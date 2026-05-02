@@ -1,0 +1,10 @@
+[package]
+name = "runfile-converters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Converters from other formats (package.json, Makefile) to Runfile.json"
+
+[dependencies]
+serde_json = { workspace = true }
+runfile-parser = { path = "../runfile-parser" }

@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: Swatinem/rust-cache@v2.9.1
+      - uses: ./.github/actions/bootstrap
+      - run: run ci:lint
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          key: ${{ matrix.os }}
+      - uses: ./.github/actions/bootstrap
+      - run: run ci:test

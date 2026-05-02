@@ -1,0 +1,22 @@
+# Build artifacts
+/target/
+/target-linux/
+/target-mac/
+/target-windows/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Claude
+/.claude/*
+!/.claude/agents/*
+!/.claude/skills/*

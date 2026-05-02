@@ -1,0 +1,25 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.31.0"
+ci = "github"
+installers = [
+	"shell",
+	"powershell",
+	"npm"
+]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "aarch64-unknown-linux-musl",
+  "x86_64-unknown-linux-musl",
+  "aarch64-pc-windows-msvc",
+  "x86_64-pc-windows-msvc",
+]
+install-path = "~/.local/bin"
+hosting = "github"
+install-updater = false
+npm-scope = "@skiley"
+npm-package = "runfile"
+publish-jobs = ["npm"]

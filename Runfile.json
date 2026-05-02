@@ -1,0 +1,78 @@
+{
+	"$schema": "./schemas/v0.schema.json",
+	"globals": {
+		"env": {
+			"CARGO_TARGET_DIR": "target-$(RUN.os)"
+		},
+		"logging": true
+	},
+	"includes": ["Runfile-wsl.json"],
+	"targets": {
+		"build": {
+			"description": "Build all crates in debug mode",
+			"commands": [
+				"cargo build $(ARGS)",
+				{
+					"if": "$(RUN.os) == windows",
+					"then": "@wsl:build"
+				},
+				"@install"
+			]
+		},
+		"build:release": {
+			"description": "Build all crates in release mode",
+			"commands": [
+				"cargo build --release $(ARGS)",
+				{
+					"if": "$(RUN.os) == windows",
+					"then": "@wsl:build:release"
+				}
+			]
+		},
+		"clean": {
+			"description": "Remove build artifacts",
+			"commands": [
+				{
+					"for": "dir",
+					"in": ["", "-linux", "-mac", "-windows"],
+					"do": ["cargo clean --target-dir target$(LOOP.dir)"]
+				}
+			]
+		},
+		"install": {
+			"description": "Copies the built binary to .local/bin",
+			"commands": [
+				{
+					"if": "$(RUN.os) == windows",
+					"then": "cp target-windows/debug/run.exe ~/.local/bin/run.exe",
+					"else": "cp $(ENV.CARGO_TARGET_DIR)/debug/run ~/.local/bin/run"
+				}
+			],
+			"detach": true,
+			"forceShell": "sh",
+			"parallel": true
+		},
+		"lint": {
+			"description": "Completely lints (type-checks, formats, runs Clippy) the project",
+			"commands": [
+				"cargo check",
+				"cargo fmt --all",
+				"cargo clippy --all-targets --all-features -- -D warnings",
+				{
+					"if": "$(RUN.os) == windows",
+					"then": "@wsl:lint"
+				}
+			]
+		},
+		"test": {
+			"description": "Run all workspace tests",
+			"commands": [
+				"cargo test $(ARGS)",
+				{
+					"if": "$(RUN.os) == windows",
+					"then": "@wsl:test"
+				}
+			]
+		}
+	}
+}

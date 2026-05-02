@@ -1,0 +1,16 @@
+[package]
+name = "runfile-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Encryption/decryption utilities for Runfile encrypted environment variables"
+
+[dependencies]
+aes-gcm = "0.10"
+base64 = "0.22"
+rand = "0.9"
+hex = "0.4"
+sha2 = "0.10"
+subtle = "2"
+zeroize = "1"
+thiserror = { workspace = true }

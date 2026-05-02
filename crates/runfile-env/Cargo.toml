@@ -1,0 +1,14 @@
+[package]
+name = "runfile-env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Environment variable building for Runfile"
+
+[dependencies]
+runfile-crypto = { path = "../runfile-crypto" }
+hex = "0.4"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

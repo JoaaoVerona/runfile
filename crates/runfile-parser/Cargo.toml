@@ -1,0 +1,16 @@
+[package]
+name = "runfile-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Runfile.json discovery and parsing"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+json5 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

@@ -1,0 +1,415 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://runfile.io/schemas/v0",
+	"title": "Runfile",
+	"description": "Schema for Runfile.json — a modern, cross-platform command runner configuration.",
+	"type": "object",
+	"required": [
+		"$schema",
+		"targets"
+	],
+	"additionalProperties": false,
+	"properties": {
+		"$schema": {
+			"type": "string",
+			"description": "Schema version identifier. Use \"https://runfile.io/schemas/v0\" during development, or a URL/path to this schema file."
+		},
+		"includes": {
+			"type": "array",
+			"description": "Other Runfile.json files to include. Paths are relative to this file. Included targets are merged (local wins on conflict).",
+			"items": {
+				"type": "string"
+			}
+		},
+		"targets": {
+			"type": "object",
+			"description": "Named targets that can be invoked via the Runfile CLI.",
+			"minProperties": 1,
+			"additionalProperties": {
+				"$ref": "#/$defs/CommandSpec"
+			}
+		},
+		"globals": {
+			"$ref": "#/$defs/Globals"
+		}
+	},
+	"$defs": {
+		"CommandStep": {
+			"description": "A step inside a `commands` array. Either a raw shell command string, a target invocation (`@target [args...]` — string starting with `@`), a `when`-guarded block, or a control-flow block (`if` / `for` object).",
+			"oneOf": [
+				{
+					"type": "string"
+				},
+				{
+					"$ref": "#/$defs/WhenStep"
+				},
+				{
+					"$ref": "#/$defs/IfStep"
+				},
+				{
+					"$ref": "#/$defs/ForStep"
+				}
+			]
+		},
+		"WhenCondition": {
+			"description": "State guard for a step: when does it run relative to whether a prior step has failed?",
+			"type": "string",
+			"enum": ["success", "failure", "always"]
+		},
+		"WhenStep": {
+			"type": "object",
+			"description": "A `when`-guarded block of command steps. Inner commands run only when the target's running state matches `when`.",
+			"required": ["commands"],
+			"additionalProperties": false,
+			"properties": {
+				"when": {
+					"$ref": "#/$defs/WhenCondition",
+					"description": "State guard for the inner commands. Default: `success`."
+				},
+				"commands": {
+					"description": "Steps to run when the gate matches. May be a single shell-command string (sugar for a one-element array) or an array of command steps.",
+					"oneOf": [
+						{ "type": "string" },
+						{
+							"type": "array",
+							"items": { "$ref": "#/$defs/CommandStep" },
+							"minItems": 1
+						}
+					]
+				},
+				"ignoreErrors": {
+					"type": "boolean",
+					"description": "When true, failures inside this block do not flip the target's failed state."
+				}
+			}
+		},
+		"IfStep": {
+			"type": "object",
+			"description": "Conditional execution. Evaluates `if` against the current substitution context (CLI args, env, loop scope) and runs `then` or `else`.",
+			"required": [
+				"if",
+				"then"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"if": {
+					"type": "string",
+					"description": "Boolean expression. Supports comparisons (==, !=), logical operators (&&, ||, !), parentheses, and substitutions ($(ARGS.x), $(ENV.X), $(FLAGS.x), $(LOOP.x), $(RUN.os), $(RUN.shell)). Mixing && and || requires parentheses. Truthiness: only the empty string is falsy."
+				},
+				"then": {
+					"description": "Steps executed when the condition is truthy. May be a single shell-command string (sugar for a one-element array) or an array of command steps.",
+					"oneOf": [
+						{ "type": "string" },
+						{
+							"type": "array",
+							"items": { "$ref": "#/$defs/CommandStep" }
+						}
+					]
+				},
+				"else": {
+					"description": "Steps executed when the condition is falsy. May be a single shell-command string (sugar for a one-element array) or an array of command steps.",
+					"oneOf": [
+						{ "type": "string" },
+						{
+							"type": "array",
+							"items": { "$ref": "#/$defs/CommandStep" }
+						}
+					]
+				},
+				"ignoreErrors": {
+					"type": "boolean",
+					"description": "When true, failures inside this block do not flip the run's success state."
+				},
+				"when": {
+					"$ref": "#/$defs/WhenCondition",
+					"description": "State guard for the entire `if` block. Default: `success`."
+				}
+			}
+		},
+		"ForStep": {
+			"type": "object",
+			"description": "Iterate over a list, glob, or shell command output. Loop variables are referenced as $(LOOP.<var>) inside the body.",
+			"required": [
+				"for",
+				"do"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"for": {
+					"type": "string",
+					"description": "Loop variable name. Matches the regex [A-Za-z_][A-Za-z0-9_]*.",
+					"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+				},
+				"in": {
+					"type": "array",
+					"description": "Iterate over this explicit array of strings.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"glob": {
+					"type": "string",
+					"description": "Iterate over file paths matching this glob pattern (relative to the working directory)."
+				},
+				"shell": {
+					"type": "string",
+					"description": "Iterate over the lines of stdout from running this shell command. Lines are trimmed; empty lines are dropped. The iterator command is run at planning time before any iteration body executes."
+				},
+				"do": {
+					"description": "Body steps executed once per iteration. May be a single shell-command string (sugar for a one-element array) or an array of command steps.",
+					"oneOf": [
+						{ "type": "string" },
+						{
+							"type": "array",
+							"items": {
+								"$ref": "#/$defs/CommandStep"
+							}
+						}
+					]
+				},
+				"parallel": {
+					"type": "boolean",
+					"description": "When true, iterations run concurrently. Inner `for` blocks inside an outer parallel context are forced sequential regardless of this flag."
+				},
+				"ignoreErrors": {
+					"type": "boolean",
+					"description": "When true, failures inside the body do not flip the run's success state."
+				},
+				"when": {
+					"$ref": "#/$defs/WhenCondition",
+					"description": "State guard for the entire `for` block. Default: `success`."
+				}
+			},
+			"oneOf": [
+				{
+					"required": [
+						"in"
+					]
+				},
+				{
+					"required": [
+						"glob"
+					]
+				},
+				{
+					"required": [
+						"shell"
+					]
+				}
+			]
+		},
+		"CommandSpec": {
+			"type": "object",
+			"description": "A single target specification.",
+			"required": [
+				"commands"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"description": {
+					"type": "string",
+					"description": "Human-readable description of what this target does. Shown in `runfile list` output."
+				},
+				"aliases": {
+					"type": "array",
+					"description": "Alternative names for this target. Aliases can be used interchangeably with the target name.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"commands": {
+					"description": "Command steps to execute sequentially. May be a single shell-command string (sugar for a one-element array) or an array of command steps. Each array entry is either a raw shell command string or a control-flow object (`if` / `for` / `when`).",
+					"oneOf": [
+						{ "type": "string" },
+						{
+							"type": "array",
+							"items": {
+								"$ref": "#/$defs/CommandStep"
+							},
+							"minItems": 1
+						}
+					]
+				},
+				"envFiles": {
+					"type": "array",
+					"description": "File paths to load environment variables from. Supports $(ARGS) and $(ENV) substitution. Loaded before the inline `env` object, so `env` values override these. Missing files are silently ignored.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"env": {
+					"type": "object",
+					"description": "Environment variables specific to this target. These override global env vars and envFiles.",
+					"additionalProperties": {
+						"$ref": "#/$defs/EnvValue"
+					}
+				},
+				"forceShell": {
+					"type": "string",
+					"description": "Force a specific shell for this target. Accepts a shell name (bash/zsh/sh/fish/powershell/cmd), an absolute path, or a $(...) substitution that resolves to one of those at runtime."
+				},
+				"addToPath": {
+					"type": "array",
+					"description": "Directories to prepend to PATH for this target. Relative paths are resolved from the Runfile.json directory.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"logging": {
+					"type": "boolean",
+					"description": "When true, print each command to stderr before executing it."
+				},
+				"ignoreErrors": {
+					"type": "boolean",
+					"description": "When true, continue executing subsequent commands even if one fails, and exit with code 0."
+				},
+				"detach": {
+					"type": "boolean",
+					"description": "When true, spawn the commands as a detached background process and exit immediately. Requires parallel: true when there are multiple commands."
+				},
+				"parallel": {
+					"type": "boolean",
+					"description": "When true, execute all commands in parallel instead of sequentially. All commands are spawned at the same time; the target finishes when all commands have exited."
+				},
+				"workingDirectory": {
+					"$ref": "#/$defs/WorkingDirectory"
+				},
+				"confirm": {
+					"type": "string",
+					"description": "Prompt message shown before executing. Requires y/N confirmation. Skipped in CI or with --yes."
+				},
+				"forceKillOnSigInt": {
+					"type": "boolean",
+					"description": "When true, forcefully kill the spawned process tree on SIGINT/CTRL+C. Useful for GUI-subsystem apps that don't respond to console signals."
+				},
+				"extendStdio": {
+					"type": "array",
+					"description": "Log files to tail during command execution, routing new complete lines to stdout or stderr.",
+					"items": {
+						"$ref": "#/$defs/ExtendStdio"
+					}
+				},
+				"watch": {
+					"type": "array",
+					"description": "Glob patterns for watch mode. When present, the target automatically re-runs on matching file changes. Use ! prefix to exclude.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"onlyInDirectories": {
+					"type": "array",
+					"description": "Restrict this target to only be available when the current directory is at or under one of the specified paths (relative to the Runfile location).",
+					"items": {
+						"type": "string"
+					}
+				}
+			}
+		},
+		"Globals": {
+			"type": "object",
+			"description": "Global configuration that applies to all targets. Individual targets can override any of these settings.",
+			"additionalProperties": false,
+			"properties": {
+				"addToPath": {
+					"type": "array",
+					"description": "Directories to prepend to PATH before running any command.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"envFiles": {
+					"type": "array",
+					"description": "File paths to load environment variables from for all targets. Supports $(ARGS) and $(ENV) substitution. Loaded before the inline `env` object. Missing files are silently ignored.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"env": {
+					"type": "object",
+					"description": "Environment variables set for all targets. Target-level env vars override these.",
+					"additionalProperties": {
+						"$ref": "#/$defs/EnvValue"
+					}
+				},
+				"forceShell": {
+					"type": "string",
+					"description": "Force all targets to use a specific shell. Can be overridden per-target.",
+					"enum": [
+						"bash",
+						"zsh",
+						"sh",
+						"fish",
+						"powershell",
+						"cmd"
+					]
+				},
+				"logging": {
+					"type": "boolean",
+					"description": "When true, print each command to stderr before executing it."
+				},
+				"ignoreErrors": {
+					"type": "boolean",
+					"description": "When true, continue executing subsequent commands even if one fails."
+				},
+				"workingDirectory": {
+					"$ref": "#/$defs/WorkingDirectory"
+				},
+				"onlyInDirectories": {
+					"type": "array",
+					"description": "Restrict this Runfile to only be available when the current directory is at or under one of the specified paths (relative to the Runfile location). Used with global files.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"forceKillOnSigInt": {
+					"type": "boolean",
+					"description": "When true, forcefully kill the spawned process tree on SIGINT/CTRL+C for all targets. Can be overridden per-target."
+				}
+			}
+		},
+		"WorkingDirectory": {
+			"type": "string",
+			"description": "Working directory for command execution. \"runfileParent\" (default) uses the Runfile.json directory; \"cwd\" uses the caller's current working directory. Accepts $(...) substitution that resolves to one of those values at runtime."
+		},
+		"ExtendStdio": {
+			"type": "object",
+			"description": "A log file to tail and route to stdout or stderr during command execution.",
+			"required": [
+				"fromFile",
+				"stream"
+			],
+			"additionalProperties": false,
+			"properties": {
+				"fromFile": {
+					"type": "string",
+					"description": "Path to the log file to tail. Relative paths are resolved from the working directory."
+				},
+				"stream": {
+					"$ref": "#/$defs/StdioStream"
+				}
+			}
+		},
+		"StdioStream": {
+			"type": "string",
+			"description": "Which standard stream to route log file contents to.",
+			"enum": [
+				"stdout",
+				"stderr"
+			]
+		},
+		"EnvValue": {
+			"description": "An environment variable value.",
+			"oneOf": [
+				{
+					"type": "string"
+				},
+				{
+					"type": "number"
+				},
+				{
+					"type": "boolean"
+				}
+			]
+		}
+	}
+}

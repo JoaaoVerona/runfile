@@ -1,0 +1,31 @@
+{
+	"$schema": "./schemas/v0.schema.json",
+	"globals": {
+		"addToPath": [
+			"target/debug"
+		],
+		"logging": true
+	},
+	"targets": {
+		"ci:build": {
+			"description": "Build all crates in release mode",
+			"commands": [
+				"cargo build --release $(ARGS)"
+			]
+		},
+		"ci:lint": {
+			"description": "Check formatting and run Clippy with warnings as errors",
+			"commands": [
+				"cargo check",
+				"cargo fmt --all -- --check",
+				"cargo clippy --all-targets --all-features -- -D warnings"
+			]
+		},
+		"ci:test": {
+			"description": "Run all workspace tests",
+			"commands": [
+				"cargo test --workspace"
+			]
+		}
+	}
+}
