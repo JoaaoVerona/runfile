@@ -1,14 +1,22 @@
 name: Publish npm
 
-# Triggered after dist's release.yml publishes a GitHub Release.
+# Triggered after dist's release.yml completes successfully.
 # Builds 7 npm packages (6 per-platform + 1 wrapper) using the
 # optionalDependencies pattern (esbuild/biome/swc-style) and publishes
 # them to npmjs.com. Zero transitive dependencies in the published
 # packages, no postinstall download.
+#
+# Why workflow_run instead of `release: published`?
+# GitHub silently suppresses event triggers for actions performed with
+# GITHUB_TOKEN (anti-loop measure). dist's release.yml creates the
+# release with GITHUB_TOKEN, so no `release: published` event fires.
+# `workflow_run` chains on the upstream workflow's completion directly
+# and isn't subject to that filter.
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -23,10 +31,20 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Run on manual dispatch, OR when Release succeeded for a tag push
+    # (filter out PR-triggered Release runs since release.yml runs on PRs too).
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # On workflow_run for a tag push, head_branch is the tag name (e.g. "v0.1.0").
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
     steps:
       - uses: actions/checkout@v6.0.2
+        with:
+          # workflow_run checks out the default branch by default; pin to the
+          # tagged ref so the build script matches what was released.
+          ref: ${{ inputs.tag || github.event.workflow_run.head_branch }}
 
       - uses: actions/setup-node@v6
         with:
