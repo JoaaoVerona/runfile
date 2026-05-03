@@ -1,5 +1,5 @@
 use crate::args::{check_env_case_duplicates, validate_args, LoopScope, RunArgs, SubstitutionError};
-use crate::env::{build_env, convert_env_map, EnvFileError};
+use crate::env::{build_env, EnvFileError};
 use runfile_parser::{
 	walk_spec_aux_templates, walk_step_templates, CommandSpec, CommandStep, ForStep, IfStep, Runfile, WhenStep,
 	WORKING_DIRECTORY_CWD,
@@ -217,8 +217,20 @@ fn extract_commands(
 	let env = build_env(spec, working_dir, args, None)?;
 	check_env_case_duplicates(&env)?;
 
-	let command_env = convert_env_map(spec.env.as_ref());
-	let extra_env = runfile_env::collect_runfile_env(command_env.as_ref());
+	// Show only the spec-defined env keys (not envFiles or system env), but
+	// pull the resolved values from the fully-built env so `$(FLAGS.x)`,
+	// `$(ARGS.x)`, `$(ENV.x)`, etc. references are substituted instead of
+	// printed literally.
+	let extra_env: Vec<(String, String)> = if let Some(spec_env) = &spec.env {
+		let mut pairs: Vec<(String, String)> = spec_env
+			.keys()
+			.filter_map(|k| env.get(k).map(|v| (k.clone(), v.clone())))
+			.collect();
+		pairs.sort_by(|a, b| a.0.cmp(&b.0));
+		pairs
+	} else {
+		Vec::new()
+	};
 
 	let mut leaf_commands: Vec<String> = Vec::new();
 	let mut loop_scope = LoopScope::new();

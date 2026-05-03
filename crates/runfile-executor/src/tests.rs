@@ -1962,6 +1962,55 @@ fn extract_with_args_substitution() {
 }
 
 #[test]
+fn extract_substitutes_env_values_with_args_flags_and_env() {
+	use crate::extract::{extract_target, format_extracted_commands};
+	use runfile_parser::Runfile;
+
+	// Regression: dry-run / extract output used to print env values raw,
+	// e.g. `RUN_TESTS_WITH_SIDE_EFFECTS='$(FLAGS.side-effects)'`. Values
+	// must be substituted just like commands are.
+	//
+	// `CARGO_PKG_NAME` is always present during `cargo test`, so we lean on
+	// it to exercise `$(ENV.*)` resolution without mutating process env
+	// (which races with other parallel tests).
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "test": {
+                "commands": ["./gradlew test"],
+                "env": {
+                    "RUN_TESTS_WITH_SIDE_EFFECTS": "$(FLAGS.side-effects)",
+                    "TARGET_ENV": "$(ARGS.env)",
+                    "PKG": "$(ENV.CARGO_PKG_NAME)"
+                }
+            }
+        }
+    }"#;
+
+	let runfile: Runfile = serde_json::from_str(json).unwrap();
+	let args = RunArgs::parse(&["--side-effects".into(), "--env=prod".into()]);
+	let dir = TempDir::new().unwrap();
+
+	let commands = extract_target("test", &runfile, &args, dir.path()).unwrap();
+	let line = format_extracted_commands(&commands, &ShellKind::Bash)
+		.into_iter()
+		.next()
+		.unwrap();
+
+	assert!(
+		line.contains("RUN_TESTS_WITH_SIDE_EFFECTS=true"),
+		"FLAGS not substituted: {line}"
+	);
+	assert!(line.contains("TARGET_ENV=prod"), "ARGS not substituted: {line}");
+	assert!(line.contains("PKG=runfile-executor"), "ENV not substituted: {line}");
+	assert!(line.contains("./gradlew test"), "command missing: {line}");
+	assert!(
+		!line.contains("$(FLAGS") && !line.contains("$(ARGS") && !line.contains("$(ENV"),
+		"unsubstituted placeholder leaked: {line}"
+	);
+}
+
+#[test]
 fn extract_missing_required_arg_errors() {
 	use crate::extract::extract_target;
 	use runfile_parser::Runfile;
