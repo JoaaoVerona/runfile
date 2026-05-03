@@ -342,6 +342,51 @@ pub fn walk_step_templates<'a, F: FnMut(&'a str)>(steps: &'a [CommandStep], visi
 	}
 }
 
+/// Walk every non-`commands` template field on a [`CommandSpec`] and call
+/// `visit` on each string that participates in `$(...)` substitution.
+///
+/// Covers: `env` values (string variants only — numbers/bools have no
+/// templates), `envFiles` paths, `forceShell`, `addToPath` entries,
+/// `workingDirectory`, `confirm`, and `extendStdio.fromFile` paths.
+///
+/// Used by static analysis (arg-usage scanning) so references like
+/// `$(ARGS.x)` / `$(FLAGS.x)` placed in `env` values, env-file paths, or
+/// other auxiliary fields are recognised — without it the validator would
+/// only see the `commands` array and reject otherwise-valid CLI args.
+pub fn walk_spec_aux_templates<'a, F: FnMut(&'a str)>(spec: &'a CommandSpec, visit: &mut F) {
+	if let Some(env) = &spec.env {
+		for value in env.values() {
+			if let EnvValue::String(s) = value {
+				visit(s.as_str());
+			}
+		}
+	}
+	if let Some(files) = &spec.env_files {
+		for f in files {
+			visit(f.as_str());
+		}
+	}
+	if let Some(s) = &spec.force_shell {
+		visit(s.as_str());
+	}
+	if let Some(paths) = &spec.add_to_path {
+		for p in paths {
+			visit(p.as_str());
+		}
+	}
+	if let Some(s) = &spec.working_directory {
+		visit(s.as_str());
+	}
+	if let Some(s) = &spec.confirm {
+		visit(s.as_str());
+	}
+	if let Some(items) = &spec.extend_stdio {
+		for item in items {
+			visit(item.from_file.as_str());
+		}
+	}
+}
+
 /// An `if` block within a `commands` array.
 ///
 /// The DSL condition is parsed at Runfile load time, so syntax errors

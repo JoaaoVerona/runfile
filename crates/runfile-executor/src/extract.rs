@@ -1,7 +1,8 @@
 use crate::args::{check_env_case_duplicates, validate_args, LoopScope, RunArgs, SubstitutionError};
 use crate::env::{build_env, convert_env_map, EnvFileError};
 use runfile_parser::{
-	walk_step_templates, CommandSpec, CommandStep, ForStep, IfStep, Runfile, WhenStep, WORKING_DIRECTORY_CWD,
+	walk_spec_aux_templates, walk_step_templates, CommandSpec, CommandStep, ForStep, IfStep, Runfile, WhenStep,
+	WORKING_DIRECTORY_CWD,
 };
 use runfile_shell::ShellKind;
 use std::collections::{HashMap, HashSet};
@@ -392,6 +393,7 @@ fn collect_extract_commands_recursive(
 		.ok_or_else(|| ExtractError::UnknownTarget(target_name.to_string()))?;
 
 	walk_step_templates(&spec.commands, &mut |t| commands.push(t.to_string()));
+	walk_spec_aux_templates(spec, &mut |t| commands.push(t.to_string()));
 
 	completed.insert(target_name.to_string());
 	in_progress.remove(target_name);

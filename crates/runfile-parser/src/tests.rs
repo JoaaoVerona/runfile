@@ -2594,6 +2594,50 @@ fn walk_step_templates_visits_all_string_payloads() {
 }
 
 #[test]
+fn walk_spec_aux_templates_visits_all_substitutable_fields() {
+	let json = r#"{
+		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"targets": {
+			"x": {
+				"commands": ["echo go"],
+				"env": {
+					"A": "$(ARGS.a)",
+					"B": "$(FLAGS.b)",
+					"N": 42,
+					"BL": true
+				},
+				"envFiles": [".env.$(RUN.os)", ".env"],
+				"forceShell": "$(ARGS.shell ? bash)",
+				"addToPath": ["bin/$(ARGS.profile)"],
+				"workingDirectory": "$(ARGS.dir ? runfileParent)",
+				"confirm": "Run with $(ARGS.env)?",
+				"extendStdio": [{ "fromFile": "logs/$(RUN.os).log", "stream": "stdout" }]
+			}
+		}
+	}"#;
+	let rf = parse_runfile(json).unwrap();
+	let mut seen: Vec<String> = Vec::new();
+	walk_spec_aux_templates(&rf.targets["x"], &mut |t| seen.push(t.to_string()));
+
+	// commands array is intentionally NOT covered by this walker.
+	assert!(!seen.iter().any(|s| s == "echo go"));
+
+	// env values: only string variants are visited (numbers/bools have no templates).
+	assert!(seen.iter().any(|s| s == "$(ARGS.a)"));
+	assert!(seen.iter().any(|s| s == "$(FLAGS.b)"));
+	assert!(!seen.iter().any(|s| s == "42"));
+	assert!(!seen.iter().any(|s| s == "true"));
+
+	assert!(seen.iter().any(|s| s == ".env.$(RUN.os)"));
+	assert!(seen.iter().any(|s| s == ".env"));
+	assert!(seen.iter().any(|s| s == "$(ARGS.shell ? bash)"));
+	assert!(seen.iter().any(|s| s == "bin/$(ARGS.profile)"));
+	assert!(seen.iter().any(|s| s == "$(ARGS.dir ? runfileParent)"));
+	assert!(seen.iter().any(|s| s == "Run with $(ARGS.env)?"));
+	assert!(seen.iter().any(|s| s == "logs/$(RUN.os).log"));
+}
+
+#[test]
 fn parse_dsl_features_all_supported() {
 	let conditions = [
 		"$(ARGS.x)",

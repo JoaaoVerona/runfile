@@ -7,7 +7,8 @@ use crate::executor::{
 };
 use crate::logging::{log_command, log_target_timing, StepCounter};
 use runfile_parser::{
-	CommandStep, ForStep, IfStep, Runfile, WhenStep, WORKING_DIRECTORY_CWD, WORKING_DIRECTORY_RUNFILE_PARENT,
+	walk_spec_aux_templates, CommandStep, ForStep, IfStep, Runfile, WhenStep, WORKING_DIRECTORY_CWD,
+	WORKING_DIRECTORY_RUNFILE_PARENT,
 };
 use runfile_shell::{resolve_shell, ResolvedShell};
 use std::collections::{HashMap, HashSet};
@@ -486,6 +487,7 @@ fn collect_commands_recursive(
 		.ok_or_else(|| RunError::UnknownTarget(target_name.to_string()))?;
 
 	collect_step_commands(&spec.commands, runfile, commands, completed, in_progress)?;
+	walk_spec_aux_templates(spec, &mut |t| commands.push(t.to_string()));
 
 	completed.insert(target_name.to_string());
 	in_progress.remove(target_name);

@@ -75,9 +75,12 @@ crates/
   `deserialize_steps_or_string` / `deserialize_optional_steps_or_string` helpers in `schema.rs` handle the shorthand
   at parse time, so the in-memory shape always normalizes to `Vec<CommandStep>`. `ForStep` requires exactly one of `in`/`glob`/`shell` (XOR validated
   at parse time) and has an optional `parallel` flag. Free function `walk_step_templates(steps, &mut visit)` recursively yields every leaf
-  template string (used by IDE generators, MCP, args-usage scanning). `From<&str>` and `From<String>` impls let
-  callers use `"foo".into()` ergonomically; `CommandSpec::new_shell(Vec<String>)` is a convenience constructor for
-  string-only command lists.
+  template string (used by IDE generators, MCP, args-usage scanning). The companion `walk_spec_aux_templates(spec, &mut visit)`
+  yields every other substitutable string on a `CommandSpec` — `env` string values, `envFiles` paths, `forceShell`,
+  `addToPath` entries, `workingDirectory`, `confirm`, and `extendStdio.fromFile` — so arg-usage scanners (e.g. the runner's
+  `validate_args` collector) recognise `$(ARGS.x)` / `$(FLAGS.x)` references that live outside `commands`. `From<&str>` and
+  `From<String>` impls let callers use `"foo".into()` ergonomically; `CommandSpec::new_shell(Vec<String>)` is a convenience
+  constructor for string-only command lists.
 - DSL parsing (`dsl.rs`): tiny boolean expression language for `if` conditions. Hand-written tokenizer + recursive
   descent parser, no external deps. Grammar: comparisons (`==`, `!=`), logical operators (`&&`, `||`, `!`), parens,
   substitution leaves (`$(ARGS.x)` / `$(ENV.X)` / `$(FLAGS.x)` / `$(LOOP.x)`), quoted strings, bare-words. Mixing
