@@ -26,6 +26,76 @@
 			"commands": [
 				"cargo test --workspace"
 			]
+		},
+
+		"ci:rustup-add-target": {
+			"description": "Install a rustup cross-compile target (--target=<triple>)",
+			"commands": [
+				"rustup target add $(ARGS.target)"
+			]
+		},
+		"ci:install-musl-tools": {
+			"description": "Install musl-tools (Linux only, required for *-linux-musl targets)",
+			"commands": [
+				"sudo apt install -y musl-tools"
+			]
+		},
+		"ci:build-target": {
+			"description": "Build the runfile binary in release mode for a specific target triple (--target=<triple>)",
+			"commands": [
+				"cargo build --release --target $(ARGS.target)"
+			]
+		},
+		"ci:package-archive": {
+			"description": "Package the built binary + README into a release archive (--target=<triple>). Produces stage/runfile-cli-<target>.{tar.xz|zip}.",
+			"forceShell": "bash",
+			"commands": [
+				"mkdir -p stage/runfile-cli-$(ARGS.target)",
+				{
+					"if": "$(RUN.os) == windows",
+					"then": "cp target/$(ARGS.target)/release/run.exe stage/runfile-cli-$(ARGS.target)/",
+					"else": "cp target/$(ARGS.target)/release/run stage/runfile-cli-$(ARGS.target)/"
+				},
+				"cp README.md stage/runfile-cli-$(ARGS.target)/",
+				{
+					"if": "$(RUN.os) == windows",
+					"then": "cd stage && 7z a runfile-cli-$(ARGS.target).zip runfile-cli-$(ARGS.target) > /dev/null",
+					"else": "cd stage && tar cJf runfile-cli-$(ARGS.target).tar.xz runfile-cli-$(ARGS.target)"
+				}
+			]
+		},
+
+		"ci:stage-release-assets": {
+			"description": "Copy install scripts + JSON Schema into assets/ and generate sha256.sum",
+			"forceShell": "bash",
+			"commands": [
+				"cp scripts/install.sh assets/install.sh",
+				"cp scripts/install.ps1 assets/install.ps1",
+				"cp schemas/v0.schema.json assets/v0.schema.json",
+				"cd assets && sha256sum * > sha256.sum"
+			]
+		},
+		"ci:create-release": {
+			"description": "Create the GitHub Release with all staged assets (--tag=<vX.Y.Z>). Requires GH_TOKEN and GITHUB_REPOSITORY in env.",
+			"forceShell": "bash",
+			"commands": [
+				"gh release create \"$(ARGS.tag)\" --repo \"$(ENV.GITHUB_REPOSITORY)\" --title \"$(ARGS.tag)\" --generate-notes assets/*"
+			]
+		},
+
+		"ci:build-npm-packages": {
+			"description": "Build the per-platform npm packages from downloaded artifacts (--version=<X.Y.Z>, no leading v)",
+			"commands": [
+				"node scripts/build-npm-packages.mjs --version $(ARGS.version) --artifacts dist-artifacts --out npm-dist"
+			]
+		},
+		"ci:publish-npm": {
+			"description": "Publish all per-platform npm packages, then the wrapper package. Requires NODE_AUTH_TOKEN in env.",
+			"forceShell": "bash",
+			"commands": [
+				"for dir in npm-dist/runfile-*; do (cd \"$dir\" && npm publish --access public --provenance) || exit 1; done",
+				"cd npm-dist/runfile && npm publish --access public --provenance"
+			]
 		}
 	}
 }

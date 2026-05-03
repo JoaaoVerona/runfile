@@ -11,6 +11,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build:
@@ -20,58 +25,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-musl
-            runner: ubuntu-24.04
-            archive: tar.xz
-            bin: run
-          - target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
-            archive: tar.xz
-            bin: run
-          - target: aarch64-apple-darwin
-            runner: macos-latest
-            archive: tar.xz
-            bin: run
-          - target: x86_64-apple-darwin
-            runner: macos-latest
-            archive: tar.xz
-            bin: run
-          - target: x86_64-pc-windows-msvc
-            runner: windows-2025
-            archive: zip
-            bin: run.exe
-          - target: aarch64-pc-windows-msvc
-            runner: windows-2025
-            archive: zip
-            bin: run.exe
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, runner: macos-latest }
+          - { target: x86_64-apple-darwin, runner: macos-latest }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2025 }
+          - { target: aarch64-pc-windows-msvc, runner: windows-2025 }
     steps:
       - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - run: rustup target add ${{ matrix.target }}
-      - if: contains(matrix.target, 'linux-musl')
-        run: sudo apt install -y musl-tools
       - uses: Swatinem/rust-cache@v2.9.1
         with:
           key: ${{ matrix.target }}
-      - run: cargo build --release --target ${{ matrix.target }}
-      - name: Package archive
-        shell: bash
-        run: |
-          dir="runfile-cli-${{ matrix.target }}"
-          mkdir -p "stage/$dir"
-          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "stage/$dir/"
-          cp README.md "stage/$dir/"
-          cd stage
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            7z a "$dir.zip" "$dir" > /dev/null
-          else
-            tar cJf "$dir.tar.xz" "$dir"
-          fi
+      - uses: ./.github/actions/bootstrap
+      - if: contains(matrix.target, 'linux-musl')
+        run: run ci:install-musl-tools
+      - run: run ci:rustup-add-target --target=${{ matrix.target }}
+      - run: run ci:build-target --target=${{ matrix.target }}
+      - run: run ci:package-archive --target=${{ matrix.target }}
       - uses: actions/upload-artifact@v7.0.0
         with:
           name: build-${{ matrix.target }}
-          path: stage/runfile-cli-${{ matrix.target }}.${{ matrix.archive }}
+          path: stage/runfile-cli-${{ matrix.target }}.*
 
   release:
     name: Release
@@ -80,7 +56,7 @@ jobs:
     permissions:
       contents: write
     env:
-      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v6.0.2
         with:
@@ -90,21 +66,10 @@ jobs:
           path: assets
           pattern: build-*
           merge-multiple: true
-      - name: Stage release assets
-        run: |
-          cp scripts/install.sh assets/install.sh
-          cp scripts/install.ps1 assets/install.ps1
-          cp schemas/v0.schema.json assets/v0.schema.json
-          cd assets && sha256sum * > sha256.sum
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$TAG" \
-            --generate-notes \
-            assets/*
+      - uses: Swatinem/rust-cache@v2.9.1
+      - uses: ./.github/actions/bootstrap
+      - run: run ci:stage-release-assets
+      - run: run ci:create-release --tag="$TAG"
 
   publish-npm:
     name: Publish npm
@@ -114,7 +79,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      TAG: ${{ inputs.tag || github.ref_name }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v6.0.2
         with:
@@ -128,17 +93,7 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-      - name: Build npm packages
-        run: |
-          node scripts/build-npm-packages.mjs \
-            --version "${TAG#v}" \
-            --artifacts dist-artifacts \
-            --out npm-dist
-      - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          for dir in npm-dist/runfile-*; do
-            (cd "$dir" && npm publish --access public --provenance)
-          done
-          (cd npm-dist/runfile && npm publish --access public --provenance)
+      - uses: Swatinem/rust-cache@v2.9.1
+      - uses: ./.github/actions/bootstrap
+      - run: run ci:build-npm-packages --version="${TAG#v}"
+      - run: run ci:publish-npm
