@@ -28,6 +28,7 @@ runfile-mcp = { path = "../runfile-mcp" }
 tokio = { version = "1", features = ["full"] }
 notify = { workspace = true }
 globset = { workspace = true }
+which = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

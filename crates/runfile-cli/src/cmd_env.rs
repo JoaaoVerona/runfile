@@ -589,7 +589,25 @@ pub fn cmd_inject(files: &[String], command_args: &[String]) {
 
 	let program = &command_args[0];
 	let args = &command_args[1..];
-	let mut cmd = std::process::Command::new(program);
+
+	// Resolve the program against the effective PATH the child will see, with
+	// PATHEXT-aware lookup. On Windows this is required to find `.cmd`/`.bat`/`.ps1`
+	// shims (e.g. `node_modules/.bin/vite.cmd`) — Rust's `Command::new` uses
+	// `CreateProcessW`, which only appends `.exe`. Effective PATH is the env file's
+	// override if present (case-insensitive on Windows), otherwise the inherited PATH.
+	let effective_path = env_map
+		.iter()
+		.find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+		.map(|(_, v)| v.clone())
+		.or_else(|| std::env::var("PATH").ok())
+		.unwrap_or_default();
+	let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+	let resolved = which::which_in(program, Some(&effective_path), &cwd);
+
+	let mut cmd = match resolved {
+		Ok(path) => std::process::Command::new(path),
+		Err(_) => std::process::Command::new(program),
+	};
 	cmd.args(args);
 	cmd.envs(&env_map);
 
