@@ -28,15 +28,23 @@ $ run build --release
 - [CLI Usage](#cli-usage)
 - [Runfile.json Reference](#runfilejson-reference)
 - [Arguments and Substitution](#arguments-and-substitution)
+- [Control Flow](#control-flow)
 - [Shell Support](#shell-support)
 - [Command Execution Model](#command-execution-model)
 - [Environment Variables](#environment-variables)
+- [Encrypted Environment Variables](#encrypted-environment-variables)
 - [PATH Manipulation](#path-manipulation)
 - [Command Logging](#command-logging)
 - [Aliases](#aliases)
 - [Internal Targets](#internal-targets)
 - [When-guarded blocks](#when-guarded-blocks-when)
+- [Dry Run](#dry-run)
+- [File Includes](#file-includes)
 - [Error Handling](#error-handling)
+- [Parallel Execution](#parallel-execution)
+- [Detached Execution](#detached-execution)
+- [extendStdio](#extendstdio)
+- [Force-kill on Ctrl+C](#force-kill-on-ctrlc)
 - [Runfile Discovery](#runfile-discovery)
     - [Global Files](#global-files)
 - [Local Settings](#local-settings)
@@ -45,6 +53,8 @@ $ run build --release
 - [Shell Completions](#shell-completions)
 - [Watch Mode](#watch-mode)
 - [Confirmation Prompts](#confirmation-prompts)
+- [MCP Server (AI Agents)](#mcp-server-ai-agents)
+- [Bootstrapping a New Project](#bootstrapping-a-new-project)
 - [Editor Integration](#editor-integration)
 - [Full Example](#full-example)
 - [Platform Support](#platform-support)
@@ -128,22 +138,33 @@ $ run dev --port=4000           # Named arguments
 | Command                                               | Description                                                    |
 |-------------------------------------------------------|----------------------------------------------------------------|
 | `run :list`                                            | List all targets with their descriptions                       |
+| `run :init [-p path]`                                  | Create a default `Runfile.json` in the current directory       |
+| `run :extract <target> [args...]`                      | Print the resolved shell commands for a target without running them |
 | `run :config shell set <name> <path>`                  | Save a custom shell executable path to local settings          |
 | `run :config shell list`                               | Show all shells with their resolved paths and availability     |
 | `run :config path-alias add <alias> <path>`            | Save a path alias for use with `-f`                            |
-| `run :config path-alias remove <alias>`                | Remove a path alias                                            |
+| `run :config path-alias remove <alias>`                | Remove a path alias (supports partial match)                   |
 | `run :config path-alias list`                          | List all saved path aliases                                    |
 | `run :config global-files add <path>`                  | Register a Runfile as a global file (always merged in)         |
-| `run :config global-files remove <path>`               | Remove a registered global file                                |
+| `run :config global-files remove <path>`               | Remove a registered global file (supports partial match)       |
 | `run :config global-files list`                        | List all registered global files                               |
+| `run :config reset`                                    | Delete the settings file, resetting all configuration to defaults |
 | `run :convert package-json`                            | Convert `package.json` scripts into Runfile targets            |
 | `run :convert makefile`                                | Convert Makefile targets into Runfile targets                  |
 | `run :generate zed-tasks`                              | Generate Zed editor tasks from Runfile targets                 |
 | `run :generate vscode-tasks`                           | Generate VS Code tasks from Runfile targets                    |
 | `run :generate jetbrains-run-configurations`           | Generate JetBrains IDE run configurations from Runfile targets |
+| `run :mcp inspect`                                     | Print the MCP tool definitions as JSON and exit                |
+| `run :mcp install [<agent>]`                           | Install the MCP server config for an agent (claude-code, cursor, claude-desktop, codex, junie) |
+| `run :mcp server`                                      | Start the MCP server on stdio                                  |
+| `run :completions install <shell>`                     | Install the completion script for a shell (bash, zsh, fish, powershell) |
+| `run :completions output <shell>`                      | Print the completion script to stdout (for `eval` or manual install) |
+| `run :completions uninstall <shell>`                   | Remove a previously installed completion script                |
 | `run :env init [-p path] [--plain] [--key prefix]`     | Create a new `.env` file, optionally encrypted                 |
-| `run :env secret-keys add [key]`                       | Generate or import a private encryption key                    |
-| `run :env secret-keys list`                            | List all keys (public key + truncated private key)             |
+| `run :env inject [-f file]... -- <command> [args...]`  | Run a command with env vars loaded from one or more `.env` files (encrypted values auto-decrypted) |
+| `run :env rotate <file> [--delete-current-key]`        | Rotate the encryption key for an encrypted `.env` file         |
+| `run :env secret-keys add`                             | Interactively generate a new key or import an existing one     |
+| `run :env secret-keys list`                            | List the public key fingerprints of all stored keys            |
 | `run :env secret-keys get-private <public-prefix>`     | Print the full private key for sharing with teammates          |
 | `run :env secret-keys remove <public-prefix>`          | Remove a key by public key prefix                              |
 | `run :env get <file> <var>`                            | Read a variable (auto-decrypts if file is encrypted)           |
@@ -178,18 +199,14 @@ $ run --shell powershell test     # Use PowerShell
 $ run --shell /usr/local/bin/zsh dev   # Use a specific shell binary
 ```
 
-The `--dry-run` flag shows the full execution plan (including transitively-called `@target` dependencies) without running anything:
+The `--dry-run` flag prints the resolved leaf shell commands for the invoked target without running anything. Only that target's own shell commands are shown — `@target` invocations and the dependency targets they would dispatch to are not expanded inline.
 
 ```
 $ run --dry-run deploy
 [runfile] Dry run for target "deploy":
-[runfile] ── target: "lint"
-[runfile]   (1/2) eslint src/
-[runfile]   (2/2) tsc --noEmit
-[runfile] ── target: "build"
-[runfile]   (1/1) cargo build --release
-[runfile] ── target: "deploy"
-[runfile]   (1/1) scp target/release/app server:/opt/
+[runfile] ── Target: deploy
+[runfile]   (1/2) scp target/release/app server:/opt/
+[runfile]   (2/2) echo Deploy complete.
 ```
 
 ---
@@ -261,8 +278,11 @@ Each target is an object under `targets`:
 | `detach`           | `boolean`  | No       | Spawn commands as detached background processes and exit immediately. Requires `parallel: true`.                                               |
 | `workingDirectory` | `string`   | No       | `"runfileParent"` (default) or `"cwd"`. Controls whether commands run in the Runfile.json directory or the caller's current working directory. |
 | `aliases`          | `string[]` | No       | Alternative names for this target.                                                                                                             |
-| `confirm`          | `string`   | No       | Prompt message shown before executing. Requires `y/N` confirmation. Skipped in CI or with `--yes`.                                             |
+| `confirm`          | `string`   | No       | Prompt message shown before executing. Requires `y/N` confirmation. Skipped in CI or with `--yes`. The string is shown verbatim — no `$(...)` substitution. |
+| `forceKillOnSigInt`| `boolean`  | No       | When true, forcefully kill the entire spawned process tree on SIGINT/CTRL+C. See [Force-kill on Ctrl+C](#force-kill-on-ctrlc).                  |
+| `extendStdio`      | `object[]` | No       | Tail one or more log files during execution and route new lines to `stdout` or `stderr`. See [extendStdio](#extendstdio).                       |
 | `watch`            | `string[]` | No       | Glob patterns for watch mode. When present, the target automatically re-runs on matching file changes. Use `!` prefix to exclude.              |
+| `onlyInDirectories`| `string[]` | No       | Restrict this target to only be invocable when the current working directory is at or under one of the listed paths (relative to the Runfile location). |
 
 ### Global Properties
 
@@ -293,6 +313,7 @@ Everything in `globals` applies to all targets. Target-level settings always tak
 | `logging`           | `boolean`  | Enable command logging globally. Overridden per-target.                                                                                                              |
 | `ignoreErrors`      | `boolean`  | Ignore command failures globally. Overridden per-target.                                                                                                             |
 | `workingDirectory`  | `string`   | `"runfileParent"` (default) or `"cwd"`. Sets the default working directory for all targets. Overridden per-target.                                                   |
+| `forceKillOnSigInt` | `boolean`  | Default for [`forceKillOnSigInt`](#force-kill-on-ctrlc). Overridden per-target.                                                                                      |
 | `onlyInDirectories` | `string[]` | Restrict this Runfile's targets to only be available when the current working directory is under one of the listed directories (relative to the Runfile's location). |
 
 ---
@@ -614,6 +635,7 @@ For an exhaustive table of target invocation semantics (no dedup, env layering, 
 | `then`         | `string \| commandStep[]`     | Yes      | Steps run when the condition is truthy. A bare string is sugar for a one-element array. May be empty.      |
 | `else`         | `string \| commandStep[]`     | No       | Steps run when the condition is falsy. Same string-shorthand as `then`.                                    |
 | `ignoreErrors` | `boolean`                     | No       | When true, failures inside this block do not flip the run's success state.                                 |
+| `when`         | `"success" \| "failure" \| "always"` | No | State guard for the entire `if` block. Default `"success"`. See [When-guarded blocks](#when-guarded-blocks-when). |
 
 ### `for` blocks
 
@@ -735,8 +757,10 @@ Runfile supports six shells:
 
 By default, Runfile auto-detects the best available shell:
 
-- **Linux/macOS** — Uses the `$SHELL` environment variable, falling back to `/bin/bash`, `/bin/zsh`, `/bin/sh`.
-- **Windows** — Looks for Git Bash in standard install locations, then PowerShell, then cmd.exe.
+- **Linux/macOS** — Uses the `$SHELL` environment variable when it points to a recognised shell, then falls back through `/bin/bash`, `/bin/zsh`, `/bin/sh`, and finally `fish` (`/usr/bin/fish`, `/usr/local/bin/fish`).
+- **Windows** — Looks for Git Bash in the standard install locations (`%ProgramFiles%\Git\bin\bash.exe`, `%ProgramFiles(x86)%\Git\bin\bash.exe`, `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`, `C:\Git\bin\bash.exe`), then PowerShell (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`), then cmd.exe (`%SystemRoot%\System32\cmd.exe`). If none of those exist, it falls back to a `which`/`where` lookup for `bash`, then `powershell`, then `cmd`.
+
+WSL's `bash` (`C:\Windows\System32\bash.exe`) is intentionally **not** picked up — it runs inside a separate Linux environment and cannot see Windows-side binaries from `PATH`.
 
 ### Forcing a shell
 
@@ -947,7 +971,7 @@ export KEY=value      # export prefix is accepted
 - `envFiles` are loaded **before** the inline `env` object, so `env` values override file values.
 - Within `envFiles`, later files override earlier ones for the same key.
 
-**Priority order:** **target env** > **target envFiles** > **global env** > **global envFiles** > **system env**.
+**Priority order (highest precedence first):** **target `env`** > **global `env`** > **target `envFiles`** > **global `envFiles`** > **system env**. (Because globals are baked into each target at parse time, the runtime applies a single merged `env` map — with target values winning over global ones — *after* all `envFiles` have been loaded.)
 
 ---
 
@@ -957,7 +981,7 @@ Runfile supports encrypted environment variable values, similar to [dotenvx](htt
 
 ### How it works
 
-Each encrypted `.env` file contains a `RUNFILE_ENCRYPTION_PUBLIC_KEY` — a SHA-256 fingerprint of the private key used to encrypt the values. When Runfile loads the file, it automatically matches this public key against the private keys stored in your local settings (or the `RUNFILE_ENCRYPTION_KEY` env var) to find the correct decryption key. No key names or manual configuration needed in `Runfile.json`.
+Each encrypted `.env` file contains a `RUNFILE_ENCRYPTION_PUBLIC_KEY` — a SHA-256 fingerprint of the private key used to encrypt the values. Private keys are stored in your platform's OS credential store (Windows Credential Manager, macOS Keychain, or Linux Secret Service); the local settings file only records the public-key fingerprints. When Runfile loads the file, it automatically matches the file's public key against your stored private keys (or the `RUNFILE_ENCRYPTION_KEY` env var) to find the correct decryption key. No key names or manual configuration needed in `Runfile.json`.
 
 ### Setup
 
@@ -972,19 +996,19 @@ Created .env.production (encrypted).
   Public key: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
 
 A new private key was generated and added to your local settings.
-  Private key: a1b2c3d4e5f6a7b8...
 
 To share this env file with teammates, they must import the same
 private key before they can decrypt or use it:
 
   1. Share the private key securely:
-     run :env secret-keys get-private a1b2c3d4...
+     run :env secret-keys get-private 9f86d081...
 
   2. They import it on their machine:
-     run :env secret-keys add <full-private-key>
+     run :env secret-keys add
+     (then paste the private key when prompted)
 ```
 
-The private key is stored in your local settings (`~/.config/runfile/settings.json` on Linux) and is never committed to version control.
+The private key is stored in your platform's OS credential store (Windows Credential Manager / macOS Keychain / Linux Secret Service via `keyring`); only its public key fingerprint is recorded in the local settings file. Neither is committed to version control.
 
 You can also use an existing key with `--key <prefix>`, or create a plaintext file with `--plain`. If you omit `-p`, the file defaults to `.env`.
 
@@ -1062,14 +1086,47 @@ API_KEY=...
 ### Key management
 
 ```
-$ run :env secret-keys list                  # Show public keys + truncated private keys
+$ run :env secret-keys list                  # Show stored public-key fingerprints
 $ run :env secret-keys get-private 9f86      # Print full private key (for sharing)
 $ run :env secret-keys remove 9f86           # Remove by public key prefix
 ```
 
 All key matching uses **public key prefixes** — if a public key starts with `9f86d081` you can reference it as `9f86` as long as the prefix is unambiguous among your stored keys.
 
-Use `run :env secret-keys get-private <public-prefix>` to print the full private key so you can securely share it with teammates who need to decrypt the same `.env` files. They import it with `run :env secret-keys add <full-key>`.
+Use `run :env secret-keys get-private <public-prefix>` to print the full private key so you can securely share it with teammates who need to decrypt the same `.env` files. They import it by running `run :env secret-keys add` and choosing **Import an existing private key** when prompted, then pasting the 64-character hex string.
+
+### Rotating a key
+
+`run :env rotate <file>` generates a new private key, **decrypts every encrypted value with the old key, re-encrypts it with the new key**, and rewrites the file with the new `RUNFILE_ENCRYPTION_PUBLIC_KEY` header. Plaintext values, comments, and blank lines are preserved verbatim. The new key is added to your OS credential store; the old key is left in place by default so other files encrypted with it keep working.
+
+```
+$ run :env rotate .env.production
+Key rotated for .env.production.
+
+  Old public key: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+  New public key: 7c5a3e29c5f1d51ec6da6d3e1c40e88b34f2a7c6e9b8b5c5d4e3f2a1b0c9d8e7
+
+To share the new key with teammates:
+  run :env secret-keys get-private 7c5a3e29...
+```
+
+Pass `--delete-current-key` to also remove the previous private key from the OS credential store after rewriting the file. **Do this only after every encrypted file that used the old key has been rotated** — otherwise those files become permanently undecryptable.
+
+### Running an arbitrary command with an encrypted env
+
+`run :env inject` is a `dotenvx run`-style helper: it loads one or more `.env` files (decrypting any encrypted values in memory), then `exec`s a child command with those variables in its environment. Use it for tools that aren't invoked via Runfile targets but still need the same secrets.
+
+```
+$ run :env inject -- node scripts/seed.js
+$ run :env inject -f .env -f .env.production -- npx prisma migrate deploy
+$ run :env inject -f .env.production -- bash -c 'echo $DATABASE_URL'
+```
+
+- `-f <file>` is repeatable. If omitted, defaults to a single `.env` in the working directory.
+- Files are merged in order — later `-f` files override earlier ones for the same key.
+- The `--` separator is required: everything after `--` is the command + args, passed through verbatim (so flags like `-v` aren't intercepted by Runfile).
+- `RUNFILE_ENCRYPTION_PUBLIC_KEY` is **stripped** from the env before injection — child processes never see the key fingerprint.
+- The child's exit code is propagated as Runfile's exit code.
 
 ### CI/CD
 
@@ -1111,10 +1168,10 @@ Add directories to `PATH` so your commands can find project-local binaries:
 ```
 
 - Relative paths are resolved from the directory containing `Runfile.json`.
-- Target-level `addToPath` entries are prepended before global ones.
-- Both are prepended before the existing system `PATH`.
+- Global `addToPath` entries come first, then target-level entries, then the existing system `PATH`. The final `PATH` looks like `<global-entries>:<target-entries>:<system-PATH>`.
+- Because `PATH` lookups are left-to-right, this means a global entry shadows a target entry that resolves to the same binary name; both shadow the system `PATH`.
 
-Priority order: **target addToPath** > **global addToPath** > **system PATH**.
+Priority order (left wins): **global addToPath** → **target addToPath** → **system PATH**.
 
 ---
 
@@ -1216,8 +1273,8 @@ Targets whose **canonical name starts with `_`** are *internal*. They are hidden
 $ run :list
 Available targets:
 
-  build              @_setup; cargo build --release
-  test               @_setup; cargo test
+  build              cargo build --release
+  test               cargo test
 
 $ run _setup
 Error: target "_setup" is internal and cannot be invoked directly.
@@ -1242,8 +1299,8 @@ Internal targets are **rejected** when used directly:
 
 Internal targets are **fully available** when:
 
-- Referenced from a `before` or `after` lifecycle step via `{ "target": "_setup" }`
-- Referenced from another internal target's lifecycle steps (you can chain them)
+- Invoked from another target's `commands` via `@_setup [args...]` (see [Target invocations](#target-invocations--target-args))
+- Invoked from another internal target's `commands` (you can chain them)
 - Pulled in via includes or globals — visibility is purely a function of the canonical name
 
 ### Aliases on internal targets
@@ -1327,22 +1384,36 @@ Concretely, parallelism applies *within* each phase; the phases themselves are o
 
 ## Dry Run
 
-Use `--dry-run` to see the full execution plan without running anything:
+Use `--dry-run` to see the resolved leaf shell commands for a target without running anything:
 
 ```
 $ run --dry-run deploy
 [runfile] Dry run for target "deploy":
-[runfile] ── target: "lint"
-[runfile]   (1/2) eslint src/
-[runfile]   (2/2) tsc --noEmit
-[runfile] ── target: "build"
-[runfile]   (1/1) cargo build --release
-[runfile] ── target: "deploy"
-[runfile]   (1/1) scp target/release/app server:/opt/
+[runfile] ── Target: deploy
+[runfile]   (1/2) scp target/release/app server:/opt/
 [runfile]   (2/2) echo Deploy complete.
 ```
 
-This resolves transitive `@target` dependencies and substitutes arguments — exactly what would happen on a real run — then prints the execution plan instead of executing it.
+Substitutions (`$(ARGS.x)`, `$(ENV.x)`, `$(RUN.os)`, etc.) are fully resolved against the current invocation, so the printed lines are the exact commands that would be sent to the shell. `@target` invocations and the dependency targets they would dispatch to are not expanded inline — only the invoked target's own shell commands appear.
+
+### `:extract`
+
+`:extract` is a sibling of `--dry-run` aimed at machine consumption: it prints the resolved leaf shell commands to **stdout**, one per line, with no `[runfile]` prefix, no ANSI colours, and no `(N/total)` step indicator.
+
+```
+$ run :extract deploy --release
+scp target/release/app server:/opt/
+echo Deploy complete.
+```
+
+Use it when you need the commands as plain text — e.g. piping into another tool, embedding into a script, or comparing diffs across branches. Like `--dry-run`, it does not execute anything and does not recurse into `@target` dependencies.
+
+Flags:
+
+| Flag                     | Description                                                                       |
+|--------------------------|-----------------------------------------------------------------------------------|
+| `-f`, `--file <path>`    | Use a specific Runfile instead of auto-discovery.                                 |
+| `--shell <name-or-path>` | Resolve commands as if running under this shell (affects shell-specific quoting). |
 
 ---
 
@@ -1372,7 +1443,6 @@ Use `includes` to pull targets from other Runfile.json files:
 - Cycle detection prevents circular includes.
 - Each included file's `globals` are baked into its own targets only — they don't leak into the including file's targets.
 
----
 ---
 
 ## Error Handling
@@ -1455,6 +1525,67 @@ Set `detach: true` (along with `parallel: true`) on a target to spawn commands a
 Running `run serve` will spawn the commands in the background and exit immediately. The spawned processes continue running independently.
 
 `detach` requires `parallel: true`. Both are **target-only** properties (not available in `globals`). To make them conditional per-platform, dispatch into specialized targets via `if "$(RUN.os) == ..."` + `@target`.
+
+---
+
+## extendStdio
+
+`extendStdio` lets a target tail one or more log files during execution and route new lines into Runfile's own `stdout` or `stderr`. Useful when a launched process writes its logs to disk instead of inheriting the console (Unity Editor, Docker daemons, IDE-launched servers, etc.).
+
+```json
+{
+	"targets": {
+		"unity": {
+			"commands": ["unity-editor.exe -batchmode -projectPath ."],
+			"extendStdio": [
+				{ "fromFile": "Logs/Editor.log",  "stream": "stdout" },
+				{ "fromFile": "Logs/Editor.err",  "stream": "stderr" }
+			]
+		}
+	}
+}
+```
+
+Each entry is `{ "fromFile": <path>, "stream": "stdout" | "stderr" }`.
+
+| Property   | Description                                                                                                                                          |
+|------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `fromFile` | Path to the file to tail. Relative paths resolve from the target's working directory. Supports `$(...)` substitution (e.g. `"logs/$(RUN.os).log"`).  |
+| `stream`   | Either `"stdout"` or `"stderr"`. New lines from the file are written to that stream, prefixed with nothing — they appear inline with command output. |
+
+Behavior:
+
+- A background thread is spawned per `extendStdio` entry **before** the first command runs. Threads continue tailing until **after** all commands in the target have exited; a final flush is performed when stopping.
+- Files are polled every **50ms**. Files that don't exist yet are tolerated — the tailer waits silently until they appear.
+- Only **complete lines** (terminated by `\n`) are emitted. A partial trailing line is buffered until the newline arrives or the tailer stops (in which case it is flushed).
+- If a file is **truncated or rotated** mid-run (size shrinks below the last-read offset), the tailer resets to the beginning of the file rather than skipping content.
+- `extendStdio` is a **target-only** property (not available in `globals`).
+
+---
+
+## Force-kill on Ctrl+C
+
+Set `forceKillOnSigInt: true` on a target (or globally) when the spawned process tree won't terminate cleanly on console interrupts. The classic case is **GUI-subsystem applications on Windows** (Unity Editor, Electron-launched dev servers, etc.) — they don't receive the console `CTRL+C` event the way CLI processes do, and would otherwise survive as orphan processes when you press Ctrl+C in the terminal where you ran `run`.
+
+```json
+{
+	"targets": {
+		"unity": {
+			"commands": ["unity-editor.exe -projectPath ."],
+			"forceKillOnSigInt": true
+		}
+	}
+}
+```
+
+Behavior:
+
+- **Windows.** Runfile creates a Windows **Job Object** and assigns the spawned children to it. On `CTRL+C` (or any signal that reaches the console handler), `TerminateJobObject` kills every process in the job — direct children **and** all transitive grandchildren — before Runfile exits.
+- **Unix.** Runfile records the PID of each spawned child and, on `SIGINT`, sends `SIGKILL` to each before exiting. (The default-handler `SIGINT` propagation is also suppressed so Runfile can reap children cleanly and report the exit status.)
+- The flag has no effect on processes that **do** handle `CTRL+C` correctly — they receive the signal first and exit on their own.
+- Available on **both targets and `globals`**. Target-level value wins when both are set.
+
+This is opt-in for two reasons: a heavier teardown path is unnecessary for normal CLI tools, and `SIGKILL`/`TerminateJobObject` give the child no chance to flush state. Don't enable it for processes that need a graceful shutdown (databases, message queues, etc.).
 
 ---
 
@@ -1544,7 +1675,7 @@ Runfile stores user-level settings (like custom shell paths) in a platform-appro
 
 Settings are created automatically when you use `run :config shell set`, `run :config path-alias add`, or `run :env secret-keys add`. You don't need to create or edit this file manually.
 
-Settings also stores **private encryption keys** for the [encrypted environment variables](#encrypted-environment-variables) feature. Keys are hex-encoded 256-bit AES keys stored in a `secretKeys` array. Each key's public fingerprint (SHA-256 hash) is used to automatically match against encrypted `.env` files.
+For the [encrypted environment variables](#encrypted-environment-variables) feature, the settings file stores only **public-key fingerprints** in a `secureKeyFingerprints` array — the actual private keys live in your platform's OS credential store (Windows Credential Manager / macOS Keychain / Linux Secret Service). Each fingerprint (SHA-256 hash of the private key) is used to automatically match against encrypted `.env` files and look up the corresponding key from the credential store.
 
 ---
 
@@ -1641,10 +1772,10 @@ run :completions output powershell | Invoke-Expression
 
 ### What Gets Completed
 
-- **Targets**: all target names from the current Runfile.json
-- **Subcommands**: `:list`, `:config`, `:mcp`, `:completions`, `:extract`, `:generate`, `:convert`
-- **Sub-subcommands**: `:config shell set`, `:config path-alias add`, `:completions install`, `:generate zed-tasks`, etc.
-- **Flags**: `-f`, `--file`, `--shell`, `--help`, `--version`
+- **Targets**: all target names from the current Runfile.json (excluding internal targets)
+- **Subcommands**: `:list`, `:init`, `:extract`, `:config`, `:mcp`, `:completions`, `:generate`, `:convert`, `:env`
+- **Sub-subcommands**: `:config shell set`, `:config path-alias add`, `:completions install`, `:generate zed-tasks`, `:env secret-keys add`, etc.
+- **Flags**: `-f`, `--file`, `--shell`, `--timings`, `-y`, `--yes`, `--dry-run`, `--help`, `--version`
 - **Shell names**: after `--shell`, completes with `bash`, `zsh`, `sh`, `fish`, `powershell`, `cmd`
 
 ---
@@ -1672,9 +1803,10 @@ Targets can define `watch` patterns to automatically re-run when files change:
 
 ```
 $ run dev
-[runfile] watching for changes... (press Ctrl+C to stop)
-[runfile] changed: src/main.rs
-[runfile] re-running "dev"...
+[runfile] Running "dev"...
+[runfile] Watching for changes... (Ctrl+C to stop)
+[runfile] Changed: src/main.rs
+[runfile] Re-running "dev"...
 ```
 
 Watch patterns use glob syntax relative to the Runfile directory. Prefix a pattern with `!` to exclude matching files.
@@ -1711,7 +1843,62 @@ Typing anything other than `y` or `Y` aborts execution. Confirmation is automati
 - In CI environments (when the `CI` environment variable is `"true"` or `"1"`)
 - When the `--yes` (`-y`) flag is passed
 
-The `confirm` prompt supports `$(...)` substitution (e.g. `"Deploy to $(ARGS.env)?"`).
+The `confirm` prompt is shown verbatim — it is not run through `$(...)` substitution, so dynamic values like `$(ARGS.env)` would appear literally in the prompt.
+
+---
+
+## MCP Server (AI Agents)
+
+Runfile ships a built-in [Model Context Protocol](https://modelcontextprotocol.io) server that exposes every public target as a callable tool, so AI coding agents (Claude Code, Cursor, Claude Desktop, Codex, Junie, …) can list and invoke them with arguments.
+
+### Inspect
+
+`run :mcp inspect` prints the JSON tool definitions that the server would advertise — useful for debugging which targets and arguments are visible to an agent. Internal targets (names starting with `_`) are excluded; named arguments are inferred from `$(ARGS.x)` and `$(FLAGS.x)` references in the target's commands.
+
+```
+$ run :mcp inspect
+{
+  "tools": [ ... ]
+}
+```
+
+### Server
+
+`run :mcp server` starts the MCP server on **stdio**, intended to be spawned by an agent rather than run by hand. The Runfile path is captured at startup (respecting `-f` / `RUNFILE_TARGET` / auto-discovery) so tool calls execute against the same Runfile they were enumerated from.
+
+### Install
+
+`run :mcp install <agent>` writes (or updates) the MCP-server snippet for a given agent, so you don't have to hand-edit JSON config files.
+
+| Agent             | Effect                                                                                  |
+|-------------------|-----------------------------------------------------------------------------------------|
+| `claude-code`     | Writes `.claude/settings.local.json` in the current directory.                          |
+| `cursor`          | Writes `.cursor/mcp.json` in the current directory.                                     |
+| `claude-desktop`  | Prints instructions + the snippet to paste into the Claude Desktop config.              |
+| `codex`           | Prints instructions + the snippet for Codex.                                            |
+| `junie`           | Prints instructions + the snippet for Junie (JetBrains AI).                             |
+| *(any other)*     | Prints generic instructions + the snippet to paste into the agent's config.             |
+| *(no argument)*   | Lists the supported agents and prints the generic snippet.                              |
+
+For agents that auto-install, an existing `runfile` entry under `mcpServers` is updated in-place; other entries are preserved.
+
+---
+
+## Bootstrapping a New Project
+
+`run :init` creates a starter `Runfile.json` in the current directory (or at `-p <path>`) with a couple of example targets so you can start filling in your own. The command refuses to overwrite an existing file.
+
+```
+$ run :init
+Created Runfile.json
+
+$ run :init -p ci/Runfile.json
+Created ci/Runfile.json
+```
+
+The generated file uses `if "$(RUN.shell) == ..."` to print a hello-world greeting in whichever shell ends up running it (PowerShell, cmd, fish, or POSIX), demonstrating how to write a single target that works across platforms.
+
+Use `run :convert package-json` or `run :convert makefile` instead when you already have a `package.json` or `Makefile` to import targets from.
 
 ---
 
