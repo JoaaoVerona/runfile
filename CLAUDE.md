@@ -323,7 +323,15 @@ crates/
 - Clap-based CLI with colon-prefixed subcommands: `:list`, `:config`, `:env`, `:mcp`, `:completions`, `:generate`,
   `:convert`, `:init`. `--dry-run` is a top-level flag (not a subcommand) that prints the resolved leaf shell
   commands to stdout (one per line, no `[runfile]` prefix, no ANSI) instead of executing them — exactly the
-  behaviour the removed `:extract` subcommand had.
+  behaviour the removed `:extract` subcommand had. `--dry-run` recursively expands `@target` invocations: the
+  dep's resolved leaf shell commands appear inline at the call site (with the dep's own env block reflected on
+  each line), so aggregator targets whose body is purely `@target` dispatches (e.g. `for in: namespaces` with
+  `@$(LOOP.ns):dev`) actually print every nested command rather than printing nothing. `if` blocks are
+  evaluated (not flattened) against the same context the runner would see — only the matching branch is
+  printed. Cycles are caught at extract time via per-call-stack tracking; sibling calls to the same target
+  expand twice (matching runtime no-dedup semantics). Optional calls (`@?target`) silently skip when the target
+  is missing. `extract_target_with_cwd` auto-syncs `args.run_context.namespaces` from the merged Runfile (matches
+  the runner's `ensure_run_context`) so `for in: "namespaces"` resolves identically in dry-run.
 - Global flags: `-f`/`--file` (custom Runfile path), `--shell` (override shell by name or path), `--timings`
   (print execution times), `-y`/`--yes` (skip confirms). For inline debug branching, declare `$(FLAGS.debug)`
   in your target — passing `--debug` (or any other flag) to a target works through the standard FLAGS

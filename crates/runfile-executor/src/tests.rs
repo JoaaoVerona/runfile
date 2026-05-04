@@ -1846,10 +1846,9 @@ fn extract_with_dependencies() {
 	use crate::extract::{extract_target, format_extracted_commands};
 	use runfile_parser::parse_runfile;
 
-	// Migrated from `before.target` to `@target` calls in `commands`.
-	// `extract_target` returns the target's own leaves only — `@target` shows
-	// up as the args template line (empty here) so we only see the parent's
-	// shell commands.
+	// `@target` invocations are recursively expanded — the dep's resolved
+	// shell commands appear inline at the call site, with the dep's own env
+	// reflected on each command.
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
@@ -1872,10 +1871,27 @@ fn extract_with_dependencies() {
 	let commands = extract_target("build", &runfile, &args, dir.path()).unwrap();
 	let lines = format_extracted_commands(&commands, &shell.kind);
 
-	// `@clean` doesn't render as a shell command in the dry-run; only build's
-	// own shell commands appear.
+	assert!(
+		lines.iter().any(|l| l.contains("npm run clean")),
+		"expected @clean to be expanded; got {lines:?}"
+	);
 	assert!(lines.iter().any(|l| l.contains("npm run build")));
 	assert!(lines.iter().any(|l| l.contains("echo done")));
+
+	// The clean command should display only its own env (ENV=test), not
+	// build's NODE_ENV — each dep keeps its own spec env block.
+	let clean_line = lines.iter().find(|l| l.contains("npm run clean")).unwrap();
+	assert!(clean_line.contains("ENV=test"));
+	assert!(
+		!clean_line.contains("NODE_ENV"),
+		"clean line should not carry build's env: {clean_line}"
+	);
+
+	// And dep ordering matches execution order: @clean expands before
+	// build's own shell commands.
+	let clean_idx = lines.iter().position(|l| l.contains("npm run clean")).unwrap();
+	let build_idx = lines.iter().position(|l| l.contains("npm run build")).unwrap();
+	assert!(clean_idx < build_idx, "clean must precede build; got {lines:?}");
 }
 
 #[test]
@@ -1883,8 +1899,6 @@ fn extract_with_global_dependency() {
 	use crate::extract::{extract_target, format_extracted_commands};
 	use runfile_parser::parse_runfile;
 
-	// Migrated from `before.target` lifecycle hooks to `@target` invocations
-	// in `commands` (lifecycle was removed; deps live inline now).
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
@@ -1904,17 +1918,16 @@ fn extract_with_global_dependency() {
 	let commands = extract_target("build", &runfile, &args, dir.path()).unwrap();
 	let lines = format_extracted_commands(&commands, &shell.kind);
 
-	// extract_target only returns the leaves of the requested target's spec —
-	// `@setup` is a single line in the dry-run.
-	assert!(lines.contains(&"echo build".to_string()));
+	// Both the dep's command and the parent's command appear, in execution order.
+	assert_eq!(lines, vec!["echo setup".to_string(), "echo build".to_string()]);
 }
 
 #[test]
-fn extract_cycle_at_runtime() {
-	// `@target` cycles are detected at runtime, not extract time, so the
-	// extract pass should still succeed for cyclical Runfiles. (The runner
-	// reports the cycle when the target actually runs.)
-	use crate::extract::extract_target;
+fn extract_detects_cycles() {
+	// `@target` cycles are now detected at extract time too (per-call-stack
+	// tracking inside the recursive walker). A cyclic Runfile yields an
+	// `ExtractError::CycleDetected` instead of an infinite loop.
+	use crate::extract::{extract_target, ExtractError};
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
@@ -1929,10 +1942,174 @@ fn extract_cycle_at_runtime() {
 	let args = RunArgs::default();
 	let dir = TempDir::new().unwrap();
 
-	// Either the extractor still walks deps and detects the cycle (current
-	// `collect_extract_commands_recursive` behavior), or it produces
-	// something — both are acceptable for a static-analysis tool.
-	let _ = extract_target("a", &runfile, &args, dir.path());
+	let err = extract_target("a", &runfile, &args, dir.path()).unwrap_err();
+	assert!(
+		matches!(err, ExtractError::CycleDetected(_)),
+		"expected CycleDetected, got: {err:?}"
+	);
+}
+
+#[test]
+fn extract_target_call_with_args_forwards_to_dep() {
+	use crate::extract::{extract_target, format_extracted_commands};
+	use runfile_parser::parse_runfile;
+
+	// `@deploy --env=prod` should pass `--env=prod` into the dep so the
+	// dep's `$(ARGS.env)` substitution resolves.
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "deploy": { "commands": ["echo deploying to $(ARGS.env)"] },
+            "release": { "commands": ["@deploy --env=prod"] }
+        }
+    }"#;
+
+	let runfile = parse_runfile(json).unwrap();
+	let shell = ResolvedShell {
+		kind: ShellKind::Bash,
+		path: PathBuf::from("/bin/bash"),
+	};
+	let args = RunArgs::default();
+	let dir = TempDir::new().unwrap();
+
+	let commands = extract_target("release", &runfile, &args, dir.path()).unwrap();
+	let lines = format_extracted_commands(&commands, &shell.kind);
+
+	assert_eq!(lines, vec!["echo deploying to prod".to_string()]);
+}
+
+#[test]
+fn extract_for_namespaces_aggregator() {
+	// Regression: aggregator targets whose only body is a `for in: namespaces`
+	// loop dispatching `@$(LOOP.ns):something` used to print nothing in
+	// dry-run for two compounding reasons: (1) `@target` calls weren't
+	// recursively expanded, and (2) the CLI dry-run path didn't sync
+	// `run_context.namespaces` from the merged Runfile. Both are fixed —
+	// `extract_target_with_cwd` now auto-syncs namespaces (matching what
+	// the runner does via `ensure_run_context`) and walks `@target`
+	// invocations into their dep's commands.
+	use crate::extract::{extract_target, format_extracted_commands};
+	use runfile_parser::parse_runfile;
+
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "dev": {
+                "commands": [
+                    { "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):dev" }
+                ]
+            },
+            "web-admin:dev": { "commands": ["next dev --port 3000"] },
+            "web-docs:dev":  { "commands": ["next dev --port 3001"] }
+        }
+    }"#;
+
+	// Post-merge state: `runfile.namespaces` is populated by the merge
+	// step. Set it directly to simulate that, since this test doesn't go
+	// through merge. Pass plain `RunArgs::default()` and let the extract
+	// auto-sync pick the namespaces up — that matches what the CLI does.
+	let mut runfile = parse_runfile(json).unwrap();
+	runfile.namespaces = vec!["web-admin".to_string(), "web-docs".to_string()];
+	let shell = ResolvedShell {
+		kind: ShellKind::Bash,
+		path: PathBuf::from("/bin/bash"),
+	};
+	let args = RunArgs::default();
+	let dir = TempDir::new().unwrap();
+
+	let commands = extract_target("dev", &runfile, &args, dir.path()).unwrap();
+	let lines = format_extracted_commands(&commands, &shell.kind);
+
+	assert_eq!(
+		lines,
+		vec!["next dev --port 3000".to_string(), "next dev --port 3001".to_string(),],
+		"each namespaced @target should expand to its dev command"
+	);
+}
+
+#[test]
+fn extract_if_evaluates_condition_against_run_context() {
+	// Regression: dry-run used to emit BOTH `then` and `else` branches as
+	// a static-analysis approximation. Now that extract resolves args/env
+	// for real (matching runtime semantics), it can evaluate the condition
+	// and emit only the branch that would actually run. This test fakes
+	// the runtime OS so the assertion is portable.
+	use crate::args::RunContext;
+	use crate::extract::{extract_target, format_extracted_commands};
+	use runfile_parser::parse_runfile;
+
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "stripe-webhook": {
+                "commands": [
+                    {
+                        "if": "$(RUN.os) == windows",
+                        "then": "stripe listen -f host.docker.internal:4000/webhook",
+                        "else": "stripe listen -f 127.0.0.1:4000/webhook"
+                    }
+                ]
+            }
+        }
+    }"#;
+
+	let runfile = parse_runfile(json).unwrap();
+	let shell = ResolvedShell {
+		kind: ShellKind::Bash,
+		path: PathBuf::from("/bin/bash"),
+	};
+	let dir = TempDir::new().unwrap();
+
+	// Force OS = "windows" so the assertion doesn't depend on the host.
+	let mut ctx_win = RunContext::new("bash");
+	ctx_win.os = "windows".to_string();
+	let args_win = RunArgs::default().with_run_context(ctx_win);
+	let lines_win = format_extracted_commands(
+		&extract_target("stripe-webhook", &runfile, &args_win, dir.path()).unwrap(),
+		&shell.kind,
+	);
+	assert_eq!(
+		lines_win,
+		vec!["stripe listen -f host.docker.internal:4000/webhook".to_string()]
+	);
+
+	// And again with OS = "linux" — only the else branch should appear.
+	let mut ctx_lin = RunContext::new("bash");
+	ctx_lin.os = "linux".to_string();
+	let args_lin = RunArgs::default().with_run_context(ctx_lin);
+	let lines_lin = format_extracted_commands(
+		&extract_target("stripe-webhook", &runfile, &args_lin, dir.path()).unwrap(),
+		&shell.kind,
+	);
+	assert_eq!(lines_lin, vec!["stripe listen -f 127.0.0.1:4000/webhook".to_string()]);
+}
+
+#[test]
+fn extract_optional_target_call_skips_missing() {
+	// `@?missing` must not error if the target is absent — runtime silently
+	// skips, extract should match.
+	use crate::extract::{extract_target, format_extracted_commands};
+	use runfile_parser::parse_runfile;
+
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "build": { "commands": ["@?missing", "echo built"] }
+        }
+    }"#;
+
+	let runfile = parse_runfile(json).unwrap();
+	let shell = ResolvedShell {
+		kind: ShellKind::Bash,
+		path: PathBuf::from("/bin/bash"),
+	};
+	let args = RunArgs::default();
+	let dir = TempDir::new().unwrap();
+
+	let commands = extract_target("build", &runfile, &args, dir.path()).unwrap();
+	let lines = format_extracted_commands(&commands, &shell.kind);
+
+	assert_eq!(lines, vec!["echo built".to_string()]);
 }
 
 #[test]

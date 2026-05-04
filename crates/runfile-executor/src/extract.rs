@@ -1,12 +1,13 @@
 use crate::args::{check_env_case_duplicates, validate_args, LoopScope, RunArgs, SubstitutionError};
-use crate::env::{build_env, EnvFileError};
+use crate::control_flow::{evaluate_if_condition, ControlFlowError};
+use crate::env::{build_env_with_base, EnvFileError};
 use runfile_parser::{
-	walk_spec_aux_templates, walk_step_templates, CommandSpec, CommandStep, ForStep, IfStep, Runfile, WhenStep,
-	WORKING_DIRECTORY_CWD,
+	walk_spec_aux_templates, walk_step_templates, CommandStep, ForStep, Runfile, WhenStep, WORKING_DIRECTORY_CWD,
 };
 use runfile_shell::ShellKind;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -14,7 +15,7 @@ pub enum ExtractError {
 	#[error("Dependency cycle detected: {0}")]
 	CycleDetected(String),
 
-	#[error("Unknown target \"{0}\" referenced in lifecycle")]
+	#[error("Unknown target \"{0}\" referenced via @target")]
 	UnknownTarget(String),
 
 	#[error("{0}")]
@@ -22,6 +23,9 @@ pub enum ExtractError {
 
 	#[error("{0}")]
 	EnvFile(#[from] EnvFileError),
+
+	#[error("{0}")]
+	ControlFlow(#[from] ControlFlowError),
 }
 
 /// A single extracted command line, ready to be printed.
@@ -46,6 +50,15 @@ pub fn extract_target(
 
 /// Extract all commands for a target with separate runfile dir and caller CWD.
 /// `source_dirs` maps target names to their source Runfile's parent directory.
+///
+/// `@target` invocations are recursively expanded — the dep's resolved leaf
+/// shell commands appear inline at the call site (with the dep's own env
+/// block reflected on each command). This mirrors what the runtime would
+/// actually execute, so the output matches a real run instead of leaving
+/// aggregator targets (whose body is just `@target` dispatches) printing
+/// nothing. Cycles are detected via per-call-stack tracking; calling the
+/// same target twice from sibling sites expands twice (matching runtime
+/// no-dedup semantics).
 pub fn extract_target_with_cwd(
 	target_name: &str,
 	runfile: &Runfile,
@@ -57,25 +70,36 @@ pub fn extract_target_with_cwd(
 	let all_commands = collect_all_extract_commands(target_name, runfile)?;
 	validate_args(args, &all_commands)?;
 
+	// Sync `run_context.namespaces` from the merged Runfile if the caller
+	// didn't already attach the same list. The runner does this via its own
+	// `ensure_run_context` before dispatch; we mirror it here so `for in:
+	// "namespaces"` resolves identically in dry-run and real execution. Only
+	// allocate when out of sync.
+	let synced_args;
+	let args = if args.run_context.namespaces.as_slice() == runfile.namespaces.as_slice() {
+		args
+	} else {
+		let mut owned = args.clone();
+		owned.run_context.namespaces = Arc::new(runfile.namespaces.clone());
+		synced_args = owned;
+		&synced_args
+	};
+
 	let mut ctx = ExtractContext {
 		runfile,
-		args,
 		runfile_dir,
 		caller_cwd,
 		source_dirs,
-		completed: HashSet::new(),
 		in_progress: HashSet::new(),
 	};
-	extract_recursive(&mut ctx, target_name)
+	extract_recursive(&mut ctx, target_name, args, None)
 }
 
 struct ExtractContext<'a> {
 	runfile: &'a Runfile,
-	args: &'a RunArgs,
 	runfile_dir: &'a Path,
 	caller_cwd: &'a Path,
 	source_dirs: &'a HashMap<String, PathBuf>,
-	completed: HashSet<String>,
 	in_progress: HashSet<String>,
 }
 
@@ -88,22 +112,46 @@ impl ExtractContext<'_> {
 	}
 }
 
-fn extract_recursive(ctx: &mut ExtractContext<'_>, target_name: &str) -> Result<Vec<ExtractedCommand>, ExtractError> {
-	if ctx.completed.contains(target_name) {
-		return Ok(Vec::new());
-	}
-
+/// Runtime preview, with two narrow static-analysis fallbacks for sources
+/// we can't resolve without side effects:
+/// - `if` blocks evaluate the condition against the same context the runner
+///   would see (args + resolved env + loop scope) and emit only the matching
+///   branch.
+/// - `for in` blocks expand each literal iteration with `$(LOOP.var)` resolved
+///   (and `for in: "namespaces"` snapshots the merged Runfile's namespace list).
+/// - `for glob` / `for shell` blocks emit the body once with the loop variable
+///   bound to a `<var>` placeholder (we don't touch the filesystem or run
+///   iterator commands during extract).
+/// - `@target` calls recurse, inheriting the parent's resolved env as their
+///   substitution base.
+fn extract_recursive(
+	ctx: &mut ExtractContext<'_>,
+	target_name: &str,
+	args: &RunArgs,
+	parent_env: Option<&HashMap<String, String>>,
+) -> Result<Vec<ExtractedCommand>, ExtractError> {
+	// Per-call-stack cycle tracking. We add to `in_progress` on entry and
+	// remove on exit (success or error) — sibling calls to the same target
+	// must succeed, only ancestor calls indicate a true cycle.
 	if !ctx.in_progress.insert(target_name.to_string()) {
 		return Err(ExtractError::CycleDetected(target_name.to_string()));
 	}
+	let result = extract_recursive_inner(ctx, target_name, args, parent_env);
+	ctx.in_progress.remove(target_name);
+	result
+}
 
+fn extract_recursive_inner(
+	ctx: &mut ExtractContext<'_>,
+	target_name: &str,
+	args: &RunArgs,
+	parent_env: Option<&HashMap<String, String>>,
+) -> Result<Vec<ExtractedCommand>, ExtractError> {
 	let spec = ctx
 		.runfile
 		.targets
 		.get(target_name)
 		.ok_or_else(|| ExtractError::UnknownTarget(target_name.to_string()))?;
-
-	let mut all_commands = Vec::new();
 
 	let target_runfile_dir = ctx.target_dir(target_name);
 	// Extract is a static-analysis path; we compare the *unsubstituted* string
@@ -115,28 +163,7 @@ fn extract_recursive(ctx: &mut ExtractContext<'_>, target_name: &str) -> Result<
 		_ => target_runfile_dir,
 	};
 
-	let mut cmds = extract_commands(spec, ctx.args, effective_working_dir)?;
-	all_commands.append(&mut cmds);
-
-	ctx.completed.insert(target_name.to_string());
-	ctx.in_progress.remove(target_name);
-
-	Ok(all_commands)
-}
-
-/// Extract commands from a single target spec (no dependency resolution).
-///
-/// Static analysis, not a runtime preview: `if` blocks emit both branches,
-/// `for in` blocks expand each literal iteration with `$(LOOP.var)` resolved,
-/// and `for glob` / `for shell` blocks emit the body once with the loop
-/// variable bound to a `<var>` placeholder (we don't touch the filesystem
-/// or run iterator commands during extract).
-fn extract_commands(
-	spec: &CommandSpec,
-	args: &RunArgs,
-	working_dir: &Path,
-) -> Result<Vec<ExtractedCommand>, ExtractError> {
-	let env = build_env(spec, working_dir, args, None)?;
+	let env = build_env_with_base(spec, effective_working_dir, args, None, parent_env, None)?;
 	check_env_case_duplicates(&env)?;
 
 	// Show only the spec-defined env keys (not envFiles or system env), but
@@ -154,49 +181,87 @@ fn extract_commands(
 		Vec::new()
 	};
 
-	let mut leaf_commands: Vec<String> = Vec::new();
+	let mut out: Vec<ExtractedCommand> = Vec::new();
 	let mut loop_scope = LoopScope::new();
-	walk_extract_steps(&spec.commands, args, &env, &mut loop_scope, &mut leaf_commands)?;
-
-	Ok(leaf_commands
-		.into_iter()
-		.map(|cmd| ExtractedCommand {
-			command: cmd,
-			env_vars: extra_env.clone(),
-		})
-		.collect())
+	walk_extract_steps(ctx, &spec.commands, args, &env, &extra_env, &mut loop_scope, &mut out)?;
+	Ok(out)
 }
 
 /// Recursive walker that produces extract output with loop-scope awareness.
 ///
 /// Iterator source templates (the `in` array elements, `glob` pattern, `shell`
-/// command) are NOT emitted as commands — they're metadata. Only shell-leaf
-/// command strings and target-call arg templates contribute to the output.
+/// command) are NOT emitted as commands — they're metadata. `@target` calls
+/// recurse into the dep, inheriting the parent's resolved env as the dep's
+/// substitution base; the dep's own env block surfaces as inline assignments
+/// on its commands.
+#[allow(clippy::too_many_arguments)]
 fn walk_extract_steps(
+	ctx: &mut ExtractContext<'_>,
 	steps: &[CommandStep],
 	args: &RunArgs,
 	env: &HashMap<String, String>,
+	extra_env: &[(String, String)],
 	loop_scope: &mut LoopScope,
-	out: &mut Vec<String>,
+	out: &mut Vec<ExtractedCommand>,
 ) -> Result<(), ExtractError> {
 	for step in steps {
 		match step {
 			CommandStep::Shell(template) => {
-				out.push(args.substitute_with_loop(template, env, loop_scope)?);
+				let cmd = args.substitute_with_loop(template, env, loop_scope)?;
+				out.push(ExtractedCommand {
+					command: cmd,
+					env_vars: extra_env.to_vec(),
+				});
 			}
 			CommandStep::TargetCall(call) => {
-				if !call.args_template.is_empty() {
-					out.push(args.substitute_with_loop(&call.args_template, env, loop_scope)?);
-				}
+				// Substitute the target name first so dynamic patterns like
+				// `@$(LOOP.ns):dev` resolve to the namespace's concrete target.
+				let resolved = args.substitute_with_loop(&call.target, env, loop_scope)?;
+
+				let canonical = match ctx.runfile.resolve_target(&resolved) {
+					Some(n) => n.to_string(),
+					None if call.optional => continue,
+					None => return Err(ExtractError::UnknownTarget(resolved)),
+				};
+
+				// Build the dep's args from the substituted+shlex-split args
+				// template — same semantics as the runtime executor in
+				// `resolve_target_call_argv`. Preserve the parent's run_context
+				// (OS, shell, namespaces) so `$(RUN.*)` and `for in: namespaces`
+				// keep working inside the dep.
+				let argv = if call.args_template.is_empty() {
+					Vec::new()
+				} else {
+					let substituted = args.substitute_with_loop(&call.args_template, env, loop_scope)?;
+					let trimmed = substituted.trim();
+					if trimmed.is_empty() {
+						Vec::new()
+					} else {
+						shlex::split(trimmed).unwrap_or_default()
+					}
+				};
+				let child_args = RunArgs::parse(&argv).with_run_context(args.run_context.clone());
+
+				// Dep gets the parent's resolved env as substitution base
+				// (matches runtime `@target` env inheritance).
+				let dep_cmds = extract_recursive(ctx, &canonical, &child_args, Some(env))?;
+				out.extend(dep_cmds);
 			}
 			CommandStep::When(WhenStep { commands, .. }) => {
-				walk_extract_steps(commands, args, env, loop_scope, out)?;
+				walk_extract_steps(ctx, commands, args, env, extra_env, loop_scope, out)?;
 			}
-			CommandStep::If(IfStep { then, r#else, .. }) => {
-				walk_extract_steps(then, args, env, loop_scope, out)?;
-				if let Some(else_steps) = r#else {
-					walk_extract_steps(else_steps, args, env, loop_scope, out)?;
-				}
+			CommandStep::If(if_step) => {
+				// Evaluate the condition against the same context the runner
+				// would see (args + resolved env + loop scope). Match the
+				// runtime branch instead of emitting both branches — output
+				// then matches what would actually execute.
+				let cond = evaluate_if_condition(if_step, args, env, loop_scope)?;
+				let branch: &[CommandStep] = if cond {
+					&if_step.then
+				} else {
+					if_step.r#else.as_deref().unwrap_or(&[])
+				};
+				walk_extract_steps(ctx, branch, args, env, extra_env, loop_scope, out)?;
 			}
 			CommandStep::For(ForStep { var, r#in, body, .. }) => {
 				use runfile_parser::ForInValue;
@@ -205,7 +270,7 @@ fn walk_extract_steps(
 						for item in items {
 							let value = args.substitute_with_loop(item, env, loop_scope)?;
 							loop_scope.push(var.as_str(), value);
-							let r = walk_extract_steps(body, args, env, loop_scope, out);
+							let r = walk_extract_steps(ctx, body, args, env, extra_env, loop_scope, out);
 							loop_scope.pop();
 							r?;
 						}
@@ -218,7 +283,7 @@ fn walk_extract_steps(
 						let namespaces = args.run_context.namespaces.clone();
 						for ns in namespaces.iter() {
 							loop_scope.push(var.as_str(), ns.clone());
-							let r = walk_extract_steps(body, args, env, loop_scope, out);
+							let r = walk_extract_steps(ctx, body, args, env, extra_env, loop_scope, out);
 							loop_scope.pop();
 							r?;
 						}
@@ -228,7 +293,7 @@ fn walk_extract_steps(
 						// `$(LOOP.var)` references resolve without touching the
 						// filesystem or running side-effecting iterator commands.
 						loop_scope.push(var.as_str(), format!("<{var}>"));
-						let r = walk_extract_steps(body, args, env, loop_scope, out);
+						let r = walk_extract_steps(ctx, body, args, env, extra_env, loop_scope, out);
 						loop_scope.pop();
 						r?;
 					}

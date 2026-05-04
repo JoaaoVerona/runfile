@@ -1525,8 +1525,13 @@ echo Deploy complete.
 ```
 
 Substitutions (`$(ARGS.x)`, `$(ENV.x)`, `$(RUN.os)`, etc.) are fully resolved against the current invocation, so the
-printed lines are the exact commands that would be sent to the shell. `@target` invocations and the dependency targets
-they would dispatch to are not expanded inline — only the invoked target's own shell commands appear.
+printed lines are the exact commands that would be sent to the shell. `if` blocks are evaluated against the same
+context the runner would see (args + resolved env + loop scope) and only the matching branch is printed.
+`@target` invocations are recursively expanded: each dep's resolved shell commands appear inline at the call site,
+with the dep's own `env` block reflected on each line. Aggregator targets whose body is purely `@target` dispatches
+(for example a `for in: "namespaces"` loop running `@$(LOOP.ns):dev` for every namespaced subproject) print every
+nested command, not nothing. Cycles are detected at extract time; optional calls (`@?target`) silently skip when the
+dispatched target is absent.
 
 > **Restricted to interactive use.** Because the resolved output inlines env-var values (including decrypted secrets) as
 > shell-ready assignments, `--dry-run` refuses to execute when an LLM-agent invocation is detected. Run it from your own
