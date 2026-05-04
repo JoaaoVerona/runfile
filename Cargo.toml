@@ -29,9 +29,9 @@ thiserror = "2"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
-which = "7"
+which = "8"
 keyring = { version = "3", default-features = false }
-notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 globset = "0.4"
 shlex = "1"
 

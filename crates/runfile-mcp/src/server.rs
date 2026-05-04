@@ -119,7 +119,7 @@ async fn execute_target(run_binary: &std::path::Path, cmd_args: Vec<String>) -> 
 	}
 }
 
-#[rmcp::tool_handler]
+#[rmcp::tool_handler(router = self.tool_router)]
 impl ServerHandler for RunfileMcpServer {
 	fn get_info(&self) -> ServerInfo {
 		ServerInfo::new(ServerCapabilities::builder().enable_tools().build())

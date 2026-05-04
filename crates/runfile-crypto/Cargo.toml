@@ -8,9 +8,8 @@ description = "Encryption/decryption utilities for Runfile encrypted environment
 [dependencies]
 aes-gcm = "0.10"
 base64 = "0.22"
-rand = "0.9"
 hex = "0.4"
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2"
 zeroize = "1"
 thiserror = { workspace = true }
