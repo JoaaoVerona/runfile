@@ -46,14 +46,19 @@ pub enum ExecuteError {
 /// implementation (e.g. `Mutex`-wrapped completed/in-progress sets) is the
 /// expected pattern.
 pub trait DependencyResolver: Sync {
-	/// Run the named target with the given pre-tokenized argv. `parent_env` is
-	/// the parent's already-resolved environment; the dependency's own
-	/// `envFiles` / `env` / `addToPath` layer on top.
+	/// Run the named target with the given pre-tokenized argv.
+	/// - `parent_env`: the parent's already-resolved env (used as the substitution
+	///   base in the dep's `build_env`).
+	/// - `parent_add_to_path_chain`: ancestor `addToPath` layers in chain order
+	///   (outermost first), with the parent's own `addToPath` already appended.
+	///   The dep extends this chain with its own `addToPath` and re-prepends
+	///   the whole stack to PATH after the shell-env overlay.
 	fn run_dependency(
 		&self,
 		target_name: &str,
 		args: Vec<String>,
 		parent_env: &HashMap<String, String>,
+		parent_add_to_path_chain: &[Vec<String>],
 	) -> Result<ExecutionResult, ExecuteError>;
 }
 
@@ -69,6 +74,7 @@ impl DependencyResolver for NoOpDependencyResolver {
 		target_name: &str,
 		_args: Vec<String>,
 		_parent_env: &HashMap<String, String>,
+		_parent_add_to_path_chain: &[Vec<String>],
 	) -> Result<ExecutionResult, ExecuteError> {
 		Err(ExecuteError::DependencyFailed(
 			target_name.to_string(),
@@ -91,6 +97,10 @@ pub struct ExecutionResult {
 /// Common setup state for command execution, shared between sequential and parallel modes.
 struct ExecSetup {
 	env: HashMap<String, String>,
+	/// addToPath chain to pass to any `@target` dependency invoked from this
+	/// target's commands: parent's chain + this target's own `add_to_path`.
+	/// Empty when neither layer contributed any entries.
+	add_to_path_chain: Vec<Vec<String>>,
 	logging: bool,
 	ignore_errors: bool,
 	force_kill: bool,
@@ -103,15 +113,33 @@ impl ExecSetup {
 		working_dir: &Path,
 		available_private_keys: Option<&[String]>,
 		parent_env: Option<&HashMap<String, String>>,
+		parent_add_to_path_chain: &[Vec<String>],
 	) -> Result<(Self, Option<StdioTailerSet>, Option<ForceKillGuard>), ExecuteError> {
-		let env = build_env_with_base(spec, working_dir, args, available_private_keys, parent_env)?;
+		let env = build_env_with_base(
+			spec,
+			working_dir,
+			args,
+			available_private_keys,
+			parent_env,
+			Some(parent_add_to_path_chain),
+		)?;
 		check_env_case_duplicates(&env)?;
+
+		// Build the chain we'll hand off to any @dep called from this target:
+		// parent's chain with this target's own addToPath appended.
+		let mut add_to_path_chain: Vec<Vec<String>> = parent_add_to_path_chain.to_vec();
+		if let Some(this_layer) = spec.add_to_path.as_deref() {
+			if !this_layer.is_empty() {
+				add_to_path_chain.push(this_layer.to_vec());
+			}
+		}
 
 		let setup = Self {
 			logging: is_logging_enabled(spec),
 			ignore_errors: spec.ignore_errors.unwrap_or(false),
 			force_kill: spec.force_kill_on_sig_int.unwrap_or(false),
 			env,
+			add_to_path_chain,
 		};
 
 		let tailer = if let Some(entries) = spec.extend_stdio.as_ref().filter(|e| !e.is_empty()) {
@@ -179,6 +207,7 @@ pub fn execute_command(
 		&counter,
 		&NoOpDependencyResolver,
 		None,
+		&[],
 	)
 }
 
@@ -200,9 +229,16 @@ pub fn execute_command_with_counter(
 	counter: &StepCounter,
 	deps: &dyn DependencyResolver,
 	parent_env: Option<&HashMap<String, String>>,
+	parent_add_to_path_chain: &[Vec<String>],
 ) -> Result<ExecutionResult, ExecuteError> {
-	let (setup, tailer, force_kill_guard) =
-		ExecSetup::new(spec, args, working_dir, available_private_keys, parent_env)?;
+	let (setup, tailer, force_kill_guard) = ExecSetup::new(
+		spec,
+		args,
+		working_dir,
+		available_private_keys,
+		parent_env,
+		parent_add_to_path_chain,
+	)?;
 	let mut state = WalkState {
 		commands_run: 0,
 		failures: 0,
@@ -438,7 +474,7 @@ fn execute_one_target_call(
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
 	let argv = resolve_target_call_argv(call, args, &setup.env, loop_scope)?;
-	let result = deps.run_dependency(&call.target, argv, &setup.env)?;
+	let result = deps.run_dependency(&call.target, argv, &setup.env, &setup.add_to_path_chain)?;
 	state.commands_run += result.commands_run;
 	state.failures += result.failures;
 	state.last_status = Some(result.final_status).or(state.last_status);
@@ -1074,7 +1110,7 @@ fn run_sequential_leaves(
 					};
 					log_command(&label, step, total);
 				}
-				let result = deps.run_dependency(&target, argv, &setup.env)?;
+				let result = deps.run_dependency(&target, argv, &setup.env, &setup.add_to_path_chain)?;
 				state.commands_run += result.commands_run;
 				state.failures += result.failures;
 				state.last_status = Some(result.final_status).or(state.last_status);
@@ -1176,14 +1212,15 @@ fn run_parallel_batch(
 	let mut wait_error: Option<std::io::Error> = None;
 	let mut last_status: Option<ExitStatus> = None;
 	let parent_env = &setup.env;
+	let parent_chain = setup.add_to_path_chain.as_slice();
 
 	// Run target calls on worker threads while children processes run
-	// concurrently. `thread::scope` lets the threads borrow `deps` and
-	// `parent_env` without requiring `'static`.
+	// concurrently. `thread::scope` lets the threads borrow `deps`,
+	// `parent_env`, and `parent_chain` without requiring `'static`.
 	let dep_results: Vec<Result<ExecutionResult, ExecuteError>> = std::thread::scope(|scope| {
 		let mut handles = Vec::with_capacity(target_calls.len());
 		for (target, argv) in target_calls {
-			handles.push(scope.spawn(move || deps.run_dependency(&target, argv, parent_env)));
+			handles.push(scope.spawn(move || deps.run_dependency(&target, argv, parent_env, parent_chain)));
 		}
 		handles
 			.into_iter()
@@ -1311,6 +1348,7 @@ pub fn execute_parallel(
 		&counter,
 		&NoOpDependencyResolver,
 		None,
+		&[],
 	)
 }
 
@@ -1327,9 +1365,16 @@ pub fn execute_parallel_with_counter(
 	counter: &StepCounter,
 	deps: &dyn DependencyResolver,
 	parent_env: Option<&HashMap<String, String>>,
+	parent_add_to_path_chain: &[Vec<String>],
 ) -> Result<ExecutionResult, ExecuteError> {
-	let (setup, tailer, force_kill_guard) =
-		ExecSetup::new(spec, args, working_dir, available_private_keys, parent_env)?;
+	let (setup, tailer, force_kill_guard) = ExecSetup::new(
+		spec,
+		args,
+		working_dir,
+		available_private_keys,
+		parent_env,
+		parent_add_to_path_chain,
+	)?;
 
 	// Expand if/for blocks to a flat list of leaves (shell or @target).
 	// Inner `for` blocks are forced sequential (their parallel flag is moot

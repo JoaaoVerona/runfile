@@ -92,6 +92,7 @@ impl DependencyResolver for RunnerDependencyResolver<'_> {
 		target_name: &str,
 		args: Vec<String>,
 		parent_env: &HashMap<String, String>,
+		parent_add_to_path_chain: &[Vec<String>],
 	) -> Result<ExecutionResult, ExecuteError> {
 		// Build a child RunArgs from the tokenized argv. We re-parse so
 		// `--key value` / `--key=value` / positional split is consistent with
@@ -102,7 +103,14 @@ impl DependencyResolver for RunnerDependencyResolver<'_> {
 		// Dependency invocations don't dedup — every `@target` call runs.
 		// Cycle detection uses the per-call chain.
 		let mut chain: Vec<String> = Vec::new();
-		match run_target_inner(self.root, target_name, &child_args, Some(parent_env), &mut chain) {
+		match run_target_inner(
+			self.root,
+			target_name,
+			&child_args,
+			Some(parent_env),
+			parent_add_to_path_chain,
+			&mut chain,
+		) {
 			Ok(result) => Ok(result),
 			Err(RunError::Execute(e)) => Err(e),
 			Err(e) => Err(ExecuteError::DependencyFailed(target_name.to_string(), e.to_string())),
@@ -186,7 +194,7 @@ pub fn run_target_with_cwd(
 		step_counter: StepCounter::new(total_leaves),
 	};
 	let mut chain: Vec<String> = Vec::new();
-	run_target_inner(&root, target_name, args, None, &mut chain)
+	run_target_inner(&root, target_name, args, None, &[], &mut chain)
 }
 
 /// Recursive entry for running a target. Used by both the top-level CLI
@@ -195,18 +203,21 @@ pub fn run_target_with_cwd(
 ///
 /// `chain` is the per-call call stack used for cycle detection. There is no
 /// dedup at this layer — every call runs.
+/// `parent_add_to_path_chain` is the accumulated `addToPath` chain from
+/// ancestors (outermost first); empty for top-level invocations.
 fn run_target_inner(
 	root: &RunRoot<'_>,
 	target_name: &str,
 	args: &RunArgs,
 	parent_env: Option<&HashMap<String, String>>,
+	parent_add_to_path_chain: &[Vec<String>],
 	chain: &mut Vec<String>,
 ) -> Result<ExecutionResult, RunError> {
 	if chain.iter().any(|t| t == target_name) {
 		return Err(RunError::CycleDetected(target_name.to_string()));
 	}
 	chain.push(target_name.to_string());
-	let result = run_target_inner_body(root, target_name, args, parent_env, chain);
+	let result = run_target_inner_body(root, target_name, args, parent_env, parent_add_to_path_chain, chain);
 	chain.pop();
 	result
 }
@@ -216,6 +227,7 @@ fn run_target_inner_body(
 	target_name: &str,
 	args: &RunArgs,
 	parent_env: Option<&HashMap<String, String>>,
+	parent_add_to_path_chain: &[Vec<String>],
 	_chain: &mut Vec<String>,
 ) -> Result<ExecutionResult, RunError> {
 	let spec = root
@@ -279,6 +291,7 @@ fn run_target_inner_body(
 			target_args,
 			root.available_private_keys,
 			parent_env,
+			Some(parent_add_to_path_chain),
 		)?;
 
 		// Evaluate `if` / `for` / `when` blocks to a flat list of concrete
@@ -340,6 +353,7 @@ fn run_target_inner_body(
 			&root.step_counter,
 			&resolver,
 			parent_env,
+			parent_add_to_path_chain,
 		)
 	} else {
 		execute_command_with_counter(
@@ -352,6 +366,7 @@ fn run_target_inner_body(
 			&root.step_counter,
 			&resolver,
 			parent_env,
+			parent_add_to_path_chain,
 		)
 	};
 

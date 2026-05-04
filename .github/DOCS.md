@@ -607,7 +607,7 @@ the target name (first token) and an args template (everything after the first w
 | Argument parsing      | The args template is **substituted first** (all `$(ARGS)` / `$(ENV.*)` / `$(RUN.*)` / `$(LOOP.*)` / `$(FLAGS.*)` resolve), then **shlex-split** into argv. Quoted args (`"hello world"`) are kept intact.    |
 | No dedup              | Calling `@build` three times runs `build` three times, with their respective args. There is no diamond-dependency dedup at this level.                                                                       |
 | Cycle detection       | A target that (transitively) calls itself errors at runtime: `Dependency cycle detected: foo`.                                                                                                               |
-| Env propagation       | The parent target's resolved env is passed to the dependency as a baseline. The dep's own `envFiles` / `env` / `addToPath` layer on top, so dep entries win on conflict.                                     |
+| Env propagation       | The parent target's resolved env is passed to the dependency as a substitution base. The dep's own `envFiles` / `env` layer on top (dep wins per key), then the **current shell env always wins** over both. For PATH, the dep's `addToPath` ends up at the very front, then the parent's, then the shell `PATH` (`[dep_addToPath…, parent_addToPath…, …, shell PATH]`). Chains compose recursively — a grandchild's `addToPath` lands further forward than its parent's, which lands further forward than the grandparent's. |
 | Target-level config   | `forceShell`, `workingDirectory`, `parallel`, `confirm`, etc. are **not inherited** — each target picks its own. Only env flows.                                                                             |
 | Inside `if` / `for`   | `@target` is a normal command step — works inside `then` / `else` / `for` body. `if` shorthand `"then": "@deploy"` is the same as `"then": ["@deploy"]`.                                                     |
 | Parallel parents      | When the parent has `parallel: true`, `@target` invocations run on worker threads alongside the sibling shell commands. Nested `parallel: true` deps fan out further (no enforced sequentialization).        |
@@ -970,8 +970,9 @@ export KEY=value      # export prefix is accepted
 - **Unparseable files produce an error.**
 - `envFiles` are loaded **before** the inline `env` object, so `env` values override file values.
 - Within `envFiles`, later files override earlier ones for the same key.
+- The current shell environment **always wins** over Runfile-defined values. After `envFiles` and `env` are merged, Runfile re-overlays `std::env::vars()`, so any var the shell defines reaches the child unmodified. Setting e.g. `"env": { "PATH": "/foo" }` will be silently overridden by the inherited shell `PATH` (use `addToPath` to extend `PATH` instead — it's applied *after* the overlay).
 
-**Priority order (highest precedence first):** **target `env`** > **global `env`** > **target `envFiles`** > **global `envFiles`** > **system env**. (Because globals are baked into each target at parse time, the runtime applies a single merged `env` map — with target values winning over global ones — *after* all `envFiles` have been loaded.)
+**Priority order (highest precedence first):** **shell env** > **target `env`** > **global `env`** > **target `envFiles`** > **global `envFiles`**. (Because globals are baked into each target at parse time, the runtime applies a single merged `env` map — with target values winning over global ones — *after* all `envFiles` have been loaded, then the shell overlay wins over the merged result.)
 
 ---
 

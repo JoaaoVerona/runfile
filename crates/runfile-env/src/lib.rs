@@ -54,9 +54,16 @@ pub struct EnvBuildParams<'a> {
 	/// the default `std::env::vars()` snapshot as the starting layer of the
 	/// merged env. Used to pass a parent target's already-resolved env into a
 	/// dependency invocation, so `@dep` sees the parent's env on top of which
-	/// it layers its own envFiles/env/addToPath. When `None` (the default),
-	/// the process's environment is used.
+	/// it layers its own envFiles/env. When `None` (the default), the process's
+	/// environment is used.
 	pub base_env: Option<&'a HashMap<String, String>>,
+	/// Accumulated `addToPath` contributions from ancestor `@target` callers,
+	/// in chain order (outermost first). The current target's own `add_to_path`
+	/// is appended internally, then the whole chain is prepended to PATH at the
+	/// end so the innermost (this target's) entries end up at the very front:
+	/// `[this..., parent..., grandparent..., shell PATH]`. None or empty for
+	/// top-level invocations.
+	pub parent_add_to_path_chain: Option<&'a [Vec<String>]>,
 }
 
 /// Load environment variables from env files, applying substitution to file paths.
@@ -109,11 +116,28 @@ pub fn load_env_files(
 
 /// Build the complete environment variable map for a command execution.
 ///
-/// Merge order (highest priority last):
-/// 1. System environment variables
-/// 2. Env files (in order)
-/// 3. Env vars (with substitution)
-/// 4. PATH modifications (prepended to existing PATH)
+/// Merge order (lowest → highest priority for non-PATH vars):
+/// 1. `envFiles` — loaded left-to-right, later files override earlier
+/// 2. `env` — with substitution; overrides envFiles per key
+/// 3. **Current shell env** — `std::env::vars()` re-overlaid; the inherited shell
+///    value ALWAYS beats whatever the Runfile's `envFiles` / `env` set
+/// 4. `addToPath` chain — for PATH only, prepended in innermost-first order
+///    (`[this target's addToPath..., parent's..., grandparent's..., shell PATH]`)
+/// 5. Decryption — `encrypted:` values rewritten in place
+///
+/// For top-level invocations (`base_env: None`), step 1 starts from
+/// `std::env::vars()` so `$(ENV.X)` substitution sees the inherited shell
+/// values. The system-env re-overlay in step 3 is what actually ENFORCES
+/// shell-wins on the final env (Runfile overrides during step 2 are undone for
+/// any key the shell defines).
+///
+/// For dependency invocations (`base_env: Some(parent's resolved env)`),
+/// step 1 starts from the parent's resolved env, so the dep inherits parent's
+/// Runfile-defined values (those that survived shell-wins in the parent build)
+/// and `$(ENV.X)` in the dep can reference them. Step 3 still re-overlays
+/// `std::env::vars()`, ensuring shell wins over both parent and dep
+/// contributions. Step 4 walks `parent_add_to_path_chain` plus this target's
+/// `addToPath` so the full chain is re-prepended after step 3 wiped PATH.
 ///
 /// The `substitute` function is called on env values and file paths, allowing
 /// `$(ARGS)`, `$(FLAGS)`, and `$(ENV)` expansion.
@@ -127,13 +151,15 @@ pub fn build_env(
 		None => env::vars().collect(),
 	};
 
-	// Apply env files (loaded with system env available for $(ENV) substitution)
+	// Layer envFiles (substitution sees the env_map built so far).
 	if let Some(env_files) = params.env_files {
 		let file_vars = load_env_files(env_files, params.working_dir, substitute, &env_map)?;
 		env_map.extend(file_vars);
 	}
 
-	// Apply env vars (with substitution, override env files)
+	// Layer env vars (substitution sees the env_map built so far; same-key
+	// values override the file layer at this stage — though shell will win in
+	// the next step).
 	if let Some(env_vars) = params.env {
 		for (key, raw) in env_vars {
 			let resolved = substitute(raw, &env_map).map_err(EnvError::Substitution)?;
@@ -141,42 +167,91 @@ pub fn build_env(
 		}
 	}
 
-	// Prepend addToPath entries to existing PATH
-	if let Some(paths) = params.add_to_path {
-		// Find the actual key casing used by the system (e.g. "Path" on Windows, "PATH" on Unix)
-		let path_key = env_map
-			.keys()
-			.find(|k| k.eq_ignore_ascii_case("PATH"))
-			.cloned()
-			.unwrap_or_else(|| "PATH".to_string());
+	// Re-overlay the current shell env. Any key the shell defines now beats
+	// whatever envFiles/env set, restoring the inherited value. PATH is
+	// case-aware (Windows uses "Path", Unix "PATH") so we don't end up with
+	// two case-different PATH keys.
+	overlay_shell_env(&mut env_map);
 
-		let current_path = env_map.get(&path_key).cloned().unwrap_or_default();
-		let separator = if cfg!(windows) { ";" } else { ":" };
+	// Build the full addToPath chain (parent ancestors + this target) and
+	// prepend to PATH. After the shell-env overlay, PATH = shell's PATH (if
+	// any), so this re-prepends the entire chain on top.
+	apply_add_to_path_chain(
+		&mut env_map,
+		params.parent_add_to_path_chain,
+		params.add_to_path,
+		params.working_dir,
+	);
 
-		let resolve = |p: &String| -> String {
-			let path = PathBuf::from(p);
-			if path.is_absolute() {
-				path.to_string_lossy().to_string()
-			} else {
-				params.working_dir.join(p).to_string_lossy().to_string()
-			}
-		};
-
-		let mut new_paths: Vec<String> = paths.iter().map(&resolve).collect();
-		if !current_path.is_empty() {
-			new_paths.push(current_path);
-		}
-
-		env_map.insert(path_key, new_paths.join(separator));
-	}
-
-	// Decrypt any encrypted env values if present
+	// Decrypt any encrypted env values if present.
 	if runfile_crypto::has_encrypted_values(&env_map) {
 		let key_hex = resolve_decryption_key(&env_map, params.available_private_keys)?;
 		runfile_crypto::decrypt_env_values(&mut env_map, &key_hex).map_err(|e| EnvError::Encryption(e.to_string()))?;
 	}
 
 	Ok(env_map)
+}
+
+/// Re-overlay `std::env::vars()` so the inherited shell env wins per key.
+/// Handles PATH's case-insensitive identity on Windows: if env_map already
+/// contains a case-insensitive PATH match, the system's PATH value is written
+/// to that existing key rather than introducing a duplicate "Path"/"PATH"
+/// pair that would later confuse `Command::envs`.
+fn overlay_shell_env(env_map: &mut HashMap<String, String>) {
+	let existing_path_key = env_map.keys().find(|k| k.eq_ignore_ascii_case("PATH")).cloned();
+	for (k, v) in env::vars() {
+		if k.eq_ignore_ascii_case("PATH") {
+			let target = existing_path_key.clone().unwrap_or(k);
+			env_map.insert(target, v);
+		} else {
+			env_map.insert(k, v);
+		}
+	}
+}
+
+/// Prepend `parent_chain + [this target's add_to_path]` to PATH so the
+/// innermost (this target's) entries end up at the very front. Relative paths
+/// resolve against `working_dir`. No-op when both inputs are empty.
+fn apply_add_to_path_chain(
+	env_map: &mut HashMap<String, String>,
+	parent_chain: Option<&[Vec<String>]>,
+	this_target: Option<&[String]>,
+	working_dir: &Path,
+) {
+	let parent_layers = parent_chain.unwrap_or(&[]);
+	let this_layer: &[String] = this_target.unwrap_or(&[]);
+	if parent_layers.iter().all(|l| l.is_empty()) && this_layer.is_empty() {
+		return;
+	}
+
+	let path_key = env_map
+		.keys()
+		.find(|k| k.eq_ignore_ascii_case("PATH"))
+		.cloned()
+		.unwrap_or_else(|| "PATH".to_string());
+	let current_path = env_map.get(&path_key).cloned().unwrap_or_default();
+	let separator = if cfg!(windows) { ";" } else { ":" };
+
+	let resolve = |p: &String| -> String {
+		let path = PathBuf::from(p);
+		if path.is_absolute() {
+			path.to_string_lossy().to_string()
+		} else {
+			working_dir.join(p).to_string_lossy().to_string()
+		}
+	};
+
+	// Innermost first (this target), then walk the parent chain in reverse so
+	// outer ancestors land further back, closer to shell PATH at the tail.
+	let mut new_paths: Vec<String> = this_layer.iter().map(&resolve).collect();
+	for layer in parent_layers.iter().rev() {
+		new_paths.extend(layer.iter().map(&resolve));
+	}
+	if !current_path.is_empty() {
+		new_paths.push(current_path);
+	}
+
+	env_map.insert(path_key, new_paths.join(separator));
 }
 
 /// Resolve the private key for decrypting encrypted env values.

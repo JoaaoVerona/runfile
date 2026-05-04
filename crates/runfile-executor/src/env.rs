@@ -30,7 +30,8 @@ pub fn load_env_files(
 }
 
 /// Build the complete environment variable map for a command execution.
-/// Merges: system env -> envFiles -> env -> PATH modifications.
+/// Merge order (low → high): envFiles → env → current shell env (always wins) →
+/// addToPath chain (prepended to PATH) → decryption.
 /// If encrypted values are found, automatically resolves the decryption key via
 /// `RUNFILE_ENCRYPTION_KEY` env var or public key matching against `available_private_keys`.
 pub fn build_env(
@@ -39,19 +40,24 @@ pub fn build_env(
 	args: &RunArgs,
 	available_private_keys: Option<&[String]>,
 ) -> Result<HashMap<String, String>, EnvFileError> {
-	build_env_with_base(command_spec, working_dir, args, available_private_keys, None)
+	build_env_with_base(command_spec, working_dir, args, available_private_keys, None, None)
 }
 
-/// Like [`build_env`] but lets the caller substitute a custom base env in place
-/// of `std::env::vars()`. Used by the runner when invoking a dependency target
-/// (`@target`) so the parent's already-resolved env flows in below the
-/// dependency's own envFiles/env/addToPath.
+/// Like [`build_env`] but lets the caller pass two pieces of ancestor state
+/// for `@target` dependency invocations:
+/// - `base_env`: the parent's already-resolved env, used as the substitution
+///   base so `$(ENV.X)` inside the dep can reference parent contributions.
+/// - `parent_add_to_path_chain`: ancestor `addToPath` layers in chain order
+///   (outermost first). Re-prepended to PATH after the shell-env overlay so
+///   the full chain reaches the dep's commands as
+///   `[dep addToPath..., parent..., grandparent..., shell PATH]`.
 pub fn build_env_with_base(
 	command_spec: &CommandSpec,
 	working_dir: &Path,
 	args: &RunArgs,
 	available_private_keys: Option<&[String]>,
 	base_env: Option<&HashMap<String, String>>,
+	parent_add_to_path_chain: Option<&[Vec<String>]>,
 ) -> Result<HashMap<String, String>, EnvFileError> {
 	let command_env = convert_env_map(command_spec.env.as_ref());
 
@@ -62,6 +68,7 @@ pub fn build_env_with_base(
 		working_dir,
 		available_private_keys,
 		base_env,
+		parent_add_to_path_chain,
 	};
 
 	let substitute = make_substitute(args);

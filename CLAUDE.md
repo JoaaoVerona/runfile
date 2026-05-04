@@ -150,10 +150,23 @@ crates/
   comments.
 - `load_env_files()`: loads multiple env files with substitution in file paths (via a caller-provided closure), relative
   path resolution, and silent skipping of missing files.
-- `build_env()`: main orchestration via `EnvBuildParams` struct. Merges: system env → envFiles → env → PATH
-  modifications (addToPath before system PATH) → decrypt encrypted values (if encryption key provided). Accepts a
-  substitution closure so it stays independent of arg parsing. `EnvBuildParams` has 3 data fields: `env_files`, `env`,
-  `add_to_path` (no global/command distinction — globals are already baked into targets by the parser).
+- `build_env()`: main orchestration via `EnvBuildParams` struct. Merge order (low → high):
+  (1) `base_env` (system env for top-level, parent's resolved env for `@dep`) → (2) `envFiles` (substitution sees the
+  env_map built so far; later files win per key) → (3) `env` (substituted; wins over envFiles within the Runfile
+  layer) → (4) **`overlay_shell_env`** re-applies `std::env::vars()` so the inherited shell env ALWAYS wins over
+  Runfile-defined keys (PATH is case-aware on Windows so we don't end up with both `Path` and `PATH`) →
+  (5) `apply_add_to_path_chain` prepends `[this target's add_to_path…, parent's add_to_path…, grandparent's…, current
+  PATH]` so the innermost `addToPath` ends up at the very front and the chain re-prepends after step 4 wiped PATH →
+  (6) decrypt encrypted values (if a key is available). Accepts a substitution closure so it stays independent of arg
+  parsing. `EnvBuildParams` has data fields: `env_files`, `env`, `add_to_path`, plus `parent_add_to_path_chain` for
+  threading ancestor `addToPath` layers through `@dep` invocations (no global/command distinction — globals are baked
+  into each target by the parser).
+- `apply_add_to_path_chain` is a no-op when both the parent chain (or its layers) and this target's `add_to_path`
+  contribute zero entries — so single-target runs and unused chains never touch the `PATH` value or perturb its case.
+- Substitution semantics intentionally stay "lexical": within a target's `env` block, a value can reference a key set
+  earlier in the same block (via `$(ENV.X)`) and gets that lexically-prior value, even if the shell's value will
+  ultimately win in step 4. This keeps existing Runfiles working — the only observable change is the final value of
+  any key the shell also defines.
 - `EnvBuildParams.available_private_keys`: optional list of private keys; when encrypted values are detected, the key is
   auto-resolved via `RUNFILE_ENCRYPTION_KEY` env var or by matching `RUNFILE_ENCRYPTION_PUBLIC_KEY` against the
   available private keys.
@@ -205,11 +218,19 @@ crates/
   dispatched. The executor calls back into the runner via the [`DependencyResolver`] trait; tests that don't have
   a runner use `NoOpDependencyResolver` (which errors on `@`). `@target` invocations have **no dedup** — calling
   the same target twice runs it twice — but cycles are still rejected via per-call-stack chain tracking. Each
-  invocation inherits the parent's already-resolved env as a baseline, then layers its own envFiles/env/addToPath
-  on top (dep wins on conflict). `forceShell` and other target-level config are NOT inherited. Inside
-  `parallel: true` parents, target calls run on worker threads via `std::thread::scope` so the resolver can
-  borrow runner state without `'static` lifetime requirements. Nested `parallel: true` deps fan out further
-  (no enforced sequentialization).
+  invocation inherits the parent's already-resolved env as a substitution base, then layers its own
+  `envFiles`/`env` on top (dep wins per key) — but the **current shell env always wins** over both via the
+  `overlay_shell_env` step. `addToPath` is threaded as a separate `parent_add_to_path_chain: Vec<Vec<String>>`
+  (one layer per ancestor in chain order, outermost first); each call appends its own `add_to_path` and the full
+  chain is re-prepended to PATH after the shell-env overlay, so PATH ends up `[innermost addToPath…, …, outermost
+  addToPath…, shell PATH]`. The trait method
+  `DependencyResolver::run_dependency(target, args, parent_env, parent_add_to_path_chain)` carries both pieces of
+  state. `ExecSetup` precomputes `add_to_path_chain = parent_chain + this target's spec.add_to_path` and hands
+  *that* slice to every nested `@dep` call (innermost-first ordering is enforced by `apply_add_to_path_chain`,
+  not by the chain layout — the chain is stored outermost-first as it accumulates). `forceShell` and other
+  target-level config are NOT inherited. Inside `parallel: true` parents, target calls run on worker threads via
+  `std::thread::scope` so the resolver can borrow runner state (and the chain slice) without `'static` lifetime
+  requirements. Nested `parallel: true` deps fan out further (no enforced sequentialization).
 - `env.rs`: thin bridge that converts `CommandSpec` (parser type) into raw data for `runfile-env`, wiring
   `RunArgs::substitute` as the substitution closure. Re-exports `EnvFileError` and `parse_env_file` from `runfile-env`.
   Passes `available_private_keys` through for automatic encrypted env decryption.
