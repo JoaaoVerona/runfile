@@ -197,7 +197,11 @@ crates/
 - `RunArgs`: parses CLI args into positional (`$(ARGS)`) and named (`--key=value`). Carries a `run_context: RunContext`
   field used to resolve `$(RUN.*)` substitutions; populated by the CLI via `RunArgs::parse(...).with_run_context(...)`.
 - `substitute()` returns `Result` — `$(ARGS.key)` without `?` errors if arg is missing; `$(ARGS.key ?)` with empty
-  right-side defaults to empty string; `$(ARGS.key ? default)` uses the default
+  right-side defaults to empty string; `$(ARGS.key ? default)` uses the default. Unknown `$(...)` heads
+  (e.g. a shell command sub like `$(echo …)`) are re-emitted with their `$(...)` wrapper intact, but the substituter
+  **recurses into the body first** so nested known prefixes resolve — `$(echo "$(ARGS.env)")` becomes
+  `$(echo "development")` rather than leaking through unsubstituted. `scan_args_usage` mirrors this so `validate_args`
+  recognises `--env` even when its only reference is nested inside an unknown wrapper.
 - `RunContext { os, shell }`: static execution context. Resolves `$(RUN.os)` (`"windows"` / `"linux"` / `"mac"`)
   and `$(RUN.shell)` (`"bash"` / `"zsh"` / `"sh"` / `"fish"` / `"powershell"` / `"cmd"`). Unknown `RUN.<key>` is
   a hard error. Participates in chained fallbacks (`$(ARGS.shell ? RUN.shell)`). The runner calls

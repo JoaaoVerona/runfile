@@ -2900,6 +2900,57 @@ fn substitute_non_args_dollar_expression_preserved() {
 }
 
 #[test]
+fn substitute_recurses_into_unknown_dollar_expression() {
+	// A shell `$(...)` command substitution wrapping an `$(ARGS.x)` reference
+	// must keep its outer `$(...)` for the shell, but the inner reference
+	// should still be substituted.
+	let args = RunArgs::parse(&["--env=development".into()]);
+	let result = args
+		.substitute_no_env(r#"base=$(echo "$f" | sed 's/\.$(ARGS.env)$//')"#)
+		.unwrap();
+	assert_eq!(result, r#"base=$(echo "$f" | sed 's/\.development$//')"#);
+}
+
+#[test]
+fn substitute_recurses_into_deeply_nested_unknown_expression() {
+	let args = RunArgs::parse(&["--name=world".into()]);
+	let mut env = HashMap::new();
+	env.insert("GREETING".to_string(), "hello".to_string());
+	let result = args
+		.substitute(r#"x=$(printf '%s' $(echo "$(ENV.GREETING) $(ARGS.name)"))"#, &env)
+		.unwrap();
+	assert_eq!(result, r#"x=$(printf '%s' $(echo "hello world"))"#);
+}
+
+#[test]
+fn substitute_recursion_propagates_missing_arg_error() {
+	// A missing $(ARGS.x) inside a shell `$(...)` should still error rather
+	// than silently leaking through unsubstituted.
+	let args = RunArgs::parse(&[]);
+	let err = args.substitute_no_env(r#"x=$(echo "$(ARGS.missing)")"#).unwrap_err();
+	matches!(err, SubstitutionError::MissingArg(_));
+}
+
+#[test]
+fn substitute_recursion_redacts_env_inside_unknown_expression() {
+	let args = RunArgs::parse(&[]);
+	let mut env = HashMap::new();
+	env.insert("TOKEN".to_string(), "secret123".to_string());
+	let result = args.substitute_redacted(r#"x=$(echo "$(ENV.TOKEN)")"#, &env).unwrap();
+	assert_eq!(result, r#"x=$(echo "***")"#);
+}
+
+#[test]
+fn scan_args_usage_finds_args_inside_unknown_expression() {
+	// validate_args needs to see `--env` referenced even when its only use
+	// is nested inside a shell `$(echo $(ARGS.env))`-style command sub.
+	let cmds = vec![r#"base=$(echo "$f" | sed 's/\.$(ARGS.env)$//')"#.into()];
+	let (positional, named) = scan_args_usage(&cmds);
+	assert!(!positional);
+	assert!(named.contains("env"));
+}
+
+#[test]
 fn substitute_multiple_args_placeholders() {
 	let args = RunArgs::parse(&["hello".into()]);
 	let result = args.substitute_no_env("echo $(ARGS) and $(ARGS)").unwrap();

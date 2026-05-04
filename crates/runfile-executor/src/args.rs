@@ -309,10 +309,15 @@ impl RunArgs {
 					)?;
 					output.push_str(&resolved);
 				} else {
-					// Not an ARGS/ENV/FLAGS/LOOP/RUN expression, put it back
+					// Unknown head (e.g. a shell `$(echo …)` command substitution).
+					// Recursively substitute the body so nested known prefixes —
+					// `$(ARGS.x)`, `$(ENV.x)`, `$(LOOP.x)`, `$(RUN.x)`, `$(FLAGS.x)` —
+					// still resolve, then re-emit the wrapping `$(...)` for the shell.
+					let inner =
+						self.resolve_placeholders_impl(&expr, env, loop_scope, consumed, flag_keys, redact_env)?;
 					output.push('$');
 					output.push('(');
-					output.push_str(&expr);
+					output.push_str(&inner);
 					output.push(')');
 				}
 			} else {
@@ -577,6 +582,10 @@ fn scan_one_template(cmd: &str, uses_positional: &mut bool, named_keys: &mut Has
 				if !key.is_empty() {
 					named_keys.insert(key.to_string());
 				}
+			} else if !trimmed.starts_with("ENV.") && !trimmed.starts_with("LOOP.") && !trimmed.starts_with("RUN.") {
+				// Unknown head — the substituter recurses into the body, so
+				// scan it for nested `$(ARGS.*)` / `$(FLAGS.*)` references too.
+				scan_one_template(&expr, uses_positional, named_keys);
 			}
 		}
 	}
