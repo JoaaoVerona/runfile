@@ -76,11 +76,7 @@
 			"description": "Publish all per-platform npm packages, then the wrapper package. Requires NODE_AUTH_TOKEN in env.",
 			"forceShell": "bash",
 			"commands": [
-				{
-					"for": "dir",
-					"glob": "npm-dist/runfile-*",
-					"do": "cd \"$(LOOP.dir)\" && npm publish --access public --provenance"
-				},
+				"for dir in npm-dist/runfile-*; do (cd \"$dir\" && npm publish --access public --provenance) || exit 1; done",
 				"cd npm-dist/runfile && npm publish --access public --provenance"
 			]
 		}
