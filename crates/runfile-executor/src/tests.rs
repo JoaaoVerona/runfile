@@ -1189,6 +1189,7 @@ fn detach_evaluates_if_block_and_does_not_run_condition_as_shell() {
 	let args = RunArgs::default().with_run_context(crate::args::RunContext {
 		os: "windows".into(),
 		shell: "sh".into(),
+		..Default::default()
 	});
 	let leaves = collect_detach_leaves(&install.commands, &args, &HashMap::new(), std::path::Path::new(".")).unwrap();
 	assert_eq!(leaves, vec!["echo windows-only".to_string()]);
@@ -3612,6 +3613,7 @@ fn args_with_run(shell: &str) -> RunArgs {
 	RunArgs::parse(&[]).with_run_context(RunContext {
 		os: "linux".to_string(),
 		shell: shell.to_string(),
+		..Default::default()
 	})
 }
 
@@ -3660,6 +3662,7 @@ fn run_does_not_consume_named_args() {
 	let args = RunArgs::parse(&["foo".into(), "--keep=true".into()]).with_run_context(RunContext {
 		os: "linux".into(),
 		shell: "bash".into(),
+		..Default::default()
 	});
 	let result = args.substitute_no_env("cmd $(RUN.shell) $(ARGS)").unwrap();
 	assert_eq!(result, "cmd bash foo --keep=true");
@@ -4296,6 +4299,112 @@ fn for_in_iterates_each_value() {
 	let args = RunArgs::default();
 	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
 	assert_eq!(result.commands_run, 3);
+}
+
+#[test]
+fn for_in_namespaces_iterates_runfile_namespaces() {
+	// Populate args.run_context.namespaces and verify the for-block runs the
+	// body once per namespace, with $(LOOP.ns) bound to each.
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let touch = match shell.kind {
+		ShellKind::Cmd => "type nul > $(LOOP.ns).ns",
+		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"$(LOOP.ns).ns\\\" -Force | Out-Null",
+		_ => "touch $(LOOP.ns).ns",
+	};
+	let spec_json = format!(
+		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
+			{{"for":"ns","in":"namespaces","do":["{touch}"]}}
+		]}}}}}}"#
+	);
+	let spec = parse_target(&spec_json, "t");
+	let args = RunArgs::default().with_run_context(crate::args::RunContext {
+		os: "linux".into(),
+		shell: shell.kind.name().to_string(),
+		namespaces: std::sync::Arc::new(vec!["project_one".into(), "project_two".into()]),
+	});
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert_eq!(result.commands_run, 2);
+	assert!(dir.path().join("project_one.ns").exists());
+	assert!(dir.path().join("project_two.ns").exists());
+}
+
+#[test]
+fn for_in_namespaces_with_dynamic_target_call_runs_each_namespaced_target() {
+	// End-to-end exercise of the user's example pattern:
+	//   "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):build"
+	// The for-block iterates the runfile's namespaces; for each value, the
+	// `@$(LOOP.ns):build` target call is substituted and dispatched to the
+	// real namespaced target. Each project's `build` writes a marker file.
+	use crate::runner::run_target;
+	use runfile_parser::parse_runfile;
+
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+
+	let touch_one = match shell.kind {
+		ShellKind::Cmd => "type nul > one.built",
+		ShellKind::PowerShell => "New-Item -ItemType File -Path one.built -Force | Out-Null",
+		_ => "touch one.built",
+	};
+	let touch_two = match shell.kind {
+		ShellKind::Cmd => "type nul > two.built",
+		ShellKind::PowerShell => "New-Item -ItemType File -Path two.built -Force | Out-Null",
+		_ => "touch two.built",
+	};
+
+	let json = format!(
+		r#"{{
+		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"targets": {{
+			"project_one:build": {{ "commands": ["{touch_one}"] }},
+			"project_two:build": {{ "commands": ["{touch_two}"] }},
+			"build_all": {{
+				"commands": [
+					{{ "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):build" }}
+				]
+			}}
+		}}
+	}}"#
+	);
+
+	let mut runfile = parse_runfile(&json).unwrap();
+	// Simulate what `merge_runfiles` would populate after resolving namespaced
+	// includes (those tests live in the parser crate); here we plug the list in
+	// directly so the executor sees the same shape it'd see at runtime.
+	runfile.namespaces = vec!["project_one".to_string(), "project_two".to_string()];
+
+	let args = RunArgs::default();
+	let result = run_target("build_all", &runfile, &shell, &args, dir.path()).unwrap();
+	assert!(result.final_status.success(), "build_all should succeed");
+	assert!(
+		dir.path().join("one.built").exists(),
+		"project_one:build should have run"
+	);
+	assert!(
+		dir.path().join("two.built").exists(),
+		"project_two:build should have run"
+	);
+}
+
+#[test]
+fn for_in_namespaces_with_empty_list_does_nothing() {
+	// No namespaces ⇒ body doesn't run. Mirrors `for in: []` semantics.
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let spec = parse_target(
+		r#"{"$schema":"x","targets":{"t":{"commands":[
+			{"for":"ns","in":"namespaces","do":["exit 1"]}
+		]}}}"#,
+		"t",
+	);
+	let args = RunArgs::default().with_run_context(crate::args::RunContext {
+		os: "linux".into(),
+		shell: shell.kind.name().to_string(),
+		namespaces: std::sync::Arc::new(Vec::new()),
+	});
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert_eq!(result.commands_run, 0);
 }
 
 #[test]

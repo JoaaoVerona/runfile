@@ -17,6 +17,7 @@ fn make_runfile(targets: Vec<(&str, Vec<&str>)>) -> Runfile {
 		includes: None,
 		targets: target_map,
 		globals: None,
+		namespaces: Vec::new(),
 	}
 }
 
@@ -266,6 +267,7 @@ fn zed_no_targets_empty_result() {
 		includes: None,
 		targets: HashMap::new(),
 		globals: None,
+		namespaces: Vec::new(),
 	};
 	let tasks = generate_zed_tasks(&runfile);
 	assert!(tasks.is_empty());
@@ -338,6 +340,7 @@ fn jetbrains_no_targets_empty_result() {
 		includes: None,
 		targets: HashMap::new(),
 		globals: None,
+		namespaces: Vec::new(),
 	};
 	let configs = generate_jetbrains_configs(&runfile);
 	assert!(configs.is_empty());

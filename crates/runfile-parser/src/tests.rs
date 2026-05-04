@@ -303,6 +303,7 @@ fn roundtrip_serialization() {
 			force_kill_on_sig_int: None,
 			only_in_directories: None,
 		}),
+		namespaces: Vec::new(),
 	};
 
 	let json = serde_json::to_string(&runfile).unwrap();
@@ -917,6 +918,7 @@ fn merge_local_only_no_global_files() {
 			t
 		},
 		globals: None,
+		namespaces: Vec::new(),
 	};
 	let dir = TempDir::new().unwrap();
 	let path = dir.path().join(RUNFILE_NAME);
@@ -968,6 +970,7 @@ fn merge_local_and_global_conflict() {
 			t
 		},
 		globals: None,
+		namespaces: Vec::new(),
 	};
 	let local_path = dir.path().join(RUNFILE_NAME);
 
@@ -1032,6 +1035,7 @@ fn merge_missing_global_file_skipped() {
 			t
 		},
 		globals: None,
+		namespaces: Vec::new(),
 	};
 	let local_path = dir.path().join(RUNFILE_NAME);
 
@@ -1077,6 +1081,7 @@ fn merge_source_dirs_tracked() {
 			t
 		},
 		globals: None,
+		namespaces: Vec::new(),
 	};
 	let local_path = dir.path().join(RUNFILE_NAME);
 
@@ -1818,6 +1823,128 @@ fn include_namespace_preserves_internal_targets() {
 	);
 	assert!(!is_internal_target_name("child:build"));
 	assert!(is_internal_target_name("_helper"));
+}
+
+// ── Namespace tracking for `for in: "namespaces"` ──────────────────
+
+#[test]
+fn merge_records_top_level_namespace() {
+	// A single namespaced include populates `state.namespaces` with that
+	// one entry — used at runtime to expand `for "in": "namespaces"`.
+	let state = run_namespace_include(
+		r#"{
+			"$schema": "x",
+			"includes": [{ "path": "child.json", "namespace": "child" }],
+			"targets": { "root": { "commands": ["echo root"] } }
+		}"#,
+		&[(
+			"child.json",
+			r#"{ "$schema": "x", "targets": { "build": { "commands": ["echo build"] } } }"#,
+		)],
+	);
+	assert_eq!(state.namespaces, vec!["child".to_string()]);
+}
+
+#[test]
+fn merge_records_no_namespaces_for_unnamespaced_includes() {
+	// String-form (no namespace) and object-form-without-namespace contribute
+	// nothing to the namespaces list.
+	let state = run_namespace_include(
+		r#"{
+			"$schema": "x",
+			"includes": ["plain.json", { "path": "obj.json" }],
+			"targets": { "root": { "commands": ["echo root"] } }
+		}"#,
+		&[
+			(
+				"plain.json",
+				r#"{ "$schema": "x", "targets": { "p": { "commands": ["echo p"] } } }"#,
+			),
+			(
+				"obj.json",
+				r#"{ "$schema": "x", "targets": { "o": { "commands": ["echo o"] } } }"#,
+			),
+		],
+	);
+	assert!(
+		state.namespaces.is_empty(),
+		"unnamespaced includes contribute nothing: {:?}",
+		state.namespaces
+	);
+}
+
+#[test]
+fn merge_namespaces_compose_innermost_first() {
+	// Nested includes layer up: a chain `outer → inner` lands as both
+	// `outer` and `outer:inner` in the namespaces list.
+	let state = run_namespace_include(
+		r#"{
+			"$schema": "x",
+			"includes": [{ "path": "mid.json", "namespace": "outer" }],
+			"targets": { "root": { "commands": ["echo root"] } }
+		}"#,
+		&[
+			(
+				"mid.json",
+				r#"{ "$schema": "x",
+				     "includes": [{ "path": "inner.json", "namespace": "inner" }],
+				     "targets": { "build": { "commands": ["echo build"] } } }"#,
+			),
+			(
+				"inner.json",
+				r#"{ "$schema": "x", "targets": { "build": { "commands": ["echo inner-build"] } } }"#,
+			),
+		],
+	);
+	let mut ns = state.namespaces.clone();
+	ns.sort();
+	assert_eq!(
+		ns,
+		vec!["outer".to_string(), "outer:inner".to_string()],
+		"nested namespaces compose with the outer prefix"
+	);
+}
+
+#[test]
+fn merge_namespaces_dedup_in_final_runfile() {
+	// `merge_runfiles` sorts and dedupes, so the same namespace appearing
+	// under multiple roots yields a single entry. Tested via the public
+	// `merge_runfiles` API — `MergeState` itself just accumulates.
+	use crate::merge_runfiles;
+	let dir = TempDir::new().unwrap();
+
+	// Two siblings with the same namespace `"shared"`.
+	std::fs::write(
+		dir.path().join("a.json"),
+		r#"{ "$schema": "x", "targets": { "build": { "commands": ["a"] } } }"#,
+	)
+	.unwrap();
+	std::fs::write(
+		dir.path().join("b.json"),
+		r#"{ "$schema": "x", "targets": { "deploy": { "commands": ["b"] } } }"#,
+	)
+	.unwrap();
+
+	let local_path = dir.path().join(RUNFILE_NAME);
+	let local = parse_runfile(
+		r#"{
+			"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+			"includes": [
+				{ "path": "a.json", "namespace": "shared" },
+				{ "path": "b.json", "namespace": "shared" }
+			],
+			"targets": { "root": { "commands": ["echo root"] } }
+		}"#,
+	)
+	.unwrap();
+	std::fs::write(&local_path, "{}").unwrap();
+
+	let result = merge_runfiles(Some((local, local_path)), &[], dir.path()).unwrap();
+	assert_eq!(
+		result.runfile.namespaces,
+		vec!["shared".to_string()],
+		"duplicate namespaces from sibling includes are deduplicated"
+	);
 }
 
 #[test]
@@ -2766,7 +2893,7 @@ fn parse_for_in_block() {
 		assert_eq!(for_step.var, "service");
 		assert_eq!(
 			for_step.r#in.as_ref().unwrap(),
-			&vec!["api".to_string(), "web".to_string()]
+			&crate::ForInValue::Literal(vec!["api".to_string(), "web".to_string()])
 		);
 		assert_eq!(for_step.body.len(), 1);
 	} else {
@@ -2793,6 +2920,114 @@ fn parse_for_do_accepts_single_string() {
 	} else {
 		panic!("expected For block");
 	}
+}
+
+#[test]
+fn parse_for_in_namespaces_magic_string() {
+	// `"in": "namespaces"` is the only string form accepted — anything else
+	// errors. Used to iterate over namespace prefixes from `includes`.
+	let json = r#"{
+		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"targets": {
+			"build_all": {
+				"commands": [
+					{ "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):build" }
+				]
+			}
+		}
+	}"#;
+	let rf = parse_runfile(json).unwrap();
+	if let CommandStep::For(for_step) = &rf.targets["build_all"].commands[0] {
+		assert_eq!(for_step.var, "ns");
+		assert_eq!(for_step.r#in.as_ref().unwrap(), &crate::ForInValue::Namespaces);
+		// Body's "@$(LOOP.ns):build" string starts with @, so it parses as a target call
+		// with an empty target (the namespace is filled in at runtime).
+		assert_eq!(for_step.body.len(), 1);
+	} else {
+		panic!("expected For block");
+	}
+}
+
+#[test]
+fn parse_for_in_array_still_works_alongside_magic_string() {
+	// Sanity: existing `in: [array]` form is unaffected by the new magic-string
+	// path through `ForInValue`.
+	let json = r#"{
+		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"targets": {
+			"each": {
+				"commands": [
+					{ "for": "x", "in": ["a", "b", "c"], "do": "echo $(LOOP.x)" }
+				]
+			}
+		}
+	}"#;
+	let rf = parse_runfile(json).unwrap();
+	if let CommandStep::For(for_step) = &rf.targets["each"].commands[0] {
+		assert_eq!(
+			for_step.r#in.as_ref().unwrap(),
+			&crate::ForInValue::Literal(vec!["a".into(), "b".into(), "c".into()])
+		);
+	} else {
+		panic!("expected For block");
+	}
+}
+
+#[test]
+fn parse_for_in_string_other_than_namespaces_errors() {
+	// Only `"namespaces"` is a recognised string form — anything else is a
+	// hard error to catch typos like `"namespace"` (singular).
+	let json = r#"{
+		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"targets": {
+			"bad": {
+				"commands": [
+					{ "for": "ns", "in": "namespace", "do": ["echo"] }
+				]
+			}
+		}
+	}"#;
+	let err = parse_runfile(json).unwrap_err();
+	let msg = err.to_string();
+	assert!(
+		msg.contains("namespaces") && msg.contains("namespace"),
+		"error should call out the typo and the accepted keyword: {msg}"
+	);
+}
+
+#[test]
+fn parse_for_in_object_form_errors() {
+	// Defensive: rejecting non-array/non-string `in` values with a clear message.
+	let json = r#"{
+		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"targets": {
+			"bad": {
+				"commands": [
+					{ "for": "x", "in": { "a": 1 }, "do": [] }
+				]
+			}
+		}
+	}"#;
+	let err = parse_runfile(json).unwrap_err();
+	assert!(err.to_string().contains("namespaces") || err.to_string().contains("array"));
+}
+
+#[test]
+fn for_in_namespaces_roundtrips_through_serde() {
+	// Serialize → deserialize must preserve the magic value (string form),
+	// not collapse it into an array.
+	let original = crate::ForInValue::Namespaces;
+	let json = serde_json::to_value(&original).unwrap();
+	assert_eq!(json, serde_json::json!("namespaces"));
+	let parsed: crate::ForInValue = serde_json::from_value(json).unwrap();
+	assert_eq!(parsed, original);
+
+	// Literal also roundtrips cleanly.
+	let literal = crate::ForInValue::Literal(vec!["a".into(), "b".into()]);
+	let json = serde_json::to_value(&literal).unwrap();
+	assert_eq!(json, serde_json::json!(["a", "b"]));
+	let parsed: crate::ForInValue = serde_json::from_value(json).unwrap();
+	assert_eq!(parsed, literal);
 }
 
 #[test]

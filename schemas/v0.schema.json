@@ -185,11 +185,19 @@
 					"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
 				},
 				"in": {
-					"type": "array",
-					"description": "Iterate over this explicit array of strings.",
-					"items": {
-						"type": "string"
-					}
+					"description": "Iterate over an explicit array of strings, or use the magic value \"namespaces\" to iterate over every namespace prefix declared via `includes` (alphabetically sorted, deduplicated, composed across nested namespaces).",
+					"oneOf": [
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						},
+						{
+							"type": "string",
+							"enum": ["namespaces"]
+						}
+					]
 				},
 				"glob": {
 					"type": "string",

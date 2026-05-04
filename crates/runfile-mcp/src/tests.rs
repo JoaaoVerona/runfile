@@ -13,6 +13,7 @@ fn make_runfile(targets: Vec<(&str, CommandSpec)>) -> Runfile {
 		includes: None,
 		targets: target_map,
 		globals: None,
+		namespaces: Vec::new(),
 	}
 }
 

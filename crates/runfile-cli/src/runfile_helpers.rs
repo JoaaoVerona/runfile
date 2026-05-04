@@ -166,6 +166,7 @@ pub fn load_or_create_runfile() -> Runfile {
 			includes: None,
 			targets: HashMap::new(),
 			globals: None,
+			namespaces: Vec::new(),
 		}
 	}
 }

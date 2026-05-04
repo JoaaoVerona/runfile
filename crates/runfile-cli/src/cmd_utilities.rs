@@ -51,6 +51,7 @@ pub fn cmd_init(path: Option<PathBuf>) {
 		includes: None,
 		targets,
 		globals: Some(Globals::default()),
+		namespaces: Vec::new(),
 	};
 
 	write_runfile_to_path(&runfile, &output_path);

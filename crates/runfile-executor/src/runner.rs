@@ -1,4 +1,4 @@
-use crate::args::{validate_args, RunArgs, RunContext as ArgsRunContext, SubstitutionError};
+use crate::args::{validate_args, RunArgs, SubstitutionError};
 use crate::control_flow::{collect_detach_leaves, DetachFlattenError};
 use crate::env::EnvFileError;
 use crate::executor::{
@@ -7,12 +7,13 @@ use crate::executor::{
 };
 use crate::logging::{log_command, log_target_timing, StepCounter};
 use runfile_parser::{
-	walk_spec_aux_templates, CommandStep, ForStep, IfStep, Runfile, WhenStep, WORKING_DIRECTORY_CWD,
+	walk_spec_aux_templates, CommandStep, ForInValue, ForStep, IfStep, Runfile, WhenStep, WORKING_DIRECTORY_CWD,
 	WORKING_DIRECTORY_RUNFILE_PARENT,
 };
 use runfile_shell::{resolve_shell, ResolvedShell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
 
@@ -163,8 +164,10 @@ pub fn run_target_with_cwd(
 	available_private_keys: Option<&[String]>,
 ) -> Result<ExecutionResult, RunError> {
 	// Make sure the run_context is in sync with the resolved shell the caller
-	// decided on. Idempotent when the caller already set it.
-	let args_owned = ensure_run_context(args, &shell.kind);
+	// decided on AND carries the merged Runfile's namespace list (for `for
+	// "in": "namespaces"` resolution). Both checks are idempotent: nothing
+	// gets cloned when the caller already set them.
+	let args_owned = ensure_run_context(args, &shell.kind, &runfile.namespaces);
 	let args = args_owned.as_ref().unwrap_or(args);
 
 	// Collect all template strings from the target and its dependencies for
@@ -260,7 +263,9 @@ fn run_target_inner_body(
 	// Update args.run_context.shell if the target's effective shell differs
 	// from the parent's. This makes `$(RUN.shell)` reflect the shell that
 	// actually runs the commands, even when a `forceShell` override applies.
-	let target_args_owned = ensure_run_context(args, &shell.kind);
+	// The namespace list is unchanged at this point — the top-level call
+	// already attached it, so we re-pass the same slice for the in-sync check.
+	let target_args_owned = ensure_run_context(args, &shell.kind, &root.runfile.namespaces);
 	let target_args: &RunArgs = target_args_owned.as_ref().unwrap_or(args);
 
 	// Substitute and validate `workingDirectory`. The substituted value must
@@ -444,7 +449,17 @@ fn count_step_leaves_recursive(
 	for step in steps {
 		total += match step {
 			CommandStep::Shell(_) => 1,
-			CommandStep::TargetCall(call) => count_target_leaves_recursive(&call.target, runfile, cache, in_progress)?,
+			CommandStep::TargetCall(call) => {
+				// Dynamic target names (containing `$(...)`, e.g. `@$(LOOP.ns):build`)
+				// resolve at runtime; we can't recurse into them statically. Count
+				// the call as 1 leaf and let `StepCounter::add_to_total` bump the
+				// total at runtime if the dispatched target exposes more leaves.
+				if call.target.contains("$(") {
+					1
+				} else {
+					count_target_leaves_recursive(&call.target, runfile, cache, in_progress)?
+				}
+			}
 			CommandStep::When(WhenStep { commands, .. }) => {
 				count_step_leaves_recursive(commands, runfile, cache, in_progress)?
 			}
@@ -460,7 +475,8 @@ fn count_step_leaves_recursive(
 			CommandStep::For(ForStep { r#in, body, .. }) => {
 				let body_count = count_step_leaves_recursive(body, runfile, cache, in_progress)?;
 				match r#in {
-					Some(items) => items.len() * body_count,
+					Some(ForInValue::Literal(items)) => items.len() * body_count,
+					Some(ForInValue::Namespaces) => runfile.namespaces.len() * body_count,
 					None => body_count, // glob/shell — 1-iteration estimate
 				}
 			}
@@ -525,13 +541,22 @@ fn collect_step_commands(
 		match step {
 			CommandStep::Shell(s) => commands.push(s.clone()),
 			CommandStep::TargetCall(call) => {
+				// `call.target` itself participates in arg-usage scanning so
+				// `$(ARGS.x)` references inside dynamic target names like
+				// `@$(LOOP.ns):build` still register.
+				commands.push(call.target.clone());
 				if !call.args_template.is_empty() {
 					commands.push(call.args_template.clone());
 				}
-				// Recurse into the called target's commands (cycle-safe).
-				// `completed` makes diamond dependencies count once for
-				// sizing — actual runtime invocations still don't dedup.
-				collect_commands_recursive(&call.target, runfile, commands, completed, in_progress)?;
+				// Dynamic target names resolve at runtime; we can't recurse
+				// into them statically. Their args templates were already
+				// captured above.
+				if !call.target.contains("$(") {
+					// Recurse into the called target's commands (cycle-safe).
+					// `completed` makes diamond dependencies count once for
+					// sizing — actual runtime invocations still don't dedup.
+					collect_commands_recursive(&call.target, runfile, commands, completed, in_progress)?;
+				}
 			}
 			CommandStep::When(WhenStep { commands: inner, .. }) => {
 				collect_step_commands(inner, runfile, commands, completed, in_progress)?;
@@ -555,7 +580,9 @@ fn collect_step_commands(
 				body,
 				..
 			}) => {
-				if let Some(items) = r#in {
+				// Only the literal-array form contributes templates; the magic
+				// `"namespaces"` keyword isn't substitutable.
+				if let Some(ForInValue::Literal(items)) = r#in {
 					for item in items {
 						commands.push(item.clone());
 					}
@@ -578,22 +605,30 @@ fn is_ci_environment() -> bool {
 }
 
 /// Return a cloned [`RunArgs`] with `run_context.shell` set to match the
-/// active shell; or `None` if `args.run_context` is already in sync (so the
+/// active shell AND `run_context.namespaces` populated from the merged
+/// Runfile; or `None` if `args.run_context` is already in sync (so the
 /// caller can keep the existing borrow). Keeps `$(RUN.shell)` / `$(RUN.os)`
 /// substitutions correct even when callers pass args from outside (e.g.
-/// tests that use `RunArgs::default()`).
-fn ensure_run_context(args: &RunArgs, shell_kind: &runfile_shell::ShellKind) -> Option<RunArgs> {
+/// tests that use `RunArgs::default()`), and ensures `for "in":
+/// "namespaces"` always sees the post-merge namespace list.
+///
+/// The namespace list is compared by pointer (`Arc::ptr_eq`) so cheap
+/// pointer equality keeps the no-op fast-path active whenever the caller
+/// already attached the same `Arc`.
+fn ensure_run_context(args: &RunArgs, shell_kind: &runfile_shell::ShellKind, namespaces: &[String]) -> Option<RunArgs> {
 	let shell_name = shell_kind.name();
 	let os = crate::args::detect_current_os();
-	let in_sync = args.run_context.shell == shell_name && args.run_context.os == os;
-	if in_sync {
+	let shell_in_sync = args.run_context.shell == shell_name && args.run_context.os == os;
+	let namespaces_in_sync = args.run_context.namespaces.as_slice() == namespaces;
+	if shell_in_sync && namespaces_in_sync {
 		None
 	} else {
 		let mut owned = args.clone();
-		owned.run_context = ArgsRunContext {
-			os: os.to_string(),
-			shell: shell_name.to_string(),
-		};
+		owned.run_context.os = os.to_string();
+		owned.run_context.shell = shell_name.to_string();
+		if !namespaces_in_sync {
+			owned.run_context.namespaces = Arc::new(namespaces.to_vec());
+		}
 		Some(owned)
 	}
 }

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -27,11 +28,14 @@ pub enum SubstitutionError {
 	UnknownNamedArg(String),
 }
 
-/// Static execution context — the OS and the resolved shell.
+/// Static execution context — the OS, the resolved shell, and the merged
+/// Runfile's namespace list.
 ///
 /// Used to resolve `$(RUN.*)` substitutions inside command templates,
 /// `if` conditions, `for-in`/`for-glob`/`for-shell` iterators, and any other
-/// place where substitution happens.
+/// place where substitution happens. Also carries the namespace list so
+/// `for "in": "namespaces"` resolves without threading another parameter
+/// through every executor function.
 ///
 /// Valid `RUN.*` keys:
 /// - `RUN.os` — `"windows"`, `"linux"`, or `"mac"`
@@ -43,15 +47,31 @@ pub struct RunContext {
 	/// The resolved shell name (lowercase): `"bash"`, `"zsh"`, `"sh"`, `"fish"`,
 	/// `"powershell"`, or `"cmd"`.
 	pub shell: String,
+	/// Namespace prefixes from the merged Runfile, sorted and deduplicated.
+	/// Wrapped in `Arc` so cloning a [`RunContext`] (and thus [`RunArgs`])
+	/// across `@dep` boundaries and worker threads stays cheap. Empty for
+	/// callers that don't have a Runfile (CLI completion, isolated tests).
+	pub namespaces: Arc<Vec<String>>,
 }
 
 impl RunContext {
-	/// Build a context from the current process OS and a shell name.
+	/// Build a context from the current process OS and a shell name. The
+	/// namespace list defaults to empty — populate it via
+	/// [`RunContext::with_namespaces`] once the merged Runfile is available.
 	pub fn new(shell: impl Into<String>) -> Self {
 		Self {
 			os: detect_current_os().to_string(),
 			shell: shell.into(),
+			namespaces: Arc::new(Vec::new()),
 		}
+	}
+
+	/// Builder: attach a namespace list. Overwrites any previously-attached
+	/// list. Pass an `Arc` so the same allocation is shared across cloned
+	/// contexts.
+	pub fn with_namespaces(mut self, namespaces: Arc<Vec<String>>) -> Self {
+		self.namespaces = namespaces;
+		self
 	}
 }
 

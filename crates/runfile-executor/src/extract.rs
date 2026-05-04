@@ -277,22 +277,39 @@ fn walk_extract_steps(
 				}
 			}
 			CommandStep::For(ForStep { var, r#in, body, .. }) => {
-				if let Some(items) = r#in {
-					for item in items {
-						let value = args.substitute_with_loop(item, env, loop_scope)?;
-						loop_scope.push(var.as_str(), value);
+				use runfile_parser::ForInValue;
+				match r#in {
+					Some(ForInValue::Literal(items)) => {
+						for item in items {
+							let value = args.substitute_with_loop(item, env, loop_scope)?;
+							loop_scope.push(var.as_str(), value);
+							let r = walk_extract_steps(body, args, env, loop_scope, out);
+							loop_scope.pop();
+							r?;
+						}
+					}
+					Some(ForInValue::Namespaces) => {
+						// Snapshot the merged Runfile's namespace list — extract
+						// expands these to concrete commands the same way as a
+						// literal array, so callers see e.g. `@project-1:build`
+						// rather than a placeholder.
+						let namespaces = args.run_context.namespaces.clone();
+						for ns in namespaces.iter() {
+							loop_scope.push(var.as_str(), ns.clone());
+							let r = walk_extract_steps(body, args, env, loop_scope, out);
+							loop_scope.pop();
+							r?;
+						}
+					}
+					None => {
+						// `for glob` / `for shell` — bind a placeholder so
+						// `$(LOOP.var)` references resolve without touching the
+						// filesystem or running side-effecting iterator commands.
+						loop_scope.push(var.as_str(), format!("<{var}>"));
 						let r = walk_extract_steps(body, args, env, loop_scope, out);
 						loop_scope.pop();
 						r?;
 					}
-				} else {
-					// `for glob` / `for shell` — bind a placeholder so
-					// `$(LOOP.var)` references resolve without touching the
-					// filesystem or running side-effecting iterator commands.
-					loop_scope.push(var.as_str(), format!("<{var}>"));
-					let r = walk_extract_steps(body, args, env, loop_scope, out);
-					loop_scope.pop();
-					r?;
 				}
 			}
 		}

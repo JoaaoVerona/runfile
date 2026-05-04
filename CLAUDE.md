@@ -77,6 +77,13 @@ crates/
   ("diamond" includes) work — and the same file can be included twice under different namespaces, yielding two
   independent copies. Empty/absent `namespace` is normalised to `None` at `IncludeEntry` deserialize time and is
   equivalent to the legacy string form. Namespace validation: non-empty, no `:` or whitespace, no leading `@`/`:`/`_`.
+- `MergeState.namespaces: Vec<String>` accumulates every namespace that's been applied. `apply_namespace_to_state`
+  prefixes the existing entries with the include's own namespace and pushes the new namespace onto the list, so
+  a chain `outer → inner → leaf` ends up tracking `outer`, `outer:inner`, and `outer:inner:leaf`.
+  `merge_from` extends sibling lists; `merge_runfiles_inner` sorts + dedupes once at the end and places the
+  result on `Runfile.namespaces` (a `#[serde(skip)]` field — never serialized; populated only by the merge
+  step). The runner attaches this list to `RunArgs.run_context.namespaces` via `Arc<Vec<String>>` so
+  `for "in": "namespaces"` resolves at execution time without threading another parameter through the executor.
 - Control-flow blocks (`if` / `for` / `when`) and target calls (`@target`): each entry of a `commands` array is a
   [`CommandStep`] — either `Shell(String)` (raw command),
   `TargetCall(TargetCallStep)` (a string starting with `@`), `When(WhenStep)`, `If(IfStep)`, or `For(ForStep)`.
@@ -86,8 +93,13 @@ crates/
   serialized). `CommandSpec.commands`, `WhenStep.commands`, `IfStep.then`, `IfStep.else`, and `ForStep.body` all
   accept either a bare string (sugar for a one-element array) or a `Vec<CommandStep>` — custom
   `deserialize_steps_or_string` / `deserialize_optional_steps_or_string` helpers in `schema.rs` handle the shorthand
-  at parse time, so the in-memory shape always normalizes to `Vec<CommandStep>`. `ForStep` requires exactly one of `in`/`glob`/`shell` (XOR validated
-  at parse time) and has an optional `parallel` flag. Free function `walk_step_templates(steps, &mut visit)` recursively yields every leaf
+  at parse time, so the in-memory shape always normalizes to `Vec<CommandStep>`. `ForStep` requires exactly one of
+  `in`/`glob`/`shell` (XOR validated at parse time) and has an optional `parallel` flag. `ForStep.in` is a custom
+  `ForInValue` enum: `Literal(Vec<String>)` for the array form (each element substitutable), or `Namespaces` for
+  the magic string `"in": "namespaces"` which expands at execution time to every namespace prefix declared via
+  `includes` — composed across nesting (`outer:inner`), sorted, deduplicated. `ForInValue` has hand-rolled
+  `Serialize` / `Deserialize` impls so it round-trips cleanly: literal arrays → JSON array, `Namespaces` → the
+  string `"namespaces"`. Any other string value is a hard parse error. Free function `walk_step_templates(steps, &mut visit)` recursively yields every leaf
   template string (used by IDE generators, MCP, args-usage scanning). The companion `walk_spec_aux_templates(spec, &mut visit)`
   yields every other substitutable string on a `CommandSpec` — `env` string values, `envFiles` paths, `forceShell`,
   `addToPath` entries, `workingDirectory`, `confirm`, and `extendStdio.fromFile` — so arg-usage scanners (e.g. the runner's
@@ -201,23 +213,34 @@ crates/
   the cached AST against the current substitution context. Truthiness rule: only `""` is falsy — `"false"`, `"0"`,
   etc. are truthy (matches what raw shell commands see). `$(FLAGS.x)` resolves to `"true"`/`"false"` strings, both
   non-empty, so flag presence checks must use explicit `== true`/`== false`. `expand_for_iterations` produces the
-  iteration values: literal arrays are substituted element-wise; `glob` patterns are expanded against the working
-  directory using `globset` (matches normalized to forward-slash relative paths, sorted); `shell` iterators run the
-  command at planning time, capture stdout, trim each line, and drop blank lines. **`for shell` failure (non-zero
-  exit) is a hard error regardless of `ignoreErrors`** — that flag controls *body* failures, not iterator-source
-  failures. `count_leaves` walks a `&[CommandStep]` tree to compute the static step-counter total: `Shell` → 1,
-  `TargetCall` → 1 (the runner's `collect_all_commands` recurses into the called target separately to size the
-  global counter accurately; locally, each `@target` invocation contributes one slot from the parent's POV),
-  `If` → `then.len() + else.len()` (both branches inflate it because we don't know which runs), `For in` →
-  `in.len() * body_count`, `For glob` / `For shell` → `body_count` (1-iteration estimate; runtime calls
-  `StepCounter::add_to_total` to bump the total when actual iterations exceed the estimate, so `N` always stays
-  ≤ `total`).
+  iteration values: `ForInValue::Literal(arr)` is substituted element-wise; `ForInValue::Namespaces` snapshots
+  `args.run_context.namespaces` (sorted + deduped at merge time, threaded down via `RunContext`'s
+  `Arc<Vec<String>>` field — empty when no namespaced includes are configured); `glob` patterns are expanded
+  against the working directory using `globset` (matches normalized to forward-slash relative paths, sorted);
+  `shell` iterators run the command at planning time, capture stdout, trim each line, and drop blank lines.
+  **`for shell` failure (non-zero exit) is a hard error regardless of `ignoreErrors`** — that flag controls
+  *body* failures, not iterator-source failures. `count_leaves` walks a `&[CommandStep]` tree to compute the
+  static step-counter total: `Shell` → 1, `TargetCall` → 1 (the runner's `collect_all_commands` recurses into
+  the called target separately to size the global counter accurately; locally, each `@target` invocation
+  contributes one slot from the parent's POV — and dynamic target names containing `$(...)` always count as 1
+  with no recursion), `If` → `then.len() + else.len()` (both branches inflate it because we don't know which
+  runs), `For in: [array]` → `array.len() * body_count`, `For in: "namespaces"` → `runfile.namespaces.len() *
+  body_count` (resolved at runner-level by `count_target_leaves_recursive`; the local `count_leaves` falls back
+  to a 1-iteration estimate since it doesn't see the Runfile), `For glob` / `For shell` → `body_count`
+  (1-iteration estimate; runtime calls `StepCounter::add_to_total` to bump the total when actual iterations
+  exceed the estimate, so `N` always stays ≤ `total`).
 - Target invocations (`@target args...`): a string command entry starting with `@` deserializes as
-  `CommandStep::TargetCall { target, args_template }`. At execute time, `args_template` goes through normal
-  substitution (so `$(ARGS)` / `$(RUN.*)` / `$(ENV.*)` resolve), then is `shlex`-split into argv before being
-  dispatched. The executor calls back into the runner via the [`DependencyResolver`] trait; tests that don't have
-  a runner use `NoOpDependencyResolver` (which errors on `@`). `@target` invocations have **no dedup** — calling
-  the same target twice runs it twice — but cycles are still rejected via per-call-stack chain tracking. Each
+  `CommandStep::TargetCall { target, args_template }`. At execute time, **both** `target` and `args_template` go
+  through normal substitution (so `$(ARGS)` / `$(RUN.*)` / `$(ENV.*)` / `$(LOOP.*)` resolve), then `args_template`
+  is `shlex`-split into argv before being dispatched. Substituting the target name lets dynamic patterns like
+  `@$(LOOP.ns):build` (the canonical use case for `for in: "namespaces"`) dispatch to the right namespaced
+  target on each iteration. Static analysis (the runner's `count_target_leaves_recursive`,
+  `collect_commands_recursive`) treats names containing `$(` as opaque — counts as 1 leaf, no recursion into the
+  called target — so the step counter relies on `add_to_total` to bump at runtime if the dispatched target
+  exposes more leaves. The executor calls back into the runner via the [`DependencyResolver`] trait; tests that
+  don't have a runner use `NoOpDependencyResolver` (which errors on `@`). `@target` invocations have **no
+  dedup** — calling the same target twice runs it twice — but cycles are still rejected via per-call-stack chain
+  tracking on the post-substitution name. Each
   invocation inherits the parent's already-resolved env as a substitution base, then layers its own
   `envFiles`/`env` on top (dep wins per key) — but the **current shell env always wins** over both via the
   `overlay_shell_env` step. `addToPath` is threaded as a separate `parent_add_to_path_chain: Vec<Vec<String>>`

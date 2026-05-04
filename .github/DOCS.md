@@ -649,6 +649,12 @@ For an exhaustive table of target invocation semantics (no dedup, env layering, 
 // Lines of stdout from a shell command (run once, at planning time):
 { "for": "f", "shell": "git diff --name-only", "do": ["clang-format -i $(LOOP.f)"] }
 
+// Iterate over every namespace prefix declared via `includes` — handy for
+// monorepo-style "build everything" targets that compose namespaced subprojects.
+// `@$(LOOP.ns):build` substitutes the loop var into the target name and
+// dispatches to the matching namespaced target on each iteration.
+{ "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):build" }
+
 // Concurrent iterations:
 { "for": "x", "in": ["a","b","c"], "parallel": true, "do": ["./worker.sh $(LOOP.x)"] }
 ```
@@ -656,12 +662,20 @@ For an exhaustive table of target invocation semantics (no dedup, env layering, 
 | Field          | Type            | Required        | Description                                                                                                                                                                            |
 |----------------|-----------------|-----------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `for`          | `string`        | Yes             | Loop variable name. Matches `[A-Za-z_][A-Za-z0-9_]*`. Reference inside the body as `$(LOOP.<name>)`.                                                                                   |
-| `in`           | `string[]`      | One of in/glob/shell | Iterate over each element. Each element is substituted (so `$(ARGS.x)` etc. work).                                                                                                 |
+| `in`           | `string[]` or `"namespaces"` | One of in/glob/shell | Iterate over each element of an explicit array (each element is substituted, so `$(ARGS.x)` etc. work), OR pass the magic string `"namespaces"` to iterate over every namespace prefix declared via `includes` (alphabetically sorted, deduplicated, composed across nested includes — a chain `outer:inner` shows up as both `outer` and `outer:inner`). |
 | `glob`         | `string`        | One of in/glob/shell | Iterate over file paths matching the pattern, relative to the working directory.                                                                                                     |
 | `shell`        | `string`        | One of in/glob/shell | Iterate over each non-empty line of the command's stdout. Lines are trimmed; blank lines are dropped. The iterator runs once at planning time. **A non-zero exit is a hard error.** |
 | `do`           | `string \| commandStep[]` | Yes   | Body steps run once per iteration. May be empty. Accepts either a single shell-command string (sugar for a one-element array) or an array of command steps.                           |
 | `parallel`     | `boolean`       | No              | Run iterations concurrently. **Outer parallel only:** an inner `for` block is forced sequential when its parent context is already parallel (a warning is printed).                    |
 | `ignoreErrors` | `boolean`       | No              | When true, body failures do not flip the run's success state and do not stop iteration.                                                                                                |
+
+> **Dynamic target names.** `@target` invocations now substitute their target
+> name at dispatch time, so patterns like `@$(LOOP.ns):build` (or
+> `@$(ARGS.target)`) resolve to a concrete target at runtime. Static analysis
+> (the `(N/total)` step counter, arg-usage scanning, cycle detection of
+> *known* names) treats dynamic names as a single leaf with no recursion —
+> the runtime counter bumps the total via `add_to_total` if the dispatched
+> target turns out to expose more steps.
 
 ### `$(LOOP.var)` — loop variable substitution
 

@@ -131,21 +131,34 @@ pub fn expand_for_iterations(
 	loop_scope: &LoopScope,
 	working_dir: &Path,
 ) -> Result<Vec<String>, ControlFlowError> {
-	if let Some(items) = &for_step.r#in {
-		// Substitute every element. Outer-loop variables ARE visible (this
-		// resolves at the time the `for` block is entered).
-		let mut result = Vec::with_capacity(items.len());
-		for item in items {
-			result.push(args.substitute_with_loop(item, env, loop_scope)?);
+	use runfile_parser::ForInValue;
+
+	match &for_step.r#in {
+		Some(ForInValue::Literal(items)) => {
+			// Substitute every element. Outer-loop variables ARE visible (this
+			// resolves at the time the `for` block is entered).
+			let mut result = Vec::with_capacity(items.len());
+			for item in items {
+				result.push(args.substitute_with_loop(item, env, loop_scope)?);
+			}
+			Ok(result)
 		}
-		Ok(result)
-	} else if let Some(pattern) = &for_step.glob {
-		expand_glob(pattern, args, env, loop_scope, working_dir)
-	} else if let Some(cmd) = &for_step.shell {
-		expand_shell(cmd, args, env, loop_scope, working_dir)
-	} else {
-		// Validation should already have rejected this. Defensive empty result.
-		Ok(Vec::new())
+		Some(ForInValue::Namespaces) => {
+			// Snapshot the merged Runfile's namespace list — no substitution,
+			// no working-dir lookup. Empty when no namespaced includes are
+			// configured (the body simply doesn't run).
+			Ok(args.run_context.namespaces.iter().cloned().collect())
+		}
+		None => {
+			if let Some(pattern) = &for_step.glob {
+				expand_glob(pattern, args, env, loop_scope, working_dir)
+			} else if let Some(cmd) = &for_step.shell {
+				expand_shell(cmd, args, env, loop_scope, working_dir)
+			} else {
+				// Validation should already have rejected this. Defensive empty result.
+				Ok(Vec::new())
+			}
+		}
 	}
 }
 
@@ -287,8 +300,14 @@ fn count_leaves_one(step: &CommandStep) -> usize {
 		CommandStep::For(ForStep { r#in, body, .. }) => {
 			let body_count = count_leaves(body);
 			match r#in {
-				Some(items) => items.len() * body_count,
-				None => body_count, // glob/shell — assume 1 iteration
+				Some(runfile_parser::ForInValue::Literal(items)) => items.len() * body_count,
+				// `Namespaces` resolves against the merged Runfile at runtime,
+				// which this counter doesn't see — fall back to the same
+				// 1-iteration estimate used for glob / shell. The runner's
+				// `count_target_leaves` (which DOES see the Runfile) gives an
+				// accurate count and `StepCounter::add_to_total` bumps the
+				// shared total at runtime if more iterations actually expand.
+				Some(runfile_parser::ForInValue::Namespaces) | None => body_count,
 			}
 		}
 	}

@@ -95,6 +95,13 @@ pub(crate) struct MergeState {
 	pub(crate) target_sources: HashMap<String, (PathBuf, SourceKind)>,
 	/// Track ALL sources for each target name to detect conflicts across files.
 	pub(crate) all_sources: HashMap<String, Vec<(PathBuf, SourceKind)>>,
+	/// Namespace prefixes that have been applied to this state, in
+	/// post-composition form (e.g. `outer:inner` after both `outer` and
+	/// `inner` namespaces stacked). Each include with a non-empty namespace
+	/// contributes one entry; nested includes prefix existing entries via
+	/// [`apply_namespace_to_state`]. Final list is sorted + deduplicated by
+	/// [`merge_runfiles_inner`] before being placed on `Runfile.namespaces`.
+	pub(crate) namespaces: Vec<String>,
 }
 
 impl MergeState {
@@ -104,6 +111,7 @@ impl MergeState {
 			source_dirs: HashMap::new(),
 			target_sources: HashMap::new(),
 			all_sources: HashMap::new(),
+			namespaces: Vec::new(),
 		}
 	}
 
@@ -158,6 +166,9 @@ impl MergeState {
 			}
 			self.targets.insert(name, spec);
 		}
+		// Namespaces accumulate across siblings; sort/dedupe happens once at
+		// the top-level merge result.
+		self.namespaces.extend(other.namespaces);
 	}
 }
 
@@ -251,12 +262,20 @@ fn merge_runfiles_inner(
 		return Err(MergeError::NoTargets);
 	}
 
+	// Sort + dedupe namespaces so consumers (particularly `for in:
+	// "namespaces"`) get deterministic order across runs and don't iterate
+	// the same namespace twice when it appears under multiple include paths.
+	let mut namespaces = state.namespaces;
+	namespaces.sort();
+	namespaces.dedup();
+
 	Ok(MergeResult {
 		runfile: Runfile {
 			schema,
 			includes: None,
 			targets: state.targets,
 			globals: None,
+			namespaces,
 		},
 		source_dirs: state.source_dirs,
 		target_sources: state.target_sources,
@@ -513,6 +532,17 @@ fn apply_namespace_to_state(state: &mut MergeState, namespace: &str) {
 		.into_iter()
 		.map(|(k, v)| (prefix(&k), v))
 		.collect();
+
+	// Compose namespaces: existing entries (from sub-includes) get this
+	// include's namespace prepended, then this include's own namespace is
+	// appended. So a chain `outer → inner → leaf` ends up tracking `outer`,
+	// `outer:inner`, and `outer:inner:leaf` (any inner-leaf descendants
+	// already encoded inside the sub-state retain their composition).
+	state.namespaces = std::mem::take(&mut state.namespaces)
+		.into_iter()
+		.map(|ns| prefix(&ns))
+		.collect();
+	state.namespaces.push(namespace.to_string());
 }
 
 /// Recursively rewrite every `@target` reference inside a command-step tree

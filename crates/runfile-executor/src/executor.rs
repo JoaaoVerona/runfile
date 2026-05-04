@@ -473,8 +473,11 @@ fn execute_one_target_call(
 	deps: &dyn DependencyResolver,
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
+	// Substitute the target name so dynamic patterns like `@$(LOOP.ns):build`
+	// dispatch to the correct namespaced target. No-op for static names.
+	let target = args.substitute_with_loop(&call.target, &setup.env, loop_scope)?;
 	let argv = resolve_target_call_argv(call, args, &setup.env, loop_scope)?;
-	let result = deps.run_dependency(&call.target, argv, &setup.env, &setup.add_to_path_chain)?;
+	let result = deps.run_dependency(&target, argv, &setup.env, &setup.add_to_path_chain)?;
 	state.commands_run += result.commands_run;
 	state.failures += result.failures;
 	state.last_status = Some(result.final_status).or(state.last_status);
@@ -662,12 +665,12 @@ fn execute_for_block(
 	let iterations = expand_for_iterations(for_step, args, &setup.env, loop_scope, working_dir)?;
 
 	// Inflate the step counter total when actual iteration count exceeds
-	// the static estimate (which assumed 1 iteration for glob/shell, and
-	// the literal count for `in`).
+	// the static estimate (which assumed 1 iteration for glob / shell /
+	// namespaces, and the literal count for `in: [...]`).
 	let body_count = count_leaves(&for_step.body);
 	let estimated_iterations = match &for_step.r#in {
-		Some(items) => items.len(),
-		None => 1,
+		Some(runfile_parser::ForInValue::Literal(items)) => items.len(),
+		Some(runfile_parser::ForInValue::Namespaces) | None => 1,
 	};
 	if iterations.len() > estimated_iterations {
 		let extra = (iterations.len() - estimated_iterations) * body_count;
@@ -905,9 +908,12 @@ fn collect_leaves_parallel_with_when(
 				});
 			}
 			CommandStep::TargetCall(call) => {
+				// Substitute the target name so `@$(LOOP.ns):build`-style
+				// dynamic targets dispatch to the right namespaced target.
+				let target = args.substitute_with_loop(&call.target, &setup.env, loop_scope)?;
 				let argv = resolve_target_call_argv(call, args, &setup.env, loop_scope)?;
 				out.push(ParallelLeaf::TargetCall {
-					target: call.target.clone(),
+					target,
 					argv,
 					when: effective,
 				});

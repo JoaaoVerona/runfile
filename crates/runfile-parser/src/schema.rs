@@ -265,7 +265,9 @@ impl CommandStep {
 				body,
 				..
 			}) => {
-				if let Some(items) = r#in {
+				// Only `Literal` entries are templates; the magic `"namespaces"`
+				// keyword isn't substitutable.
+				if let Some(ForInValue::Literal(items)) = r#in {
 					for item in items {
 						visit(item.as_str());
 					}
@@ -476,6 +478,71 @@ where
 	deserialize_steps_or_string(deserializer).map(Some)
 }
 
+/// Iterator source for a `for` block's `in` field.
+///
+/// Either a literal array of values (each substitutable like every other
+/// template), or a magic source resolved at execution time. Today the only
+/// magic value is `"namespaces"`, which expands to every namespace prefix
+/// declared via `includes` (composed across nested includes — a chain of
+/// `outer:inner` shows up as both `outer` and `outer:inner`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForInValue {
+	/// Iterate over a literal array of strings (each goes through normal
+	/// `$(...)` substitution at execution time).
+	Literal(Vec<String>),
+	/// Iterate over every namespace prefix declared via `includes`.
+	/// Resolved against the merged Runfile's `namespaces` list at execution
+	/// time — order is alphabetical, deduplicated.
+	Namespaces,
+}
+
+impl ForInValue {
+	/// Magic string that selects [`ForInValue::Namespaces`] when used as the
+	/// `in` value (i.e. `"in": "namespaces"`).
+	pub const NAMESPACES_KEYWORD: &'static str = "namespaces";
+}
+
+impl Serialize for ForInValue {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		match self {
+			ForInValue::Literal(items) => items.serialize(serializer),
+			ForInValue::Namespaces => serializer.serialize_str(Self::NAMESPACES_KEYWORD),
+		}
+	}
+}
+
+impl<'de> Deserialize<'de> for ForInValue {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		use serde_json::Value;
+		let v = Value::deserialize(deserializer)?;
+		match v {
+			Value::Array(arr) => {
+				let mut items = Vec::with_capacity(arr.len());
+				for elem in arr {
+					match elem {
+						Value::String(s) => items.push(s),
+						other => {
+							return Err(serde::de::Error::custom(format!(
+								"`in` array entries must be strings, got {other}"
+							)));
+						}
+					}
+				}
+				Ok(ForInValue::Literal(items))
+			}
+			Value::String(s) if s == Self::NAMESPACES_KEYWORD => Ok(ForInValue::Namespaces),
+			Value::String(s) => Err(serde::de::Error::custom(format!(
+				"`in` string value must be \"{}\" (got \"{s}\"); for literal iteration use an array",
+				Self::NAMESPACES_KEYWORD
+			))),
+			other => Err(serde::de::Error::custom(format!(
+				"`in` must be an array of strings or the magic string \"{}\" (got {other})",
+				Self::NAMESPACES_KEYWORD
+			))),
+		}
+	}
+}
+
 /// A `for` block within a `commands` array.
 ///
 /// Exactly one of `in`, `glob`, or `shell` must be set (validated at parse time).
@@ -486,9 +553,10 @@ pub struct ForStep {
 	#[serde(rename = "for")]
 	pub var: String,
 
-	/// Iterate over an explicit array of strings.
+	/// Iterate over either an explicit array of strings or a magic source
+	/// (currently just `"namespaces"`). See [`ForInValue`].
 	#[serde(default, rename = "in", skip_serializing_if = "Option::is_none")]
-	pub r#in: Option<Vec<String>>,
+	pub r#in: Option<ForInValue>,
 
 	/// Iterate over file paths matching this glob pattern (relative to the working directory).
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -544,6 +612,14 @@ pub struct Runfile {
 	/// Optional global configuration.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub globals: Option<Globals>,
+
+	/// Namespace prefixes declared via `includes`, sorted and deduplicated.
+	/// Populated by the merge step — never serialized or deserialized. Used
+	/// at execution time to resolve `for "in": "namespaces"` blocks. Composes
+	/// across nested includes: a chain of `outer:inner` shows up as both
+	/// `outer` and `outer:inner`.
+	#[serde(skip)]
+	pub namespaces: Vec<String>,
 }
 
 /// A single entry in the `includes` array. Accepts either a plain string
