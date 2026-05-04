@@ -31,7 +31,9 @@
 //! VT processing is enabled and treats bare `\n` as a strict line-feed
 //! without carriage return) and `\n` on Unix.
 
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(not(windows))]
+use std::io::Write;
 use std::sync::mpsc::{self, Sender};
 use std::sync::OnceLock;
 #[cfg(test)]
@@ -243,23 +245,114 @@ fn writer_sender() -> &'static Sender<OutputMessage> {
 }
 
 fn write_to_stream(stream: &OutputStream, bytes: &[u8]) {
-	match stream {
-		OutputStream::Stdout => {
-			let stdout = std::io::stdout();
-			let mut h = stdout.lock();
-			let _ = h.write_all(bytes);
-			let _ = h.flush();
+	#[cfg(test)]
+	if let OutputStream::Capture(buf) = stream {
+		let mut g = buf.lock().unwrap();
+		g.extend_from_slice(bytes);
+		return;
+	}
+	#[cfg(windows)]
+	{
+		windows_write::write_to_stream_windows(stream, bytes);
+	}
+	#[cfg(not(windows))]
+	{
+		match stream {
+			OutputStream::Stdout => {
+				let stdout = std::io::stdout();
+				let mut h = stdout.lock();
+				let _ = h.write_all(bytes);
+				let _ = h.flush();
+			}
+			OutputStream::Stderr => {
+				let stderr = std::io::stderr();
+				let mut h = stderr.lock();
+				let _ = h.write_all(bytes);
+				let _ = h.flush();
+			}
+			#[cfg(test)]
+			OutputStream::Capture(_) => unreachable!("captured above"),
 		}
-		OutputStream::Stderr => {
-			let stderr = std::io::stderr();
-			let mut h = stderr.lock();
-			let _ = h.write_all(bytes);
-			let _ = h.flush();
-		}
-		#[cfg(test)]
-		OutputStream::Capture(buf) => {
-			let mut g = buf.lock().unwrap();
-			g.extend_from_slice(bytes);
+	}
+}
+
+/// Direct Windows console / pipe writes that bypass Rust's `Stdout` /
+/// `Stderr` `LineWriter` buffering and re-assert the console mode on every
+/// call. This is necessary because:
+///
+/// 1. Windows children (notably `wsl.exe` and tools running inside it) can
+///    flip the parent console's mode flags behind our back —
+///    `ENABLE_VIRTUAL_TERMINAL_PROCESSING` and `ENABLE_PROCESSED_OUTPUT`
+///    can both end up cleared mid-run, causing subsequent writes to render
+///    `\x1b` and `\r\n` as literal CP437 glyphs (`←`, `♪`, `◙`).
+///
+/// 2. The Rust `Stdout` `LineWriter` introduces an internal byte buffer
+///    that, under high write throughput from a single thread to a Windows
+///    console handle, has been observed to allow byte-level interleaving
+///    between adjacent `write_all` calls — even when serialized through a
+///    single writer thread. Going straight to `WriteConsoleW` /
+///    `WriteFile` avoids that buffer and lands the entire prefixed line in
+///    one OS call.
+#[cfg(windows)]
+mod windows_write {
+	use super::OutputStream;
+	use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+	use windows_sys::Win32::Storage::FileSystem::WriteFile;
+	use windows_sys::Win32::System::Console::{
+		GetConsoleMode, GetStdHandle, SetConsoleMode, WriteConsoleW, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+	};
+
+	const ENABLE_PROCESSED_OUTPUT: u32 = 0x0001;
+	const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+
+	pub(super) fn write_to_stream_windows(stream: &OutputStream, bytes: &[u8]) {
+		let handle_id = match stream {
+			OutputStream::Stdout => STD_OUTPUT_HANDLE,
+			OutputStream::Stderr => STD_ERROR_HANDLE,
+			#[cfg(test)]
+			OutputStream::Capture(_) => return,
+		};
+		unsafe {
+			let handle: HANDLE = GetStdHandle(handle_id);
+			if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+				return;
+			}
+			let mut mode: u32 = 0;
+			let is_console = GetConsoleMode(handle, &mut mode) != 0;
+			if is_console {
+				// Some descendant (wsl, docker, etc.) may have flipped these
+				// flags off. Re-assert on every write so VT escapes and CRLF
+				// keep working. Cheap (one syscall) and correct.
+				let desired = mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+				if desired != mode {
+					let _ = SetConsoleMode(handle, desired);
+				}
+				// WriteConsoleW takes UTF-16. ASCII (and our ANSI escapes)
+				// encode 1:1; non-ASCII content from children gets a lossy
+				// UTF-8 → UTF-16 transcode. The whole line lands in a single
+				// `WriteConsoleW` call, atomic w.r.t. other console writes.
+				let utf16: Vec<u16> = String::from_utf8_lossy(bytes).encode_utf16().collect();
+				let mut written: u32 = 0;
+				let _ = WriteConsoleW(
+					handle,
+					utf16.as_ptr(),
+					utf16.len() as u32,
+					&mut written,
+					std::ptr::null_mut(),
+				);
+			} else {
+				// Not a console — pipe, file, or NUL. WriteFile is atomic for
+				// small (< PIPE_BUF) writes which our prefixed lines almost
+				// always are.
+				let mut written: u32 = 0;
+				let _ = WriteFile(
+					handle,
+					bytes.as_ptr(),
+					bytes.len() as u32,
+					&mut written,
+					std::ptr::null_mut(),
+				);
+			}
 		}
 	}
 }
