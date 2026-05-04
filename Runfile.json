@@ -6,7 +6,12 @@
 		},
 		"logging": true
 	},
-	"includes": ["Runfile-wsl.json"],
+	"includes": [
+		{
+			"namespace": "wsl",
+			"path": "Runfile-wsl.json"
+		}
+	],
 	"targets": {
 		"build": {
 			"description": "Build all crates in debug mode",
@@ -34,8 +39,15 @@
 			"commands": [
 				{
 					"for": "dir",
-					"in": ["", "-linux", "-mac", "-windows"],
-					"do": ["cargo clean --target-dir target$(LOOP.dir)"]
+					"in": [
+						"",
+						"-linux",
+						"-mac",
+						"-windows"
+					],
+					"do": [
+						"cargo clean --target-dir target$(LOOP.dir)"
+					]
 				}
 			]
 		},

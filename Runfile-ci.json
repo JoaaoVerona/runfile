@@ -27,7 +27,6 @@
 				"cargo test --workspace"
 			]
 		},
-
 		"ci:rustup-add-target": {
 			"description": "Install a rustup cross-compile target (--target=<triple>)",
 			"commands": [
@@ -64,7 +63,6 @@
 				}
 			]
 		},
-
 		"ci:stage-release-assets": {
 			"description": "Copy install scripts + JSON Schema into assets/ and generate sha256.sum",
 			"forceShell": "bash",
@@ -82,7 +80,6 @@
 				"gh release create \"$(ARGS.tag)\" --repo \"$(ENV.GITHUB_REPOSITORY)\" --title \"$(ARGS.tag)\" --generate-notes assets/*"
 			]
 		},
-
 		"ci:build-npm-packages": {
 			"description": "Build the per-platform npm packages from downloaded artifacts (--version=<X.Y.Z>, no leading v)",
 			"commands": [
