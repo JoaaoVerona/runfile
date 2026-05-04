@@ -320,8 +320,10 @@ crates/
 
 **Files:** `main.rs`
 
-- Clap-based CLI with colon-prefixed subcommands: `:list`, `:config`, `:env`, `:mcp`, `:completions`, `:extract`,
-  `:generate`, `:convert`, `:init`
+- Clap-based CLI with colon-prefixed subcommands: `:list`, `:config`, `:env`, `:mcp`, `:completions`, `:generate`,
+  `:convert`, `:init`. `--dry-run` is a top-level flag (not a subcommand) that prints the resolved leaf shell
+  commands to stdout (one per line, no `[runfile]` prefix, no ANSI) instead of executing them — exactly the
+  behaviour the removed `:extract` subcommand had.
 - Global flags: `-f`/`--file` (custom Runfile path), `--shell` (override shell by name or path), `--timings`
   (print execution times), `-y`/`--yes` (skip confirms). For inline debug branching, declare `$(FLAGS.debug)`
   in your target — passing `--debug` (or any other flag) to a target works through the standard FLAGS
@@ -345,6 +347,13 @@ crates/
   canonical name starting with `_`.
 - Uses `run_target()` from the runner module, not `execute_command()` directly — this ensures the `when:`-aware
   walker and `@target` resolver are always engaged.
+- LLM-agent guard (`agent_detect.rs`): `refuse_if_agent(action_description)` aborts with an error if it detects an
+  agent invocation. Detection signals (any one triggers): env vars `CLAUDECODE=1`, `LLM_INVOCATION=true`, or
+  `AGENT_MODE=1`, or stdin not being a terminal. Applied to commands that emit decrypted secrets or otherwise
+  resolved env values: `:env get`, `:env decrypt`, `:env secret-keys list`, `:env secret-keys get-private`,
+  and `--dry-run` (`format_extracted_commands` inlines resolved env vars — including decrypted secrets — into the
+  printed shell-ready commands). When adding a new command that prints resolved env values, decrypted secrets,
+  or private keys, gate it with `refuse_if_agent` too.
 
 ## Runfile.json Schema Quick Reference
 

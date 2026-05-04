@@ -33,16 +33,6 @@ pub struct ExtractedCommand {
 	pub env_vars: Vec<(String, String)>,
 }
 
-/// A group of extracted commands belonging to a single target.
-/// Used by dry-run mode to show commands grouped by target in dependency order.
-#[derive(Debug, Clone)]
-pub struct ExtractedTarget {
-	/// The target name.
-	pub target_name: String,
-	/// The commands that would be executed for this target.
-	pub commands: Vec<ExtractedCommand>,
-}
-
 /// Extract all commands that would be executed for a target, including dependencies.
 /// Returns the commands in execution order, with env vars inlined.
 pub fn extract_target(
@@ -77,74 +67,6 @@ pub fn extract_target_with_cwd(
 		in_progress: HashSet::new(),
 	};
 	extract_recursive(&mut ctx, target_name)
-}
-
-/// Extract all commands grouped by target, in dependency execution order.
-/// Used by dry-run mode to show which commands belong to which target.
-pub fn extract_target_grouped(
-	target_name: &str,
-	runfile: &Runfile,
-	args: &RunArgs,
-	runfile_dir: &Path,
-	caller_cwd: &Path,
-	source_dirs: &HashMap<String, PathBuf>,
-) -> Result<Vec<ExtractedTarget>, ExtractError> {
-	let all_commands = collect_all_extract_commands(target_name, runfile)?;
-	validate_args(args, &all_commands)?;
-
-	let mut ctx = ExtractContext {
-		runfile,
-		args,
-		runfile_dir,
-		caller_cwd,
-		source_dirs,
-		completed: HashSet::new(),
-		in_progress: HashSet::new(),
-	};
-	extract_recursive_grouped(&mut ctx, target_name)
-}
-
-fn extract_recursive_grouped(
-	ctx: &mut ExtractContext<'_>,
-	target_name: &str,
-) -> Result<Vec<ExtractedTarget>, ExtractError> {
-	if ctx.completed.contains(target_name) {
-		return Ok(Vec::new());
-	}
-
-	if !ctx.in_progress.insert(target_name.to_string()) {
-		return Err(ExtractError::CycleDetected(target_name.to_string()));
-	}
-
-	let spec = ctx
-		.runfile
-		.targets
-		.get(target_name)
-		.ok_or_else(|| ExtractError::UnknownTarget(target_name.to_string()))?;
-
-	let mut all_targets = Vec::new();
-
-	let target_runfile_dir = ctx.target_dir(target_name);
-	// Extract is a static-analysis path; we compare the *unsubstituted* string
-	// to detect the cwd mode. Fully resolving substitutions would require
-	// runtime state we don't have here. Anything that doesn't textually equal
-	// "cwd" falls back to the runfile parent.
-	let effective_working_dir = match spec.working_directory.as_deref() {
-		Some(s) if s == WORKING_DIRECTORY_CWD => ctx.caller_cwd,
-		_ => target_runfile_dir,
-	};
-
-	let cmds = extract_commands(spec, ctx.args, effective_working_dir)?;
-
-	all_targets.push(ExtractedTarget {
-		target_name: target_name.to_string(),
-		commands: cmds,
-	});
-
-	ctx.completed.insert(target_name.to_string());
-	ctx.in_progress.remove(target_name);
-
-	Ok(all_targets)
 }
 
 struct ExtractContext<'a> {

@@ -89,21 +89,6 @@ enum Commands {
 		#[command(subcommand)]
 		action: EnvAction,
 	},
-	/// Extract the shell commands for a target without executing them
-	#[command(name = ":extract")]
-	Extract {
-		/// Path to a specific Runfile to use instead of auto-discovery
-		#[arg(short = 'f', long = "file")]
-		file: Option<PathBuf>,
-
-		/// Override shell for extraction (name like "bash" or full path)
-		#[arg(long = "shell")]
-		shell: Option<String>,
-
-		/// The target name to extract, followed by any arguments
-		#[arg(trailing_var_arg = true, required = true)]
-		args: Vec<String>,
-	},
 	/// Generate editor integration files from Runfile targets
 	#[command(name = ":generate")]
 	Generate {
@@ -456,15 +441,6 @@ fn main() {
 			CompletionsAction::Uninstall { shell } => completions::cmd_completions_uninstall(&shell),
 			CompletionsAction::Output { shell } => completions::cmd_completions_output(&shell),
 		},
-		Some(Commands::Extract {
-			file: extract_file,
-			shell: extract_shell,
-			args: extract_args,
-		}) => cmd_run::cmd_extract(
-			&extract_args,
-			extract_file.as_deref().or(cli.file.as_deref()),
-			extract_shell.as_deref().or(cli.shell.as_deref()),
-		),
 		Some(Commands::Generate { action }) => match action {
 			GenerateAction::ZedTasks { file } => cmd_utilities::cmd_generate_zed_tasks(file.as_deref()),
 			GenerateAction::JetbrainsRunConfigurations { file, output_dir } => {

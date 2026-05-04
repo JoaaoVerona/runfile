@@ -200,7 +200,6 @@ fn cli_has_all_top_level_subcommands() {
 	assert!(names.contains(&":init"), "missing :init");
 	assert!(names.contains(&":mcp"), "missing :mcp");
 	assert!(names.contains(&":completions"), "missing :completions");
-	assert!(names.contains(&":extract"), "missing :extract");
 	assert!(names.contains(&":generate"), "missing :generate");
 	assert!(names.contains(&":convert"), "missing :convert");
 	assert!(names.contains(&":env"), "missing :env");
@@ -343,16 +342,6 @@ fn convert_subcommands_have_descriptions() {
 }
 
 #[test]
-fn extract_has_required_args() {
-	let cmd = Cli::command();
-	let extract = find_subcommand(&cmd, ":extract");
-	let arg_names: Vec<&str> = extract.get_arguments().map(|a| a.get_id().as_str()).collect();
-	assert!(arg_names.contains(&"file"), "extract missing -f/--file");
-	assert!(arg_names.contains(&"shell"), "extract missing --shell");
-	assert!(arg_names.contains(&"args"), "extract missing args");
-}
-
-#[test]
 fn config_has_subcommands() {
 	let cmd = Cli::command();
 	let config = find_subcommand(&cmd, ":config");
@@ -475,27 +464,6 @@ fn cli_rejects_completions_install_without_shell() {
 }
 
 #[test]
-fn cli_parses_extract() {
-	let result = try_parse(&["run", ":extract", "my-target"]);
-	assert!(result.is_ok(), "failed to parse ':extract my-target': {result:?}");
-}
-
-#[test]
-fn cli_parses_extract_with_flags() {
-	let result = try_parse(&["run", ":extract", "-f", "Runfile.json", "--shell", "bash", "my-target"]);
-	assert!(
-		result.is_ok(),
-		"failed to parse ':extract -f ... --shell ... target': {result:?}"
-	);
-}
-
-#[test]
-fn cli_rejects_extract_without_target() {
-	let result = try_parse(&["run", ":extract"]);
-	assert!(result.is_err(), ":extract without target should fail");
-}
-
-#[test]
 fn cli_parses_generate_zed_tasks() {
 	let result = try_parse(&["run", ":generate", "zed-tasks"]);
 	assert!(result.is_ok(), "failed to parse ':generate zed-tasks': {result:?}");
@@ -590,7 +558,6 @@ fn top_level_help_does_not_panic() {
 	assert!(help.contains(":config"));
 	assert!(help.contains(":mcp"));
 	assert!(help.contains(":completions"));
-	assert!(help.contains(":extract"));
 	assert!(help.contains(":generate"));
 	assert!(help.contains(":convert"));
 	assert!(!help.contains(":utilities"));
@@ -643,20 +610,6 @@ fn convert_help_shows_subcommands() {
 	let help = String::from_utf8(buf).unwrap();
 	assert!(help.contains("makefile"), "convert help missing 'makefile'");
 	assert!(help.contains("package-json"), "convert help missing 'package-json'");
-}
-
-#[test]
-fn extract_help_shows_options() {
-	let cmd = Cli::command();
-	let extract = find_subcommand(&cmd, ":extract");
-	let mut buf = Vec::new();
-	extract.clone().write_help(&mut buf).unwrap();
-	let help = String::from_utf8(buf).unwrap();
-	assert!(
-		help.contains("--file") || help.contains("-f"),
-		"extract help missing file flag"
-	);
-	assert!(help.contains("--shell"), "extract help missing shell flag");
 }
 
 // ── list-subcommands tests ───────────────────────────────────────

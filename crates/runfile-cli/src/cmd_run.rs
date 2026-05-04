@@ -1,6 +1,5 @@
 use runfile_executor::{
-	extract_target_grouped, extract_target_with_cwd, format_extracted_commands, log_total_timing, run_target_with_cwd,
-	RunArgs, RunContext,
+	extract_target_with_cwd, format_extracted_commands, log_total_timing, run_target_with_cwd, RunArgs, RunContext,
 };
 use runfile_parser::{is_internal_target_name, CommandSpec, Runfile, SourceKind};
 use runfile_settings::Settings;
@@ -10,10 +9,11 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Instant;
 
+use crate::agent_detect;
 use crate::runfile_helpers::{local_dir_from_merge, resolve_and_merge};
 use crate::shell::{resolve_cli_shell_override, resolve_shell_for_runfile};
 
-/// Common resolved state shared across cmd_run, cmd_extract, cmd_dry_run, cmd_watch.
+/// Common resolved state shared across cmd_run, cmd_dry_run, cmd_watch.
 struct ResolvedTarget {
 	resolved_name: String,
 	runfile: Runfile,
@@ -25,7 +25,7 @@ struct ResolvedTarget {
 	args: RunArgs,
 }
 
-/// Resolve merge result, target name, shell, and args — shared setup for run/extract/dry-run/watch.
+/// Resolve merge result, target name, shell, and args — shared setup for run/dry-run/watch.
 fn resolve_target_setup(
 	target_name: &str,
 	extra_args: &[String],
@@ -291,15 +291,10 @@ pub fn cmd_run(
 	}
 }
 
-pub fn cmd_extract(extract_args: &[String], file: Option<&std::path::Path>, cli_shell: Option<&str>) {
-	if extract_args.is_empty() {
-		eprintln!("Error: target name is required for extract");
-		process::exit(1);
-	}
+pub fn cmd_dry_run(target_name: &str, extra_args: &[String], file: Option<&std::path::Path>, cli_shell: Option<&str>) {
+	agent_detect::refuse_if_agent("dry-run a target");
 
-	let target_name = &extract_args[0];
-	let extra_args: Vec<String> = extract_args[1..].to_vec();
-	let rt = resolve_target_setup(target_name, &extra_args, file, cli_shell);
+	let rt = resolve_target_setup(target_name, extra_args, file, cli_shell);
 
 	match extract_target_with_cwd(
 		&rt.resolved_name,
@@ -313,58 +308,6 @@ pub fn cmd_extract(extract_args: &[String], file: Option<&std::path::Path>, cli_
 			let lines = format_extracted_commands(&commands, &rt.shell.kind);
 			for line in lines {
 				println!("{}", line);
-			}
-		}
-		Err(e) => {
-			eprintln!("Error: {e}");
-			process::exit(1);
-		}
-	}
-}
-
-pub fn cmd_dry_run(target_name: &str, extra_args: &[String], file: Option<&std::path::Path>, cli_shell: Option<&str>) {
-	let rt = resolve_target_setup(target_name, extra_args, file, cli_shell);
-
-	match extract_target_grouped(
-		&rt.resolved_name,
-		&rt.runfile,
-		&rt.args,
-		&rt.runfile_dir,
-		&rt.caller_cwd,
-		&rt.source_dirs,
-	) {
-		Ok(targets) => {
-			// ANSI codes
-			const RESET: &str = "\x1b[0m";
-			const BOLD: &str = "\x1b[1m";
-			const CYAN: &str = "\x1b[36m";
-			const DIM: &str = "\x1b[2m";
-
-			eprintln!(
-				"{BOLD}{CYAN}[runfile]{RESET} Dry run for target \"{BOLD}{}{RESET}\":",
-				rt.resolved_name
-			);
-
-			for group in &targets {
-				eprintln!(
-					"{BOLD}{CYAN}[runfile]{RESET} {DIM}── Target: {}{RESET}",
-					group.target_name
-				);
-				let total = group.commands.len();
-				for (i, cmd) in group.commands.iter().enumerate() {
-					let formatted = format_extracted_commands(std::slice::from_ref(cmd), &rt.shell.kind);
-					if let Some(line) = formatted.first() {
-						if total > 1 {
-							eprintln!(
-								"{BOLD}{CYAN}[runfile]{RESET}   {DIM}({}/{}){RESET} {BOLD}{line}{RESET}",
-								i + 1,
-								total,
-							);
-						} else {
-							eprintln!("{BOLD}{CYAN}[runfile]{RESET}   {BOLD}{line}{RESET}");
-						}
-					}
-				}
 			}
 		}
 		Err(e) => {
