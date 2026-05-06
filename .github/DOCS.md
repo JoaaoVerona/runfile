@@ -819,6 +819,14 @@ By default, Runfile auto-detects the best available shell:
 WSL's `bash` (`C:\Windows\System32\bash.exe`) is intentionally **not** picked up — it runs inside a separate Linux
 environment and cannot see Windows-side binaries from `PATH`.
 
+### `sh` fallback
+
+`sh` is rarely installed on Windows and may be missing on minimal Linux containers. When `sh` is requested
+(via `forceShell`, `--shell`, or any other path) and cannot be found, Runfile falls back to other
+sh-compatible shells in order: **bash → zsh → fish**. `$(RUN.shell)` then reflects whichever shell actually
+ran (e.g. `bash`), so existing `if $(RUN.shell) == bash` branches keep working. This lets you write
+`forceShell: "sh"` for portable `cp`/`echo`/`mkdir` snippets without an `if RUN.os == windows` branch.
+
 ### Forcing a shell
 
 Use `forceShell` to pin a specific shell. This is useful for cross-platform teams or for commands that require a

@@ -157,6 +157,24 @@ fn resolve_shell_success_for_available_shells() {
 }
 
 #[test]
+fn resolve_sh_falls_back_to_compatible_shell() {
+	// `sh` should always resolve as long as any of bash/zsh/fish/sh is
+	// available on the system. The returned kind reflects whichever shell
+	// actually ran.
+	if let Ok(shell) = resolve_shell("sh") {
+		assert!(shell.path.exists(), "resolved shell path must exist");
+		assert!(
+			matches!(
+				shell.kind,
+				ShellKind::Sh | ShellKind::Bash | ShellKind::Zsh | ShellKind::Fish
+			),
+			"sh fallback must land on an sh-compatible shell, got {:?}",
+			shell.kind
+		);
+	}
+}
+
+#[test]
 fn resolve_shell_not_found_error() {
 	// Try resolving a valid shell name that doesn't exist on this system
 	// cmd should not exist on Unix

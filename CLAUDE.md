@@ -127,7 +127,12 @@ crates/
 - `ShellKind` enum: Bash, Zsh, Sh, Fish, PowerShell, Cmd
 - `ResolvedShell`: a kind + path pair, with `exec_args()` that returns the correct flag (`-c`, `-Command`, `/C`)
 - `detect.rs`: auto-detects the default shell per platform (checks `$SHELL` on Unix, well-known paths on Windows)
-- `resolve.rs`: resolves a shell by name from known paths or `which`
+- `resolve.rs`: resolves a shell by name from known paths or `which`. When the requested shell is `sh` and
+  resolution fails (no `/bin/sh`, no `sh` on PATH — common on Windows and minimal containers), falls back to
+  other sh-compatible shells in order: bash → zsh → fish. The returned `ResolvedShell.kind` is the actual shell
+  that was found (e.g. `Bash`), so `$(RUN.shell)` reflects what's really running rather than the requested name.
+  Targets that hard-code `forceShell: "sh"` for `cp`/`echo`/etc. now Just Work cross-platform without an
+  `if RUN.os == windows` branch.
 
 ### runfile-settings
 

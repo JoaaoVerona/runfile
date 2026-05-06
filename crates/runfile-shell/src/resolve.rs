@@ -12,7 +12,11 @@ pub enum ShellResolveError {
 }
 
 /// Resolve a shell by name. Tries well-known paths, then falls back to
-/// searching PATH via `which`.
+/// searching PATH via `which`. As a last resort, if the requested shell is
+/// `sh` (commonly missing on Windows and minimal containers), falls back to
+/// other sh-compatible shells in order: bash → zsh → fish. The returned
+/// `kind` reflects the shell that will actually run, so `$(RUN.shell)` is
+/// accurate.
 pub fn resolve_shell(name: &str) -> Result<ResolvedShell, ShellResolveError> {
 	let kind = ShellKind::from_name(name).ok_or_else(|| ShellResolveError::UnknownShell(name.to_string()))?;
 
@@ -27,6 +31,14 @@ pub fn resolve_shell(name: &str) -> Result<ResolvedShell, ShellResolveError> {
 	// Fall back to `which`
 	if let Ok(path) = which::which(name) {
 		return Ok(ResolvedShell { kind, path });
+	}
+
+	if matches!(kind, ShellKind::Sh) {
+		for fallback in [ShellKind::Bash, ShellKind::Zsh, ShellKind::Fish] {
+			if let Ok(shell) = resolve_shell(fallback.name()) {
+				return Ok(shell);
+			}
+		}
 	}
 
 	Err(ShellResolveError::ShellNotFound(name.to_string()))
