@@ -98,11 +98,6 @@ fn build_jetbrains_run_config(config_name: &str, target_name: &str) -> String {
 	// (no per-invocation parameter UI), so without the flag a target with a
 	// required arg would just fail. The flag is a no-op when nothing's
 	// missing, so it's safe to always include.
-	//
-	// `EXECUTE_IN_TERMINAL=true` is required for the prompts to work — the
-	// default Run/Services tool window is output-only and `read_line` would
-	// hit EOF immediately. The integrated terminal connects stdin
-	// bidirectionally so the user can type answers.
 	format!(
 		r#"<component name="ProjectRunConfigurationManager">
   <configuration default="false" name="{config_name}" type="ShConfigurationType">
@@ -115,7 +110,7 @@ fn build_jetbrains_run_config(config_name: &str, target_name: &str) -> String {
     <option name="INDEPENDENT_INTERPRETER_PATH" value="true" />
     <option name="INTERPRETER_PATH" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
-    <option name="EXECUTE_IN_TERMINAL" value="true" />
+    <option name="EXECUTE_IN_TERMINAL" value="false" />
     <option name="EXECUTE_SCRIPT_FILE" value="false" />
     <envs />
     <method v="2" />

@@ -161,12 +161,10 @@ fn jetbrains_generate_basic_target() {
 }
 
 #[test]
-fn jetbrains_execute_in_terminal_is_true() {
-	// Run configurations are static — `--stdin-args` only works when stdin
-	// is connected, which requires the IDE's interactive terminal.
+fn jetbrains_execute_in_terminal_is_false() {
 	let runfile = make_runfile(vec![("build", vec!["cargo build"])]);
 	let configs = generate_jetbrains_configs(&runfile);
-	assert!(configs[0].xml.contains("name=\"EXECUTE_IN_TERMINAL\" value=\"true\""));
+	assert!(configs[0].xml.contains("name=\"EXECUTE_IN_TERMINAL\" value=\"false\""));
 }
 
 #[test]
@@ -463,11 +461,8 @@ fn vscode_args_target_using_args_keeps_input_args_after_stdin_args() {
 }
 
 #[test]
-fn jetbrains_xml_pairs_stdin_args_with_terminal_execution() {
-	// Both pieces are required together: prompts only work when stdin is
-	// attached, which only happens in the integrated terminal.
+fn jetbrains_xml_includes_stdin_args_flag() {
 	let runfile = make_runfile(vec![("build", vec!["cargo build"])]);
 	let xml = &generate_jetbrains_configs(&runfile)[0].xml;
 	assert!(xml.contains("value=\"run --stdin-args build\""));
-	assert!(xml.contains("name=\"EXECUTE_IN_TERMINAL\" value=\"true\""));
 }

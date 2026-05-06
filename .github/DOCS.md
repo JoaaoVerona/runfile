@@ -2220,10 +2220,10 @@ $ run :generate jetbrains-run-configurations
 ```
 
 Generates Shell Script run configurations (one `.xml` file per target) in the `.run/` directory. Each configuration runs
-`run --stdin-args <target>` with the working directory set to `$PROJECT_DIR$` and `EXECUTE_IN_TERMINAL=true` — JetBrains
-run configs are static (no per-invocation parameter UI), so `--stdin-args` makes the IDE's integrated terminal prompt
-for any unsupplied `$(ARGS.x)` / `$(ENV.X)` / `$(FLAGS.x)` value, and the terminal mode is what attaches stdin so the
-prompts can be answered. Re-generating upgrades configs created by older Runfile versions in place.
+`run --stdin-args <target>` with the working directory set to `$PROJECT_DIR$` — JetBrains run configs are static (no
+per-invocation parameter UI), so `--stdin-args` covers targets that need user input by prompting at run time for any
+unsupplied `$(ARGS.x)` / `$(ENV.X)` / `$(FLAGS.x)` value. Re-generating upgrades configs created by older Runfile
+versions in place.
 
 Options:
 
