@@ -292,8 +292,12 @@ crates/
   `base64_decode(s)` (errors on `InvalidBase64` / `NonUtf8Decoded`), `concat(s1, s2, ...)` (variadic, 1+ args),
   `join(sep, s1, s2, ...)` (variadic, 1+ args; `join(sep)` with no items returns `""`),
   `replace_all(haystack, needle, replacement)` (defers to Rust's `str::replace`; an empty `needle` produces
-  the replacement between every char, matching stdlib semantics), and `define(name, value)` (returns `""`, side
-  effect: sets `VARS.name`). Functions resolve as full substitution bodies
+  the replacement between every char, matching stdlib semantics),
+  `shell_quote(s)` (per-shell single-arg quoting via [`quote_for_shell`] dispatching on `RUN.shell` —
+  POSIX/fish use `'...'` with `'\''` escape, PowerShell uses `'...'` with `''` escape, cmd uses `"..."` with
+  `""` escape; lets users inline arbitrary bytes — newlines, `$`, `"`, `'`, JSON, etc. — into shell commands
+  as single argv slots without env-var indirection), and `define(name, value)` (returns `""`, side effect:
+  sets `VARS.name`). Functions resolve as full substitution bodies
   AND as chain segments — `{{ ARGS.host ? to_lower(ENV.HOST) }}` is a chain whose first segment is a source lookup
   and second is a function call. Args themselves are chain / quoted-literal expressions, so nested calls
   (`to_upper(to_lower(x))`) and chained args (`to_upper(ARGS.x ? 'default')`) work naturally. The chain splitter

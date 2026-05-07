@@ -3857,6 +3857,57 @@ fn extract_decrypts_envfile_when_private_key_provided() {
 	assert_eq!(commands[0].command, "echo super-secret-value");
 }
 
+// Regression: env-block substitutions must see DECRYPTED values from envFiles,
+// not the raw `encrypted:...` form. This is what makes patterns like
+// `"ENV": { "JSON": "{{ base64_decode(ENV.SECRET_BASE64) }}" }` work when
+// `SECRET_BASE64` is encrypted in the env file. Before the build_env reorder,
+// the env block ran first and saw `encrypted:abc...`, so any post-processing
+// (`base64_decode`, comparisons, function calls) would error or get wrong
+// results.
+#[test]
+fn env_block_sees_decrypted_envfile_values() {
+	use crate::env::build_env_with_base;
+	use runfile_parser::{CommandSpec, EnvValue};
+	use std::fs;
+
+	let dir = TempDir::new().unwrap();
+	let key_hex = runfile_crypto::generate_key();
+	let public_key = runfile_crypto::derive_public_key(&key_hex).unwrap();
+	// Encrypt a base64-encoded payload (mirrors the GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64
+	// pattern: file holds an encrypted value whose plaintext is base64).
+	let plaintext_b64 = "aGVsbG8gd29ybGQ="; // "hello world"
+	let encrypted = runfile_crypto::encrypt(plaintext_b64, &key_hex).unwrap();
+	let private_keys = vec![key_hex];
+
+	let env_path = dir.path().join(".env.production");
+	fs::write(
+		&env_path,
+		format!(
+			"{}={public_key}\nSECRET_BASE64={encrypted}\n",
+			runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR,
+		),
+	)
+	.unwrap();
+
+	// Spec with an env block that base64_decodes the (encrypted) ENV value.
+	// If decryption hadn't run before the env block, this would surface
+	// `InvalidBase64` because `encrypted:abc...` isn't valid base64.
+	let mut spec = CommandSpec::new(vec!["echo $DECODED".into()]);
+	let mut env_block = HashMap::new();
+	env_block.insert(
+		"DECODED".to_string(),
+		EnvValue::String("{{ base64_decode(ENV.SECRET_BASE64) }}".to_string()),
+	);
+	spec.env = Some(env_block);
+	spec.env_files = Some(vec![".env.production".to_string()]);
+
+	let args = RunArgs::default();
+	let env = build_env_with_base(&spec, dir.path(), dir.path(), &args, Some(&private_keys), None, None).unwrap();
+
+	// `DECODED` should hold the base64-decoded plaintext, NOT an error/empty/encrypted form.
+	assert_eq!(env.get("DECODED").map(String::as_str), Some("hello world"));
+}
+
 #[test]
 fn extract_format_bash_value_with_special_chars() {
 	use crate::extract::{format_extracted_commands, ExtractedCommand};
@@ -6515,6 +6566,149 @@ mod functions {
 			.substitute("{{ to_upper(replace_all(ARGS.csv, ',', ' | ')) }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "A | B | C");
+	}
+
+	// ── shell_quote ──
+
+	fn args_with_shell(shell: &str) -> RunArgs {
+		RunArgs::parse(&[]).with_run_context(RunContext {
+			shell: shell.into(),
+			..Default::default()
+		})
+	}
+
+	#[test]
+	fn shell_quote_posix_simple() {
+		let args = args_with_shell("bash");
+		let result = args.substitute("{{ shell_quote('hello') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "'hello'");
+	}
+
+	#[test]
+	fn shell_quote_posix_with_spaces_and_double_quotes() {
+		// POSIX single-quotes preserve double quotes verbatim.
+		let args = args_with_shell("bash");
+		let result = args
+			.substitute(
+				"{{ shell_quote('it has \"double quotes\" and spaces') }}",
+				&HashMap::new(),
+			)
+			.unwrap();
+		assert_eq!(result, "'it has \"double quotes\" and spaces'");
+	}
+
+	#[test]
+	fn shell_quote_posix_escapes_single_quote() {
+		// `'` inside the value is escaped via close-escape-reopen idiom.
+		// Use ENV to carry the literal value — Runfile syntax has no way to
+		// inline a `'` inside a single-quoted literal.
+		let args = args_with_shell("zsh");
+		let mut env = HashMap::new();
+		env.insert("V".to_string(), "it's".to_string());
+		let result = args.substitute("{{ shell_quote(ENV.V) }}", &env).unwrap();
+		// Value is `it's` → quoted as `'it'\''s'`.
+		assert_eq!(result, "'it'\\''s'");
+	}
+
+	#[test]
+	fn shell_quote_posix_handles_dollar_signs_and_backticks() {
+		// Inside POSIX single quotes, `$` and backticks are literal — no
+		// command substitution / variable expansion.
+		let args = args_with_shell("sh");
+		let result = args
+			.substitute("{{ shell_quote('$HOME and `whoami`') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "'$HOME and `whoami`'");
+	}
+
+	#[test]
+	fn shell_quote_posix_handles_newlines() {
+		// Build a value containing an actual newline via base64_decode (the
+		// Runfile single-quoted form doesn't support escape sequences, so we
+		// can't put a literal newline inline). "line1\nline2" is base64
+		// "bGluZTEKbGluZTI=".
+		let args = args_with_shell("bash");
+		let result = args
+			.substitute("{{ shell_quote(base64_decode('bGluZTEKbGluZTI=')) }}", &HashMap::new())
+			.unwrap();
+		// POSIX single-quoted strings can carry literal newlines.
+		assert_eq!(result, "'line1\nline2'");
+	}
+
+	#[test]
+	fn shell_quote_powershell_simple() {
+		let args = args_with_shell("powershell");
+		let result = args.substitute("{{ shell_quote('hello') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "'hello'");
+	}
+
+	#[test]
+	fn shell_quote_powershell_escapes_single_quote() {
+		// PowerShell escapes `'` as `''`.
+		let args = args_with_shell("powershell");
+		let mut env = HashMap::new();
+		env.insert("V".to_string(), "it's".to_string());
+		let result = args.substitute("{{ shell_quote(ENV.V) }}", &env).unwrap();
+		assert_eq!(result, "'it''s'");
+	}
+
+	#[test]
+	fn shell_quote_powershell_keeps_double_quotes_verbatim() {
+		let args = args_with_shell("powershell");
+		let result = args
+			.substitute("{{ shell_quote('say \"hi\"') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "'say \"hi\"'");
+	}
+
+	#[test]
+	fn shell_quote_cmd_simple() {
+		let args = args_with_shell("cmd");
+		let result = args.substitute("{{ shell_quote('hello') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "\"hello\"");
+	}
+
+	#[test]
+	fn shell_quote_cmd_escapes_double_quotes() {
+		// cmd uses `""` to embed a `"` inside a `"..."` argument.
+		let args = args_with_shell("cmd");
+		let result = args
+			.substitute("{{ shell_quote('say \"hi\"') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "\"say \"\"hi\"\"\"");
+	}
+
+	#[test]
+	fn shell_quote_unknown_shell_falls_back_to_posix() {
+		// Empty shell name (e.g. tests using RunArgs::default()) defaults to
+		// POSIX-style single-quoting — the safest baseline for unix-likes.
+		let args = RunArgs::default();
+		let result = args.substitute("{{ shell_quote('hello') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "'hello'");
+	}
+
+	#[test]
+	fn shell_quote_empty_string() {
+		// An empty argument is `''` in POSIX, `''` in PowerShell, `""` in cmd.
+		let args = args_with_shell("bash");
+		let result = args.substitute("{{ shell_quote('') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "''");
+	}
+
+	#[test]
+	fn shell_quote_composes_with_base64_decode() {
+		// The headline use case: decode an env-var payload and inline it
+		// safely as a CLI argument. The decoded JSON contains `"`, `:`, `\n`
+		// and other shell-special chars — all preserved through the POSIX
+		// single-quoted form.
+		let mut env = HashMap::new();
+		// {"key":"val"} base64-encoded.
+		env.insert("PAYLOAD".to_string(), "eyJrZXkiOiJ2YWwifQ==".to_string());
+		let args = args_with_shell("bash");
+		let result = args
+			.substitute("some-tool --json {{ shell_quote(base64_decode(ENV.PAYLOAD)) }}", &env)
+			.unwrap();
+		assert_eq!(result, "some-tool --json '{\"key\":\"val\"}'");
 	}
 
 	#[test]
