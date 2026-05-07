@@ -249,7 +249,7 @@ impl CommandStep {
 	/// target-invocation arg templates, `if` condition expressions, `for in`
 	/// array elements, and `for glob`/`for shell` iterator sources.
 	///
-	/// Used for static analysis (arg-usage detection, scanning for `$(ARGS.x)`
+	/// Used for static analysis (arg-usage detection, scanning for `{{ ARGS.x }}`
 	/// references in IDE generators and MCP tooling) without needing to
 	/// resolve values.
 	pub fn walk_templates<'a, F: FnMut(&'a str)>(&'a self, visit: &mut F) {
@@ -341,6 +341,30 @@ impl CommandStep {
 	}
 }
 
+/// Find the first whitespace that splits `target` from `args` in a target-call
+/// string, but skip whitespace inside a `{{ ... }}` substitution block. Lets
+/// `@{{ LOOP.ns }}:dev` keep its whole substituted name as the target.
+fn find_target_args_split(s: &str) -> Option<usize> {
+	let bytes = s.as_bytes();
+	let mut i = 0;
+	while i < bytes.len() {
+		if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+			// Skip until matching `}}`.
+			let close = match s[i + 2..].find("}}") {
+				Some(rel) => i + 2 + rel + 2,
+				None => return None,
+			};
+			i = close;
+			continue;
+		}
+		if (bytes[i] as char).is_whitespace() {
+			return Some(i);
+		}
+		i += 1;
+	}
+	None
+}
+
 /// Convert a raw string into a [`CommandStep`]. Strings starting with `@`
 /// become `TargetCall`; everything else is a plain `Shell` command. Used
 /// both by the manual `Deserialize` impl and by the `then` / `else`
@@ -355,7 +379,7 @@ pub(crate) fn command_step_from_string(s: String) -> Result<CommandStep, String>
 			Some(after) => (after, true),
 			None => (rest, false),
 		};
-		let (target, args) = match rest.find(char::is_whitespace) {
+		let (target, args) = match find_target_args_split(rest) {
 			Some(idx) => (rest[..idx].to_string(), rest[idx..].trim_start().to_string()),
 			None => (rest.to_string(), String::new()),
 		};
@@ -382,7 +406,7 @@ pub(crate) fn command_step_from_string(s: String) -> Result<CommandStep, String>
 /// (substituted) target name doesn't exist in the merged Runfile, the call is
 /// silently skipped rather than failing. `args_template` is the raw
 /// post-target text (after the first whitespace run). At execute time it goes
-/// through the normal substitution pipeline (so `$(ARGS)`, `$(RUN.*)`, etc.
+/// through the normal substitution pipeline (so `{{ ARGS }}`, `{{ RUN.* }}`, etc.
 /// resolve), then is split into argv via shell-style tokenization.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct TargetCallStep {
@@ -414,14 +438,14 @@ pub fn walk_step_templates<'a, F: FnMut(&'a str)>(steps: &'a [CommandStep], visi
 }
 
 /// Walk every non-`commands` template field on a [`CommandSpec`] and call
-/// `visit` on each string that participates in `$(...)` substitution.
+/// `visit` on each string that participates in `{{ ... }}` substitution.
 ///
 /// Covers: `env` values (string variants only — numbers/bools have no
 /// templates), `envFiles` paths, `forceShell`, `addToPath` entries,
 /// `workingDirectory`, `confirm`, and `extendStdio.fromFile` paths.
 ///
 /// Used by static analysis (arg-usage scanning) so references like
-/// `$(ARGS.x)` / `$(FLAGS.x)` placed in `env` values, env-file paths, or
+/// `{{ ARGS.x }}` / `{{ FLAGS.x }}` placed in `env` values, env-file paths, or
 /// other auxiliary fields are recognised — without it the validator would
 /// only see the `commands` array and reject otherwise-valid CLI args.
 pub fn walk_spec_aux_templates<'a, F: FnMut(&'a str)>(spec: &'a CommandSpec, visit: &mut F) {
@@ -557,7 +581,7 @@ where
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForInValue {
 	/// Iterate over a literal array of strings (each goes through normal
-	/// `$(...)` substitution at execution time).
+	/// `{{ ... }}` substitution at execution time).
 	Literal(Vec<String>),
 	/// Iterate over every namespace prefix declared via `includes`.
 	/// Resolved against the merged Runfile's `namespaces` list at execution
@@ -618,7 +642,7 @@ impl<'de> Deserialize<'de> for ForInValue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ForStep {
-	/// The loop variable name (referenced inside the body as `$(LOOP.<var>)`).
+	/// The loop variable name (referenced inside the body as `{{ LOOP.<var> }}`).
 	#[serde(rename = "for")]
 	pub var: String,
 
@@ -659,7 +683,7 @@ pub struct ForStep {
 /// A `match`-block within a `commands` array.
 ///
 /// Resolves the `match` template through the normal substitution pipeline
-/// (so `$(ARGS.x)`, `$(ENV.X)`, `$(LOOP.x)`, chained fallbacks, etc. work),
+/// (so `{{ ARGS.x }}`, `{{ ENV.X }}`, `{{ LOOP.x }}`, chained fallbacks, etc. work),
 /// then dispatches on string equality against `cases`. When no case matches
 /// and no `default` is set, execution errors out — listing the valid cases
 /// in the message — so users learn about valid values rather than silently
@@ -671,8 +695,8 @@ pub struct ForStep {
 #[serde(deny_unknown_fields)]
 pub struct MatchStep {
 	/// The substitution template to evaluate. Goes through the same
-	/// substitution pipeline as any other `$(...)` reference, so chained
-	/// fallbacks (`$(ARGS.tier ? ENV.TIER ? 1)`) and all source kinds are
+	/// substitution pipeline as any other `{{ ... }}` reference, so chained
+	/// fallbacks (`{{ ARGS.tier ? ENV.TIER ? 1 }}`) and all source kinds are
 	/// supported.
 	#[serde(rename = "match")]
 	pub r#match: String,
@@ -888,7 +912,7 @@ pub struct CommandSpec {
 	pub parallel: Option<bool>,
 
 	/// Working directory mode: `"runfileParent"` (default) or `"cwd"`.
-	/// Stored as a free-form `String` to support `$(...)` substitution; the
+	/// Stored as a free-form `String` to support `{{ ... }}` substitution; the
 	/// runner validates the substituted value at execute time.
 	#[serde(default, rename = "workingDirectory", skip_serializing_if = "Option::is_none")]
 	pub working_directory: Option<String>,
@@ -1042,8 +1066,8 @@ pub struct ExtendStdio {
 }
 
 /// Canonical `workingDirectory` values. The schema field itself is a free-form
-/// `String` so it can carry `$(...)` substitutions (e.g.
-/// `"workingDirectory": "$(ARGS.cwd ? runfileParent)"`); runtime validation in
+/// `String` so it can carry `{{ ... }}` substitutions (e.g.
+/// `"workingDirectory": "{{ ARGS.cwd ? runfileParent }}"`); runtime validation in
 /// `runner.rs` checks the substituted value matches one of these constants.
 pub const WORKING_DIRECTORY_RUNFILE_PARENT: &str = "runfileParent";
 pub const WORKING_DIRECTORY_CWD: &str = "cwd";
@@ -1103,7 +1127,7 @@ pub struct Globals {
 	pub ignore_errors: Option<bool>,
 
 	/// Working directory mode: `"runfileParent"` (default) or `"cwd"`.
-	/// Stored as a free-form `String` to support `$(...)` substitution; the
+	/// Stored as a free-form `String` to support `{{ ... }}` substitution; the
 	/// runner validates the substituted value at execute time.
 	#[serde(default, rename = "workingDirectory", skip_serializing_if = "Option::is_none")]
 	pub working_directory: Option<String>,

@@ -133,7 +133,7 @@
 			"properties": {
 				"if": {
 					"type": "string",
-					"description": "Boolean expression. Supports comparisons (==, !=), logical operators (&&, ||, !), parentheses, and substitutions ($(ARGS.x), $(ENV.X), $(FLAGS.x), $(LOOP.x), $(RUN.os), $(RUN.shell)). Mixing && and || requires parentheses. Truthiness: only the empty string is falsy."
+					"description": "Boolean expression. Supports comparisons (==, !=), logical operators (&&, ||, !), parentheses, and substitutions ({{ ARGS.x }}, {{ ENV.X }}, {{ FLAGS.x }}, {{ LOOP.x }}, {{ RUN.os }}, {{ RUN.shell }}). Mixing && and || requires parentheses. Truthiness: only the empty string is falsy."
 				},
 				"then": {
 					"description": "Steps executed when the condition is truthy. May be a single shell-command string (sugar for a one-element array) or an array of command steps.",
@@ -175,7 +175,7 @@
 		},
 		"ForStep": {
 			"type": "object",
-			"description": "Iterate over a list, glob, or shell command output. Loop variables are referenced as $(LOOP.<var>) inside the body.",
+			"description": "Iterate over a list, glob, or shell command output. Loop variables are referenced as {{ LOOP.<var> }} inside the body.",
 			"required": [
 				"for",
 				"do"
@@ -257,7 +257,7 @@
 		},
 		"MatchStep": {
 			"type": "object",
-			"description": "Multi-way dispatch on a substituted value. Resolves the `match` template through the normal substitution pipeline ($(ARGS.x), $(ENV.X), $(LOOP.x), $(RUN.*), chained fallbacks like $(ARGS.x ? ENV.X ? default), etc.), then runs the matching branch by string equality against the `cases` keys. When no case matches and no `default` is set, execution errors out and lists the valid cases.",
+			"description": "Multi-way dispatch on a substituted value. Resolves the `match` template through the normal substitution pipeline ({{ ARGS.x }}, {{ ENV.X }}, {{ LOOP.x }}, {{ RUN.* }}, chained fallbacks like {{ ARGS.x ? ENV.X ? default }}, etc.), then runs the matching branch by string equality against the `cases` keys. When no case matches and no `default` is set, execution errors out and lists the valid cases.",
 			"required": [
 				"match",
 				"cases"
@@ -266,7 +266,7 @@
 			"properties": {
 				"match": {
 					"type": "string",
-					"description": "The substitution expression whose resolved value selects a case. Supports the full $(...) syntax including chained fallbacks."
+					"description": "The substitution expression whose resolved value selects a case. Supports the full {{ ... }} syntax including chained fallbacks."
 				},
 				"cases": {
 					"type": "object",
@@ -345,7 +345,7 @@
 				},
 				"envFiles": {
 					"type": "array",
-					"description": "File paths to load environment variables from. Supports $(ARGS) and $(ENV) substitution. Loaded before the inline `env` object, so `env` values override these. Missing files are silently ignored.",
+					"description": "File paths to load environment variables from. Supports {{ ARGS.* }} and {{ ENV.* }} substitution. Loaded before the inline `env` object, so `env` values override these. Missing files are silently ignored.",
 					"items": {
 						"type": "string"
 					}
@@ -359,7 +359,7 @@
 				},
 				"forceShell": {
 					"type": "string",
-					"description": "Force a specific shell for this target. Accepts a shell name (bash/zsh/sh/fish/powershell/cmd), an absolute path, or a $(...) substitution that resolves to one of those at runtime."
+					"description": "Force a specific shell for this target. Accepts a shell name (bash/zsh/sh/fish/powershell/cmd), an absolute path, or a {{ ... }} substitution that resolves to one of those at runtime."
 				},
 				"addToPath": {
 					"type": "array",
@@ -432,7 +432,7 @@
 				},
 				"envFiles": {
 					"type": "array",
-					"description": "File paths to load environment variables from for all targets. Supports $(ARGS) and $(ENV) substitution. Loaded before the inline `env` object. Missing files are silently ignored.",
+					"description": "File paths to load environment variables from for all targets. Supports {{ ARGS.* }} and {{ ENV.* }} substitution. Loaded before the inline `env` object. Missing files are silently ignored.",
 					"items": {
 						"type": "string"
 					}
@@ -482,7 +482,7 @@
 		},
 		"WorkingDirectory": {
 			"type": "string",
-			"description": "Working directory for command execution. \"runfileParent\" (default) uses the Runfile.json directory; \"cwd\" uses the caller's current working directory. Accepts $(...) substitution that resolves to one of those values at runtime."
+			"description": "Working directory for command execution. \"runfileParent\" (default) uses the Runfile.json directory; \"cwd\" uses the caller's current working directory. Accepts {{ ... }} substitution that resolves to one of those values at runtime."
 		},
 		"ExtendStdio": {
 			"type": "object",

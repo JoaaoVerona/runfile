@@ -47,7 +47,7 @@ crates/
   `WhenCondition`, `ExtendStdio`, `StdioStream`, `CommandStep`, `IfStep`, `ForStep`, `MatchStep`, `TargetCallStep`,
   `IncludeEntry`
 - Conditional configuration is expressed
-  via `$(RUN.os)` / `$(RUN.shell)` substitution in scalar fields (env values, `forceShell`,
+  via `{{ RUN.os }}` / `{{ RUN.shell }}` substitution in scalar fields (env values, `forceShell`,
   `workingDirectory`, etc.) plus `if` / `when` / `@target` composition inside `commands`.
 - All structs use `#[serde(deny_unknown_fields)]` to enforce strict parsing
 - `discover.rs` walks up from the current directory to find `Runfile.json` or `Runfile.json5` (`.json` takes priority
@@ -55,7 +55,7 @@ crates/
 - `parse.rs` uses the `json5` crate for deserialization (JSON5 is a superset of JSON — supports comments, trailing
   commas, unquoted keys, single-quoted strings). After deserialization, runs validation (non-empty schema, at least
   one target, no empty command lists, env keys, aliases, non-empty `WhenStep.commands`, literal `workingDirectory`
-  values when not a `$(...)` template). `@target` references are NOT validated at parse time — they are checked at
+  values when not a `{{ ... }}` template). `@target` references are NOT validated at parse time — they are checked at
   runtime, because included files may define targets not yet available. `parse_runfile_partial()` skips the
   `NoTargets` check (used for included files and global settings files).
 - The root JSON key is `"targets"` (not `"commands"` — that was renamed). Each target has a `"commands"` array inside
@@ -104,17 +104,17 @@ crates/
   template string (used by IDE generators, MCP, args-usage scanning). The companion `walk_spec_aux_templates(spec, &mut visit)`
   yields every other substitutable string on a `CommandSpec` — `env` string values, `envFiles` paths, `forceShell`,
   `addToPath` entries, `workingDirectory`, `confirm`, and `extendStdio.fromFile` — so arg-usage scanners (e.g. the runner's
-  `validate_args` collector) recognise `$(ARGS.x)` / `$(FLAGS.x)` references that live outside `commands`. `From<&str>` and
+  `validate_args` collector) recognise `{{ ARGS.x }}` / `{{ FLAGS.x }}` references that live outside `commands`. `From<&str>` and
   `From<String>` impls let callers use `"foo".into()` ergonomically; `CommandSpec::new_shell(Vec<String>)` is a convenience
   constructor for string-only command lists.
 - DSL parsing (`dsl.rs`): tiny boolean expression language for `if` conditions. Hand-written tokenizer + recursive
   descent parser, no external deps. Grammar: comparisons (`==`, `!=`), logical operators (`&&`, `||`, `!`), parens,
-  substitution leaves (`$(ARGS.x)` / `$(ENV.X)` / `$(FLAGS.x)` / `$(LOOP.x)`), quoted strings, bare-words. Mixing
+  substitution leaves (`{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` / `{{ LOOP.x }}`), quoted strings, bare-words. Mixing
   `&&` and `||` in the same expression is a hard parse error — parens are required to disambiguate. Parsing happens
   eagerly during `validate_runfile`, so syntax errors surface at Runfile load time.
 - `MatchStep` (multi-way dispatch): `{ "match", "cases", "default"?, "ignoreErrors"?, "when"? }`. Stored on
-  `CommandStep::Match`. The `match` field is a substitution template — same pipeline as any other `$(...)`
-  reference, so chained fallbacks work (`$(ARGS.tier ? ENV.TIER ? 1)`). `cases` is a `BTreeMap<String,
+  `CommandStep::Match`. The `match` field is a substitution template — same pipeline as any other `{{ ... }}`
+  reference, so chained fallbacks work (`{{ ARGS.tier ? ENV.TIER ? 1 }}`). `cases` is a `BTreeMap<String,
   Vec<CommandStep>>` (sorted; alphabetical iteration order in error messages); each case body accepts the usual
   string-or-array sugar via the same `Value`-based deserializer pattern as `IfStep.then`. `default` is an
   optional branch run when no case matches. Validation lives in `parse.rs::validate_match_step`: empty
@@ -147,7 +147,7 @@ crates/
 - `resolve.rs`: resolves a shell by name from known paths or `which`. When the requested shell is `sh` and
   resolution fails (no `/bin/sh`, no `sh` on PATH — common on Windows and minimal containers), falls back to
   other sh-compatible shells in order: bash → zsh → fish. The returned `ResolvedShell.kind` is the actual shell
-  that was found (e.g. `Bash`), so `$(RUN.shell)` reflects what's really running rather than the requested name.
+  that was found (e.g. `Bash`), so `{{ RUN.shell }}` reflects what's really running rather than the requested name.
   Targets that hard-code `forceShell: "sh"` for `cp`/`echo`/etc. now Just Work cross-platform without an
   `if RUN.os == windows` branch.
 
@@ -198,7 +198,7 @@ crates/
 - `apply_add_to_path_chain` is a no-op when both the parent chain (or its layers) and this target's `add_to_path`
   contribute zero entries — so single-target runs and unused chains never touch the `PATH` value or perturb its case.
 - Substitution semantics intentionally stay "lexical": within a target's `env` block, a value can reference a key set
-  earlier in the same block (via `$(ENV.X)`) and gets that lexically-prior value, even if the shell's value will
+  earlier in the same block (via `{{ ENV.X }}`) and gets that lexically-prior value, even if the shell's value will
   ultimately win in step 4. This keeps existing Runfiles working — the only observable change is the final value of
   any key the shell also defines.
 - `EnvBuildParams.available_private_keys`: optional list of private keys; when encrypted values are detected, the key is
@@ -216,35 +216,38 @@ crates/
 **Files:** `args.rs`, `control_flow.rs`, `env.rs`, `executor.rs`, `force_kill.rs`, `logging.rs`,
 `parallel_output.rs`, `runner.rs`, `stdio_tailer.rs`, `tests.rs`
 
-- `RunArgs`: parses CLI args into positional (`$(ARGS)`) and named (`--key=value`). Carries a `run_context: RunContext`
-  field used to resolve `$(RUN.*)` substitutions; populated by the CLI via `RunArgs::parse(...).with_run_context(...)`.
+- `RunArgs`: parses CLI args into positional (`{{ ARGS }}`) and named (`--key=value`). Carries a `run_context: RunContext`
+  field used to resolve `{{ RUN.* }}` substitutions; populated by the CLI via `RunArgs::parse(...).with_run_context(...)`.
   Also carries an optional `stdin_prompter: Option<Arc<dyn StdinPrompter>>` — when set (top-level CLI flag
-  `--stdin-args`), missing `$(ARGS.*)` / `$(ENV.*)` / `$(FLAGS.*)` references trigger a stdin prompt instead of
+  `--stdin-args`), missing `{{ ARGS.* }}` / `{{ ENV.* }}` / `{{ FLAGS.* }}` references trigger a stdin prompt instead of
   erroring. The prompter trait lives in `args.rs` alongside `InteractiveStdinPrompter` (the default impl that
   reads stdin, writes prompts to stderr, and caches answers in `Mutex<HashMap>`s). `Arc` cloning shares the
   cache, so the prompter propagates through `@target` calls (via `RunnerDependencyResolver::run_dependency`,
   which clones `parent.stdin_prompter`) without re-asking the user. Tests use a mock `StdinPrompter` to script
   scripted answers.
-- `substitute()` returns `Result` — `$(ARGS.key)` without `?` errors if arg is missing; `$(ARGS.key ?)` with empty
-  right-side defaults to empty string; `$(ARGS.key ? default)` uses the default. Unknown `$(...)` heads
-  (e.g. a shell command sub like `$(echo …)`) are re-emitted with their `$(...)` wrapper intact, but the substituter
-  **recurses into the body first** so nested known prefixes resolve — `$(echo "$(ARGS.env)")` becomes
-  `$(echo "development")` rather than leaking through unsubstituted. `scan_args_usage` mirrors this so `validate_args`
-  recognises `--env` even when its only reference is nested inside an unknown wrapper.
-- `RunContext { os, shell }`: static execution context. Resolves `$(RUN.os)` (`"windows"` / `"linux"` / `"mac"`)
-  and `$(RUN.shell)` (`"bash"` / `"zsh"` / `"sh"` / `"fish"` / `"powershell"` / `"cmd"`). Unknown `RUN.<key>` is
-  a hard error. Participates in chained fallbacks (`$(ARGS.shell ? RUN.shell)`). The runner calls
-  `ensure_run_context()` per target so `$(RUN.shell)` stays accurate even when a target-level `forceShell`
+- `substitute()` returns `Result` — `{{ ARGS.key }}` without `?` errors if arg is missing; `{{ ARGS.key ? }}` with empty
+  right-side defaults to empty string; `{{ ARGS.key ? default }}` uses the default. The substituter walks the
+  template once, resolving every `{{ ... }}` block it finds while leaving everything else (including bash
+  `$(...)` command substitutions) untouched — so `echo $(date)` passes through verbatim, and
+  `$(echo "{{ ARGS.env }}")` becomes `$(echo "development")` (the inner `{{ ... }}` resolves; the outer
+  `$(...)` is opaque to Runfile). Strict whitespace: exactly one space after `{{` and before `}}`, exactly
+  one space around `?` and `:`. Use `\{{` / `\}}` to emit a literal `{{` / `}}` in the output.
+  `scan_args_usage` mirrors this so `validate_args` recognises `--env` even when its only reference is
+  nested inside a shell `$(...)`.
+- `RunContext { os, shell }`: static execution context. Resolves `{{ RUN.os }}` (`"windows"` / `"linux"` / `"mac"`)
+  and `{{ RUN.shell }}` (`"bash"` / `"zsh"` / `"sh"` / `"fish"` / `"powershell"` / `"cmd"`). Unknown `RUN.<key>` is
+  a hard error. Participates in chained fallbacks (`{{ ARGS.shell ? RUN.shell }}`). The runner calls
+  `ensure_run_context()` per target so `{{ RUN.shell }}` stays accurate even when a target-level `forceShell`
   swaps the effective shell. `forceShell` and `workingDirectory` themselves go through substitution before
-  resolution — e.g. `"forceShell": "$(ARGS.shell ? bash)"` works.
+  resolution — e.g. `"forceShell": "{{ ARGS.shell ? bash }}"` works.
 - `LoopScope`: stack of currently-active `for`-loop bindings (`var → value`). Pushed/popped by the executor when
   entering/leaving a `for` block. `RunArgs::substitute_with_loop()` and `substitute_redacted_with_loop()` accept a
-  `&LoopScope` to resolve `$(LOOP.<var>)` references. The non-loop `substitute()` and `substitute_redacted()` are
-  now thin wrappers over the `_with_loop` variants with an empty scope. `$(LOOP.x)` participates in chained
-  fallbacks (`$(ARGS.x ? LOOP.y ? default)`); missing LOOP refs are a hard error like missing ARGS.
+  `&LoopScope` to resolve `{{ LOOP.<var> }}` references. The non-loop `substitute()` and `substitute_redacted()` are
+  now thin wrappers over the `_with_loop` variants with an empty scope. `{{ LOOP.x }}` participates in chained
+  fallbacks (`{{ ARGS.x ? LOOP.y ? default }}`); missing LOOP refs are a hard error like missing ARGS.
 - `control_flow.rs`: DSL evaluator + `for`-block iterator expansion. `evaluate(&DslExpr, args, env, scope)` walks
   the cached AST against the current substitution context. Truthiness rule: only `""` is falsy — `"false"`, `"0"`,
-  etc. are truthy (matches what raw shell commands see). `$(FLAGS.x)` resolves to `"true"`/`"false"` strings, both
+  etc. are truthy (matches what raw shell commands see). `{{ FLAGS.x }}` resolves to `"true"`/`"false"` strings, both
   non-empty, so flag presence checks must use explicit `== true`/`== false`. `expand_for_iterations` produces the
   iteration values: `ForInValue::Literal(arr)` is substituted element-wise; `ForInValue::Namespaces` snapshots
   `args.run_context.namespaces` (sorted + deduped at merge time, threaded down via `RunContext`'s
@@ -255,7 +258,7 @@ crates/
   *body* failures, not iterator-source failures. `count_leaves` walks a `&[CommandStep]` tree to compute the
   static step-counter total: `Shell` → 1, `TargetCall` → 1 (the runner's `collect_all_commands` recurses into
   the called target separately to size the global counter accurately; locally, each `@target` invocation
-  contributes one slot from the parent's POV — and dynamic target names containing `$(...)` always count as 1
+  contributes one slot from the parent's POV — and dynamic target names containing `{{ ... }}` always count as 1
   with no recursion), `If` → `then.len() + else.len()` (both branches inflate it because we don't know which
   runs), `For in: [array]` → `array.len() * body_count`, `For in: "namespaces"` → `runfile.namespaces.len() *
   body_count` (resolved at runner-level by `count_target_leaves_recursive`; the local `count_leaves` falls back
@@ -267,21 +270,21 @@ crates/
   `optional: true` and is stripped from the in-memory `target` field; the marker round-trips through serde via
   the manual `Serialize` impl on `CommandStep` (re-emits `@?` when `optional`). Optional calls silently skip
   when the (substituted) target isn't found in the merged Runfile — useful with `for in: "namespaces"` patterns
-  where some namespaces don't define the dispatched target (`@?$(LOOP.ns):adb-forward`). The skip only suppresses
+  where some namespaces don't define the dispatched target (`@?{{ LOOP.ns }}:adb-forward`). The skip only suppresses
   the *missing-target* error; failures *inside* the target's commands are not silenced (use `ignoreErrors` for
-  that). At execute time, **both** `target` and `args_template` go through normal substitution (so `$(ARGS)` /
-  `$(RUN.*)` / `$(ENV.*)` / `$(LOOP.*)` resolve), then `args_template` is `shlex`-split into argv before being
-  dispatched. Substituting the target name lets dynamic patterns like `@$(LOOP.ns):build` (the canonical use
+  that). At execute time, **both** `target` and `args_template` go through normal substitution (so `{{ ARGS }}` /
+  `{{ RUN.* }}` / `{{ ENV.* }}` / `{{ LOOP.* }}` resolve), then `args_template` is `shlex`-split into argv before being
+  dispatched. Substituting the target name lets dynamic patterns like `@{{ LOOP.ns }}:build` (the canonical use
   case for `for in: "namespaces"`) dispatch to the right namespaced target on each iteration. The `?` character
   is reserved for the optional marker — declared target names, aliases, and `includes` namespaces are rejected
   at parse time if they contain `?` (`ParseError::TargetNameContainsQuestionMark`,
   `ParseError::AliasContainsQuestionMark`, plus the namespace check in `merge::validate_namespace`); a literal
   `?` inside a `@target` reference (e.g. `@foo?bar`) is also rejected via `validate_target_call`. Static
   analysis (the runner's `count_target_leaves_recursive`, `collect_commands_recursive`) treats names containing
-  `$(` as opaque — counts as 1 leaf, no recursion into the called target — so the step counter relies on
+  `{{` as opaque — counts as 1 leaf, no recursion into the called target — so the step counter relies on
   `add_to_total` to bump at runtime if the dispatched target exposes more leaves. **Optional calls on a
   statically-missing target contribute 0 leaves and skip recursion** (since they'll be runtime no-ops); optional
-  calls on a present target recurse normally. Dynamic optional calls (`@?$(...)`) still count as 1 leaf each
+  calls on a present target recurse normally. Dynamic optional calls (`@?{{ ... }}`) still count as 1 leaf each
   (the namespace iteration count drives the for-block multiplier), and the slot is "wasted" but harmless when
   the target turns out to be missing at dispatch — total ≥ N is preserved. The executor calls back into the
   runner via the [`DependencyResolver`] trait, which now carries an `optional: bool` parameter on
@@ -331,7 +334,7 @@ crates/
   `output_prefix` parameter, the runner threads it through `run_target_inner` into the dispatched target's
   `ExecSetup.output_prefix`, and from there every shell (sequential `execute_one_shell` and any nested
   parallel batch) tags its piped output with that string. Result: `dev` targets that fan out via
-  `for in: "namespaces"` + `@$(LOOP.ns):dev` get cleanly tagged per-branch output even when the leaves are
+  `for in: "namespaces"` + `@{{ LOOP.ns }}:dev` get cleanly tagged per-branch output even when the leaves are
   `@target` calls rather than direct shells. Same counter-sharing pattern.
 - `parallel_output.rs`: line-buffered, prefixed stdout/stderr for parallel shell children. `spawn_line_pump`
   reads from a `ChildStdout`/`ChildStderr`, splits on `\n` and `\r` (CR-as-soft-break flattens progress-bar
@@ -380,14 +383,14 @@ crates/
   behaviour the removed `:extract` subcommand had. `--dry-run` recursively expands `@target` invocations: the
   dep's resolved leaf shell commands appear inline at the call site (with the dep's own env block reflected on
   each line), so aggregator targets whose body is purely `@target` dispatches (e.g. `for in: namespaces` with
-  `@$(LOOP.ns):dev`) actually print every nested command rather than printing nothing. `if` blocks are
+  `@{{ LOOP.ns }}:dev`) actually print every nested command rather than printing nothing. `if` blocks are
   evaluated (not flattened) against the same context the runner would see — only the matching branch is
   printed. Cycles are caught at extract time via per-call-stack tracking; sibling calls to the same target
   expand twice (matching runtime no-dedup semantics). Optional calls (`@?target`) silently skip when the target
   is missing. `extract_target_with_cwd` auto-syncs `args.run_context.namespaces` from the merged Runfile (matches
   the runner's `ensure_run_context`) so `for in: "namespaces"` resolves identically in dry-run.
 - Global flags: `-f`/`--file` (custom Runfile path), `--shell` (override shell by name or path), `--timings`
-  (print execution times), `-y`/`--yes` (skip confirms). For inline debug branching, declare `$(FLAGS.debug)`
+  (print execution times), `-y`/`--yes` (skip confirms). For inline debug branching, declare `{{ FLAGS.debug }}`
   in your target — passing `--debug` (or any other flag) to a target works through the standard FLAGS
   substitution.
 - `RUNFILE_TARGET` env var: when `-f`/`--file` is not passed, this env var is used as the default Runfile path before
@@ -461,9 +464,9 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   intentional.
 - The `$schema` field accepts any non-empty string (URLs, paths) so editors can point to the JSON Schema file for
   autocomplete.
-- Substitution (`$(ARGS.key)` without default) is a hard error, not silent empty string. This catches mistakes. Use
-  `$(ARGS.key ?)` for intentional optional-with-empty-default.
-- `--stdin-args` (top-level CLI flag, like `--dry-run`): when set, missing `$(ARGS.x)` / `$(ENV.X)` / `$(FLAGS.x)`
+- Substitution (`{{ ARGS.key }}` without default) is a hard error, not silent empty string. This catches mistakes. Use
+  `{{ ARGS.key ? }}` for intentional optional-with-empty-default.
+- `--stdin-args` (top-level CLI flag, like `--dry-run`): when set, missing `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}`
   references prompt the user via stdin instead of erroring. The prompt key is the FIRST `ARGS.*` / `ENV.*` segment in
   the chain (the user-facing "primary name"); the chain's literal default (if any) is shown in `[brackets]`. A
   non-empty answer overrides the chain; an empty answer (just Enter) falls through to the default — or to the
@@ -472,25 +475,25 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   presence. Answers are cached per (kind, key) so the same value is asked at most once per run, even across
   `@target` invocations (the `Arc<dyn StdinPrompter>` is propagated through `RunnerDependencyResolver`). Works with
   `--dry-run` too (the dry-run path also goes through `RunArgs::substitute`).
-- Runtime context substitutions: `$(RUN.os)` / `$(RUN.shell)` expose the OS and the resolved shell so users
-  can write inline `if` conditions for cross-platform branching (e.g. `"if": "$(RUN.os) == windows"`).
+- Runtime context substitutions: `{{ RUN.os }}` / `{{ RUN.shell }}` expose the OS and the resolved shell so users
+  can write inline `if` conditions for cross-platform branching (e.g. `"if": "{{ RUN.os }} == windows"`).
   Unknown RUN keys are a hard error. RUN values are not redacted by `substitute_redacted` (they aren't
   secrets). The runner re-derives the shell value per target so a target-level `forceShell` swap is
-  reflected in `$(RUN.shell)`.
-- `forceShell` and `workingDirectory` accept `$(...)` substitutions. The substituted `workingDirectory` value must
+  reflected in `{{ RUN.shell }}`.
+- `forceShell` and `workingDirectory` accept `{{ ... }}` substitutions. The substituted `workingDirectory` value must
   resolve to `"runfileParent"` or `"cwd"` (or be omitted), otherwise the runner errors with
   `RunError::InvalidWorkingDirectory`. Parse-time validation rejects literal non-canonical values; templates
-  (containing `$(`) defer validation to runtime.
+  (containing `{{ ` }} defer validation to runtime.
 - Control flow (`if` / `for` / `match` blocks) is evaluated by Runfile itself, not by the shell — same semantics
   on every platform. Conditions use a tiny boolean DSL parsed at Runfile load time (errors fail fast). Truthiness
   rule: only
   the empty string is falsy; every other string (including `"false"` and `"0"`) is truthy. This matches what raw
-  shell commands see when they receive a `$(...)` substitution. Because `$(FLAGS.x)` resolves to `"true"` or
+  shell commands see when they receive a `{{ ... }}` substitution. Because `{{ FLAGS.x }}` resolves to `"true"` or
   `"false"` (both non-empty), flag presence checks must use explicit `== true` / `== false` comparisons. Mixing
   `&&` and `||` in the same expression is a parse error — parens are required to disambiguate. `for` blocks accept
   one of `in: [...]` (literal array, each element substituted), `glob: "..."` (filesystem glob, sorted matches),
   or `shell: "..."` (run command at planning time, iterate trimmed non-blank stdout lines). `for shell` failure is
-  a hard error regardless of `ignoreErrors`. Loop variables are referenced as `$(LOOP.<name>)` and follow lexical
+  a hard error regardless of `ignoreErrors`. Loop variables are referenced as `{{ LOOP.<name> }}` and follow lexical
   scoping (innermost wins). `parallel: true` on a `for` block runs iterations concurrently, but **outer parallel
   only**: a nested `for parallel: true` inside an already-parallel context is forced sequential (with a warning).
 - `ignoreErrors` makes the CLI exit 0 even when commands fail — this is the specified behavior, not a bug.
@@ -499,15 +502,15 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   escapes — so progress-bar redraws (`docker compose pull`, etc.) become append-only chronological lines instead
   of corrupting interleaved output. Stdin is inherited. **`@target` calls inside a parallel parent propagate
   the parent's prefix through the entire dispatched dependency subtree** (via `DependencyResolver::run_dependency(..., output_prefix)`),
-  so a `dev` target that fans out via `for in: "namespaces"` + `@$(LOOP.ns):dev` gets every nested shell tagged
+  so a `dev` target that fans out via `for in: "namespaces"` + `@{{ LOOP.ns }}:dev` gets every nested shell tagged
   with its parallel branch identity. Set `RUNFILE_NO_LINE_PREFIX=1`/`true` to disable prefixing and inherit raw
   stdio. The target finishes when all commands exit. With `ignoreErrors`, failures are counted but exit is 0.
 - `detach` requires `parallel: true`. When both are set, commands are spawned in parallel as detached background
   processes and the CLI exits immediately.
 - Logging goes to stderr so it doesn't interfere with command stdout.
-- Conditional configuration uses `$(RUN.*)` substitution in scalar fields (env values,
+- Conditional configuration uses `{{ RUN.* }}` substitution in scalar fields (env values,
   `forceShell`, `workingDirectory`, etc.) plus `if`/`when`/`@target` composition. The most common pattern
-  (`"X": "value-$(RUN.os)"`) covers nearly all real cases without any new constructs.
+  (`"X": "value-{{ RUN.os }}"`) covers nearly all real cases without any new constructs.
 - **No `before` / `after` lifecycle.** Removed in favor of inline `@target` invocations and `WhenStep` blocks
   in `commands`.
 - **Include namespacing for monorepos.** `includes` accepts `IncludeEntry` values: either a path string (legacy
@@ -535,10 +538,10 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   See `run_parallel_leaves` in `executor.rs`.
 - `match` blocks (`{ "match", "cases", "default"?, "ignoreErrors"?, "when"? }`) provide multi-way dispatch on a
   substituted value with built-in case validation. The `match` template goes through the normal substitution
-  pipeline (chained fallbacks supported, e.g. `$(ARGS.tier ? ENV.TIER ? 1)`). `cases` keys are compared by exact
+  pipeline (chained fallbacks supported, e.g. `{{ ARGS.tier ? ENV.TIER ? 1 }}`). `cases` keys are compared by exact
   string equality against the resolved value. When no case matches, `default` runs if set; otherwise execution
   errors out and the message lists every valid case so the user knows what values to pass. When the `match`
-  substitution itself fails (e.g. `$(ARGS.tier)` with no `--tier` and no chain default), `default` also runs as
+  substitution itself fails (e.g. `{{ ARGS.tier }}` with no `--tier` and no chain default), `default` also runs as
   a fallback for the unresolvable value — only when there's no `default` does the substitution error propagate
   (with the case list appended). Cases are stored in a `BTreeMap` so error-message ordering is deterministic
   (alphabetical). `count_leaves` sums every case + default (worst case, like `if`'s both-branches counting).
@@ -573,13 +576,13 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   `cmd_run.rs` (CLI layer). Events are debounced at 300ms. Patterns are relative to the Runfile directory; `!` prefix
   excludes.
 - Confirmation prompts (`confirm` field) block on stdin before executing. Auto-skipped when `CI` env var is `"true"` or
-  `"1"`, or when `--yes`/`-y` flag is passed. The `confirm` string supports `$(...)` substitution.
+  `"1"`, or when `--yes`/`-y` flag is passed. The `confirm` string supports `{{ ... }}` substitution.
 - `extendStdio` is an optional array of `{ "fromFile": "path", "stream": "stdout"|"stderr" }` objects on `CommandSpec`.
   During execution, background threads tail each log file and route new complete lines (terminated by `\n`) to the
   specified stream. Files that don't exist yet are polled until they appear. Polling interval is 50ms.
   Truncated/rotated files are handled by resetting to the beginning. Tailers start before command execution and stop
-  after all commands finish (including a final flush). `fromFile` paths support `$(...)` substitution (e.g.
-  `"logs/$(RUN.os).log"`).
+  after all commands finish (including a final flush). `fromFile` paths support `{{ ... }}` substitution (e.g.
+  `"logs/{{ RUN.os }}.log"`).
 - `forceKillOnSigInt` is a boolean on `CommandSpec`. When true, the executor creates a Job
   Object (Windows) or tracks child PIDs (Unix) and installs a CTRL+C/SIGINT handler that forcefully terminates the
   entire process tree. This is essential for GUI-subsystem apps (e.g. Unity Editor) on Windows that don't receive
@@ -592,8 +595,8 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   `.vscode/tasks.json`, merges with existing files preserving user-added fields via `#[serde(flatten)]`.
 - All three editor generators (`vscode`, `zed`, `jetbrains-run-configurations`) inject `--stdin-args` into the
   generated invocation. Editor run configs are static (no per-invocation arg prompt UI built into the IDE), so
-  `--stdin-args` is what lets a static config still cover targets that need user input — missing `$(ARGS.x)` /
-  `$(ENV.X)` / `$(FLAGS.x)` values are prompted at run time. JetBrains keeps `EXECUTE_IN_TERMINAL=false` (the
+  `--stdin-args` is what lets a static config still cover targets that need user input — missing `{{ ARGS.x }}` /
+  `{{ ENV.X }}` / `{{ FLAGS.x }}` values are prompted at run time. JetBrains keeps `EXECUTE_IN_TERMINAL=false` (the
   default Run/Services tool window) — do NOT flip it to `true`. `check_existing_jetbrains_config` accepts both
   the current `run --stdin-args <target>` form and the legacy `run <target>` form so older configs upgrade in
   place.

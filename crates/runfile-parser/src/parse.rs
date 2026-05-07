@@ -73,7 +73,7 @@ pub enum ParseError {
 	EmptyWhenCommands(String),
 
 	#[error(
-		"Invalid `workingDirectory` value \"{1}\" in {0} — must be \"runfileParent\" or \"cwd\" (or a `$(...)` substitution)."
+		"Invalid `workingDirectory` value \"{1}\" in {0} — must be \"runfileParent\" or \"cwd\" (or a `{{{{ ... }}}}` substitution)."
 	)]
 	InvalidWorkingDirectoryLiteral(String, String),
 
@@ -84,11 +84,11 @@ pub enum ParseError {
 	EmptyMatchCases(String),
 }
 
-/// Whether a string carries a `$(...)` substitution that defers its actual
+/// Whether a string carries a `{{ ... }}` substitution that defers its actual
 /// value to runtime. Used to skip parse-time literal validation for fields
 /// like `forceShell` / `workingDirectory` that accept substitution.
 fn is_substitution_template(s: &str) -> bool {
-	s.contains("$(")
+	s.contains("{{")
 }
 
 /// Validate a `workingDirectory` field. Substitution templates are accepted
@@ -240,6 +240,52 @@ fn validate_when_step(step: &mut WhenStep, context: &str) -> Result<(), ParseErr
 	validate_command_steps(&mut step.commands, &inner_ctx)
 }
 
+/// Walk `s` and check whether any whitespace character appears outside a
+/// `{{ ... }}` substitution block. Used by [`validate_target_call`] so that
+/// `@{{ LOOP.ns }}:dev` (which legitimately contains spaces inside `{{ ... }}`)
+/// passes validation.
+fn has_unbraced_whitespace(s: &str) -> bool {
+	let bytes = s.as_bytes();
+	let mut i = 0;
+	while i < bytes.len() {
+		if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+			match s[i + 2..].find("}}") {
+				Some(rel) => i = i + 2 + rel + 2,
+				None => return false,
+			}
+			continue;
+		}
+		if (bytes[i] as char).is_whitespace() {
+			return true;
+		}
+		i += 1;
+	}
+	false
+}
+
+/// Same as [`has_unbraced_whitespace`] but for `?` — allows a `?` inside a
+/// `{{ ... }}` substitution (e.g. chain fallbacks) while still rejecting it
+/// at the top level (`@?target` is the optional-call marker, stripped at
+/// parse time before validation).
+fn has_unbraced_question(s: &str) -> bool {
+	let bytes = s.as_bytes();
+	let mut i = 0;
+	while i < bytes.len() {
+		if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+			match s[i + 2..].find("}}") {
+				Some(rel) => i = i + 2 + rel + 2,
+				None => return false,
+			}
+			continue;
+		}
+		if bytes[i] == b'?' {
+			return true;
+		}
+		i += 1;
+	}
+	false
+}
+
 fn validate_target_call(call: &TargetCallStep, context: &str) -> Result<(), ParseError> {
 	if call.target.is_empty() {
 		return Err(ParseError::InvalidTargetCall {
@@ -247,7 +293,9 @@ fn validate_target_call(call: &TargetCallStep, context: &str) -> Result<(), Pars
 			reason: "target name is empty".to_string(),
 		});
 	}
-	if call.target.contains(char::is_whitespace) {
+	// Whitespace inside a `{{ ... }}` substitution is fine (e.g.
+	// `@{{ LOOP.ns }}:dev`); we only reject whitespace OUTSIDE substitutions.
+	if has_unbraced_whitespace(&call.target) {
 		return Err(ParseError::InvalidTargetCall {
 			context: context.to_string(),
 			reason: format!("target name \"{}\" contains whitespace", call.target),
@@ -255,8 +303,9 @@ fn validate_target_call(call: &TargetCallStep, context: &str) -> Result<(), Pars
 	}
 	// `?` is reserved for the `@?target` optional-call marker. The marker is
 	// stripped at parse time, so any `?` appearing in `call.target` is part of
-	// the target name itself (e.g. `@target?` or `@nam?e`) — reject it.
-	if call.target.contains('?') {
+	// the target name itself (e.g. `@target?` or `@nam?e`) — reject it. A `?`
+	// inside a `{{ ... }}` substitution is allowed (chain fallback / FLAGS).
+	if has_unbraced_question(&call.target) {
 		return Err(ParseError::InvalidTargetCall {
 			context: context.to_string(),
 			reason: format!(

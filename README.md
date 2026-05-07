@@ -17,7 +17,7 @@ $ run dev --port=4000
     "dev": {
       "description": "Starts the dev server",
       "commands": "vite",
-      "env": { "PORT": "$(ARGS.port ? 3000)" }
+      "env": { "PORT": "{{ ARGS.port ? 3000 }}" }
     },
     "build": {
       "description": "Type-checks and builds in parallel",
@@ -25,11 +25,11 @@ $ run dev --port=4000
         "@type-check",
         "vite build",
         {
-          "if": "$(RUN.os) == windows && $(FLAGS.wsl) == true",
+          "if": "{{ RUN.os }} == windows && {{ FLAGS.wsl }} == true",
           "then": "wsl --shell-type login -- vite build"
         }
       ],
-      "envFiles": [".env", ".env.$(ARGS.env ? development)"],
+      "envFiles": [".env", ".env.{{ ARGS.env ? development }}"],
       "parallel": true
     },
     "type-check": {
@@ -98,7 +98,7 @@ Sorted from where Runfile is most differentiated to where it lags behind.
 | Encrypted env vars, built-in (AES-256-GCM)            |    ✅    |  ❌   |  ❌   |    ❌     |
 | MCP server (AI agent integration)                     |    ✅    |  ❌   |  ❌   |    ❌     |
 | `when:` blocks for success/failure/always cleanup     |    ✅    |  ❌   |  ❌   |    ❌     |
-| Inline OS / shell / debug branching via `$(RUN.*)`    |    ✅    |  ❌   |  ❌   |    ❌     |
+| Inline OS / shell / debug branching via `{{ RUN.* }}` |    ✅    |  ❌   |  ❌   |    ❌     |
 | Detached background execution                         |    ✅    |  ❌   |  ❌   |    ❌     |
 | IDE task generation (VS Code / Zed / JetBrains)       |    ✅    |  ❌   |  ❌   |    ❌     |
 | Migrate from `package.json` / `Makefile`              |    ✅    |  ❌   |  ❌   |    ❌     |
@@ -167,18 +167,21 @@ $ run :env inject -f .env.production -- ./deploy.sh       # encrypted values aut
 
 #### Powerful argument substitution
 
-Positional, named, flags, env vars, and runtime context (`$(RUN.os)` / `$(RUN.shell)`) — with chained fallbacks and
-required values.
+Positional, named, flags, env vars, and runtime context (`{{ RUN.os }}` / `{{ RUN.shell }}`) — with chained fallbacks
+and required values. The new `{{ ... }}` syntax avoids collisions with shell `$(...)` command substitution.
 
 ```jsonc
-"PORT": "$(ARGS.port ? ENV.PORT ? 3000)",
-"OPTS": "$(FLAGS.release ? --release :) $(FLAGS.verbose ? -v :)",
-"CARGO_TARGET_DIR": "target-$(RUN.os)",
+"PORT": "{{ ARGS.port ? ENV.PORT ? 3000 }}",
+"OPTS": "{{ FLAGS.release ? --release : }} {{ FLAGS.verbose ? -v : }}",
+"CARGO_TARGET_DIR": "target-{{ RUN.os }}",
 // Inline OS/shell branches:
-{ "if": "$(RUN.os) == windows", "then": ["del /S /Q build"], "else": ["rm -rf build"] },
-// User-supplied flags branch through $(FLAGS.x):
-{ "if": "$(FLAGS.debug) == true", "then": ["./tool --verbose"], "else": ["./tool"] }
+{ "if": "{{ RUN.os }} == windows", "then": ["del /S /Q build"], "else": ["rm -rf build"] },
+// User-supplied flags branch through {{ FLAGS.x }}:
+{ "if": "{{ FLAGS.debug }} == true", "then": ["./tool --verbose"], "else": ["./tool"] }
 ```
+
+Strict format: exactly one space after `{{` and before `}}`, exactly one space around `?` and `:` operators.
+Use `\{{` / `\}}` to emit a literal `{{` / `}}` in your output.
 
 #### Conditionals and loops, no shell required
 
@@ -187,31 +190,31 @@ evaluated by Runfile itself, so the logic works the same on every shell and plat
 
 ```jsonc
 "commands": [
-  { "if": "$(ARGS.env) == production",
+  { "if": "{{ ARGS.env }} == production",
     "then": ["./deploy-prod.sh"],
     "else": ["./deploy-staging.sh"] },
 
-  { "match": "$(ARGS.tier ? 1)",  // chain default; case "1" runs when --tier missing
+  { "match": "{{ ARGS.tier ? 1 }}",  // chain default; case "1" runs when --tier missing
     "cases": {
       "1": "flutter emulators --launch Tier_1_Android_9",
       "2": "flutter emulators --launch Tier_2_Android_11",
       "3": "flutter emulators --launch Tier_3_Android_14"
-    } },                          // unknown values error out, listing the valid cases
+    } },                              // unknown values error out, listing the valid cases
 
   { "for": "service",
     "in": ["api", "web", "worker"],
     "parallel": true,
-    "do": ["docker build -t $(LOOP.service) services/$(LOOP.service)"] },
+    "do": ["docker build -t {{ LOOP.service }} services/{{ LOOP.service }}"] },
 
   { "for": "file",
     "shell": "git diff --name-only HEAD~1",
-    "do": ["clang-format -i $(LOOP.file)"] }
+    "do": ["clang-format -i {{ LOOP.file }}"] }
 ]
 ```
 
 #### Call other targets inline with `@target`
 
-Any command string starting with `@` invokes another target. Forward args with `$(ARGS)` or pass anything explicit.
+Any command string starting with `@` invokes another target. Forward args with `{{ ARGS }}` or pass anything explicit.
 Each invocation runs (no dedup), inherits the parent's env, and works inside `if` / `for` blocks. Parallel parents
 fan out target calls onto worker threads.
 
@@ -223,9 +226,9 @@ namespace.
 "commands": [
   "@lint",
   "@test --coverage",
-  "@build $(ARGS)",
-  { "if": "$(RUN.os) == windows", "then": "@deploy-win", "else": "@deploy-unix" },
-  { "for": "ns", "in": "namespaces", "do": "@?$(LOOP.ns):adb-forward" } // skip namespaces without the target
+  "@build {{ ARGS }}",
+  { "if": "{{ RUN.os }} == windows", "then": "@deploy-win", "else": "@deploy-unix" },
+  { "for": "ns", "in": "namespaces", "do": "@?{{ LOOP.ns }}:adb-forward" } // skip namespaces without the target
 ]
 ```
 
@@ -235,7 +238,7 @@ When commands run in parallel (`"parallel": true` on a target or `for` block), e
 line-buffered, prefixed with its step number `[N]`, and stripped of cursor-control escapes — so progress-bar
 redraws (`docker compose pull`, `cargo build`, etc.) become chronological append-only lines instead of corrupting
 each other's output. SGR colors flow through unchanged. The prefix propagates through `@target` invocations too,
-so monorepo fan-outs like `{ "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):dev" }` tag every nested shell
+so monorepo fan-outs like `{ "for": "ns", "in": "namespaces", "do": "@{{ LOOP.ns }}:dev" }` tag every nested shell
 with its branch identity. Set `RUNFILE_NO_LINE_PREFIX=1` to opt out and inherit raw stdio.
 
 ```text

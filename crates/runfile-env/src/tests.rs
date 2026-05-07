@@ -315,11 +315,11 @@ fn load_env_files_with_substitution() {
 	let dir = TempDir::new().unwrap();
 	std::fs::write(dir.path().join(".env.production"), "DB=prod-db\n").unwrap();
 	let env = HashMap::new();
-	// Simulate substitution that replaces $(MYVAR) with "production"
+	// Simulate substitution that replaces {{ MYVAR }} with "production"
 	let substitute = |input: &str, _env: &HashMap<String, String>| -> Result<String, String> {
-		Ok(input.replace("$(MYVAR)", "production"))
+		Ok(input.replace("{{ MYVAR }}", "production"))
 	};
-	let result = load_env_files(&[".env.$(MYVAR)".to_string()], dir.path(), &substitute, &env).unwrap();
+	let result = load_env_files(&[".env.{{ MYVAR }}".to_string()], dir.path(), &substitute, &env).unwrap();
 	assert_eq!(result.get("DB").unwrap(), "prod-db");
 }
 
@@ -488,11 +488,11 @@ fn build_env_env_files() {
 fn build_env_substitution_in_env_values() {
 	let dir = TempDir::new().unwrap();
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("GREETING".to_string(), "hello $(NAME)".to_string());
+	cmd_env.insert("GREETING".to_string(), "hello {{ NAME }}".to_string());
 
-	// Substitute that replaces $(NAME) with "world"
+	// Substitute that replaces {{ NAME }} with "world"
 	let substitute = |input: &str, _env: &HashMap<String, String>| -> Result<String, String> {
-		Ok(input.replace("$(NAME)", "world"))
+		Ok(input.replace("{{ NAME }}", "world"))
 	};
 
 	let params = EnvBuildParams {
@@ -512,10 +512,10 @@ fn build_env_substitution_in_env_values() {
 fn build_env_substitution_error_propagated() {
 	let dir = TempDir::new().unwrap();
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("KEY".to_string(), "$(MISSING)".to_string());
+	cmd_env.insert("KEY".to_string(), "{{ MISSING }}".to_string());
 
 	let substitute = |input: &str, _env: &HashMap<String, String>| -> Result<String, String> {
-		if input.contains("$(MISSING)") {
+		if input.contains("{{ MISSING }}") {
 			Err("missing variable".to_string())
 		} else {
 			Ok(input.to_string())

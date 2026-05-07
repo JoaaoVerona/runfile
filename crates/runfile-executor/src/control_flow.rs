@@ -74,7 +74,7 @@ fn resolve_value(
 
 /// Truthiness rule: only the empty string is falsy. Every other string is
 /// truthy. This matches the values that raw shell commands see when they
-/// receive a `$(...)` substitution. In particular, `$(FLAGS.x)` resolves
+/// receive a `{{ ... }}` substitution. In particular, `{{ FLAGS.x }}` resolves
 /// to either `"true"` or `"false"` — both non-empty — so users must compare
 /// flags explicitly with `== true` / `== false`.
 fn is_truthy(s: &str) -> bool {

@@ -70,7 +70,7 @@ pub struct EnvBuildParams<'a> {
 /// Missing files are silently skipped. Parse errors are returned.
 ///
 /// The `substitute` function is called on each file path template with the current
-/// environment, allowing `$(ARGS)` and `$(ENV)` expansion in paths.
+/// environment, allowing `{{ ARGS.* }}` and `{{ ENV.* }}` expansion in paths.
 #[allow(clippy::type_complexity)]
 pub fn load_env_files(
 	env_files: &[String],
@@ -81,7 +81,7 @@ pub fn load_env_files(
 	let mut result = HashMap::new();
 
 	for file_template in env_files {
-		// Substitute $(ARGS) and $(ENV) in the file path
+		// Substitute {{ ARGS.* }} and {{ ENV.* }} in the file path
 		let file_path_str = substitute(file_template, current_env).map_err(EnvError::Substitution)?;
 
 		// Resolve relative to working directory
@@ -126,7 +126,7 @@ pub fn load_env_files(
 /// 5. Decryption — `encrypted:` values rewritten in place
 ///
 /// For top-level invocations (`base_env: None`), step 1 starts from
-/// `std::env::vars()` so `$(ENV.X)` substitution sees the inherited shell
+/// `std::env::vars()` so `{{ ENV.X }}` substitution sees the inherited shell
 /// values. The system-env re-overlay in step 3 is what actually ENFORCES
 /// shell-wins on the final env (Runfile overrides during step 2 are undone for
 /// any key the shell defines).
@@ -134,13 +134,13 @@ pub fn load_env_files(
 /// For dependency invocations (`base_env: Some(parent's resolved env)`),
 /// step 1 starts from the parent's resolved env, so the dep inherits parent's
 /// Runfile-defined values (those that survived shell-wins in the parent build)
-/// and `$(ENV.X)` in the dep can reference them. Step 3 still re-overlays
+/// and `{{ ENV.X }}` in the dep can reference them. Step 3 still re-overlays
 /// `std::env::vars()`, ensuring shell wins over both parent and dep
 /// contributions. Step 4 walks `parent_add_to_path_chain` plus this target's
 /// `addToPath` so the full chain is re-prepended after step 3 wiped PATH.
 ///
 /// The `substitute` function is called on env values and file paths, allowing
-/// `$(ARGS)`, `$(FLAGS)`, and `$(ENV)` expansion.
+/// `{{ ARGS.* }}`, `{{ FLAGS.* }}`, and `{{ ENV.* }}` expansion.
 #[allow(clippy::type_complexity)]
 pub fn build_env(
 	params: &EnvBuildParams<'_>,

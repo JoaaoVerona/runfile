@@ -799,7 +799,7 @@ fn convert_npm_windows_only_script() {
 
 	let result = crate::convert_package_json_scripts(scripts, &HashSet::new());
 	let spec = &result.targets["win"];
-	// Windows-only scripts now wrap their commands in `if "$(RUN.os) == windows"`.
+	// Windows-only scripts now wrap their commands in `if "{{ RUN.os }} == windows"`.
 	assert!(matches!(&spec.commands[0], runfile_parser::CommandStep::If(_)));
 }
 

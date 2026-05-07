@@ -355,11 +355,11 @@ fn convert_npm_script(script: &str, script_name: &str, known_scripts: &HashSet<&
 	let description = Some(format!("Converted from package.json script \"{script_name}\""));
 
 	if is_windows_only {
-		// Wrap the Windows-only commands in an `if "$(RUN.os) == windows"`
+		// Wrap the Windows-only commands in an `if "{{ RUN.os }} == windows"`
 		// block; non-Windows runs emit a friendly error and exit 1.
 		let win_commands = to_steps(commands);
 		let if_step = IfStep {
-			condition: "$(RUN.os) == windows".to_string(),
+			condition: "{{ RUN.os }} == windows".to_string(),
 			then: win_commands,
 			r#else: Some(vec![CommandStep::Shell(
 				"echo \"Error: this target is Windows-only\" && exit 1".to_string(),

@@ -27,7 +27,7 @@ pub struct Cli {
 	#[arg(long = "dry-run")]
 	dry_run: bool,
 
-	/// Prompt for any missing $(ARGS.x) / $(ENV.X) / $(FLAGS.x) values via stdin
+	/// Prompt for any missing {{ ARGS.x }} / {{ ENV.X }} / {{ FLAGS.x }} values via stdin
 	/// instead of failing. Substitutions with defaults are also prompted —
 	/// pressing Enter accepts the default; required values without a default
 	/// must be supplied or the run fails.

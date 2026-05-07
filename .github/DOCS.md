@@ -186,7 +186,7 @@ $ run dev --port=4000           # Named arguments
 | `--timings`              | Print per-target and per-command execution times to stderr                                                         |
 | `-y`, `--yes`            | Skip confirmation prompts (same as CI auto-skip)                                                                   |
 | `--dry-run`              | Show what would be executed without running anything (like `make -n`)                                              |
-| `--stdin-args`           | Prompt via stdin for any missing `$(ARGS.x)` / `$(ENV.X)` / `$(FLAGS.x)` values instead of failing                 |
+| `--stdin-args`           | Prompt via stdin for any missing `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` values instead of failing                 |
 | `--version`              | Print version                                                                                                      |
 | `--help`                 | Print help                                                                                                         |
 
@@ -284,7 +284,7 @@ Each target is an object under `targets`:
 |---------------------|---------------------------|----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `commands`          | `(string \| if \| for)[]` | Yes      | Command steps to run sequentially. Each entry is either a shell command string or a control-flow object (`if` / `for`). See [Control Flow](#control-flow).  |
 | `description`       | `string`                  | No       | Shown in `run :list` output.                                                                                                                                |
-| `envFiles`          | `string[]`                | No       | File paths to load environment variables from. Supports `$(ARGS)` and `$(ENV)` substitution. Loaded before `env`.                                           |
+| `envFiles`          | `string[]`                | No       | File paths to load environment variables from. Supports `{{ ARGS }}` and `{{ ENV }}` substitution. Loaded before `env`.                                           |
 | `env`               | `object`                  | No       | Environment variables for this target. Values can be strings, numbers, or booleans.                                                                         |
 | `addToPath`         | `string[]`                | No       | Directories to prepend to `PATH`. Relative paths resolve from the Runfile.json location.                                                                    |
 | `forceShell`        | `string`                  | No       | Force a specific shell for this target.                                                                                                                     |
@@ -294,7 +294,7 @@ Each target is an object under `targets`:
 | `detach`            | `boolean`                 | No       | Spawn commands as detached background processes and exit immediately. Requires `parallel: true`.                                                            |
 | `workingDirectory`  | `string`                  | No       | `"runfileParent"` (default) or `"cwd"`. Controls whether commands run in the Runfile.json directory or the caller's current working directory.              |
 | `aliases`           | `string[]`                | No       | Alternative names for this target.                                                                                                                          |
-| `confirm`           | `string`                  | No       | Prompt message shown before executing. Requires `y/N` confirmation. Skipped in CI or with `--yes`. The string is shown verbatim — no `$(...)` substitution. |
+| `confirm`           | `string`                  | No       | Prompt message shown before executing. Requires `y/N` confirmation. Skipped in CI or with `--yes`. The string is shown verbatim — no `{{ ... }}` substitution. |
 | `forceKillOnSigInt` | `boolean`                 | No       | When true, forcefully kill the entire spawned process tree on SIGINT/CTRL+C. See [Force-kill on Ctrl+C](#force-kill-on-ctrlc).                              |
 | `extendStdio`       | `object[]`                | No       | Tail one or more log files during execution and route new lines to `stdout` or `stderr`. See [extendStdio](#extendstdio).                                   |
 | `watch`             | `string[]`                | No       | Glob patterns for watch mode. When present, the target automatically re-runs on matching file changes. Use `!` prefix to exclude.                           |
@@ -323,7 +323,7 @@ Everything in `globals` applies to all targets. Target-level settings always tak
 | Property            | Type       | Description                                                                                                                                                          |
 |---------------------|------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `addToPath`         | `string[]` | Directories prepended to `PATH` for every target. Target-level `addToPath` entries go before global ones.                                                            |
-| `envFiles`          | `string[]` | File paths to load environment variables from for all targets. Supports `$(ARGS)` and `$(ENV)` substitution.                                                         |
+| `envFiles`          | `string[]` | File paths to load environment variables from for all targets. Supports `{{ ARGS }}` and `{{ ENV }}` substitution.                                                         |
 | `env`               | `object`   | Environment variables for all targets. Target-level `env` overrides these.                                                                                           |
 | `forceShell`        | `string`   | Default shell for all targets. Overridden by target-level `forceShell`.                                                                                              |
 | `logging`           | `boolean`  | Enable command logging globally. Overridden per-target.                                                                                                              |
@@ -338,7 +338,7 @@ Everything in `globals` applies to all targets. Target-level settings always tak
 
 Runfile has built-in support for passing arguments from the command line into your commands.
 
-### Positional arguments — `$(ARGS)`
+### Positional arguments — `{{ ARGS }}`
 
 Everything after the target name that isn't a `--flag` is a positional argument:
 
@@ -347,7 +347,7 @@ Everything after the target name that isn't a `--flag` is a positional argument:
 	"targets": {
 		"build": {
 			"commands": [
-				"cargo build $(ARGS)"
+				"cargo build {{ ARGS }}"
 			]
 		}
 	}
@@ -359,7 +359,7 @@ $ run build --release --features=serde
 # Executes: cargo build --release --features=serde
 ```
 
-### Named arguments — `$(ARGS.key ? default)`
+### Named arguments — `{{ ARGS.key ? default }}`
 
 Named arguments are extracted from `--key=value` or `--key value` pairs:
 
@@ -371,8 +371,8 @@ Named arguments are extracted from `--key=value` or `--key value` pairs:
 				"npm run dev"
 			],
 			"env": {
-				"PORT": "$(ARGS.port ? 3000)",
-				"NODE_ENV": "$(ARGS.env ? development)"
+				"PORT": "{{ ARGS.port ? 3000 }}",
+				"NODE_ENV": "{{ ARGS.env ? development }}"
 			}
 		}
 	}
@@ -385,9 +385,9 @@ $ run dev --port=4000             # PORT=4000, NODE_ENV=development
 $ run dev --env=production        # PORT=3000, NODE_ENV=production
 ```
 
-### Environment variables — `$(ENV.key ? default)`
+### Environment variables — `{{ ENV.key ? default }}`
 
-Reference environment variables (including those defined in the target's `env` property) with `$(ENV.key)`. Lookups are
+Reference environment variables (including those defined in the target's `env` property) with `{{ ENV.key }}`. Lookups are
 case-insensitive:
 
 ```json
@@ -395,7 +395,7 @@ case-insensitive:
 	"targets": {
 		"greet": {
 			"commands": [
-				"echo Hello $(ENV.USER ? world)"
+				"echo Hello {{ ENV.USER ? world }}"
 			]
 		}
 	}
@@ -419,7 +419,7 @@ Fallback values can themselves be `ARGS.key` or `ENV.key` references, forming a 
 				"node server.js"
 			],
 			"env": {
-				"NODE_ENV": "$(ARGS.env ? ENV.NODE_ENV ? development)"
+				"NODE_ENV": "{{ ARGS.env ? ENV.NODE_ENV ? development }}"
 			}
 		}
 	}
@@ -435,14 +435,14 @@ $ run server                      # NODE_ENV=development (literal default)
 ### Interactive prompts — `--stdin-args`
 
 The `--stdin-args` flag (placed before the target name, like `--dry-run`) prompts via stdin for any missing
-`$(ARGS.x)` / `$(ENV.X)` / `$(FLAGS.x)` reference instead of failing. Substitutions with a literal default are
+`{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` reference instead of failing. Substitutions with a literal default are
 also prompted: pressing Enter accepts the default; required values without a default must be supplied or the
 run errors as it would without the flag.
 
 ```
 $ run --stdin-args server
 [runfile] enter ARGS.env [development]:        # Enter → uses "development"
-[runfile] pass --release? (y/N): y             # toggles $(FLAGS.release) to true
+[runfile] pass --release? (y/N): y             # toggles {{ FLAGS.release }} to true
 ```
 
 Resolution order with `--stdin-args` set:
@@ -458,7 +458,7 @@ Resolution order with `--stdin-args` set:
 same value is asked at most once per run, even across `@target` invocations. Works with `--dry-run` too — the
 dry-run path goes through the same substitution layer.
 
-### Boolean flags — `$(FLAGS.key)`
+### Boolean flags — `{{ FLAGS.key }}`
 
 Flags are boolean toggles. They check whether `--key` was passed on the command line (the value, if any, is ignored).
 Flags are always optional — they resolve to `"false"` when absent.
@@ -468,7 +468,7 @@ Flags are always optional — they resolve to `"false"` when absent.
 	"targets": {
 		"build": {
 			"commands": [
-				"cargo build $(FLAGS.release ? --release :) $(FLAGS.verbose ? -v :)"
+				"cargo build {{ FLAGS.release ? --release : }} {{ FLAGS.verbose ? -v : }}"
 			]
 		}
 	}
@@ -481,14 +481,14 @@ $ run build --release                 # cargo build --release
 $ run build --verbose --release       # cargo build --release -v
 ```
 
-The raw form `$(FLAGS.key)` returns the string `"true"` or `"false"`:
+The raw form `{{ FLAGS.key }}` returns the string `"true"` or `"false"`:
 
 ```json
 {
 	"targets": {
 		"test": {
 			"commands": [
-				"echo dry_run=$(FLAGS.dry-run)"
+				"echo dry_run={{ FLAGS.dry-run }}"
 			]
 		}
 	}
@@ -500,7 +500,7 @@ $ run test --dry-run                  # echo dry_run=true
 $ run test                            # echo dry_run=false
 ```
 
-The ternary form `$(FLAGS.key ? true_val : false_val)` uses ` : ` (colon with spaces) as the separator, so colons inside
+The ternary form `{{ FLAGS.key ? true_val : false_val }}` uses ` : ` (colon with spaces) as the separator, so colons inside
 URLs and paths work naturally:
 
 ```json
@@ -508,27 +508,27 @@ URLs and paths work naturally:
 	"targets": {
 		"serve": {
 			"commands": [
-				"curl $(FLAGS.ssl ? https://localhost:3443 : http://localhost:3000)"
+				"curl {{ FLAGS.ssl ? https://localhost:3443 : http://localhost:3000 }}"
 			]
 		}
 	}
 }
 ```
 
-The shorthand `$(FLAGS.key ? value)` (no ` : `) returns `value` when the flag is present and an empty string when
+The shorthand `{{ FLAGS.key ? value }}` (no ` : `) returns `value` when the flag is present and an empty string when
 absent.
 
-Flags referenced by `$(FLAGS.key)` are consumed and will not appear in `$(ARGS)`.
+Flags referenced by `{{ FLAGS.key }}` are consumed and will not appear in `{{ ARGS }}`.
 
-### Runtime context — `$(RUN.os)`, `$(RUN.shell)`
+### Runtime context — `{{ RUN.os }}`, `{{ RUN.shell }}`
 
 Reference the active execution context to write conditional commands without
 duplicating logic into multiple targets. Two runtime values are exposed as substitutions:
 
 | Substitution   | Resolves to                                                                                                                               |
 |----------------|-------------------------------------------------------------------------------------------------------------------------------------------|
-| `$(RUN.os)`    | `"windows"`, `"linux"`, or `"mac"`.                                                                                                       |
-| `$(RUN.shell)` | `"bash"`, `"zsh"`, `"sh"`, `"fish"`, `"powershell"`, or `"cmd"` — the shell that will run the commands (after any `forceShell` override). |
+| `{{ RUN.os }}`    | `"windows"`, `"linux"`, or `"mac"`.                                                                                                       |
+| `{{ RUN.shell }}` | `"bash"`, `"zsh"`, `"sh"`, `"fish"`, `"powershell"`, or `"cmd"` — the shell that will run the commands (after any `forceShell` override). |
 
 These plug straight into `if` conditions, `for` iterators, command bodies, and
 `env` values:
@@ -538,28 +538,28 @@ These plug straight into `if` conditions, `for` iterators, command bodies, and
 	"targets": {
 		"clean": {
 			"commands": [
-				{ "if": "$(RUN.os) == windows", "then": ["del /S /Q build"], "else": ["rm -rf build"] }
+				{ "if": "{{ RUN.os }} == windows", "then": ["del /S /Q build"], "else": ["rm -rf build"] }
 			]
 		},
 		"smoke": {
 			"commands": [
-				{ "if": "$(RUN.shell) == powershell", "then": ["Write-Host hello"], "else": ["echo hello"] }
+				{ "if": "{{ RUN.shell }} == powershell", "then": ["Write-Host hello"], "else": ["echo hello"] }
 			]
 		},
 		"trace": {
 			"commands": [
-				{ "if": "$(FLAGS.debug) == true", "then": ["./tool --verbose"], "else": ["./tool"] }
+				{ "if": "{{ FLAGS.debug }} == true", "then": ["./tool --verbose"], "else": ["./tool"] }
 			]
 		}
 	}
 }
 ```
 
-Unknown `$(RUN.<key>)` references are an error at substitution time. The valid
+Unknown `{{ RUN.<key> }}` references are an error at substitution time. The valid
 keys are `os` and `shell`. `RUN.*` participates in chained fallbacks just like
-ARGS/ENV: `$(ARGS.shell ? RUN.shell)`.
+ARGS/ENV: `{{ ARGS.shell ? RUN.shell }}`.
 
-All substitution syntax (`$(ARGS)`, `$(FLAGS)`, `$(ENV)`, `$(RUN)`) works in `env` values too, both at the target and
+All substitution syntax (`{{ ARGS }}`, `{{ FLAGS }}`, `{{ ENV }}`, `{{ RUN }}`) works in `env` values too, both at the target and
 global level:
 
 ```json
@@ -570,8 +570,8 @@ global level:
 				"node server.js"
 			],
 			"env": {
-				"PORT": "$(ARGS.port ? 3000)",
-				"NODE_OPTIONS": "$(FLAGS.debug ? --inspect : )"
+				"PORT": "{{ ARGS.port ? 3000 }}",
+				"NODE_OPTIONS": "{{ FLAGS.debug ? --inspect : }}"
 			}
 		}
 	}
@@ -587,31 +587,38 @@ $ run dev                        # PORT=3000, NODE_OPTIONS=
 
 | Syntax                    | Behavior                                                         |
 |---------------------------|------------------------------------------------------------------|
-| `$(ARGS)`                 | All positional arguments, joined by spaces.                      |
-| `$(ARGS.key ? default)`   | Named argument `--key`, or `default` if not provided.            |
-| `$(ARGS.key ?)`           | Named argument `--key`, or empty string if not provided.         |
-| `$(ARGS.key)`             | Named argument `--key`. **Error** if not provided.               |
-| `$(FLAGS.key)`            | `"true"` if `--key` passed, `"false"` otherwise.                 |
-| `$(FLAGS.key ? a : b)`    | `a` if `--key` passed, `b` otherwise (` : ` separator).          |
-| `$(FLAGS.key ? a)`        | `a` if `--key` passed, empty string otherwise.                   |
-| `$(ENV.key ? default)`    | Environment variable, or `default` if not set.                   |
-| `$(ENV.key ?)`            | Environment variable, or empty string if not set.                |
-| `$(ENV.key)`              | Environment variable. **Error** if not set.                      |
-| `$(RUN.os)`               | `"windows"`, `"linux"`, or `"mac"`.                              |
-| `$(RUN.shell)`            | `"bash"`, `"zsh"`, `"sh"`, `"fish"`, `"powershell"`, or `"cmd"`. |
-| `$(ARGS.a ? ENV.b ? val)` | Chained: try ARGS.a, then ENV.b, then literal `val`.             |
+| `{{ ARGS }}`                 | All positional arguments, joined by spaces.                      |
+| `{{ ARGS.key ? default }}`   | Named argument `--key`, or `default` if not provided.            |
+| `{{ ARGS.key ? }}`           | Named argument `--key`, or empty string if not provided.         |
+| `{{ ARGS.key }}`             | Named argument `--key`. **Error** if not provided.               |
+| `{{ FLAGS.key }}`            | `"true"` if `--key` passed, `"false"` otherwise.                 |
+| `{{ FLAGS.key ? a : b }}`    | `a` if `--key` passed, `b` otherwise (` : ` separator).          |
+| `{{ FLAGS.key ? a }}`        | `a` if `--key` passed, empty string otherwise.                   |
+| `{{ ENV.key ? default }}`    | Environment variable, or `default` if not set.                   |
+| `{{ ENV.key ? }}`            | Environment variable, or empty string if not set.                |
+| `{{ ENV.key }}`              | Environment variable. **Error** if not set.                      |
+| `{{ RUN.os }}`               | `"windows"`, `"linux"`, or `"mac"`.                              |
+| `{{ RUN.shell }}`            | `"bash"`, `"zsh"`, `"sh"`, `"fish"`, `"powershell"`, or `"cmd"`. |
+| `{{ ARGS.a ? ENV.b ? val }}` | Chained: try ARGS.a, then ENV.b, then literal `val`.             |
+
+**Strict formatting:** every substitution requires *exactly one* space after `{{` and before `}}`, and exactly
+one space around the `?` and `:` operators. Anything else is a parse error. This avoids any ambiguity with shell
+syntax — `{{ARGS.x}}` is rejected, only `{{ ARGS.x }}` is valid.
+
+**Escapes:** to emit a literal `{{` or `}}` in the rendered output, prefix the doubled brace with a backslash:
+`\{{` produces `{{` and `\}}` produces `}}`. A bare backslash (`\`) is otherwise passed through unchanged.
 
 Environment variable lookups are **case-insensitive**. If the target's `env` property defines the same key with
 different casing (e.g. both `NODE_ENV` and `node_env`), Runfile exits with an error.
 
-The `$(ARGS.key)` and `$(ENV.key)` forms (no `?`) are useful when a value is required:
+The `{{ ARGS.key }}` and `{{ ENV.key }}` forms (no `?`) are useful when a value is required:
 
 ```json
 {
 	"targets": {
 		"deploy": {
 			"commands": [
-				"./deploy.sh --env=$(ARGS.env)"
+				"./deploy.sh --env={{ ARGS.env }}"
 			]
 		}
 	}
@@ -654,11 +661,11 @@ failures from the target's own commands.
   "echo running pipeline",
   "@build",                       // call `build` with no args
   "@build --release",             // call `build` with explicit args
-  "@build $(ARGS)",               // forward the parent's positional args
-  "@deploy --env=$(ENV.STAGE)",   // any substitution works in the args template
+  "@build {{ ARGS }}",               // forward the parent's positional args
+  "@deploy --env={{ ENV.STAGE }}",   // any substitution works in the args template
   "@?nightly-cleanup",            // silently skipped if `nightly-cleanup` isn't defined
   // common pattern: per-namespace target that's only defined in some namespaces
-  { "for": "ns", "in": "namespaces", "do": "@?$(LOOP.ns):adb-forward" }
+  { "for": "ns", "in": "namespaces", "do": "@?{{ LOOP.ns }}:adb-forward" }
 ]
 ```
 
@@ -667,14 +674,14 @@ they contain `?`.
 
 | Behavior              | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 |-----------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Argument parsing      | The args template is **substituted first** (all `$(ARGS)` / `$(ENV.*)` / `$(RUN.*)` / `$(LOOP.*)` / `$(FLAGS.*)` resolve), then **shlex-split** into argv. Quoted args (`"hello world"`) are kept intact.                                                                                                                                                                                                                                                                                                                     |
+| Argument parsing      | The args template is **substituted first** (all `{{ ARGS }}` / `{{ ENV.* }}` / `{{ RUN.* }}` / `{{ LOOP.* }}` / `{{ FLAGS.* }}` resolve), then **shlex-split** into argv. Quoted args (`"hello world"`) are kept intact.                                                                                                                                                                                                                                                                                                                     |
 | No dedup              | Calling `@build` three times runs `build` three times, with their respective args. There is no diamond-dependency dedup at this level.                                                                                                                                                                                                                                                                                                                                                                                        |
 | Cycle detection       | A target that (transitively) calls itself errors at runtime: `Dependency cycle detected: foo`.                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Env propagation       | The parent target's resolved env is passed to the dependency as a substitution base. The dep's own `envFiles` / `env` layer on top (dep wins per key), then the **current shell env always wins** over both. For PATH, the dep's `addToPath` ends up at the very front, then the parent's, then the shell `PATH` (`[dep_addToPath…, parent_addToPath…, …, shell PATH]`). Chains compose recursively — a grandchild's `addToPath` lands further forward than its parent's, which lands further forward than the grandparent's. |
 | Target-level config   | `forceShell`, `workingDirectory`, `parallel`, `confirm`, etc. are **not inherited** — each target picks its own. Only env flows.                                                                                                                                                                                                                                                                                                                                                                                              |
 | Inside `if` / `for`   | `@target` is a normal command step — works inside `then` / `else` / `for` body. `if` shorthand `"then": "@deploy"` is the same as `"then": ["@deploy"]`.                                                                                                                                                                                                                                                                                                                                                                      |
 | Parallel parents      | When the parent has `parallel: true`, `@target` invocations run on worker threads alongside the sibling shell commands. Nested `parallel: true` deps fan out further (no enforced sequentialization).                                                                                                                                                                                                                                                                                                                         |
-| Optional calls        | `@?target` silently skips when the target doesn't exist (no error, no failure counted). Static analysis treats statically-missing optional calls as 0 leaves; dynamic optional calls (`@?$(...)`) still reserve 1 counter slot per dispatch and skip at runtime. Failures *inside* a present target's commands are not silenced — use `ignoreErrors` for that.                                                                                                                                                                |
+| Optional calls        | `@?target` silently skips when the target doesn't exist (no error, no failure counted). Static analysis treats statically-missing optional calls as 0 leaves; dynamic optional calls (`@?{{ ... }}`) still reserve 1 counter slot per dispatch and skip at runtime. Failures *inside* a present target's commands are not silenced — use `ignoreErrors` for that.                                                                                                                                                                |
 | Plain `@` not allowed | `"@"` or `"@ "` (no target name) is a parse error. Same for `"@?"` / `"@? "`. To run a shell command starting literally with `@`, prefix with a space or wrap in `sh -c`.                                                                                                                                                                                                                                                                                                                                                     |
 
 For an exhaustive table of target invocation semantics (no dedup, env layering, cycle detection), see
@@ -684,13 +691,13 @@ For an exhaustive table of target invocation semantics (no dedup, env layering, 
 
 ```jsonc
 {
-  "if": "$(ARGS.env) == production && $(FLAGS.confirm) == true",
+  "if": "{{ ARGS.env }} == production && {{ FLAGS.confirm }} == true",
   "then": ["./deploy-prod.sh"],
   "else": ["./deploy-staging.sh"]
 }
 
 // Single-command shorthand: `then` and `else` can be a bare string instead of a one-element array.
-{ "if": "$(RUN.os) == windows", "then": "del /S /Q build", "else": "rm -rf build" }
+{ "if": "{{ RUN.os }} == windows", "then": "del /S /Q build", "else": "rm -rf build" }
 ```
 
 | Field          | Type                                 | Required | Description                                                                                                       |
@@ -705,28 +712,28 @@ For an exhaustive table of target invocation semantics (no dedup, env layering, 
 
 ```jsonc
 // Inline list:
-{ "for": "service", "in": ["api", "web"], "do": ["docker build $(LOOP.service)"] }
+{ "for": "service", "in": ["api", "web"], "do": ["docker build {{ LOOP.service }}"] }
 
 // File glob (relative to the working directory):
-{ "for": "f", "glob": "src/**/*.rs", "do": ["rustfmt $(LOOP.f)"] }
+{ "for": "f", "glob": "src/**/*.rs", "do": ["rustfmt {{ LOOP.f }}"] }
 
 // Lines of stdout from a shell command (run once, at planning time):
-{ "for": "f", "shell": "git diff --name-only", "do": ["clang-format -i $(LOOP.f)"] }
+{ "for": "f", "shell": "git diff --name-only", "do": ["clang-format -i {{ LOOP.f }}"] }
 
 // Iterate over every namespace prefix declared via `includes` — handy for
 // monorepo-style "build everything" targets that compose namespaced subprojects.
-// `@$(LOOP.ns):build` substitutes the loop var into the target name and
+// `@{{ LOOP.ns }}:build` substitutes the loop var into the target name and
 // dispatches to the matching namespaced target on each iteration.
-{ "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):build" }
+{ "for": "ns", "in": "namespaces", "do": "@{{ LOOP.ns }}:build" }
 
 // Concurrent iterations:
-{ "for": "x", "in": ["a","b","c"], "parallel": true, "do": ["./worker.sh $(LOOP.x)"] }
+{ "for": "x", "in": ["a","b","c"], "parallel": true, "do": ["./worker.sh {{ LOOP.x }}"] }
 ```
 
 | Field          | Type                         | Required             | Description                                                                                                                                                                                                                                                                                                                                               |
 |----------------|------------------------------|----------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `for`          | `string`                     | Yes                  | Loop variable name. Matches `[A-Za-z_][A-Za-z0-9_]*`. Reference inside the body as `$(LOOP.<name>)`.                                                                                                                                                                                                                                                      |
-| `in`           | `string[]` or `"namespaces"` | One of in/glob/shell | Iterate over each element of an explicit array (each element is substituted, so `$(ARGS.x)` etc. work), OR pass the magic string `"namespaces"` to iterate over every namespace prefix declared via `includes` (alphabetically sorted, deduplicated, composed across nested includes — a chain `outer:inner` shows up as both `outer` and `outer:inner`). |
+| `for`          | `string`                     | Yes                  | Loop variable name. Matches `[A-Za-z_][A-Za-z0-9_]*`. Reference inside the body as `{{ LOOP.<name> }}`.                                                                                                                                                                                                                                                      |
+| `in`           | `string[]` or `"namespaces"` | One of in/glob/shell | Iterate over each element of an explicit array (each element is substituted, so `{{ ARGS.x }}` etc. work), OR pass the magic string `"namespaces"` to iterate over every namespace prefix declared via `includes` (alphabetically sorted, deduplicated, composed across nested includes — a chain `outer:inner` shows up as both `outer` and `outer:inner`). |
 | `glob`         | `string`                     | One of in/glob/shell | Iterate over file paths matching the pattern, relative to the working directory.                                                                                                                                                                                                                                                                          |
 | `shell`        | `string`                     | One of in/glob/shell | Iterate over each non-empty line of the command's stdout. Lines are trimmed; blank lines are dropped. The iterator runs once at planning time. **A non-zero exit is a hard error.**                                                                                                                                                                       |
 | `do`           | `string \| commandStep[]`    | Yes                  | Body steps run once per iteration. May be empty. Accepts either a single shell-command string (sugar for a one-element array) or an array of command steps.                                                                                                                                                                                               |
@@ -734,8 +741,8 @@ For an exhaustive table of target invocation semantics (no dedup, env layering, 
 | `ignoreErrors` | `boolean`                    | No                   | When true, body failures do not flip the run's success state and do not stop iteration.                                                                                                                                                                                                                                                                   |
 
 > **Dynamic target names.** `@target` invocations now substitute their target
-> name at dispatch time, so patterns like `@$(LOOP.ns):build` (or
-> `@$(ARGS.target)`) resolve to a concrete target at runtime. Static analysis
+> name at dispatch time, so patterns like `@{{ LOOP.ns }}:build` (or
+> `@{{ ARGS.target }}`) resolve to a concrete target at runtime. Static analysis
 > (the `(N/total)` step counter, arg-usage scanning, cycle detection of
 > *known* names) treats dynamic names as a single leaf with no recursion —
 > the runtime counter bumps the total via `add_to_total` if the dispatched
@@ -749,7 +756,7 @@ clearer error story when the value doesn't match any case (and no `default` is c
 ```jsonc
 "commands": [
   {
-    "match": "$(ARGS.tier ? 1)",  // chained substitution → defaults to "1" when --tier missing
+    "match": "{{ ARGS.tier ? 1 }}",  // chained substitution → defaults to "1" when --tier missing
     "cases": {
       "1": "flutter emulators --launch Tier_1_Android_9_SDK_28_1GB",
       "2": "flutter emulators --launch Tier_2_Android_11_SDK_30_2GB",
@@ -763,7 +770,7 @@ clearer error story when the value doesn't match any case (and no `default` is c
 
 | Field          | Type                                 | Required | Description                                                                                                                                                                                                                                          |
 |----------------|--------------------------------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `match`        | `string`                             | Yes      | The substitution template whose resolved value selects a case. Goes through the same substitution pipeline as any other `$(...)` reference, so chained fallbacks (`$(ARGS.tier ? ENV.TIER ? 1)`) and all source kinds (`ARGS`, `ENV`, `LOOP`, `RUN`) work. |
+| `match`        | `string`                             | Yes      | The substitution template whose resolved value selects a case. Goes through the same substitution pipeline as any other `{{ ... }}` reference, so chained fallbacks (`{{ ARGS.tier ? ENV.TIER ? 1 }}`) and all source kinds (`ARGS`, `ENV`, `LOOP`, `RUN`) work. |
 | `cases`        | `object<string, string \| commandStep[]>` | Yes (or `default`) | Map from case value (compared as a string against the resolved match value) to the steps to run. Each value is either a single shell-command string (sugar for a one-element array) or an array of command steps.                                                                                       |
 | `default`      | `string \| commandStep[]`            | No       | Steps run when no case matches the resolved value. Also runs when the `match` substitution itself fails (e.g. missing arg with no chain default). When omitted, an unmatched value is a hard error that lists the valid cases.                       |
 | `ignoreErrors` | `boolean`                            | No       | When true, failures inside the chosen branch do not flip the run's success state.                                                                                                                                                                    |
@@ -774,37 +781,37 @@ equality. A case match runs that case's steps. Otherwise, `default` runs if set.
 value surfaces an error like:
 
 ```
-No case matched value "5" for `match` "$(ARGS.tier)"
+No case matched value "5" for `match` "{{ ARGS.tier }}"
   Valid cases: "1", "2", "3", "4"
 ```
 
-When the substitution itself fails (e.g. `$(ARGS.tier)` with no `--tier` flag and no chain default), `default` runs
+When the substitution itself fails (e.g. `{{ ARGS.tier }}` with no `--tier` flag and no chain default), `default` runs
 if present; otherwise the error message includes the valid cases too — so users always know what values they can
 pass:
 
 ```
-Could not resolve value for `match` "$(ARGS.tier)": Argument "tier" was not provided …
+Could not resolve value for `match` "{{ ARGS.tier }}": Argument "tier" was not provided …
   Valid cases: "1", "2", "3", "4"
 ```
 
-Use chained substitution in `match` for a default *value* (`$(ARGS.tier ? 1)`) and `default` for a fallback
+Use chained substitution in `match` for a default *value* (`{{ ARGS.tier ? 1 }}`) and `default` for a fallback
 *branch* — they compose. Cases iterate in alphabetical order in error messages (because internally they're stored
 in a sorted map).
 
-### `$(LOOP.var)` — loop variable substitution
+### `{{ LOOP.var }}` — loop variable substitution
 
-Inside a `for` block's body (and in nested blocks), reference the loop variable as `$(LOOP.<var>)`:
+Inside a `for` block's body (and in nested blocks), reference the loop variable as `{{ LOOP.<var> }}`:
 
 ```jsonc
 { "for": "stage", "in": ["lint", "test", "build"], "do": [
   { "for": "service", "in": ["api", "web"], "do": [
-    "echo running $(LOOP.stage) on $(LOOP.service)"
+    "echo running {{ LOOP.stage }} on {{ LOOP.service }}"
   ] }
 ] }
 ```
 
 Inner loop variables shadow outer ones with the same name. Referencing a loop variable outside its scope is a hard
-error. `$(LOOP.x)` participates in chained fallbacks just like ARGS/ENV: `$(LOOP.x ? default)`.
+error. `{{ LOOP.x }}` participates in chained fallbacks just like ARGS/ENV: `{{ LOOP.x ? default }}`.
 
 ### Condition expressions
 
@@ -824,19 +831,19 @@ Conditions in `if` blocks use a tiny boolean DSL.
 
 **Values** can be:
 
-- A substitution: `$(ARGS.x)`, `$(ENV.X)`, `$(FLAGS.x)`, `$(LOOP.x)`, `$(RUN.os)` / `$(RUN.shell)`, with chained
+- A substitution: `{{ ARGS.x }}`, `{{ ENV.X }}`, `{{ FLAGS.x }}`, `{{ LOOP.x }}`, `{{ RUN.os }}` / `{{ RUN.shell }}`, with chained
   fallbacks.
 - A quoted string: `"foo bar"` or `'foo bar'`. No escapes in v1.
 - A bare word: `production`, `path/to/file`, `1.2.3`.
 
 **Truthiness rule.** Only the empty string is falsy. Every other string — including `"false"`, `"0"`, and `"no"` — is
-truthy. This matches what the shell sees when given a `$(...)` substitution. In particular, `$(FLAGS.x)` resolves to
+truthy. This matches what the shell sees when given a `{{ ... }}` substitution. In particular, `{{ FLAGS.x }}` resolves to
 `"true"` when present and `"false"` when absent — *both non-empty* — so flag presence checks must use explicit
 comparison:
 
 ```jsonc
-{ "if": "$(FLAGS.confirm) == true", "then": [...] }   // flag set
-{ "if": "$(FLAGS.confirm) == false", "then": [...] }  // flag absent
+{ "if": "{{ FLAGS.confirm }} == true", "then": [...] }   // flag set
+{ "if": "{{ FLAGS.confirm }} == false", "then": [...] }  // flag absent
 ```
 
 **Mixing `&&` and `||`.** The DSL refuses to assume operator precedence. If you mix the two operators in the same
@@ -901,8 +908,8 @@ environment and cannot see Windows-side binaries from `PATH`.
 
 `sh` is rarely installed on Windows and may be missing on minimal Linux containers. When `sh` is requested
 (via `forceShell`, `--shell`, or any other path) and cannot be found, Runfile falls back to other
-sh-compatible shells in order: **bash → zsh → fish**. `$(RUN.shell)` then reflects whichever shell actually
-ran (e.g. `bash`), so existing `if $(RUN.shell) == bash` branches keep working. This lets you write
+sh-compatible shells in order: **bash → zsh → fish**. `{{ RUN.shell }}` then reflects whichever shell actually
+ran (e.g. `bash`), so existing `if {{ RUN.shell }} == bash` branches keep working. This lets you write
 `forceShell: "sh"` for portable `cp`/`echo`/`mkdir` snippets without an `if RUN.os == windows` branch.
 
 ### Forcing a shell
@@ -1071,14 +1078,14 @@ Load environment variables from `.env` files using `envFiles`:
 }
 ```
 
-File paths support `$(ARGS)` and `$(ENV)` substitution for dynamic selection:
+File paths support `{{ ARGS }}` and `{{ ENV }}` substitution for dynamic selection:
 
 ```json
 {
 	"globals": {
 		"envFiles": [
 			".env",
-			".env.$(ENV.environment ? development)"
+			".env.{{ ENV.environment ? development }}"
 		]
 	},
 	"targets": {
@@ -1088,7 +1095,7 @@ File paths support `$(ARGS)` and `$(ENV)` substitution for dynamic selection:
 			],
 			"envFiles": [
 				".env",
-				".env.$(ARGS.env)"
+				".env.{{ ARGS.env }}"
 			]
 		}
 	}
@@ -1550,8 +1557,8 @@ Wrap a list of inner commands so they only run under the chosen condition:
 wrapper:
 
 ```jsonc
-{ "when": "always", "if": "$(RUN.os) == windows", "then": "rm -rf ./tmp_data", "else": "rm -rf /tmp/data" }
-{ "when": "failure", "for": "f", "glob": "logs/*", "do": ["cat $(LOOP.f)"] }
+{ "when": "always", "if": "{{ RUN.os }} == windows", "then": "rm -rf ./tmp_data", "else": "rm -rf /tmp/data" }
+{ "when": "failure", "for": "f", "glob": "logs/*", "do": ["cat {{ LOOP.f }}"] }
 ```
 
 ### Semantics in detail
@@ -1610,12 +1617,12 @@ scp target/release/app server:/opt/
 echo Deploy complete.
 ```
 
-Substitutions (`$(ARGS.x)`, `$(ENV.x)`, `$(RUN.os)`, etc.) are fully resolved against the current invocation, so the
+Substitutions (`{{ ARGS.x }}`, `{{ ENV.x }}`, `{{ RUN.os }}`, etc.) are fully resolved against the current invocation, so the
 printed lines are the exact commands that would be sent to the shell. `if` blocks are evaluated against the same
 context the runner would see (args + resolved env + loop scope) and only the matching branch is printed.
 `@target` invocations are recursively expanded: each dep's resolved shell commands appear inline at the call site,
 with the dep's own `env` block reflected on each line. Aggregator targets whose body is purely `@target` dispatches
-(for example a `for in: "namespaces"` loop running `@$(LOOP.ns):dev` for every namespaced subproject) print every
+(for example a `for in: "namespaces"` loop running `@{{ LOOP.ns }}:dev` for every namespaced subproject) print every
 nested command, not nothing. Cycles are detected at extract time; optional calls (`@?target`) silently skip when the
 dispatched target is absent.
 
@@ -1766,7 +1773,7 @@ When `parallel: true` and `ignoreErrors: true` are both set, all commands run to
 but the CLI exits with code 0.
 
 `parallel` is a **target-only** property (not available in `globals`). To make it conditional per-platform, dispatch
-into specialized targets via `if "$(RUN.os) == ..."` + `@target`.
+into specialized targets via `if "{{ RUN.os }} == ..."` + `@target`.
 
 ---
 
@@ -1793,7 +1800,7 @@ Running `run serve` will spawn the commands in the background and exit immediate
 running independently.
 
 `detach` requires `parallel: true`. Both are **target-only** properties (not available in `globals`). To make them
-conditional per-platform, dispatch into specialized targets via `if "$(RUN.os) == ..."` + `@target`.
+conditional per-platform, dispatch into specialized targets via `if "{{ RUN.os }} == ..."` + `@target`.
 
 ---
 
@@ -1829,7 +1836,7 @@ Each entry is `{ "fromFile": <path>, "stream": "stdout" | "stderr" }`.
 
 | Property   | Description                                                                                                                                          |
 |------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `fromFile` | Path to the file to tail. Relative paths resolve from the target's working directory. Supports `$(...)` substitution (e.g. `"logs/$(RUN.os).log"`).  |
+| `fromFile` | Path to the file to tail. Relative paths resolve from the target's working directory. Supports `{{ ... }}` substitution (e.g. `"logs/{{ RUN.os }}.log"`).  |
 | `stream`   | Either `"stdout"` or `"stderr"`. New lines from the file are written to that stream, prefixed with nothing — they appear inline with command output. |
 
 Behavior:
@@ -2167,8 +2174,8 @@ Typing anything other than `y` or `Y` aborts execution. Confirmation is automati
 - In CI environments (when the `CI` environment variable is `"true"` or `"1"`)
 - When the `--yes` (`-y`) flag is passed
 
-The `confirm` prompt is shown verbatim — it is not run through `$(...)` substitution, so dynamic values like
-`$(ARGS.env)` would appear literally in the prompt.
+The `confirm` prompt is shown verbatim — it is not run through `{{ ... }}` substitution, so dynamic values like
+`{{ ARGS.env }}` would appear literally in the prompt.
 
 ---
 
@@ -2182,7 +2189,7 @@ invoke them with arguments.
 
 `run :mcp inspect` prints the JSON tool definitions that the server would advertise — useful for debugging which targets
 and arguments are visible to an agent. Internal targets (names starting with `_`) are excluded; named arguments are
-inferred from `$(ARGS.x)` and `$(FLAGS.x)` references in the target's commands.
+inferred from `{{ ARGS.x }}` and `{{ FLAGS.x }}` references in the target's commands.
 
 ```
 $ run :mcp inspect
@@ -2230,7 +2237,7 @@ $ run :init -p ci/Runfile.json
 Created ci/Runfile.json
 ```
 
-The generated file uses `if "$(RUN.shell) == ..."` to print a hello-world greeting in whichever shell ends up running
+The generated file uses `if "{{ RUN.shell }} == ..."` to print a hello-world greeting in whichever shell ends up running
 it (PowerShell, cmd, fish, or POSIX), demonstrating how to write a single target that works across platforms.
 
 Use `run :convert package-json` or `run :convert makefile` instead when you already have a `package.json` or `Makefile`
@@ -2249,9 +2256,9 @@ $ run :generate vscode-tasks
 ```
 
 Generates (or updates) `.vscode/tasks.json` with one task per Runfile target. Existing user-added fields are preserved
-on update. Targets that use `$(ARGS)` patterns get an `${input:args}` variable appended so VS Code prompts for
-arguments. Every generated task is invoked with `--stdin-args` so any unsupplied `$(ARGS.x)` / `$(ENV.X)` /
-`$(FLAGS.x)` value is prompted in the integrated terminal at run time.
+on update. Targets that use `{{ ARGS }}` patterns get an `${input:args}` variable appended so VS Code prompts for
+arguments. Every generated task is invoked with `--stdin-args` so any unsupplied `{{ ARGS.x }}` / `{{ ENV.X }}` /
+`{{ FLAGS.x }}` value is prompted in the integrated terminal at run time.
 
 ### Zed
 
@@ -2260,8 +2267,8 @@ $ run :generate zed-tasks
 ```
 
 Generates (or updates) `.zed/tasks.json` with one task per Runfile target. Existing user-added fields are preserved on
-update. Targets that use `$(ARGS)` get `$ZED_CUSTOM_ARGS` appended so Zed prompts for arguments. Every generated task
-is invoked with `--stdin-args` so any unsupplied `$(ARGS.x)` / `$(ENV.X)` / `$(FLAGS.x)` value is prompted in the Zed
+update. Targets that use `{{ ARGS }}` get `$ZED_CUSTOM_ARGS` appended so Zed prompts for arguments. Every generated task
+is invoked with `--stdin-args` so any unsupplied `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` value is prompted in the Zed
 terminal at run time.
 
 ### JetBrains (IntelliJ, CLion, RustRover, WebStorm, etc.)
@@ -2273,7 +2280,7 @@ $ run :generate jetbrains-run-configurations
 Generates Shell Script run configurations (one `.xml` file per target) in the `.run/` directory. Each configuration runs
 `run --stdin-args <target>` with the working directory set to `$PROJECT_DIR$` — JetBrains run configs are static (no
 per-invocation parameter UI), so `--stdin-args` covers targets that need user input by prompting at run time for any
-unsupplied `$(ARGS.x)` / `$(ENV.X)` / `$(FLAGS.x)` value. Re-generating upgrades configs created by older Runfile
+unsupplied `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` value. Re-generating upgrades configs created by older Runfile
 versions in place.
 
 Options:
@@ -2297,7 +2304,7 @@ a different configuration name or runs a different command, it is skipped with a
 		"build": {
 			"description": "Build the project",
 			"commands": [
-				"npm run build $(ARGS)"
+				"npm run build {{ ARGS }}"
 			]
 		},
 		"dev": {
@@ -2307,8 +2314,8 @@ a different configuration name or runs a different command, it is skipped with a
 				"npm run dev"
 			],
 			"env": {
-				"PORT": "$(ARGS.port ? 5000)",
-				"NODE_ENV": "$(ARGS.env ? development)"
+				"PORT": "{{ ARGS.port ? 5000 }}",
+				"NODE_ENV": "{{ ARGS.env ? development }}"
 			}
 		},
 		"dev:debug": {
@@ -2326,7 +2333,7 @@ a different configuration name or runs a different command, it is skipped with a
 		"test": {
 			"description": "Run test suite",
 			"commands": [
-				"npm test $(ARGS)"
+				"npm test {{ ARGS }}"
 			],
 			"env": {
 				"CI": true
@@ -2346,8 +2353,8 @@ a different configuration name or runs a different command, it is skipped with a
 		"deploy": {
 			"description": "Deploy to an environment (requires --env)",
 			"commands": [
-				"echo Deploying to $(ARGS.env)...",
-				"./scripts/deploy.sh --target=$(ARGS.env)"
+				"echo Deploying to {{ ARGS.env }}...",
+				"./scripts/deploy.sh --target={{ ARGS.env }}"
 			],
 			"forceShell": "bash",
 			"logging": true

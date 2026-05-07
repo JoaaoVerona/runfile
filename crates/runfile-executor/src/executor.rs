@@ -189,7 +189,7 @@ impl ExecSetup {
 	}
 }
 
-/// Substitute $(ARGS) and $(ENV) references in extendStdio fromFile paths.
+/// Substitute `{{ ARGS.* }}` and `{{ ENV.* }}` references in extendStdio fromFile paths.
 fn substitute_extend_stdio(
 	entries: &[ExtendStdio],
 	args: &RunArgs,
@@ -520,7 +520,7 @@ fn execute_one_target_call(
 	deps: &dyn DependencyResolver,
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
-	// Substitute the target name so dynamic patterns like `@$(LOOP.ns):build`
+	// Substitute the target name so dynamic patterns like `@{{ LOOP.ns }}:build`
 	// dispatch to the correct namespaced target. No-op for static names.
 	let target = args.substitute_with_loop(&call.target, &setup.env, loop_scope)?;
 	let argv = resolve_target_call_argv(call, args, &setup.env, loop_scope)?;
@@ -538,8 +538,8 @@ fn execute_one_target_call(
 	Ok(())
 }
 
-/// Substitute the args template and shlex-split it into argv. `$(ARGS)`
-/// expansion happens here, so `@build $(ARGS)` correctly forwards the
+/// Substitute the args template and shlex-split it into argv. `{{ ARGS }}`
+/// expansion happens here, so `@build {{ ARGS }}` correctly forwards the
 /// caller's positional arguments. The original (unsubstituted) template is
 /// surfaced in error messages to avoid leaking secrets.
 fn resolve_target_call_argv(
@@ -1049,7 +1049,7 @@ fn collect_leaves_parallel_with_when(
 				});
 			}
 			CommandStep::TargetCall(call) => {
-				// Substitute the target name so `@$(LOOP.ns):build`-style
+				// Substitute the target name so `@{{ LOOP.ns }}:build`-style
 				// dynamic targets dispatch to the right namespaced target.
 				let target = args.substitute_with_loop(&call.target, &setup.env, loop_scope)?;
 				let argv = resolve_target_call_argv(call, args, &setup.env, loop_scope)?;

@@ -15,7 +15,7 @@ pub enum ShellResolveError {
 /// searching PATH via `which`. As a last resort, if the requested shell is
 /// `sh` (commonly missing on Windows and minimal containers), falls back to
 /// other sh-compatible shells in order: bash → zsh → fish. The returned
-/// `kind` reflects the shell that will actually run, so `$(RUN.shell)` is
+/// `kind` reflects the shell that will actually run, so `{{ RUN.shell }}` is
 /// accurate.
 pub fn resolve_shell(name: &str) -> Result<ResolvedShell, ShellResolveError> {
 	let kind = ShellKind::from_name(name).ok_or_else(|| ShellResolveError::UnknownShell(name.to_string()))?;

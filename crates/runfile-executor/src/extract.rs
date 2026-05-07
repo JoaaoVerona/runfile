@@ -117,7 +117,7 @@ impl ExtractContext<'_> {
 /// - `if` blocks evaluate the condition against the same context the runner
 ///   would see (args + resolved env + loop scope) and emit only the matching
 ///   branch.
-/// - `for in` blocks expand each literal iteration with `$(LOOP.var)` resolved
+/// - `for in` blocks expand each literal iteration with `{{ LOOP.var }}` resolved
 ///   (and `for in: "namespaces"` snapshots the merged Runfile's namespace list).
 /// - `for glob` / `for shell` blocks emit the body once with the loop variable
 ///   bound to a `<var>` placeholder (we don't touch the filesystem or run
@@ -167,8 +167,8 @@ fn extract_recursive_inner(
 	check_env_case_duplicates(&env)?;
 
 	// Show only the spec-defined env keys (not envFiles or system env), but
-	// pull the resolved values from the fully-built env so `$(FLAGS.x)`,
-	// `$(ARGS.x)`, `$(ENV.x)`, etc. references are substituted instead of
+	// pull the resolved values from the fully-built env so `{{ FLAGS.x }}`,
+	// `{{ ARGS.x }}`, `{{ ENV.x }}`, etc. references are substituted instead of
 	// printed literally.
 	let extra_env: Vec<(String, String)> = if let Some(spec_env) = &spec.env {
 		let mut pairs: Vec<(String, String)> = spec_env
@@ -215,7 +215,7 @@ fn walk_extract_steps(
 			}
 			CommandStep::TargetCall(call) => {
 				// Substitute the target name first so dynamic patterns like
-				// `@$(LOOP.ns):dev` resolve to the namespace's concrete target.
+				// `@{{ LOOP.ns }}:dev` resolve to the namespace's concrete target.
 				let resolved = args.substitute_with_loop(&call.target, env, loop_scope)?;
 
 				let canonical = match ctx.runfile.resolve_target(&resolved) {
@@ -227,7 +227,7 @@ fn walk_extract_steps(
 				// Build the dep's args from the substituted+shlex-split args
 				// template — same semantics as the runtime executor in
 				// `resolve_target_call_argv`. Preserve the parent's run_context
-				// (OS, shell, namespaces) so `$(RUN.*)` and `for in: namespaces`
+				// (OS, shell, namespaces) so `{{ RUN.* }}` and `for in: namespaces`
 				// keep working inside the dep.
 				let argv = if call.args_template.is_empty() {
 					Vec::new()
@@ -290,7 +290,7 @@ fn walk_extract_steps(
 					}
 					None => {
 						// `for glob` / `for shell` — bind a placeholder so
-						// `$(LOOP.var)` references resolve without touching the
+						// `{{ LOOP.var }}` references resolve without touching the
 						// filesystem or running side-effecting iterator commands.
 						loop_scope.push(var.as_str(), format!("<{var}>"));
 						let r = walk_extract_steps(ctx, body, args, env, extra_env, loop_scope, out);

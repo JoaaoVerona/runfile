@@ -77,7 +77,7 @@ fn parse_flag_without_value() {
 #[test]
 fn substitute_args_placeholder() {
 	let args = RunArgs::parse(&["release".into(), "fast".into()]);
-	let result = args.substitute_no_env("cargo build $(ARGS)").unwrap();
+	let result = args.substitute_no_env("cargo build {{ ARGS }}").unwrap();
 	assert_eq!(result, "cargo build release fast");
 }
 
@@ -85,7 +85,7 @@ fn substitute_args_placeholder() {
 fn substitute_args_passes_dashes_through() {
 	// "run build --help" → "cargo build --help"
 	let args = RunArgs::parse(&["--help".into()]);
-	let result = args.substitute_no_env("cargo build $(ARGS)").unwrap();
+	let result = args.substitute_no_env("cargo build {{ ARGS }}").unwrap();
 	assert_eq!(result, "cargo build --help");
 }
 
@@ -93,38 +93,38 @@ fn substitute_args_passes_dashes_through() {
 fn substitute_args_passes_everything_through() {
 	// "run build 333 44 $ARGS" → "cargo build 333 44 $ARGS"
 	let args = RunArgs::parse(&["333".into(), "44".into(), "$ARGS".into()]);
-	let result = args.substitute_no_env("cargo build $(ARGS)").unwrap();
+	let result = args.substitute_no_env("cargo build {{ ARGS }}").unwrap();
 	assert_eq!(result, "cargo build 333 44 $ARGS");
 }
 
 #[test]
 fn substitute_named_consumed_removed_from_args() {
-	// "run build --env dev --help" with "cargo build env:$(ARGS.env ? test) $(ARGS)"
+	// "run build --env dev --help" with "cargo build env:{{ ARGS.env ? test }} {{ ARGS }}"
 	// → "cargo build env:dev --help"
 	let args = RunArgs::parse(&["--env".into(), "dev".into(), "--help".into()]);
 	let result = args
-		.substitute_no_env("cargo build env:$(ARGS.env ? test) $(ARGS)")
+		.substitute_no_env("cargo build env:{{ ARGS.env ? test }} {{ ARGS }}")
 		.unwrap();
 	assert_eq!(result, "cargo build env:dev --help");
 }
 
 #[test]
 fn substitute_named_consumed_equals_form() {
-	// "run build --env=dev --help" → consumed --env=dev, $(ARGS) = "--help"
+	// "run build --env=dev --help" → consumed --env=dev, {{ ARGS }} = "--help"
 	let args = RunArgs::parse(&["--env=dev".into(), "--help".into()]);
 	let result = args
-		.substitute_no_env("cargo build env:$(ARGS.env ? test) $(ARGS)")
+		.substitute_no_env("cargo build env:{{ ARGS.env ? test }} {{ ARGS }}")
 		.unwrap();
 	assert_eq!(result, "cargo build env:dev --help");
 }
 
 #[test]
 fn substitute_named_default_not_consumed_from_args() {
-	// "run build --help" with "cargo build env:$(ARGS.env ? test) $(ARGS)"
-	// --env was NOT provided, so default "test" is used, and --help stays in $(ARGS)
+	// "run build --help" with "cargo build env:{{ ARGS.env ? test }} {{ ARGS }}"
+	// --env was NOT provided, so default "test" is used, and --help stays in {{ ARGS }}
 	let args = RunArgs::parse(&["--help".into()]);
 	let result = args
-		.substitute_no_env("cargo build env:$(ARGS.env ? test) $(ARGS)")
+		.substitute_no_env("cargo build env:{{ ARGS.env ? test }} {{ ARGS }}")
 		.unwrap();
 	assert_eq!(result, "cargo build env:test --help");
 }
@@ -132,37 +132,39 @@ fn substitute_named_default_not_consumed_from_args() {
 #[test]
 fn substitute_named_arg() {
 	let args = RunArgs::parse(&["--env=staging".into()]);
-	let result = args.substitute_no_env("echo $(ARGS.env)").unwrap();
+	let result = args.substitute_no_env("echo {{ ARGS.env }}").unwrap();
 	assert_eq!(result, "echo staging");
 }
 
 #[test]
 fn substitute_named_arg_with_default() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo $(ARGS.env ? development)").unwrap();
+	let result = args.substitute_no_env("echo {{ ARGS.env ? development }}").unwrap();
 	assert_eq!(result, "echo development");
 }
 
 #[test]
 fn substitute_named_arg_overrides_default() {
 	let args = RunArgs::parse(&["--env=production".into()]);
-	let result = args.substitute_no_env("echo $(ARGS.env ? development)").unwrap();
+	let result = args.substitute_no_env("echo {{ ARGS.env ? development }}").unwrap();
 	assert_eq!(result, "echo production");
 }
 
 #[test]
-fn substitute_preserves_non_args_dollar() {
+fn substitute_preserves_shell_dollar_var() {
+	// Bare shell variables like `$HOME` are not Runfile substitutions and
+	// must pass through verbatim to the shell.
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo $(HOME) and $(ARGS)").unwrap();
-	assert_eq!(result, "echo $(HOME) and ");
+	let result = args.substitute_no_env("echo $HOME and {{ ARGS }}").unwrap();
+	assert_eq!(result, "echo $HOME and ");
 }
 
 #[test]
 fn substitute_multiple_named_consumed() {
-	// Both --port and --host are consumed by $(ARGS.key), so $(ARGS) should be empty
+	// Both --port and --host are consumed by {{ ARGS.key }}, so {{ ARGS }} should be empty
 	let args = RunArgs::parse(&["--port=3000".into(), "--host=localhost".into()]);
 	let result = args
-		.substitute_no_env("server --port=$(ARGS.port ? 8080) --host=$(ARGS.host ? 0.0.0.0)")
+		.substitute_no_env("server --port={{ ARGS.port ? 8080 }} --host={{ ARGS.host ? 0.0.0.0 }}")
 		.unwrap();
 	assert_eq!(result, "server --port=3000 --host=localhost");
 }
@@ -172,16 +174,16 @@ fn substitute_order_independent() {
 	// "run build --help --env dev" → same as "--env dev --help"
 	let args = RunArgs::parse(&["--help".into(), "--env".into(), "dev".into()]);
 	let result = args
-		.substitute_no_env("cargo build env:$(ARGS.env ? test) $(ARGS)")
+		.substitute_no_env("cargo build env:{{ ARGS.env ? test }} {{ ARGS }}")
 		.unwrap();
 	assert_eq!(result, "cargo build env:dev --help");
 }
 
 #[test]
 fn substitute_no_args_no_substitution() {
-	// "run build" with "cargo build $(ARGS)" → "cargo build "
+	// "run build" with "cargo build {{ ARGS }}" → "cargo build "
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("cargo build $(ARGS)").unwrap();
+	let result = args.substitute_no_env("cargo build {{ ARGS }}").unwrap();
 	assert_eq!(result, "cargo build ");
 }
 
@@ -193,7 +195,7 @@ fn substitute_redacted_hides_env_values() {
 	let mut env = HashMap::new();
 	env.insert("DB_PASSWORD".to_string(), "s3cret".to_string());
 	let result = args
-		.substitute_redacted("connect --password=$(ENV.DB_PASSWORD)", &env)
+		.substitute_redacted("connect --password={{ ENV.DB_PASSWORD }}", &env)
 		.unwrap();
 	assert_eq!(result, "connect --password=***");
 	assert!(!result.contains("s3cret"), "secret should be redacted");
@@ -203,7 +205,7 @@ fn substitute_redacted_hides_env_values() {
 fn substitute_redacted_shows_args_values() {
 	let args = RunArgs::parse(&["--env=production".into()]);
 	let env = HashMap::new();
-	let result = args.substitute_redacted("deploy $(ARGS.env)", &env).unwrap();
+	let result = args.substitute_redacted("deploy {{ ARGS.env }}", &env).unwrap();
 	assert_eq!(result, "deploy production");
 }
 
@@ -211,7 +213,7 @@ fn substitute_redacted_shows_args_values() {
 fn substitute_redacted_shows_positional_args() {
 	let args = RunArgs::parse(&["hello".into(), "world".into()]);
 	let env = HashMap::new();
-	let result = args.substitute_redacted("echo $(ARGS)", &env).unwrap();
+	let result = args.substitute_redacted("echo {{ ARGS }}", &env).unwrap();
 	assert_eq!(result, "echo hello world");
 }
 
@@ -222,7 +224,7 @@ fn substitute_redacted_mixed_args_and_env() {
 	env.insert("SECRET_TOKEN".to_string(), "tok_abc123".to_string());
 	let result = args
 		.substitute_redacted(
-			"curl -H 'Authorization: $(ENV.SECRET_TOKEN)' https://$(ARGS.host)/api",
+			"curl -H 'Authorization: {{ ENV.SECRET_TOKEN }}' https://{{ ARGS.host }}/api",
 			&env,
 		)
 		.unwrap();
@@ -234,7 +236,9 @@ fn substitute_redacted_env_with_default_still_redacts() {
 	let args = RunArgs::parse(&[]);
 	let mut env = HashMap::new();
 	env.insert("TOKEN".to_string(), "actual_value".to_string());
-	let result = args.substitute_redacted("echo $(ENV.TOKEN ? fallback)", &env).unwrap();
+	let result = args
+		.substitute_redacted("echo {{ ENV.TOKEN ? fallback }}", &env)
+		.unwrap();
 	assert_eq!(result, "echo ***");
 }
 
@@ -243,7 +247,7 @@ fn substitute_redacted_env_missing_uses_default() {
 	let args = RunArgs::parse(&[]);
 	let env = HashMap::new();
 	let result = args
-		.substitute_redacted("echo $(ENV.MISSING ? fallback)", &env)
+		.substitute_redacted("echo {{ ENV.MISSING ? fallback }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo fallback");
 }
@@ -255,7 +259,7 @@ fn substitute_redacted_chained_args_then_env() {
 	env.insert("DB_HOST".to_string(), "db.internal".to_string());
 	// ARGS.host not provided, falls through to ENV.DB_HOST → redacted
 	let result = args
-		.substitute_redacted("connect $(ARGS.host ? ENV.DB_HOST)", &env)
+		.substitute_redacted("connect {{ ARGS.host ? ENV.DB_HOST }}", &env)
 		.unwrap();
 	assert_eq!(result, "connect ***");
 }
@@ -267,7 +271,7 @@ fn substitute_redacted_chained_args_provided() {
 	env.insert("DB_HOST".to_string(), "db.internal".to_string());
 	// ARGS.host IS provided → shown as-is (not redacted)
 	let result = args
-		.substitute_redacted("connect $(ARGS.host ? ENV.DB_HOST)", &env)
+		.substitute_redacted("connect {{ ARGS.host ? ENV.DB_HOST }}", &env)
 		.unwrap();
 	assert_eq!(result, "connect localhost");
 }
@@ -277,7 +281,7 @@ fn substitute_redacted_flags_shown() {
 	let args = RunArgs::parse(&["--verbose".into()]);
 	let env = HashMap::new();
 	let result = args
-		.substitute_redacted("cmd $(FLAGS.verbose ? --verbose :)", &env)
+		.substitute_redacted("cmd {{ FLAGS.verbose ? --verbose : }}", &env)
 		.unwrap();
 	assert_eq!(result, "cmd --verbose");
 }
@@ -359,7 +363,7 @@ fn build_env_add_to_path_absolute() {
 #[test]
 fn build_env_substitutes_args_in_target_env() {
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("PORT".into(), EnvValue::String("$(ARGS.port ? 3000)".into()));
+	cmd_env.insert("PORT".into(), EnvValue::String("{{ ARGS.port ? 3000 }}".into()));
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(cmd_env);
 	let args = RunArgs::parse(&["--port=4000".into()]);
@@ -370,7 +374,7 @@ fn build_env_substitutes_args_in_target_env() {
 #[test]
 fn build_env_substitutes_args_default_in_target_env() {
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("PORT".into(), EnvValue::String("$(ARGS.port ? 3000)".into()));
+	cmd_env.insert("PORT".into(), EnvValue::String("{{ ARGS.port ? 3000 }}".into()));
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(cmd_env);
 	let args = RunArgs::default();
@@ -383,7 +387,7 @@ fn build_env_substitutes_flags_in_target_env() {
 	let mut cmd_env = HashMap::new();
 	cmd_env.insert(
 		"NODE_OPTIONS".into(),
-		EnvValue::String("$(FLAGS.debug ? --inspect : )".into()),
+		EnvValue::String("{{ FLAGS.debug ? --inspect : }}".into()),
 	);
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(cmd_env);
@@ -395,7 +399,7 @@ fn build_env_substitutes_flags_in_target_env() {
 #[test]
 fn build_env_substitutes_flags_false_in_target_env() {
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("DEBUG".into(), EnvValue::String("$(FLAGS.debug)".into()));
+	cmd_env.insert("DEBUG".into(), EnvValue::String("{{ FLAGS.debug }}".into()));
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(cmd_env);
 	let args = RunArgs::default();
@@ -406,7 +410,10 @@ fn build_env_substitutes_flags_false_in_target_env() {
 #[test]
 fn build_env_substitutes_args_in_global_env() {
 	let mut global_env = HashMap::new();
-	global_env.insert("ENV_NAME".into(), EnvValue::String("$(ARGS.env ? development)".into()));
+	global_env.insert(
+		"ENV_NAME".into(),
+		EnvValue::String("{{ ARGS.env ? development }}".into()),
+	);
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(global_env);
 	let args = RunArgs::parse(&["--env=staging".into()]);
@@ -417,7 +424,7 @@ fn build_env_substitutes_args_in_global_env() {
 #[test]
 fn build_env_substitutes_flags_in_global_env() {
 	let mut global_env = HashMap::new();
-	global_env.insert("VERBOSE".into(), EnvValue::String("$(FLAGS.verbose)".into()));
+	global_env.insert("VERBOSE".into(), EnvValue::String("{{ FLAGS.verbose }}".into()));
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(global_env);
 	let args = RunArgs::parse(&["--verbose".into()]);
@@ -427,9 +434,12 @@ fn build_env_substitutes_flags_in_global_env() {
 
 #[test]
 fn build_env_env_can_reference_system_env_via_substitution() {
-	// Env vars can reference system env vars via $(ENV.VAR) substitution
+	// Env vars can reference system env vars via {{ ENV.VAR }} substitution
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("MY_PATH_COPY".into(), EnvValue::String("$(ENV.PATH ? fallback)".into()));
+	cmd_env.insert(
+		"MY_PATH_COPY".into(),
+		EnvValue::String("{{ ENV.PATH ? fallback }}".into()),
+	);
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(cmd_env);
 	let args = RunArgs::default();
@@ -438,13 +448,13 @@ fn build_env_env_can_reference_system_env_via_substitution() {
 	let path_copy = env.get("MY_PATH_COPY").unwrap();
 	assert_ne!(
 		path_copy, "fallback",
-		"Should have resolved $(ENV.PATH) from system env"
+		"Should have resolved {{ ENV.PATH }} from system env"
 	);
 }
 
 #[test]
 fn build_env_non_string_env_values_not_substituted() {
-	// Numbers and booleans don't contain $() patterns, so substitution is a no-op
+	// Numbers and booleans don't contain {{  }} patterns, so substitution is a no-op
 	let mut cmd_env = HashMap::new();
 	cmd_env.insert("PORT".into(), EnvValue::Number(8080.0));
 	cmd_env.insert("ENABLED".into(), EnvValue::Bool(true));
@@ -540,14 +550,14 @@ fn execute_with_env_vars() {
 #[test]
 fn substitute_empty_default_returns_empty_string() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo $(ARGS.env ?)").unwrap();
+	let result = args.substitute_no_env("echo {{ ARGS.env ? }}").unwrap();
 	assert_eq!(result, "echo ");
 }
 
 #[test]
 fn substitute_missing_arg_without_default_errors() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo $(ARGS.env)");
+	let result = args.substitute_no_env("echo {{ ARGS.env }}");
 	assert!(result.is_err());
 	let err = result.unwrap_err();
 	assert!(err.to_string().contains("env"));
@@ -556,7 +566,7 @@ fn substitute_missing_arg_without_default_errors() {
 #[test]
 fn substitute_present_arg_without_default_works() {
 	let args = RunArgs::parse(&["--env=prod".into()]);
-	let result = args.substitute_no_env("echo $(ARGS.env)").unwrap();
+	let result = args.substitute_no_env("echo {{ ARGS.env }}").unwrap();
 	assert_eq!(result, "echo prod");
 }
 
@@ -567,7 +577,7 @@ fn substitute_env_basic() {
 	let args = RunArgs::parse(&[]);
 	let mut env = HashMap::new();
 	env.insert("NODE_ENV".into(), "production".into());
-	let result = args.substitute("echo $(ENV.NODE_ENV)", &env).unwrap();
+	let result = args.substitute("echo {{ ENV.NODE_ENV }}", &env).unwrap();
 	assert_eq!(result, "echo production");
 }
 
@@ -576,7 +586,7 @@ fn substitute_env_case_insensitive() {
 	let args = RunArgs::parse(&[]);
 	let mut env = HashMap::new();
 	env.insert("NODE_ENV".into(), "production".into());
-	let result = args.substitute("echo $(ENV.node_env)", &env).unwrap();
+	let result = args.substitute("echo {{ ENV.node_env }}", &env).unwrap();
 	assert_eq!(result, "echo production");
 }
 
@@ -584,7 +594,7 @@ fn substitute_env_case_insensitive() {
 fn substitute_env_with_default() {
 	let args = RunArgs::parse(&[]);
 	let env = HashMap::new();
-	let result = args.substitute("echo $(ENV.NODE_ENV ? development)", &env).unwrap();
+	let result = args.substitute("echo {{ ENV.NODE_ENV ? development }}", &env).unwrap();
 	assert_eq!(result, "echo development");
 }
 
@@ -592,7 +602,7 @@ fn substitute_env_with_default() {
 fn substitute_env_with_empty_default() {
 	let args = RunArgs::parse(&[]);
 	let env = HashMap::new();
-	let result = args.substitute("echo $(ENV.NODE_ENV ?)", &env).unwrap();
+	let result = args.substitute("echo {{ ENV.NODE_ENV ? }}", &env).unwrap();
 	assert_eq!(result, "echo ");
 }
 
@@ -600,7 +610,7 @@ fn substitute_env_with_empty_default() {
 fn substitute_env_missing_errors() {
 	let args = RunArgs::parse(&[]);
 	let env = HashMap::new();
-	let result = args.substitute("echo $(ENV.NODE_ENV)", &env);
+	let result = args.substitute("echo {{ ENV.NODE_ENV }}", &env);
 	assert!(result.is_err());
 	assert!(result.unwrap_err().to_string().contains("NODE_ENV"));
 }
@@ -610,7 +620,7 @@ fn substitute_env_present_overrides_default() {
 	let args = RunArgs::parse(&[]);
 	let mut env = HashMap::new();
 	env.insert("NODE_ENV".into(), "staging".into());
-	let result = args.substitute("echo $(ENV.NODE_ENV ? development)", &env).unwrap();
+	let result = args.substitute("echo {{ ENV.NODE_ENV ? development }}", &env).unwrap();
 	assert_eq!(result, "echo staging");
 }
 
@@ -620,7 +630,7 @@ fn substitute_chain_args_then_env() {
 	let mut env = HashMap::new();
 	env.insert("MY_ENV".into(), "from_env".into());
 	let result = args
-		.substitute("echo $(ARGS.key ? ENV.MY_ENV ? fallback)", &env)
+		.substitute("echo {{ ARGS.key ? ENV.MY_ENV ? fallback }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo from_env");
 }
@@ -631,7 +641,7 @@ fn substitute_chain_args_wins_over_env() {
 	let mut env = HashMap::new();
 	env.insert("MY_ENV".into(), "from_env".into());
 	let result = args
-		.substitute("echo $(ARGS.key ? ENV.MY_ENV ? fallback)", &env)
+		.substitute("echo {{ ARGS.key ? ENV.MY_ENV ? fallback }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo from_args");
 }
@@ -641,7 +651,7 @@ fn substitute_chain_falls_through_to_literal() {
 	let args = RunArgs::parse(&[]);
 	let env = HashMap::new();
 	let result = args
-		.substitute("echo $(ARGS.key ? ENV.MY_ENV ? fallback)", &env)
+		.substitute("echo {{ ARGS.key ? ENV.MY_ENV ? fallback }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo fallback");
 }
@@ -652,7 +662,7 @@ fn substitute_chain_env_then_env() {
 	let mut env = HashMap::new();
 	env.insert("SECONDARY".into(), "second".into());
 	let result = args
-		.substitute("echo $(ENV.PRIMARY ? ENV.SECONDARY ? none)", &env)
+		.substitute("echo {{ ENV.PRIMARY ? ENV.SECONDARY ? none }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo second");
 }
@@ -661,7 +671,7 @@ fn substitute_chain_env_then_env() {
 fn substitute_chain_with_empty_default() {
 	let args = RunArgs::parse(&[]);
 	let env = HashMap::new();
-	let result = args.substitute("echo $(ARGS.key ? ENV.MISSING ?)", &env).unwrap();
+	let result = args.substitute("echo {{ ARGS.key ? ENV.MISSING ? }}", &env).unwrap();
 	assert_eq!(result, "echo ");
 }
 
@@ -671,7 +681,7 @@ fn substitute_env_and_args_in_same_command() {
 	let mut env = HashMap::new();
 	env.insert("HOST".into(), "localhost".into());
 	let result = args
-		.substitute("server --host=$(ENV.HOST) --port=$(ARGS.port ? 8080)", &env)
+		.substitute("server --host={{ ENV.HOST }} --port={{ ARGS.port ? 8080 }}", &env)
 		.unwrap();
 	assert_eq!(result, "server --host=localhost --port=9090");
 }
@@ -837,7 +847,7 @@ fn logging_command_enables_without_global() {
 #[test]
 fn execute_with_args_substitution() {
 	let shell = get_test_shell();
-	let spec = CommandSpec::new(vec!["echo $(ARGS)".into()]);
+	let spec = CommandSpec::new(vec!["echo {{ ARGS }}".into()]);
 	let args = RunArgs::parse(&["hello".into(), "world".into()]);
 	let dir = TempDir::new().unwrap();
 
@@ -1055,7 +1065,7 @@ fn when_with_if_block() {
             "t": {{
                 "commands": [
                     "{fail}",
-                    {{ "when": "always", "if": "$(RUN.os) == windows", "then": "echo windows >> \"{log_escaped}\"", "else": "echo unix >> \"{log_escaped}\"" }}
+                    {{ "when": "always", "if": "{{{{ RUN.os }}}} == windows", "then": "echo windows >> \"{log_escaped}\"", "else": "echo unix >> \"{log_escaped}\"" }}
                 ]
             }}
         }}
@@ -1168,7 +1178,7 @@ fn detach_evaluates_if_block_and_does_not_run_condition_as_shell() {
 			"install": {
 				"commands": [
 					{
-						"if": "$(RUN.os) == windows",
+						"if": "{{ RUN.os }} == windows",
 						"then": "echo windows-only",
 						"else": "echo unix-only"
 					}
@@ -1235,7 +1245,7 @@ fn target_call_runs_dependency_and_passes_args() {
 	// `[` / `]` are glob char-classes in bash/zsh (and zsh errors on unmatched globs);
 	// `=word` triggers zsh's `=cmd` PATH-lookup expansion. `_` has no special meaning
 	// in bash/zsh/sh/fish/powershell/cmd.
-	let append_arg = format!("echo _$(ARGS)_ >> \\\"{log_escaped}\\\"");
+	let append_arg = format!("echo _{{{{ ARGS }}}}_ >> \\\"{log_escaped}\\\"");
 
 	let json = format!(
 		r#"{{
@@ -1440,7 +1450,7 @@ fn target_call_in_parallel_parent_runs_each_dep() {
 	let counter = dir.path().join("count.txt");
 	let counter_escaped = json_escape_path(&counter);
 	let _ = shell.kind;
-	let bump = format!("echo $(ARGS.tag) >> \\\"{counter_escaped}\\\"");
+	let bump = format!("echo {{{{ ARGS.tag }}}} >> \\\"{counter_escaped}\\\"");
 
 	let json = format!(
 		r#"{{
@@ -1500,7 +1510,7 @@ fn target_call_inside_if_branch() {
             "dev": {{ "commands": ["{touch_dev}"] }},
             "deploy": {{
                 "commands": [
-                    {{ "if": "$(ARGS.env) == prod", "then": "@prod", "else": "@dev" }}
+                    {{ "if": "{{{{ ARGS.env }}}} == prod", "then": "@prod", "else": "@dev" }}
                 ]
             }}
         }}
@@ -1516,7 +1526,7 @@ fn target_call_inside_if_branch() {
 
 #[test]
 fn target_call_substitutes_args_template() {
-	// $(ARGS) in the args template should expand to the parent's args.
+	// {{ ARGS }} in the args template should expand to the parent's args.
 	use crate::runner::run_target;
 	use runfile_parser::Runfile;
 
@@ -1526,14 +1536,14 @@ fn target_call_substitutes_args_template() {
 	let log_escaped = json_escape_path(&log);
 
 	let _ = shell.kind;
-	let echo = format!("echo $(ARGS) > \\\"{log_escaped}\\\"");
+	let echo = format!("echo {{{{ ARGS }}}} > \\\"{log_escaped}\\\"");
 
 	let json = format!(
 		r#"{{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "echo": {{ "commands": ["{echo}"] }},
-            "fwd": {{ "commands": ["@echo $(ARGS)"] }}
+            "fwd": {{ "commands": ["@echo {{{{ ARGS }}}}"] }}
         }}
     }}"#
 	);
@@ -1703,7 +1713,7 @@ fn run_target_working_directory_target_overrides_global() {
 
 #[test]
 fn working_directory_accepts_substitution() {
-	// `workingDirectory` may be a `$(...)` template that resolves to one of
+	// `workingDirectory` may be a `{{ ... }}` template that resolves to one of
 	// the canonical values at runtime.
 	use crate::runner::run_target;
 	use runfile_parser::parse_runfile;
@@ -1718,14 +1728,14 @@ fn working_directory_accepts_substitution() {
 		format!("touch \\\"{marker_escaped}\\\"")
 	};
 
-	// `$(ARGS.dir ? cwd)` → resolves to the literal "cwd" at runtime.
+	// `{{ ARGS.dir ? cwd }}` → resolves to the literal "cwd" at runtime.
 	let json = format!(
 		r#"{{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": ["{touch}"],
-                "workingDirectory": "$(ARGS.dir ? cwd)"
+                "workingDirectory": "{{{{ ARGS.dir ? cwd }}}}"
             }}
         }}
     }}"#
@@ -1748,7 +1758,7 @@ fn working_directory_invalid_substitution_errors_at_runtime() {
         "targets": {
             "t": {
                 "commands": ["echo hi"],
-                "workingDirectory": "$(ARGS.dir ? bogus)"
+                "workingDirectory": "{{ ARGS.dir ? bogus }}"
             }
         }
     }"#;
@@ -1760,7 +1770,7 @@ fn working_directory_invalid_substitution_errors_at_runtime() {
 #[test]
 fn force_shell_accepts_substitution() {
 	// `forceShell` may be a substituted string. We only verify parsing +
-	// resolution succeeds — a value of `$(RUN.shell)` resolves to the shell
+	// resolution succeeds — a value of `{{ RUN.shell }}` resolves to the shell
 	// the CLI already chose, so no actual switch happens.
 	use crate::runner::run_target;
 	use runfile_parser::parse_runfile;
@@ -1772,7 +1782,7 @@ fn force_shell_accepts_substitution() {
         "targets": {
             "t": {
                 "commands": ["echo hi"],
-                "forceShell": "$(RUN.shell)"
+                "forceShell": "{{ RUN.shell }}"
             }
         }
     }"#;
@@ -1955,11 +1965,11 @@ fn extract_target_call_with_args_forwards_to_dep() {
 	use runfile_parser::parse_runfile;
 
 	// `@deploy --env=prod` should pass `--env=prod` into the dep so the
-	// dep's `$(ARGS.env)` substitution resolves.
+	// dep's `{{ ARGS.env }}` substitution resolves.
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "deploy": { "commands": ["echo deploying to $(ARGS.env)"] },
+            "deploy": { "commands": ["echo deploying to {{ ARGS.env }}"] },
             "release": { "commands": ["@deploy --env=prod"] }
         }
     }"#;
@@ -1981,7 +1991,7 @@ fn extract_target_call_with_args_forwards_to_dep() {
 #[test]
 fn extract_for_namespaces_aggregator() {
 	// Regression: aggregator targets whose only body is a `for in: namespaces`
-	// loop dispatching `@$(LOOP.ns):something` used to print nothing in
+	// loop dispatching `@{{ LOOP.ns }}:something` used to print nothing in
 	// dry-run for two compounding reasons: (1) `@target` calls weren't
 	// recursively expanded, and (2) the CLI dry-run path didn't sync
 	// `run_context.namespaces` from the merged Runfile. Both are fixed —
@@ -1996,7 +2006,7 @@ fn extract_for_namespaces_aggregator() {
         "targets": {
             "dev": {
                 "commands": [
-                    { "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):dev" }
+                    { "for": "ns", "in": "namespaces", "do": "@{{ LOOP.ns }}:dev" }
                 ]
             },
             "web-admin:dev": { "commands": ["next dev --port 3000"] },
@@ -2044,7 +2054,7 @@ fn extract_if_evaluates_condition_against_run_context() {
             "stripe-webhook": {
                 "commands": [
                     {
-                        "if": "$(RUN.os) == windows",
+                        "if": "{{ RUN.os }} == windows",
                         "then": "stripe listen -f host.docker.internal:4000/webhook",
                         "else": "stripe listen -f 127.0.0.1:4000/webhook"
                     }
@@ -2120,7 +2130,7 @@ fn extract_with_args_substitution() {
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "deploy": { "commands": ["echo deploying to $(ARGS.env)"] }
+            "deploy": { "commands": ["echo deploying to {{ ARGS.env }}"] }
         }
     }"#;
 
@@ -2145,11 +2155,11 @@ fn extract_substitutes_env_values_with_args_flags_and_env() {
 	use runfile_parser::Runfile;
 
 	// Regression: dry-run / extract output used to print env values raw,
-	// e.g. `RUN_TESTS_WITH_SIDE_EFFECTS='$(FLAGS.side-effects)'`. Values
+	// e.g. `RUN_TESTS_WITH_SIDE_EFFECTS='{{ FLAGS.side-effects }}'`. Values
 	// must be substituted just like commands are.
 	//
 	// `CARGO_PKG_NAME` is always present during `cargo test`, so we lean on
-	// it to exercise `$(ENV.*)` resolution without mutating process env
+	// it to exercise `{{ ENV.* }}` resolution without mutating process env
 	// (which races with other parallel tests).
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
@@ -2157,9 +2167,9 @@ fn extract_substitutes_env_values_with_args_flags_and_env() {
             "test": {
                 "commands": ["./gradlew test"],
                 "env": {
-                    "RUN_TESTS_WITH_SIDE_EFFECTS": "$(FLAGS.side-effects)",
-                    "TARGET_ENV": "$(ARGS.env)",
-                    "PKG": "$(ENV.CARGO_PKG_NAME)"
+                    "RUN_TESTS_WITH_SIDE_EFFECTS": "{{ FLAGS.side-effects }}",
+                    "TARGET_ENV": "{{ ARGS.env }}",
+                    "PKG": "{{ ENV.CARGO_PKG_NAME }}"
                 }
             }
         }
@@ -2183,7 +2193,7 @@ fn extract_substitutes_env_values_with_args_flags_and_env() {
 	assert!(line.contains("PKG=runfile-executor"), "ENV not substituted: {line}");
 	assert!(line.contains("./gradlew test"), "command missing: {line}");
 	assert!(
-		!line.contains("$(FLAGS") && !line.contains("$(ARGS") && !line.contains("$(ENV"),
+		!line.contains("{{ FLAGS") && !line.contains("{{ ARGS") && !line.contains("{{ ENV"),
 		"unsubstituted placeholder leaked: {line}"
 	);
 }
@@ -2196,7 +2206,7 @@ fn extract_missing_required_arg_errors() {
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "deploy": { "commands": ["echo deploying to $(ARGS.env)"] }
+            "deploy": { "commands": ["echo deploying to {{ ARGS.env }}"] }
         }
     }"#;
 
@@ -2286,7 +2296,7 @@ fn extract_env_value_with_spaces_quoted_bash() {
 
 #[test]
 fn scan_args_detects_positional() {
-	let cmds = vec!["echo $(ARGS)".into()];
+	let cmds = vec!["echo {{ ARGS }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(positional);
 	assert!(named.is_empty());
@@ -2294,7 +2304,7 @@ fn scan_args_detects_positional() {
 
 #[test]
 fn scan_args_detects_named() {
-	let cmds = vec!["echo $(ARGS.env)".into(), "echo $(ARGS.port ? 8080)".into()];
+	let cmds = vec!["echo {{ ARGS.env }}".into(), "echo {{ ARGS.port ? 8080 }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("env"));
@@ -2303,7 +2313,7 @@ fn scan_args_detects_named() {
 
 #[test]
 fn scan_args_detects_both() {
-	let cmds = vec!["echo $(ARGS.env) $(ARGS)".into()];
+	let cmds = vec!["echo {{ ARGS.env }} {{ ARGS }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(positional);
 	assert!(named.contains("env"));
@@ -2349,7 +2359,7 @@ fn validate_args_unexpected_named_args_error() {
 #[test]
 fn validate_args_unknown_named_arg_error() {
 	let args = RunArgs::parse(&["--env=prod".into(), "--port=8080".into()]);
-	let cmds = vec!["echo $(ARGS.env)".into()]; // only $(ARGS.env), not $(ARGS.port)
+	let cmds = vec!["echo {{ ARGS.env }}".into()]; // only {{ ARGS.env }}, not {{ ARGS.port }}
 	let err = validate_args(&args, &cmds).unwrap_err();
 	assert!(
 		err.to_string().contains("Unknown named argument \"--port\""),
@@ -2360,23 +2370,23 @@ fn validate_args_unknown_named_arg_error() {
 #[test]
 fn validate_args_known_named_arg_ok() {
 	let args = RunArgs::parse(&["--env=prod".into()]);
-	let cmds = vec!["echo $(ARGS.env)".into()];
+	let cmds = vec!["echo {{ ARGS.env }}".into()];
 	assert!(validate_args(&args, &cmds).is_ok());
 }
 
 #[test]
 fn validate_args_positional_accepts_all() {
-	// When $(ARGS) is used, all args are accepted (including unknown named ones)
+	// When {{ ARGS }} is used, all args are accepted (including unknown named ones)
 	let args = RunArgs::parse(&["--env=prod".into(), "foo".into(), "bar".into()]);
-	let cmds = vec!["echo $(ARGS)".into()];
+	let cmds = vec!["echo {{ ARGS }}".into()];
 	assert!(validate_args(&args, &cmds).is_ok());
 }
 
 #[test]
 fn validate_args_named_only_rejects_positional() {
-	// Commands only use $(ARGS.env), but user passes positional args
+	// Commands only use {{ ARGS.env }}, but user passes positional args
 	let args = RunArgs::parse(&["--env=prod".into(), "extra_arg".into()]);
-	let cmds = vec!["echo $(ARGS.env)".into()];
+	let cmds = vec!["echo {{ ARGS.env }}".into()];
 	let err = validate_args(&args, &cmds).unwrap_err();
 	assert!(
 		err.to_string().contains("No command in this target accepts arguments")
@@ -2424,7 +2434,7 @@ fn run_target_rejects_unknown_named_arg() {
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "deploy": { "commands": ["echo deploying to $(ARGS.env)"] }
+            "deploy": { "commands": ["echo deploying to {{ ARGS.env }}"] }
         }
     }"#;
 
@@ -2454,7 +2464,7 @@ fn run_target_accepts_valid_args() {
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "greet": { "commands": ["echo hello $(ARGS)"] }
+            "greet": { "commands": ["echo hello {{ ARGS }}"] }
         }
     }"#;
 
@@ -2495,9 +2505,9 @@ fn extract_rejects_unexpected_args() {
 
 #[test]
 fn validate_args_considers_dependency_commands() {
-	// If the dependency uses $(ARGS), args should be accepted
+	// If the dependency uses {{ ARGS }}, args should be accepted
 	let args = RunArgs::parse(&["world".into()]);
-	let cmds = vec!["echo clean".into(), "echo $(ARGS)".into()];
+	let cmds = vec!["echo clean".into(), "echo {{ ARGS }}".into()];
 	assert!(validate_args(&args, &cmds).is_ok());
 }
 
@@ -2507,12 +2517,12 @@ fn run_target_dependency_args_accepted() {
 	use runfile_parser::parse_runfile;
 
 	let shell = detect_default_shell().unwrap();
-	// `@setup $(ARGS)` forwards the parent's args explicitly.
+	// `@setup {{ ARGS }}` forwards the parent's args explicitly.
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "build": { "commands": ["@setup $(ARGS)", "echo building"] },
-            "setup": { "commands": ["echo setup $(ARGS)"] }
+            "build": { "commands": ["@setup {{ ARGS }}", "echo building"] },
+            "setup": { "commands": ["echo setup {{ ARGS }}"] }
         }
     }"#;
 
@@ -2526,7 +2536,7 @@ fn run_target_dependency_args_accepted() {
 
 // ── Arg validation also scans non-`commands` template fields ──────────
 //
-// Regression: $(ARGS.x)/$(FLAGS.x) references in env values, envFiles,
+// Regression: {{ ARGS.x }}/{{ FLAGS.x }} references in env values, envFiles,
 // forceShell, addToPath, workingDirectory, confirm, and extendStdio paths
 // must be recognised by `validate_args` so users can pass --x without
 // also referencing the arg from a command string.
@@ -2542,7 +2552,7 @@ fn run_target_accepts_flag_referenced_only_in_env() {
         "targets": {
             "test": {
                 "commands": "echo running",
-                "env": { "RUN_TESTS_WITH_SIDE_EFFECTS": "$(FLAGS.side-effects)" }
+                "env": { "RUN_TESTS_WITH_SIDE_EFFECTS": "{{ FLAGS.side-effects }}" }
             }
         }
     }"#;
@@ -2566,7 +2576,7 @@ fn run_target_accepts_arg_referenced_only_in_env() {
         "targets": {
             "deploy": {
                 "commands": "echo deploying",
-                "env": { "TARGET_ENV": "$(ARGS.env)" }
+                "env": { "TARGET_ENV": "{{ ARGS.env }}" }
             }
         }
     }"#;
@@ -2592,7 +2602,7 @@ fn run_target_accepts_arg_referenced_only_in_env_files() {
         "targets": {
             "deploy": {
                 "commands": "echo deploying",
-                "envFiles": [".env.$(ARGS.env)"]
+                "envFiles": [".env.{{ ARGS.env }}"]
             }
         }
     }"#;
@@ -2610,7 +2620,7 @@ fn run_target_accepts_arg_referenced_only_in_force_shell() {
 	use crate::runner::run_target;
 	use runfile_parser::parse_runfile;
 
-	// Pass --shellname=bash but reference it only via forceShell: $(ARGS.shellname).
+	// Pass --shellname=bash but reference it only via forceShell: {{ ARGS.shellname }}.
 	// We don't care which shell ends up resolved — only that validate_args
 	// doesn't reject the unknown-arg.
 	let shell = detect_default_shell().unwrap();
@@ -2621,7 +2631,7 @@ fn run_target_accepts_arg_referenced_only_in_force_shell() {
         "targets": {{
             "x": {{
                 "commands": "echo go",
-                "forceShell": "$(ARGS.shellname ? {shell_name})"
+                "forceShell": "{{{{ ARGS.shellname ? {shell_name} }}}}"
             }}
         }}
     }}"#
@@ -2647,7 +2657,7 @@ fn validate_args_rejects_truly_unknown_named_arg_with_aux_fields() {
         "targets": {
             "test": {
                 "commands": "echo running",
-                "env": { "X": "$(FLAGS.side-effects)" }
+                "env": { "X": "{{ FLAGS.side-effects }}" }
             }
         }
     }"#;
@@ -2806,7 +2816,7 @@ fn load_env_files_with_args_substitution() {
 	std::fs::write(dir.path().join(".env.production"), "DB=prod-db\n").unwrap();
 	let args = RunArgs::parse(&["--env".into(), "production".into()]);
 	let env = HashMap::new();
-	let result = load_env_files(&[".env.$(ARGS.env)".to_string()], dir.path(), &args, &env).unwrap();
+	let result = load_env_files(&[".env.{{ ARGS.env }}".to_string()], dir.path(), &args, &env).unwrap();
 	assert_eq!(result.get("DB").unwrap(), "prod-db");
 }
 
@@ -2817,7 +2827,7 @@ fn load_env_files_with_env_substitution() {
 	let args = RunArgs::default();
 	let mut env = HashMap::new();
 	env.insert("environment".to_string(), "staging".to_string());
-	let result = load_env_files(&[".env.$(ENV.environment)".to_string()], dir.path(), &args, &env).unwrap();
+	let result = load_env_files(&[".env.{{ ENV.environment }}".to_string()], dir.path(), &args, &env).unwrap();
 	assert_eq!(result.get("DB").unwrap(), "staging-db");
 }
 
@@ -2828,7 +2838,7 @@ fn load_env_files_with_default_substitution() {
 	let args = RunArgs::default();
 	let env = HashMap::new();
 	let result = load_env_files(
-		&[".env.$(ENV.environment ? development)".to_string()],
+		&[".env.{{ ENV.environment ? development }}".to_string()],
 		dir.path(),
 		&args,
 		&env,
@@ -3070,58 +3080,63 @@ fn parse_flag_followed_by_another_flag() {
 }
 
 #[test]
-fn substitute_non_args_dollar_expression_preserved() {
+fn substitute_shell_dollar_paren_expression_preserved() {
+	// Shell `$(...)` command substitutions pass through verbatim — they're
+	// not Runfile syntax and the substituter doesn't touch them.
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo $(OTHER_EXPR)").unwrap();
-	assert_eq!(result, "echo $(OTHER_EXPR)");
+	let result = args.substitute_no_env("echo $(date +%s)").unwrap();
+	assert_eq!(result, "echo $(date +%s)");
 }
 
 #[test]
-fn substitute_recurses_into_unknown_dollar_expression() {
-	// A shell `$(...)` command substitution wrapping an `$(ARGS.x)` reference
-	// must keep its outer `$(...)` for the shell, but the inner reference
-	// should still be substituted.
+fn substitute_resolves_braces_inside_shell_command_substitution() {
+	// A shell `$(...)` command substitution is opaque to Runfile — it stays
+	// literal in the output. But any `{{ ... }}` reference *inside* the shell
+	// substitution body is still resolved so users can do
+	// `$(echo "{{ ARGS.env }}")` and have the env get substituted.
 	let args = RunArgs::parse(&["--env=development".into()]);
 	let result = args
-		.substitute_no_env(r#"base=$(echo "$f" | sed 's/\.$(ARGS.env)$//')"#)
+		.substitute_no_env(r#"base=$(echo "$f" | sed 's/\.{{ ARGS.env }}$//')"#)
 		.unwrap();
 	assert_eq!(result, r#"base=$(echo "$f" | sed 's/\.development$//')"#);
 }
 
 #[test]
-fn substitute_recurses_into_deeply_nested_unknown_expression() {
+fn substitute_resolves_braces_in_deeply_nested_shell_substitution() {
 	let args = RunArgs::parse(&["--name=world".into()]);
 	let mut env = HashMap::new();
 	env.insert("GREETING".to_string(), "hello".to_string());
 	let result = args
-		.substitute(r#"x=$(printf '%s' $(echo "$(ENV.GREETING) $(ARGS.name)"))"#, &env)
+		.substitute(r#"x=$(printf '%s' $(echo "{{ ENV.GREETING }} {{ ARGS.name }}"))"#, &env)
 		.unwrap();
 	assert_eq!(result, r#"x=$(printf '%s' $(echo "hello world"))"#);
 }
 
 #[test]
-fn substitute_recursion_propagates_missing_arg_error() {
-	// A missing $(ARGS.x) inside a shell `$(...)` should still error rather
-	// than silently leaking through unsubstituted.
+fn substitute_propagates_missing_arg_inside_shell_substitution() {
+	// A missing `{{ ARGS.x }}` inside a shell `$(...)` should still error
+	// rather than silently leaking through unsubstituted.
 	let args = RunArgs::parse(&[]);
-	let err = args.substitute_no_env(r#"x=$(echo "$(ARGS.missing)")"#).unwrap_err();
+	let err = args.substitute_no_env(r#"x=$(echo "{{ ARGS.missing }}")"#).unwrap_err();
 	matches!(err, SubstitutionError::MissingArg(_));
 }
 
 #[test]
-fn substitute_recursion_redacts_env_inside_unknown_expression() {
+fn substitute_redacts_env_inside_shell_substitution() {
 	let args = RunArgs::parse(&[]);
 	let mut env = HashMap::new();
 	env.insert("TOKEN".to_string(), "secret123".to_string());
-	let result = args.substitute_redacted(r#"x=$(echo "$(ENV.TOKEN)")"#, &env).unwrap();
+	let result = args
+		.substitute_redacted(r#"x=$(echo "{{ ENV.TOKEN }}")"#, &env)
+		.unwrap();
 	assert_eq!(result, r#"x=$(echo "***")"#);
 }
 
 #[test]
-fn scan_args_usage_finds_args_inside_unknown_expression() {
+fn scan_args_usage_finds_args_inside_shell_substitution() {
 	// validate_args needs to see `--env` referenced even when its only use
-	// is nested inside a shell `$(echo $(ARGS.env))`-style command sub.
-	let cmds = vec![r#"base=$(echo "$f" | sed 's/\.$(ARGS.env)$//')"#.into()];
+	// is nested inside a shell `$(echo {{ ARGS.env }})`-style command sub.
+	let cmds = vec![r#"base=$(echo "$f" | sed 's/\.{{ ARGS.env }}$//')"#.into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("env"));
@@ -3130,7 +3145,7 @@ fn scan_args_usage_finds_args_inside_unknown_expression() {
 #[test]
 fn substitute_multiple_args_placeholders() {
 	let args = RunArgs::parse(&["hello".into()]);
-	let result = args.substitute_no_env("echo $(ARGS) and $(ARGS)").unwrap();
+	let result = args.substitute_no_env("echo {{ ARGS }} and {{ ARGS }}").unwrap();
 	assert_eq!(result, "echo hello and hello");
 }
 
@@ -3148,10 +3163,97 @@ fn substitute_dollar_without_paren() {
 	assert_eq!(result, "echo $HOME");
 }
 
+// ── Brace-escape tests ──────────────────────────────────────────────
+//
+// `\{{` and `\}}` are escapes for emitting a literal `{{` / `}}` in the
+// output without triggering substitution. The backslash itself is consumed.
+// A bare `\` (not followed by `{{` or `}}`) is preserved as-is.
+
 #[test]
-fn scan_args_usage_nested_parens() {
-	// Verify depth-tracking handles nested parens
-	let cmds = vec!["echo $(ARGS.key ? default(value))".into()];
+fn substitute_escaped_open_brace_emits_literal() {
+	let args = RunArgs::parse(&[]);
+	let result = args.substitute_no_env(r"echo \{{ literal").unwrap();
+	assert_eq!(result, "echo {{ literal");
+}
+
+#[test]
+fn substitute_escaped_close_brace_emits_literal() {
+	let args = RunArgs::parse(&[]);
+	let result = args.substitute_no_env(r"echo not a sub \}}").unwrap();
+	assert_eq!(result, "echo not a sub }}");
+}
+
+#[test]
+fn substitute_escaped_pair_emits_literal_braces() {
+	// A user wanting to print a literal `{{ X }}` token (e.g. when generating
+	// templates for Jinja, Handlebars, etc.) writes both halves escaped.
+	let args = RunArgs::parse(&[]);
+	let result = args
+		.substitute_no_env(r"template uses \{{ name \}} as a placeholder")
+		.unwrap();
+	assert_eq!(result, "template uses {{ name }} as a placeholder");
+}
+
+#[test]
+fn substitute_escape_does_not_interfere_with_real_substitution() {
+	// An escaped `\{{` followed by a real `{{ ARGS.x }}` should leave the
+	// escape literal and still resolve the substitution.
+	let args = RunArgs::parse(&["--name=alice".into()]);
+	let result = args
+		.substitute_no_env(r"prefix \{{ then {{ ARGS.name }}")
+		.unwrap();
+	assert_eq!(result, "prefix {{ then alice");
+}
+
+#[test]
+fn substitute_lone_backslash_is_preserved() {
+	// A backslash that isn't part of `\{{` or `\}}` passes through unchanged
+	// — needed so shell commands like `\\\"` and Windows paths still work.
+	let args = RunArgs::parse(&[]);
+	let result = args.substitute_no_env(r"echo C:\Windows\System32").unwrap();
+	assert_eq!(result, r"echo C:\Windows\System32");
+}
+
+#[test]
+fn substitute_double_backslash_before_brace_keeps_first_backslash() {
+	// `\\{{` is `\` followed by an escaped `{{` — the inner escape consumes
+	// `\{{` and emits literal `{{`, leaving the outer `\` intact.
+	let args = RunArgs::parse(&[]);
+	let result = args.substitute_no_env(r"\\{{ literal \\}}").unwrap();
+	assert_eq!(result, r"\{{ literal \}}");
+}
+
+#[test]
+fn substitute_escape_inside_shell_command_substitution() {
+	// Mixing escapes with shell `$(...)` substitution: the bash `$(...)`
+	// passes through verbatim, the escape produces a literal `{{`, and any
+	// real `{{ ARGS.x }}` inside still resolves.
+	let args = RunArgs::parse(&["--env=prod".into()]);
+	let result = args
+		.substitute_no_env(r#"sh -c $(echo "got \{{ {{ ARGS.env }} \}}")"#)
+		.unwrap();
+	assert_eq!(result, r#"sh -c $(echo "got {{ prod }}")"#);
+}
+
+#[test]
+fn scan_args_usage_ignores_escaped_substitution() {
+	// An escaped `\{{ ARGS.x \}}` is a literal — it should NOT register `x`
+	// as a referenced argument (the validator would otherwise accept --x and
+	// the runtime would never resolve it).
+	let cmds = vec![r"echo \{{ ARGS.x \}}".into()];
+	let (positional, named) = scan_args_usage(&cmds);
+	assert!(!positional);
+	assert!(
+		named.is_empty(),
+		"escaped substitution must not register arg keys: got {named:?}"
+	);
+}
+
+#[test]
+fn scan_args_usage_default_with_parens() {
+	// Literal default values can contain parens — `{{ ... }}` matching is
+	// brace-based, so `()` in the default doesn't break the scanner.
+	let cmds = vec!["echo {{ ARGS.key ? default(value) }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("key"));
@@ -3159,7 +3261,7 @@ fn scan_args_usage_nested_parens() {
 
 #[test]
 fn scan_args_detects_named_with_chained_fallback() {
-	let cmds = vec!["echo $(ARGS.env ? ENV.NODE_ENV ? production)".into()];
+	let cmds = vec!["echo {{ ARGS.env ? ENV.NODE_ENV ? production }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("env"));
@@ -3180,7 +3282,7 @@ fn substitute_env_chain_first_wins() {
 	env.insert("FIRST".into(), "found".into());
 	env.insert("SECOND".into(), "also_found".into());
 	let result = args
-		.substitute("echo $(ENV.FIRST ? ENV.SECOND ? fallback)", &env)
+		.substitute("echo {{ ENV.FIRST ? ENV.SECOND ? fallback }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo found");
 }
@@ -3451,7 +3553,7 @@ fn extract_format_bash_value_with_special_chars() {
 
 	let commands = vec![ExtractedCommand {
 		command: "echo test".to_string(),
-		env_vars: vec![("CMD".to_string(), "echo $(whoami) | cat".to_string())],
+		env_vars: vec![("CMD".to_string(), "echo {{ whoami }} | cat".to_string())],
 	}];
 
 	let lines = format_extracted_commands(&commands, &ShellKind::Bash);
@@ -3560,28 +3662,28 @@ fn parallel_with_ignore_errors() {
 #[test]
 fn flags_basic_true() {
 	let args = RunArgs::parse(&["--verbose".into()]);
-	let result = args.substitute_no_env("echo $(FLAGS.verbose)").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAGS.verbose }}").unwrap();
 	assert_eq!(result, "echo true");
 }
 
 #[test]
 fn flags_basic_false() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo $(FLAGS.verbose)").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAGS.verbose }}").unwrap();
 	assert_eq!(result, "echo false");
 }
 
 #[test]
 fn flags_ternary_true() {
 	let args = RunArgs::parse(&["--debug".into()]);
-	let result = args.substitute_no_env("gcc $(FLAGS.debug ? -g : -O2)").unwrap();
+	let result = args.substitute_no_env("gcc {{ FLAGS.debug ? -g : -O2 }}").unwrap();
 	assert_eq!(result, "gcc -g");
 }
 
 #[test]
 fn flags_ternary_false() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("gcc $(FLAGS.debug ? -g : -O2)").unwrap();
+	let result = args.substitute_no_env("gcc {{ FLAGS.debug ? -g : -O2 }}").unwrap();
 	assert_eq!(result, "gcc -O2");
 }
 
@@ -3589,7 +3691,7 @@ fn flags_ternary_false() {
 fn flags_ternary_with_spaces_in_values() {
 	let args = RunArgs::parse(&["--color".into()]);
 	let result = args
-		.substitute_no_env("cmd $(FLAGS.color ? --color always : --color never)")
+		.substitute_no_env("cmd {{ FLAGS.color ? --color always : --color never }}")
 		.unwrap();
 	assert_eq!(result, "cmd --color always");
 }
@@ -3598,7 +3700,7 @@ fn flags_ternary_with_spaces_in_values() {
 fn flags_ternary_with_spaces_false_branch() {
 	let args = RunArgs::parse(&[]);
 	let result = args
-		.substitute_no_env("cmd $(FLAGS.color ? --color always : --color never)")
+		.substitute_no_env("cmd {{ FLAGS.color ? --color always : --color never }}")
 		.unwrap();
 	assert_eq!(result, "cmd --color never");
 }
@@ -3606,49 +3708,49 @@ fn flags_ternary_with_spaces_false_branch() {
 #[test]
 fn flags_no_colon_present() {
 	let args = RunArgs::parse(&["--v".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.v ? -v)").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAGS.v ? -v }}").unwrap();
 	assert_eq!(result, "cmd -v");
 }
 
 #[test]
 fn flags_no_colon_absent() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("cmd $(FLAGS.v ? -v)").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAGS.v ? -v }}").unwrap();
 	assert_eq!(result, "cmd ");
 }
 
 #[test]
 fn flags_empty_true_branch() {
 	let args = RunArgs::parse(&["--quiet".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.quiet ? : --verbose)").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAGS.quiet ? : --verbose }}").unwrap();
 	assert_eq!(result, "cmd ");
 }
 
 #[test]
 fn flags_empty_false_branch() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("cmd $(FLAGS.v ? --verbose :)").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAGS.v ? --verbose : }}").unwrap();
 	assert_eq!(result, "cmd ");
 }
 
 #[test]
 fn flags_empty_false_branch_present() {
 	let args = RunArgs::parse(&["--v".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.v ? --verbose :)").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAGS.v ? --verbose : }}").unwrap();
 	assert_eq!(result, "cmd --verbose");
 }
 
 #[test]
 fn flags_consumed_from_args() {
 	let args = RunArgs::parse(&["--verbose".into(), "foo".into(), "bar".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.verbose) $(ARGS)").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAGS.verbose }} {{ ARGS }}").unwrap();
 	assert_eq!(result, "cmd true foo bar");
 }
 
 #[test]
 fn flags_absent_not_consumed_from_args() {
 	let args = RunArgs::parse(&["foo".into(), "bar".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.verbose) $(ARGS)").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAGS.verbose }} {{ ARGS }}").unwrap();
 	assert_eq!(result, "cmd false foo bar");
 }
 
@@ -3656,7 +3758,7 @@ fn flags_absent_not_consumed_from_args() {
 fn flags_with_value_still_true() {
 	// --verbose=yes should still be "true" for FLAGS (presence only)
 	let args = RunArgs::parse(&["--verbose=yes".into()]);
-	let result = args.substitute_no_env("echo $(FLAGS.verbose)").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAGS.verbose }}").unwrap();
 	assert_eq!(result, "echo true");
 }
 
@@ -3664,35 +3766,41 @@ fn flags_with_value_still_true() {
 fn flags_with_space_value_still_true() {
 	// --verbose something should still be "true" for FLAGS
 	let args = RunArgs::parse(&["--verbose".into(), "something".into()]);
-	let result = args.substitute_no_env("echo $(FLAGS.verbose)").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAGS.verbose }}").unwrap();
 	assert_eq!(result, "echo true");
 }
 
 #[test]
 fn flags_multiple() {
 	let args = RunArgs::parse(&["--verbose".into(), "--debug".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.verbose) $(FLAGS.debug)").unwrap();
+	let result = args
+		.substitute_no_env("cmd {{ FLAGS.verbose }} {{ FLAGS.debug }}")
+		.unwrap();
 	assert_eq!(result, "cmd true true");
 }
 
 #[test]
 fn flags_multiple_mixed_presence() {
 	let args = RunArgs::parse(&["--verbose".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.verbose) $(FLAGS.debug)").unwrap();
+	let result = args
+		.substitute_no_env("cmd {{ FLAGS.verbose }} {{ FLAGS.debug }}")
+		.unwrap();
 	assert_eq!(result, "cmd true false");
 }
 
 #[test]
 fn flags_mixed_with_args_named() {
 	let args = RunArgs::parse(&["--verbose".into(), "--env=prod".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.verbose) env=$(ARGS.env)").unwrap();
+	let result = args
+		.substitute_no_env("cmd {{ FLAGS.verbose }} env={{ ARGS.env }}")
+		.unwrap();
 	assert_eq!(result, "cmd true env=prod");
 }
 
 #[test]
 fn flags_mixed_with_args_positional() {
 	let args = RunArgs::parse(&["--verbose".into(), "file.txt".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.verbose) $(ARGS)").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAGS.verbose }} {{ ARGS }}").unwrap();
 	assert_eq!(result, "cmd true file.txt");
 }
 
@@ -3700,7 +3808,7 @@ fn flags_mixed_with_args_positional() {
 fn flags_ternary_complex_values() {
 	let args = RunArgs::parse(&["--side-effects".into()]);
 	let result = args
-		.substitute_no_env("cmd $(FLAGS.side-effects ? -run -startup 3 : -donotrun)")
+		.substitute_no_env("cmd {{ FLAGS.side-effects ? -run -startup 3 : -donotrun }}")
 		.unwrap();
 	assert_eq!(result, "cmd -run -startup 3");
 }
@@ -3709,7 +3817,7 @@ fn flags_ternary_complex_values() {
 fn flags_ternary_complex_values_false() {
 	let args = RunArgs::parse(&[]);
 	let result = args
-		.substitute_no_env("cmd $(FLAGS.side-effects ? -run -startup 3 : -donotrun)")
+		.substitute_no_env("cmd {{ FLAGS.side-effects ? -run -startup 3 : -donotrun }}")
 		.unwrap();
 	assert_eq!(result, "cmd -donotrun");
 }
@@ -3719,7 +3827,7 @@ fn flags_ternary_url_colons_preserved() {
 	// Colons in URLs should not be treated as ternary separator (only " : " is)
 	let args = RunArgs::parse(&["--ssl".into()]);
 	let result = args
-		.substitute_no_env("cmd $(FLAGS.ssl ? https://secure.example.com : http://example.com)")
+		.substitute_no_env("cmd {{ FLAGS.ssl ? https://secure.example.com : http://example.com }}")
 		.unwrap();
 	assert_eq!(result, "cmd https://secure.example.com");
 }
@@ -3728,14 +3836,14 @@ fn flags_ternary_url_colons_preserved() {
 fn flags_ternary_url_colons_false_branch() {
 	let args = RunArgs::parse(&[]);
 	let result = args
-		.substitute_no_env("cmd $(FLAGS.ssl ? https://secure.example.com : http://example.com)")
+		.substitute_no_env("cmd {{ FLAGS.ssl ? https://secure.example.com : http://example.com }}")
 		.unwrap();
 	assert_eq!(result, "cmd http://example.com");
 }
 
 #[test]
 fn flags_scan_detects_flags() {
-	let cmds = vec!["echo $(FLAGS.verbose)".into()];
+	let cmds = vec!["echo {{ FLAGS.verbose }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("verbose"));
@@ -3743,7 +3851,7 @@ fn flags_scan_detects_flags() {
 
 #[test]
 fn flags_scan_detects_flags_with_ternary() {
-	let cmds = vec!["echo $(FLAGS.debug ? -g : -O2)".into()];
+	let cmds = vec!["echo {{ FLAGS.debug ? -g : -O2 }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("debug"));
@@ -3751,7 +3859,7 @@ fn flags_scan_detects_flags_with_ternary() {
 
 #[test]
 fn flags_scan_mixed_with_args() {
-	let cmds = vec!["echo $(FLAGS.verbose) $(ARGS.env)".into()];
+	let cmds = vec!["echo {{ FLAGS.verbose }} {{ ARGS.env }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("verbose"));
@@ -3761,14 +3869,14 @@ fn flags_scan_mixed_with_args() {
 #[test]
 fn flags_validate_accepts_flag_args() {
 	let args = RunArgs::parse(&["--verbose".into()]);
-	let cmds = vec!["echo $(FLAGS.verbose)".into()];
+	let cmds = vec!["echo {{ FLAGS.verbose }}".into()];
 	assert!(validate_args(&args, &cmds).is_ok());
 }
 
 #[test]
 fn flags_validate_rejects_unknown_flag() {
 	let args = RunArgs::parse(&["--verbose".into(), "--unknown".into()]);
-	let cmds = vec!["echo $(FLAGS.verbose)".into()];
+	let cmds = vec!["echo {{ FLAGS.verbose }}".into()];
 	let err = validate_args(&args, &cmds).unwrap_err();
 	assert!(
 		err.to_string().contains("unknown"),
@@ -3779,7 +3887,7 @@ fn flags_validate_rejects_unknown_flag() {
 #[test]
 fn flags_validate_mixed_flags_and_args() {
 	let args = RunArgs::parse(&["--verbose".into(), "--env=prod".into()]);
-	let cmds = vec!["echo $(FLAGS.verbose) $(ARGS.env)".into()];
+	let cmds = vec!["echo {{ FLAGS.verbose }} {{ ARGS.env }}".into()];
 	assert!(validate_args(&args, &cmds).is_ok());
 }
 
@@ -3788,7 +3896,7 @@ fn flags_in_env_substitution() {
 	let args = RunArgs::parse(&["--debug".into()]);
 	let env = HashMap::new();
 	let result = args
-		.substitute("echo $(FLAGS.debug ? --inspect : --no-inspect)", &env)
+		.substitute("echo {{ FLAGS.debug ? --inspect : --no-inspect }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo --inspect");
 }
@@ -3797,7 +3905,7 @@ fn flags_in_env_substitution() {
 fn flags_multiple_in_same_command() {
 	let args = RunArgs::parse(&["--verbose".into(), "--release".into()]);
 	let result = args
-		.substitute_no_env("cargo build $(FLAGS.verbose ? -v :) $(FLAGS.release ? --release :)")
+		.substitute_no_env("cargo build {{ FLAGS.verbose ? -v : }} {{ FLAGS.release ? --release : }}")
 		.unwrap();
 	assert_eq!(result, "cargo build -v --release");
 }
@@ -3806,23 +3914,23 @@ fn flags_multiple_in_same_command() {
 fn flags_multiple_in_same_command_none_set() {
 	let args = RunArgs::parse(&[]);
 	let result = args
-		.substitute_no_env("cargo build $(FLAGS.verbose ? -v :) $(FLAGS.release ? --release :)")
+		.substitute_no_env("cargo build {{ FLAGS.verbose ? -v : }} {{ FLAGS.release ? --release : }}")
 		.unwrap();
 	assert_eq!(result, "cargo build  ");
 }
 
 #[test]
 fn flags_consumed_with_value_from_args() {
-	// --verbose=yes used as FLAGS should consume the --verbose=yes token from $(ARGS)
+	// --verbose=yes used as FLAGS should consume the --verbose=yes token from {{ ARGS }}
 	let args = RunArgs::parse(&["--verbose=yes".into(), "file.txt".into()]);
-	let result = args.substitute_no_env("cmd $(FLAGS.verbose) $(ARGS)").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAGS.verbose }} {{ ARGS }}").unwrap();
 	assert_eq!(result, "cmd true file.txt");
 }
 
 #[test]
 fn flags_hyphenated_key() {
 	let args = RunArgs::parse(&["--dry-run".into()]);
-	let result = args.substitute_no_env("echo $(FLAGS.dry-run)").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAGS.dry-run }}").unwrap();
 	assert_eq!(result, "echo true");
 }
 
@@ -3830,7 +3938,7 @@ fn flags_hyphenated_key() {
 fn flags_hyphenated_key_ternary() {
 	let args = RunArgs::parse(&["--dry-run".into()]);
 	let result = args
-		.substitute_no_env("cmd $(FLAGS.dry-run ? --dry-run : --execute)")
+		.substitute_no_env("cmd {{ FLAGS.dry-run ? --dry-run : --execute }}")
 		.unwrap();
 	assert_eq!(result, "cmd --dry-run");
 }
@@ -3848,21 +3956,21 @@ fn args_with_run(shell: &str) -> RunArgs {
 #[test]
 fn run_os_resolves() {
 	let args = args_with_run("bash");
-	let result = args.substitute_no_env("echo $(RUN.os)").unwrap();
+	let result = args.substitute_no_env("echo {{ RUN.os }}").unwrap();
 	assert_eq!(result, "echo linux");
 }
 
 #[test]
 fn run_shell_resolves() {
 	let args = args_with_run("powershell");
-	let result = args.substitute_no_env("echo $(RUN.shell)").unwrap();
+	let result = args.substitute_no_env("echo {{ RUN.shell }}").unwrap();
 	assert_eq!(result, "echo powershell");
 }
 
 #[test]
 fn run_unknown_key_errors() {
 	let args = args_with_run("bash");
-	let err = args.substitute_no_env("echo $(RUN.unknown)").unwrap_err();
+	let err = args.substitute_no_env("echo {{ RUN.unknown }}").unwrap_err();
 	let msg = err.to_string();
 	assert!(msg.contains("unknown"), "unexpected error: {msg}");
 	assert!(msg.contains("os"), "expected error to mention valid keys: {msg}");
@@ -3870,9 +3978,9 @@ fn run_unknown_key_errors() {
 
 #[test]
 fn run_in_chained_fallback() {
-	// $(ARGS.shell ? RUN.shell) — falls back when ARGS not provided.
+	// {{ ARGS.shell ? RUN.shell }} — falls back when ARGS not provided.
 	let args = args_with_run("zsh");
-	let result = args.substitute_no_env("echo $(ARGS.shell ? RUN.shell)").unwrap();
+	let result = args.substitute_no_env("echo {{ ARGS.shell ? RUN.shell }}").unwrap();
 	assert_eq!(result, "echo zsh");
 }
 
@@ -3880,19 +3988,19 @@ fn run_in_chained_fallback() {
 fn run_with_default_when_unknown() {
 	// Unknown RUN key followed by literal default still works.
 	let args = args_with_run("bash");
-	let result = args.substitute_no_env("echo $(RUN.unknown ? fallback)").unwrap();
+	let result = args.substitute_no_env("echo {{ RUN.unknown ? fallback }}").unwrap();
 	assert_eq!(result, "echo fallback");
 }
 
 #[test]
 fn run_does_not_consume_named_args() {
-	// $(RUN.shell) must not influence $(ARGS) — RUN keys are not user input.
+	// {{ RUN.shell }} must not influence {{ ARGS }} — RUN keys are not user input.
 	let args = RunArgs::parse(&["foo".into(), "--keep=true".into()]).with_run_context(RunContext {
 		os: "linux".into(),
 		shell: "bash".into(),
 		..Default::default()
 	});
-	let result = args.substitute_no_env("cmd $(RUN.shell) $(ARGS)").unwrap();
+	let result = args.substitute_no_env("cmd {{ RUN.shell }} {{ ARGS }}").unwrap();
 	assert_eq!(result, "cmd bash foo --keep=true");
 }
 
@@ -3901,7 +4009,9 @@ fn run_redacted_substitute_does_not_redact() {
 	// RUN values are not secrets — the redacted form should show them.
 	let args = args_with_run("bash");
 	let env = HashMap::new();
-	let result = args.substitute_redacted("echo $(RUN.os)/$(RUN.shell)", &env).unwrap();
+	let result = args
+		.substitute_redacted("echo {{ RUN.os }}/{{ RUN.shell }}", &env)
+		.unwrap();
 	assert_eq!(result, "echo linux/bash");
 }
 
@@ -3916,12 +4026,12 @@ fn run_in_if_condition_parses_in_runfile() {
 		"targets": {
 			"t": {
 				"commands": [
-					{ "if": "$(RUN.os) == linux", "then": ["echo on-linux"] }
+					{ "if": "{{ RUN.os }} == linux", "then": ["echo on-linux"] }
 				]
 			}
 		}
 	}"#;
-	// $(RUN.os) is a substitution leaf in DSL conditions; the parser must
+	// {{ RUN.os }} is a substitution leaf in DSL conditions; the parser must
 	// accept it without complaining at validation time.
 	let runfile = parse_runfile(raw).unwrap();
 	assert!(runfile.targets.contains_key("t"));
@@ -3933,7 +4043,7 @@ fn run_if_condition_runtime_execution() {
 	use crate::control_flow::evaluate;
 	use runfile_parser::parse_condition;
 
-	let ast = parse_condition("$(RUN.shell) == bash").unwrap();
+	let ast = parse_condition("{{ RUN.shell }} == bash").unwrap();
 	let env = HashMap::new();
 	let scope = LoopScope::new();
 
@@ -3946,9 +4056,9 @@ fn run_if_condition_runtime_execution() {
 
 #[test]
 fn run_for_in_substitutes_run_values() {
-	// `for in: ["$(RUN.os)", "ci"]` should expand $(RUN.os) per element.
+	// `for in: ["{{ RUN.os }}", "ci"]` should expand {{ RUN.os }} per element.
 	let args = args_with_run("bash");
-	let result = args.substitute_no_env("$(RUN.os)").unwrap();
+	let result = args.substitute_no_env("{{ RUN.os }}").unwrap();
 	assert_eq!(result, "linux");
 }
 
@@ -3958,7 +4068,7 @@ fn run_negated_inequality() {
 	use crate::control_flow::evaluate;
 	use runfile_parser::parse_condition;
 
-	let ast = parse_condition("$(RUN.os) != windows").unwrap();
+	let ast = parse_condition("{{ RUN.os }} != windows").unwrap();
 	let env = HashMap::new();
 	let scope = LoopScope::new();
 
@@ -4038,15 +4148,15 @@ fn cmd_env_value_with_percent_is_quoted() {
 fn powershell_env_value_with_dollar_subexpression_not_expanded() {
 	use crate::extract::{format_extracted_commands, ExtractedCommand};
 
-	// In double quotes, PowerShell would expand $(whoami). Single quotes prevent this.
+	// In double quotes, PowerShell would expand {{ whoami }}. Single quotes prevent this.
 	let commands = vec![ExtractedCommand {
 		command: "echo test".to_string(),
-		env_vars: vec![("VAR".to_string(), "$(whoami)".to_string())],
+		env_vars: vec![("VAR".to_string(), "{{ whoami }}".to_string())],
 	}];
 
 	let lines = format_extracted_commands(&commands, &ShellKind::PowerShell);
-	// Must use single quotes so $(whoami) is literal
-	assert_eq!(lines[0], "$env:VAR='$(whoami)'; echo test");
+	// Must use single quotes so {{ whoami }} is literal
+	assert_eq!(lines[0], "$env:VAR='{{ whoami }}'; echo test");
 }
 
 #[test]
@@ -4170,9 +4280,9 @@ fn error_message_contains_template_not_substituted_value() {
 	} else {
 		"exit 1".to_string()
 	};
-	// Template contains $(ARGS.secret) — the error should show the template,
+	// Template contains {{ ARGS.secret }} — the error should show the template,
 	// not the substituted value.
-	let template = format!("{fail_cmd} $(ARGS.secret ? default_val)");
+	let template = format!("{fail_cmd} {{{{ ARGS.secret ? default_val }}}}");
 
 	let spec = CommandSpec::new_shell(vec![template.clone()]);
 	let args = RunArgs::parse(&["--secret=super_secret_password".into()]);
@@ -4379,7 +4489,7 @@ fn if_then_branch_executes_on_truthy() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"$(ARGS.go) == yes","then":["echo then-branch"],"else":["echo else-branch"]}
+			{"if":"{{ ARGS.go }} == yes","then":["echo then-branch"],"else":["echo else-branch"]}
 		]}}}"#,
 		"t",
 	);
@@ -4395,7 +4505,7 @@ fn if_else_branch_executes_on_falsy() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"$(ARGS.go) == yes","then":["exit 1"],"else":["echo else-branch"]}
+			{"if":"{{ ARGS.go }} == yes","then":["exit 1"],"else":["echo else-branch"]}
 		]}}}"#,
 		"t",
 	);
@@ -4411,7 +4521,7 @@ fn if_no_else_branch_skipped_when_falsy() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"$(ARGS.go) == yes","then":["exit 1"]},
+			{"if":"{{ ARGS.go }} == yes","then":["exit 1"]},
 			"echo done"
 		]}}}"#,
 		"t",
@@ -4429,7 +4539,7 @@ fn if_truthiness_only_empty_string_is_falsy() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"$(ARGS.flag ? false)","then":["echo truthy"],"else":["exit 1"]}
+			{"if":"{{ ARGS.flag ? false }}","then":["echo truthy"],"else":["exit 1"]}
 		]}}}"#,
 		"t",
 	);
@@ -4445,7 +4555,7 @@ fn if_chained_logical_operators() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"$(ARGS.a) == 1 && $(ARGS.b) == 2","then":["echo both"],"else":["exit 1"]}
+			{"if":"{{ ARGS.a }} == 1 && {{ ARGS.b }} == 2","then":["echo both"],"else":["exit 1"]}
 		]}}}"#,
 		"t",
 	);
@@ -4460,7 +4570,7 @@ fn if_negation_works() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"!$(ARGS.skip ? )","then":["echo go"],"else":["exit 1"]}
+			{"if":"!{{ ARGS.skip ? }}","then":["echo go"],"else":["exit 1"]}
 		]}}}"#,
 		"t",
 	);
@@ -4480,7 +4590,7 @@ fn if_failure_propagates_without_ignore_errors() {
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
-			{{"if":"$(ARGS.go) == yes","then":["{fail_cmd}"]}}
+			{{"if":"{{{{ ARGS.go }}}} == yes","then":["{fail_cmd}"]}}
 		]}}}}}}"#
 	);
 	let spec = parse_target(&spec_json, "t");
@@ -4503,7 +4613,7 @@ fn if_ignore_errors_swallows_body_failure() {
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
-			{{"if":"$(ARGS.go) == yes","then":["{fail_cmd}"],"ignoreErrors":true}},
+			{{"if":"{{{{ ARGS.go }}}} == yes","then":["{fail_cmd}"],"ignoreErrors":true}},
 			"echo after"
 		]}}}}}}"#
 	);
@@ -4560,7 +4670,7 @@ fn for_in_iterates_each_value() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"for":"x","in":["1","2","3"],"do":["echo $(LOOP.x)"]}
+			{"for":"x","in":["1","2","3"],"do":["echo {{ LOOP.x }}"]}
 		]}}}"#,
 		"t",
 	);
@@ -4572,13 +4682,13 @@ fn for_in_iterates_each_value() {
 #[test]
 fn for_in_namespaces_iterates_runfile_namespaces() {
 	// Populate args.run_context.namespaces and verify the for-block runs the
-	// body once per namespace, with $(LOOP.ns) bound to each.
+	// body once per namespace, with {{ LOOP.ns }} bound to each.
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let touch = match shell.kind {
-		ShellKind::Cmd => "type nul > $(LOOP.ns).ns",
-		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"$(LOOP.ns).ns\\\" -Force | Out-Null",
-		_ => "touch $(LOOP.ns).ns",
+		ShellKind::Cmd => "type nul > {{ LOOP.ns }}.ns",
+		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"{{ LOOP.ns }}.ns\\\" -Force | Out-Null",
+		_ => "touch {{ LOOP.ns }}.ns",
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
@@ -4600,9 +4710,9 @@ fn for_in_namespaces_iterates_runfile_namespaces() {
 #[test]
 fn for_in_namespaces_with_dynamic_target_call_runs_each_namespaced_target() {
 	// End-to-end exercise of the user's example pattern:
-	//   "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):build"
+	//   "for": "ns", "in": "namespaces", "do": "@{{ LOOP.ns }}:build"
 	// The for-block iterates the runfile's namespaces; for each value, the
-	// `@$(LOOP.ns):build` target call is substituted and dispatched to the
+	// `@{{ LOOP.ns }}:build` target call is substituted and dispatched to the
 	// real namespaced target. Each project's `build` writes a marker file.
 	use crate::runner::run_target;
 	use runfile_parser::parse_runfile;
@@ -4629,7 +4739,7 @@ fn for_in_namespaces_with_dynamic_target_call_runs_each_namespaced_target() {
 			"project_two:build": {{ "commands": ["{touch_two}"] }},
 			"build_all": {{
 				"commands": [
-					{{ "for": "ns", "in": "namespaces", "do": "@$(LOOP.ns):build" }}
+					{{ "for": "ns", "in": "namespaces", "do": "@{{{{ LOOP.ns }}}}:build" }}
 				]
 			}}
 		}}
@@ -4680,7 +4790,7 @@ fn optional_target_call_skips_when_missing() {
 			"without_it:other": {{ "commands": ["echo never"] }},
 			"adb-forward": {{
 				"commands": [
-					{{ "for": "ns", "in": "namespaces", "do": "@?$(LOOP.ns):adb-forward" }}
+					{{ "for": "ns", "in": "namespaces", "do": "@?{{{{ LOOP.ns }}}}:adb-forward" }}
 				]
 			}}
 		}}
@@ -4790,9 +4900,9 @@ fn for_in_loop_var_substitutes() {
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let touch = match shell.kind {
-		ShellKind::Cmd => "type nul > $(LOOP.f).out",
-		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"$(LOOP.f).out\\\" -Force | Out-Null",
-		_ => "touch $(LOOP.f).out",
+		ShellKind::Cmd => "type nul > {{ LOOP.f }}.out",
+		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"{{ LOOP.f }}.out\\\" -Force | Out-Null",
+		_ => "touch {{ LOOP.f }}.out",
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
@@ -4813,7 +4923,7 @@ fn for_in_nested_inner_var_shadows_outer() {
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
 			{"for":"x","in":["1","2"],"do":[
-				{"for":"y","in":["a","b"],"do":["echo $(LOOP.x)$(LOOP.y)"]}
+				{"for":"y","in":["a","b"],"do":["echo {{ LOOP.x }}{{ LOOP.y }}"]}
 			]}
 		]}}}"#,
 		"t",
@@ -4832,7 +4942,7 @@ fn for_glob_expands_files() {
 	std::fs::write(dir.path().join("c.dat"), "").unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"for":"f","glob":"*.txt","do":["echo $(LOOP.f)"]}
+			{"for":"f","glob":"*.txt","do":["echo {{ LOOP.f }}"]}
 		]}}}"#,
 		"t",
 	);
@@ -4867,7 +4977,7 @@ fn for_shell_iterates_lines() {
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
-			{{"for":"line","shell":"{cmd}","do":["echo $(LOOP.line)"]}}
+			{{"for":"line","shell":"{cmd}","do":["echo {{{{ LOOP.line }}}}"]}}
 		]}}}}}}"#
 	);
 	let spec = parse_target(&spec_json, "t");
@@ -4902,11 +5012,11 @@ fn for_in_with_ignore_errors_continues_after_failure() {
 	// We can't easily branch in pure shell without quotes; use exit-on-name
 	// matching via a marker file: when x=fail, exit 1; otherwise touch a file.
 	let body = match shell.kind {
-		ShellKind::Cmd => "if $(LOOP.x)==fail (exit /b 1) else (type nul > $(LOOP.x).done)",
+		ShellKind::Cmd => "if {{ LOOP.x }}==fail (exit /b 1) else (type nul > {{ LOOP.x }}.done)",
 		ShellKind::PowerShell => {
-			"if ($env:RFLOOP_X -eq 'fail') { exit 1 } else { New-Item -ItemType File -Path \\\"$(LOOP.x).done\\\" -Force | Out-Null }"
+			"if ($env:RFLOOP_X -eq 'fail') { exit 1 } else { New-Item -ItemType File -Path \\\"{{ LOOP.x }}.done\\\" -Force | Out-Null }"
 		}
-		_ => "test $(LOOP.x) = fail && exit 1 || touch $(LOOP.x).done",
+		_ => "test {{ LOOP.x }} = fail && exit 1 || touch {{ LOOP.x }}.done",
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
@@ -4986,9 +5096,9 @@ fn for_in_parallel_runs_concurrently() {
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let touch = match shell.kind {
-		ShellKind::Cmd => "type nul > $(LOOP.f).out",
-		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"$(LOOP.f).out\\\" -Force | Out-Null",
-		_ => "touch $(LOOP.f).out",
+		ShellKind::Cmd => "type nul > {{ LOOP.f }}.out",
+		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"{{ LOOP.f }}.out\\\" -Force | Out-Null",
+		_ => "touch {{ LOOP.f }}.out",
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
@@ -5014,7 +5124,7 @@ fn nested_for_outer_parallel_inner_forced_sequential() {
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
 			{"for":"x","in":["1","2"],"parallel":true,"do":[
-				{"for":"y","in":["a","b"],"parallel":true,"do":["echo $(LOOP.x)$(LOOP.y)"]}
+				{"for":"y","in":["a","b"],"parallel":true,"do":["echo {{ LOOP.x }}{{ LOOP.y }}"]}
 			]}
 		]}}}"#,
 		"t",
@@ -5029,7 +5139,7 @@ fn missing_loop_var_errors() {
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
-		r#"{"$schema":"x","targets":{"t":{"commands":["echo $(LOOP.undefined)"]}}}"#,
+		r#"{"$schema":"x","targets":{"t":{"commands":["echo {{ LOOP.undefined }}"]}}}"#,
 		"t",
 	);
 	let args = RunArgs::default();
@@ -5044,7 +5154,7 @@ fn dsl_works_with_env_substitution() {
 	let dir = TempDir::new().unwrap();
 	let spec_json = r#"{"$schema":"x","targets":{"t":{
 		"commands":[
-			{"if":"$(ENV.MY_TEST_KEY) == hello","then":["echo matched"],"else":["exit 1"]}
+			{"if":"{{ ENV.MY_TEST_KEY }} == hello","then":["echo matched"],"else":["exit 1"]}
 		],
 		"env":{"MY_TEST_KEY":"hello"}
 	}}}"#;
@@ -5125,11 +5235,11 @@ fn dsl_evaluator_comparisons_short_circuit() {
 
 	// Or short-circuit: second arm would fail to substitute (LOOP.missing),
 	// but the first arm is true so evaluation stops.
-	let ast = parse_condition("foo || $(LOOP.missing)").unwrap();
+	let ast = parse_condition("foo || {{ LOOP.missing }}").unwrap();
 	assert!(evaluate(&ast, &args, &env, &scope).unwrap());
 
 	// And short-circuit: first arm false stops evaluation before LOOP fails.
-	let ast = parse_condition("\"\" && $(LOOP.missing)").unwrap();
+	let ast = parse_condition("\"\" && {{ LOOP.missing }}").unwrap();
 	assert!(!evaluate(&ast, &args, &env, &scope).unwrap());
 }
 
@@ -5144,7 +5254,7 @@ fn dsl_evaluator_loop_var_resolves() {
 	scope.push("color", "red");
 	let args = RunArgs::default();
 
-	let ast = parse_condition("$(LOOP.color) == red").unwrap();
+	let ast = parse_condition("{{ LOOP.color }} == red").unwrap();
 	assert!(evaluate(&ast, &args, &env, &scope).unwrap());
 }
 
@@ -5496,7 +5606,7 @@ fn match_runs_matching_case() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"$(ARGS.tier)","cases":{"1":"echo one","2":"echo two","3":"echo three"}}
+			{"match":"{{ ARGS.tier }}","cases":{"1":"echo one","2":"echo two","3":"echo three"}}
 		]}}}"#,
 		"t",
 	);
@@ -5512,7 +5622,7 @@ fn match_no_case_no_default_errors_with_valid_cases_listed() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"$(ARGS.tier)","cases":{"1":"echo one","2":"echo two"}}
+			{"match":"{{ ARGS.tier }}","cases":{"1":"echo one","2":"echo two"}}
 		]}}}"#,
 		"t",
 	);
@@ -5530,7 +5640,7 @@ fn match_default_runs_when_no_case_matches() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"$(ARGS.tier)","cases":{"1":"exit 1"},"default":"echo fallback"}
+			{"match":"{{ ARGS.tier }}","cases":{"1":"exit 1"},"default":"echo fallback"}
 		]}}}"#,
 		"t",
 	);
@@ -5548,7 +5658,7 @@ fn match_missing_arg_uses_default_when_set() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"$(ARGS.tier)","cases":{"1":"exit 1"},"default":"echo defaulted"}
+			{"match":"{{ ARGS.tier }}","cases":{"1":"exit 1"},"default":"echo defaulted"}
 		]}}}"#,
 		"t",
 	);
@@ -5566,7 +5676,7 @@ fn match_missing_arg_no_default_errors_with_valid_cases() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"$(ARGS.tier)","cases":{"1":"echo one","2":"echo two"}}
+			{"match":"{{ ARGS.tier }}","cases":{"1":"echo one","2":"echo two"}}
 		]}}}"#,
 		"t",
 	);
@@ -5583,12 +5693,12 @@ fn match_missing_arg_no_default_errors_with_valid_cases() {
 
 #[test]
 fn match_chained_substitution_resolves_to_default_value() {
-	// `$(ARGS.tier ? 1)` resolves to "1" when --tier missing → case "1" runs.
+	// `{{ ARGS.tier ? 1 }}` resolves to "1" when --tier missing → case "1" runs.
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"$(ARGS.tier ? 1)","cases":{"1":"echo one","2":"exit 1"}}
+			{"match":"{{ ARGS.tier ? 1 }}","cases":{"1":"echo one","2":"exit 1"}}
 		]}}}"#,
 		"t",
 	);
@@ -5610,7 +5720,7 @@ fn match_target_call_dispatch() {
 			"dev": { "commands": ["echo dev"] },
 			"deploy": {
 				"commands": [
-					{ "match": "$(ARGS.env)", "cases": { "prod": "@prod", "dev": "@dev" } }
+					{ "match": "{{ ARGS.env }}", "cases": { "prod": "@prod", "dev": "@dev" } }
 				]
 			}
 		}
@@ -5629,7 +5739,7 @@ fn match_ignore_errors_isolates_failure() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"$(ARGS.x)","cases":{"a":"exit 1"},"ignoreErrors":true},
+			{"match":"{{ ARGS.x }}","cases":{"a":"exit 1"},"ignoreErrors":true},
 			"echo after"
 		]}}}"#,
 		"t",
@@ -5652,7 +5762,7 @@ fn match_used_with_for_loop() {
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
 			{"for":"x","in":["a","b"],"do":[
-				{"match":"$(LOOP.x)","cases":{"a":"echo got-a","b":"echo got-b"}}
+				{"match":"{{ LOOP.x }}","cases":{"a":"echo got-a","b":"echo got-b"}}
 			]}
 		]}}}"#,
 		"t",
@@ -5667,7 +5777,7 @@ fn match_count_leaves_sums_all_branches() {
 	use crate::control_flow::count_leaves;
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"$(ARGS.x)","cases":{"a":"echo 1","b":["echo 2","echo 3"]},"default":"echo 4"}
+			{"match":"{{ ARGS.x }}","cases":{"a":"echo 1","b":["echo 2","echo 3"]},"default":"echo 4"}
 		]}}}"#,
 		"t",
 	);
@@ -5727,7 +5837,7 @@ mod stdin_args {
 	fn missing_args_prompts_and_uses_answer() {
 		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.name", Some("alice")));
 		let args = args_with(prompter.clone());
-		let result = args.substitute("hello $(ARGS.name)", &HashMap::new()).unwrap();
+		let result = args.substitute("hello {{ ARGS.name }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "hello alice");
 		let calls = prompter.value_calls.lock().unwrap();
 		assert_eq!(calls.len(), 1);
@@ -5740,7 +5850,7 @@ mod stdin_args {
 		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.env", None));
 		let args = args_with(prompter.clone());
 		let result = args
-			.substitute("env=$(ARGS.env ? production)", &HashMap::new())
+			.substitute("env={{ ARGS.env ? production }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "env=production");
 		let calls = prompter.value_calls.lock().unwrap();
@@ -5752,7 +5862,7 @@ mod stdin_args {
 		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.env", Some("staging")));
 		let args = args_with(prompter);
 		let result = args
-			.substitute("env=$(ARGS.env ? production)", &HashMap::new())
+			.substitute("env={{ ARGS.env ? production }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "env=staging");
 	}
@@ -5763,7 +5873,7 @@ mod stdin_args {
 		// → fall through to MissingArg as if --stdin-args wasn't set.
 		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.name", None));
 		let args = args_with(prompter);
-		let err = args.substitute("hi $(ARGS.name)", &HashMap::new()).unwrap_err();
+		let err = args.substitute("hi {{ ARGS.name }}", &HashMap::new()).unwrap_err();
 		assert!(matches!(err, SubstitutionError::MissingArg(ref k) if k == "name"));
 	}
 
@@ -5771,7 +5881,7 @@ mod stdin_args {
 	fn provided_args_skip_prompt() {
 		let prompter = Arc::new(MockPrompter::default());
 		let args = RunArgs::parse(&["--name=bob".into()]).with_stdin_prompter(Some(prompter.clone()));
-		let result = args.substitute("hi $(ARGS.name)", &HashMap::new()).unwrap();
+		let result = args.substitute("hi {{ ARGS.name }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "hi bob");
 		assert!(prompter.value_calls.lock().unwrap().is_empty());
 	}
@@ -5780,7 +5890,7 @@ mod stdin_args {
 	fn missing_env_prompts_and_uses_answer() {
 		let prompter = Arc::new(MockPrompter::default().with_value("ENV.SECRET", Some("hush")));
 		let args = args_with(prompter);
-		let result = args.substitute("token=$(ENV.SECRET)", &HashMap::new()).unwrap();
+		let result = args.substitute("token={{ ENV.SECRET }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "token=hush");
 	}
 
@@ -5790,19 +5900,19 @@ mod stdin_args {
 		let args = args_with(prompter.clone());
 		let mut env = HashMap::new();
 		env.insert("HOST".to_string(), "example.com".to_string());
-		let result = args.substitute("host=$(ENV.HOST)", &env).unwrap();
+		let result = args.substitute("host={{ ENV.HOST }}", &env).unwrap();
 		assert_eq!(result, "host=example.com");
 		assert!(prompter.value_calls.lock().unwrap().is_empty());
 	}
 
 	#[test]
 	fn chain_args_to_env_to_default_prompts_once_with_first_source_key() {
-		// `$(ARGS.x ? ENV.X ? fallback)` — neither set, prompt key is
+		// `{{ ARGS.x ? ENV.X ? fallback }}` — neither set, prompt key is
 		// the first source (ARGS.x), default is "fallback".
 		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.x", Some("entered")));
 		let args = args_with(prompter.clone());
 		let result = args
-			.substitute("v=$(ARGS.x ? ENV.X ? fallback)", &HashMap::new())
+			.substitute("v={{ ARGS.x ? ENV.X ? fallback }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "v=entered");
 		let calls = prompter.value_calls.lock().unwrap();
@@ -5814,7 +5924,9 @@ mod stdin_args {
 	fn flags_missing_prompts_for_presence() {
 		let prompter = Arc::new(MockPrompter::default().with_flag("--verbose", true));
 		let args = args_with(prompter.clone());
-		let result = args.substitute("cmd $(FLAGS.verbose ? -v :)", &HashMap::new()).unwrap();
+		let result = args
+			.substitute("cmd {{ FLAGS.verbose ? -v : }}", &HashMap::new())
+			.unwrap();
 		assert_eq!(result, "cmd -v");
 		let calls = prompter.flag_calls.lock().unwrap();
 		assert_eq!(calls.len(), 1);
@@ -5825,7 +5937,9 @@ mod stdin_args {
 	fn flags_provided_skips_prompt() {
 		let prompter = Arc::new(MockPrompter::default());
 		let args = RunArgs::parse(&["--verbose".into()]).with_stdin_prompter(Some(prompter.clone()));
-		let result = args.substitute("cmd $(FLAGS.verbose ? -v :)", &HashMap::new()).unwrap();
+		let result = args
+			.substitute("cmd {{ FLAGS.verbose ? -v : }}", &HashMap::new())
+			.unwrap();
 		assert_eq!(result, "cmd -v");
 		assert!(prompter.flag_calls.lock().unwrap().is_empty());
 	}
@@ -5835,7 +5949,7 @@ mod stdin_args {
 		let prompter = Arc::new(MockPrompter::default().with_flag("--release", false));
 		let args = args_with(prompter);
 		let result = args
-			.substitute("cargo build $(FLAGS.release ? --release : --debug)", &HashMap::new())
+			.substitute("cargo build {{ FLAGS.release ? --release : --debug }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "cargo build --debug");
 	}
@@ -5844,7 +5958,7 @@ mod stdin_args {
 	fn no_prompter_preserves_existing_error() {
 		// Sanity check: with no prompter, missing args still error.
 		let args = RunArgs::parse(&[]);
-		let err = args.substitute("hi $(ARGS.name)", &HashMap::new()).unwrap_err();
+		let err = args.substitute("hi {{ ARGS.name }}", &HashMap::new()).unwrap_err();
 		assert!(matches!(err, SubstitutionError::MissingArg(_)));
 	}
 }

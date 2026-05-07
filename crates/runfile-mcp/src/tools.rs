@@ -14,11 +14,11 @@ pub struct ToolDef {
 
 /// Result of scanning a target's commands for argument patterns.
 struct ArgScan {
-	/// True if any command uses `$(ARGS)` (bare positional).
+	/// True if any command uses `{{ ARGS }}` (bare positional).
 	uses_positional: bool,
-	/// Keys from `$(ARGS.key)` patterns (string-valued named arguments).
+	/// Keys from `{{ ARGS.key }}` patterns (string-valued named arguments).
 	arg_keys: HashSet<String>,
-	/// Keys from `$(FLAGS.key)` patterns (boolean flags).
+	/// Keys from `{{ FLAGS.key }}` patterns (boolean flags).
 	flag_keys: HashSet<String>,
 	/// Keys that appear without a `?` default (required arguments).
 	required_keys: HashSet<String>,
@@ -44,7 +44,7 @@ fn collect_env_strings(env: &Option<std::collections::HashMap<String, EnvValue>>
 	}
 }
 
-/// Scan strings for `$(ARGS)`, `$(ARGS.key)`, and `$(FLAGS.key)` patterns.
+/// Scan strings for `{{ ARGS }}`, `{{ ARGS.key }}`, and `{{ FLAGS.key }}` patterns.
 fn scan_arg_patterns(strings: &[String]) -> ArgScan {
 	let mut scan = ArgScan {
 		uses_positional: false,
@@ -54,47 +54,75 @@ fn scan_arg_patterns(strings: &[String]) -> ArgScan {
 	};
 
 	for s in strings {
-		let mut chars = s.chars().peekable();
-		while let Some(ch) = chars.next() {
-			if ch == '$' && chars.peek() == Some(&'(') {
-				chars.next(); // consume '('
-				let mut expr = String::new();
-				let mut depth = 1;
-				for c in chars.by_ref() {
-					if c == '(' {
-						depth += 1;
-					} else if c == ')' {
-						depth -= 1;
-						if depth == 0 {
-							break;
-						}
-					}
-					expr.push(c);
-				}
-
-				let trimmed = expr.trim();
-				if trimmed == "ARGS" {
-					scan.uses_positional = true;
-				} else if let Some(rest) = trimmed.strip_prefix("ARGS.") {
-					let has_default = rest.contains('?');
-					let key = rest.split('?').next().unwrap_or("").trim();
-					if !key.is_empty() {
-						scan.arg_keys.insert(key.to_string());
-						if !has_default {
-							scan.required_keys.insert(key.to_string());
-						}
-					}
-				} else if let Some(rest) = trimmed.strip_prefix("FLAGS.") {
-					let key = rest.split('?').next().unwrap_or("").trim();
-					if !key.is_empty() {
-						scan.flag_keys.insert(key.to_string());
-					}
-				}
-			}
-		}
+		scan_one(s, &mut scan);
 	}
 
 	scan
+}
+
+fn scan_one(input: &str, scan: &mut ArgScan) {
+	let bytes = input.as_bytes();
+	let mut i = 0;
+	while i < bytes.len() {
+		// Skip escapes so `\{{` literals don't register as substitutions.
+		if bytes[i] == b'\\' && bytes.get(i + 1) == Some(&b'{') && bytes.get(i + 2) == Some(&b'{') {
+			i += 3;
+			continue;
+		}
+		if bytes[i] == b'\\' && bytes.get(i + 1) == Some(&b'}') && bytes.get(i + 2) == Some(&b'}') {
+			i += 3;
+			continue;
+		}
+		if bytes[i] == b'{' && bytes.get(i + 1) == Some(&b'{') {
+			let body_start = i + 2;
+			if let Some(rel_close) = input[body_start..].find("}}") {
+				let content = &input[body_start..body_start + rel_close];
+				let trimmed = content.trim();
+				if trimmed == "ARGS" {
+					scan.uses_positional = true;
+				}
+				// A chain may have multiple `ARGS.key` references
+				// (e.g. `{{ ARGS.a ? ARGS.b }}`); collect all of them. Required-vs-default
+				// is tracked separately: if the substitution body contains any `?`, every
+				// ARGS reference inside it becomes optional (the chain has a fallback).
+				let has_default = trimmed.contains('?');
+				collect_in_substitution(trimmed, has_default, scan);
+				i = body_start + rel_close + 2;
+				continue;
+			}
+			break;
+		}
+		i += 1;
+	}
+}
+
+fn collect_in_substitution(inner: &str, has_default: bool, scan: &mut ArgScan) {
+	let bytes = inner.as_bytes();
+	let mut i = 0;
+	while i < bytes.len() {
+		let s = &inner[i..];
+		if let Some(rest) = s.strip_prefix("ARGS.") {
+			let key: String = rest
+				.chars()
+				.take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+				.collect();
+			if !key.is_empty() {
+				scan.arg_keys.insert(key.clone());
+				if !has_default {
+					scan.required_keys.insert(key);
+				}
+			}
+		} else if let Some(rest) = s.strip_prefix("FLAGS.") {
+			let key: String = rest
+				.chars()
+				.take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+				.collect();
+			if !key.is_empty() {
+				scan.flag_keys.insert(key);
+			}
+		}
+		i += 1;
+	}
 }
 
 /// Build tool definitions for all targets in a Runfile.
@@ -128,7 +156,7 @@ pub fn build_tool_defs(runfile: &Runfile) -> Vec<ToolDef> {
 				let mut properties = serde_json::Map::new();
 				let mut required: Vec<String> = Vec::new();
 
-				// Named string arguments from $(ARGS.key) patterns
+				// Named string arguments from {{ ARGS.key }} patterns
 				let mut sorted_args: Vec<&String> = scan.arg_keys.iter().collect();
 				sorted_args.sort();
 				for key in sorted_args {
@@ -144,7 +172,7 @@ pub fn build_tool_defs(runfile: &Runfile) -> Vec<ToolDef> {
 					}
 				}
 
-				// Boolean flags from $(FLAGS.key) patterns (skip if already in arg_keys)
+				// Boolean flags from {{ FLAGS.key }} patterns (skip if already in arg_keys)
 				let mut sorted_flags: Vec<&String> =
 					scan.flag_keys.iter().filter(|k| !scan.arg_keys.contains(*k)).collect();
 				sorted_flags.sort();
@@ -158,7 +186,7 @@ pub fn build_tool_defs(runfile: &Runfile) -> Vec<ToolDef> {
 					);
 				}
 
-				// Positional args array for $(ARGS) usage
+				// Positional args array for {{ ARGS }} usage
 				if scan.uses_positional {
 					properties.insert(
 						"args".to_string(),

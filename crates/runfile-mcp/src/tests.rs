@@ -58,7 +58,7 @@ fn build_tools_sorted_alphabetically() {
 
 #[test]
 fn build_tools_target_with_positional_args_has_args_array() {
-	let runfile = make_runfile(vec![("build", simple_spec(vec!["cargo build $(ARGS)"], None))]);
+	let runfile = make_runfile(vec![("build", simple_spec(vec!["cargo build {{ ARGS }}"], None))]);
 	let tools = build_tool_defs(&runfile);
 	let schema = &tools[0].input_schema;
 	let props = schema.get("properties").unwrap();
@@ -71,7 +71,7 @@ fn build_tools_target_with_named_args_has_explicit_properties() {
 	let runfile = make_runfile(vec![(
 		"deploy",
 		simple_spec(
-			vec!["deploy --env=$(ARGS.env) --region=$(ARGS.region ? us-east-1)"],
+			vec!["deploy --env={{ ARGS.env }} --region={{ ARGS.region ? us-east-1 }}"],
 			None,
 		),
 	)]);
@@ -81,7 +81,7 @@ fn build_tools_target_with_named_args_has_explicit_properties() {
 	// Named args should be explicit string properties
 	assert_eq!(props.get("env").unwrap().get("type").unwrap(), "string");
 	assert_eq!(props.get("region").unwrap().get("type").unwrap(), "string");
-	// No generic "args" array since $(ARGS) is not used
+	// No generic "args" array since {{ ARGS }} is not used
 	assert!(props.get("args").is_none());
 	// "env" is required (no default), "region" is optional (has default)
 	let required = schema.get("required").unwrap().as_array().unwrap();
@@ -93,7 +93,7 @@ fn build_tools_target_with_named_args_has_explicit_properties() {
 fn build_tools_target_with_flags_has_boolean_properties() {
 	let runfile = make_runfile(vec![(
 		"build",
-		simple_spec(vec!["cargo build $(FLAGS.release ? --release :)"], None),
+		simple_spec(vec!["cargo build {{ FLAGS.release ? --release : }}"], None),
 	)]);
 	let tools = build_tool_defs(&runfile);
 	let schema = &tools[0].input_schema;
@@ -103,7 +103,10 @@ fn build_tools_target_with_flags_has_boolean_properties() {
 
 #[test]
 fn build_tools_target_with_positional_and_named_args() {
-	let runfile = make_runfile(vec![("run", simple_spec(vec!["app --env=$(ARGS.env) $(ARGS)"], None))]);
+	let runfile = make_runfile(vec![(
+		"run",
+		simple_spec(vec!["app --env={{ ARGS.env }} {{ ARGS }}"], None),
+	)]);
 	let tools = build_tool_defs(&runfile);
 	let schema = &tools[0].input_schema;
 	let props = schema.get("properties").unwrap();
@@ -125,7 +128,7 @@ fn build_tools_target_without_args_has_empty_properties() {
 fn build_tools_args_from_env_values_are_included() {
 	let mut spec = simple_spec(vec!["echo $MY_VAR"], None);
 	let mut env = HashMap::new();
-	env.insert("MY_VAR".to_string(), EnvValue::String("$(ARGS.config)".into()));
+	env.insert("MY_VAR".to_string(), EnvValue::String("{{ ARGS.config }}".into()));
 	spec.env = Some(env);
 	let runfile = make_runfile(vec![("test", spec)]);
 	let tools = build_tool_defs(&runfile);
@@ -323,7 +326,7 @@ fn server_can_be_constructed() {
 	use crate::server::RunfileMcpServer;
 	let runfile = make_runfile(vec![
 		("build", simple_spec(vec!["cargo build"], Some("Build"))),
-		("test", simple_spec(vec!["cargo test $(ARGS)"], Some("Test"))),
+		("test", simple_spec(vec!["cargo test {{ ARGS }}"], Some("Test"))),
 	]);
 	// Just verify it doesn't panic
 	let _server = RunfileMcpServer::new(

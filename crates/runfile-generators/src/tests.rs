@@ -37,7 +37,7 @@ fn zed_generate_basic_target() {
 
 #[test]
 fn zed_target_with_args_gets_custom_args() {
-	let runfile = make_runfile(vec![("test", vec!["cargo test $(ARGS)"])]);
+	let runfile = make_runfile(vec![("test", vec!["cargo test {{ ARGS }}"])]);
 	let tasks = generate_zed_tasks(&runfile);
 	assert_eq!(tasks[0].args, vec!["--stdin-args", "test", "$ZED_CUSTOM_ARGS"]);
 	assert_eq!(tasks[0].allow_concurrent_runs, Some(true));
@@ -45,7 +45,7 @@ fn zed_target_with_args_gets_custom_args() {
 
 #[test]
 fn zed_target_with_named_args_gets_custom_args() {
-	let runfile = make_runfile(vec![("deploy", vec!["deploy --env=$(ARGS.env)"])]);
+	let runfile = make_runfile(vec![("deploy", vec!["deploy --env={{ ARGS.env }}"])]);
 	let tasks = generate_zed_tasks(&runfile);
 	assert_eq!(tasks[0].args, vec!["--stdin-args", "deploy", "$ZED_CUSTOM_ARGS"]);
 	assert_eq!(tasks[0].allow_concurrent_runs, Some(true));
@@ -396,8 +396,8 @@ fn jetbrains_check_completely_different_file() {
 
 #[test]
 fn zed_task_with_named_args_pattern() {
-	// $(ARGS.name) should also trigger custom args
-	let runfile = make_runfile(vec![("deploy", vec!["echo $(ARGS.env ? prod)"])]);
+	// {{ ARGS.name }} should also trigger custom args
+	let runfile = make_runfile(vec![("deploy", vec!["echo {{ ARGS.env ? prod }}"])]);
 	let tasks = generate_zed_tasks(&runfile);
 	assert!(tasks[0].args.contains(&"$ZED_CUSTOM_ARGS".to_string()));
 	assert_eq!(tasks[0].allow_concurrent_runs, Some(true));
@@ -455,7 +455,7 @@ fn vscode_args_include_stdin_args_flag() {
 fn vscode_args_target_using_args_keeps_input_args_after_stdin_args() {
 	// `${input:args}` still works for callers who know what to pass; missing
 	// values are then prompted in the integrated terminal.
-	let runfile = make_runfile(vec![("test", vec!["cargo test $(ARGS)"])]);
+	let runfile = make_runfile(vec![("test", vec!["cargo test {{ ARGS }}"])]);
 	let tasks = generate_vscode_tasks(&runfile);
 	assert_eq!(tasks[0].args, vec!["--stdin-args", "test", "${input:args}"]);
 }

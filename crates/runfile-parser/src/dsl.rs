@@ -20,7 +20,11 @@
 //! - Comparisons are case-sensitive string compares.
 //! - Truthiness rule: only the empty string is falsy. Every other string —
 //!   including `"false"` and `"0"` — is truthy. This matches what raw
-//!   shell commands see when they receive a `$(...)` substitution.
+//!   shell commands see when they receive a `{{ ... }}` substitution.
+//! - Substitutions inside conditions use the same `{{ ... }}` syntax as
+//!   anywhere else (e.g. `{{ ARGS.env }} == prod`). The full original
+//!   substring (including the leading `{{ ` and trailing ` }}`) is captured
+//!   so the runtime substitutor can resolve it unchanged.
 //!
 //! The parser produces a [`DslExpr`] tree. Evaluation lives outside this
 //! crate (in `runfile-executor`) because it needs access to the
@@ -49,8 +53,8 @@ pub enum DslExpr {
 /// A leaf value in a DSL expression.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DslValue {
-	/// A raw `$(...)` substitution expression. The full original substring
-	/// (including the leading `$(` and trailing `)`) is stored so the
+	/// A raw `{{ ... }}` substitution expression. The full original substring
+	/// (including the leading `{{ ` and trailing ` }}`) is stored so the
 	/// existing substitution machinery can resolve it unchanged.
 	Substitution(String),
 	/// A literal string (either bare-word or quoted).
@@ -68,7 +72,7 @@ pub enum DslParseError {
 	#[error("Unterminated string literal starting at position {0}")]
 	UnterminatedString(usize),
 
-	#[error("Unterminated `$(...)` substitution starting at position {0}")]
+	#[error("Unterminated `{{{{ ... }}}}` substitution starting at position {0}")]
 	UnterminatedSubstitution(usize),
 
 	#[error("Unexpected end of input — expected {0}")]
@@ -120,7 +124,7 @@ enum TokKind {
 	AndAnd,
 	OrOr,
 	Bang,
-	Substitution, // raw $(...) including delimiters
+	Substitution, // raw `{{ ... }}` including delimiters
 	String,       // quoted or bare-word; payload in `text` is the string content
 }
 
@@ -221,21 +225,22 @@ fn tokenize(source: &str) -> Result<Vec<Token>, DslParseError> {
 			_ => {}
 		}
 
-		// $(...) substitution — capture the raw text including delimiters.
-		if b == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'(' {
+		// `{{ ... }}` substitution — capture the raw text including delimiters.
+		// The substituter (in `runfile-executor::args`) handles the inner
+		// content; here we just need to find the matching `}}`.
+		if b == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
 			let start = i;
-			i += 2; // skip "$("
-			let mut depth = 1i32;
-			while i < bytes.len() && depth > 0 {
-				let c = bytes[i];
-				if c == b'(' {
-					depth += 1;
-				} else if c == b')' {
-					depth -= 1;
+			i += 2; // skip "{{"
+			let mut closed = false;
+			while i + 1 < bytes.len() {
+				if bytes[i] == b'}' && bytes[i + 1] == b'}' {
+					i += 2;
+					closed = true;
+					break;
 				}
 				i += 1;
 			}
-			if depth != 0 {
+			if !closed {
 				return Err(DslParseError::UnterminatedSubstitution(start));
 			}
 			let text = source[start..i].to_string();
@@ -416,17 +421,17 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn parses_truthy_substitution() {
-		let ast = parse_condition("$(ARGS.x)").unwrap();
-		assert_eq!(ast, DslExpr::Truthy(DslValue::Substitution("$(ARGS.x)".into())));
+		let ast = parse_condition("{{ ARGS.x }}").unwrap();
+		assert_eq!(ast, DslExpr::Truthy(DslValue::Substitution("{{ ARGS.x }}".into())));
 	}
 
 	#[test]
 	fn parses_equality() {
-		let ast = parse_condition("$(ARGS.env) == production").unwrap();
+		let ast = parse_condition("{{ ARGS.env }} == production").unwrap();
 		assert_eq!(
 			ast,
 			DslExpr::Equality(
-				DslValue::Substitution("$(ARGS.env)".into()),
+				DslValue::Substitution("{{ ARGS.env }}".into()),
 				DslValue::Literal("production".into()),
 			)
 		);
@@ -434,11 +439,11 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn parses_inequality() {
-		let ast = parse_condition("$(ARGS.env) != \"staging\"").unwrap();
+		let ast = parse_condition("{{ ARGS.env }} != \"staging\"").unwrap();
 		assert_eq!(
 			ast,
 			DslExpr::Inequality(
-				DslValue::Substitution("$(ARGS.env)".into()),
+				DslValue::Substitution("{{ ARGS.env }}".into()),
 				DslValue::Literal("staging".into()),
 			)
 		);
@@ -520,7 +525,7 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn rejects_unterminated_substitution() {
-		match parse_condition("$(ARGS.x").unwrap_err() {
+		match parse_condition("{{ ARGS.x").unwrap_err() {
 			DslParseError::UnterminatedSubstitution(_) => {}
 			e => panic!("got {e:?}"),
 		}
@@ -540,16 +545,19 @@ mod dsl_unit_tests {
 	}
 
 	#[test]
-	fn parses_nested_substitution_with_parens_inside() {
-		// $(FLAGS.key ? a : b) — colon inside but no extra parens to confuse tokenizer.
-		let ast = parse_condition("$(FLAGS.x ? on : off) == on").unwrap();
+	fn parses_flag_ternary_substitution() {
+		// `{{ FLAGS.x ? on : off }}` — colon inside but the inner content is
+		// captured as a single substitution token by the DSL tokenizer.
+		let ast = parse_condition("{{ FLAGS.x ? on : off }} == on").unwrap();
 		assert!(matches!(ast, DslExpr::Equality(..)));
 	}
 
 	#[test]
 	fn parses_complex_expression() {
-		let ast = parse_condition("$(ARGS.env) == production && ($(FLAGS.confirm) == true || $(ENV.CI) == \"true\")")
-			.unwrap();
+		let ast = parse_condition(
+			"{{ ARGS.env }} == production && ({{ FLAGS.confirm }} == true || {{ ENV.CI }} == \"true\")",
+		)
+		.unwrap();
 		match ast {
 			DslExpr::And(parts) => assert_eq!(parts.len(), 2),
 			_ => panic!(),
@@ -558,7 +566,7 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn parses_negated_truthy() {
-		let ast = parse_condition("!$(ARGS.skip)").unwrap();
+		let ast = parse_condition("!{{ ARGS.skip }}").unwrap();
 		match ast {
 			DslExpr::Not(inner) => assert!(matches!(*inner, DslExpr::Truthy(_))),
 			_ => panic!(),
@@ -567,7 +575,7 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn parses_paths_as_barewords() {
-		let ast = parse_condition("$(ENV.PATH) != /usr/local/bin").unwrap();
+		let ast = parse_condition("{{ ENV.PATH }} != /usr/local/bin").unwrap();
 		assert!(matches!(ast, DslExpr::Inequality(..)));
 	}
 }

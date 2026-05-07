@@ -24,7 +24,7 @@ fn install_profile_appends_marker_and_content() {
 	fs::write(&path, "existing content\n").unwrap();
 
 	completions_install_profile(
-		"eval \"$(run :completions output bash)\"",
+		"eval \"{{ run :completions output bash }}\"",
 		&path,
 		"# runfile completions",
 	);
@@ -34,7 +34,7 @@ fn install_profile_appends_marker_and_content() {
 
 	assert!(result.contains("existing content"));
 	assert!(result.contains("# runfile completions"));
-	assert!(result.contains("eval \"$(run :completions output bash)\""));
+	assert!(result.contains("eval \"{{ run :completions output bash }}\""));
 	// marker comes after existing content
 	assert!(result.find("existing content") < result.find("# runfile completions"));
 }
@@ -119,7 +119,7 @@ fn install_then_uninstall_roundtrip() {
 	fs::write(&path, "pre-existing\n").unwrap();
 
 	completions_install_profile(
-		"eval \"$(run :completions output bash)\"",
+		"eval \"{{ run :completions output bash }}\"",
 		&path,
 		"# runfile completions",
 	);

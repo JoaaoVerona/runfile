@@ -17,8 +17,8 @@ fn make_substitute(args: &RunArgs) -> impl Fn(&str, &HashMap<String, String>) ->
 	|input: &str, env: &HashMap<String, String>| args.substitute(input, env).map_err(|e| e.to_string())
 }
 
-/// Load environment variables from env files, applying $(ARGS) and $(ENV) substitution
-/// to file paths. Missing files are silently skipped. Parse errors are returned.
+/// Load environment variables from env files, applying `{{ ARGS.* }}` and `{{ ENV.* }}`
+/// substitution to file paths. Missing files are silently skipped. Parse errors are returned.
 pub fn load_env_files(
 	env_files: &[String],
 	working_dir: &Path,
@@ -46,7 +46,7 @@ pub fn build_env(
 /// Like [`build_env`] but lets the caller pass two pieces of ancestor state
 /// for `@target` dependency invocations:
 /// - `base_env`: the parent's already-resolved env, used as the substitution
-///   base so `$(ENV.X)` inside the dep can reference parent contributions.
+///   base so `{{ ENV.X }}` inside the dep can reference parent contributions.
 /// - `parent_add_to_path_chain`: ancestor `addToPath` layers in chain order
 ///   (outermost first). Re-prepended to PATH after the shell-env overlay so
 ///   the full chain reaches the dep's commands as

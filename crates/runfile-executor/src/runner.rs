@@ -166,7 +166,7 @@ pub fn run_target(
 /// `source_dirs` maps target names to their source Runfile's parent directory
 /// (used when targets come from different files, e.g. global files).
 ///
-/// The caller's `args.run_context` is used as the baseline for `$(RUN.*)`
+/// The caller's `args.run_context` is used as the baseline for `{{ RUN.* }}`
 /// resolution; the runner rewrites `run_context.shell` internally if a
 /// target's `forceShell` substitution resolves to a different shell than
 /// the caller's, so users always see the shell that actually runs their
@@ -193,7 +193,7 @@ pub fn run_target_with_cwd(
 
 	// Collect all template strings from the target and its dependencies for
 	// arg-usage validation. This includes condition strings, args templates,
-	// for-iterator sources, etc. — every place a `$(ARGS.x)` reference could
+	// for-iterator sources, etc. — every place a `{{ ARGS.x }}` reference could
 	// hide. It is NOT used to size the step counter (which would over-count).
 	let all_commands = collect_all_commands(target_name, runfile)?;
 	validate_args(args, &all_commands)?;
@@ -273,10 +273,10 @@ fn run_target_inner_body(
 		.ok_or_else(|| RunError::UnknownTarget(target_name.to_string()))?;
 
 	// Build a thin env for substituting `forceShell` and `workingDirectory`.
-	// These fields can carry `$(...)` substitutions; we resolve them BEFORE
+	// These fields can carry `{{ ... }}` substitutions; we resolve them BEFORE
 	// the full env is built (since the working dir is needed to load env
 	// files). `parent_env` (if any) and `args` are enough — substitution of
-	// `forceShell` / `workingDirectory` against `$(ENV.X)` references the
+	// `forceShell` / `workingDirectory` against `{{ ENV.X }}` references the
 	// parent's env, not the target's own envFiles.
 	let pre_env: HashMap<String, String> = parent_env.cloned().unwrap_or_default();
 
@@ -294,7 +294,7 @@ fn run_target_inner_body(
 	let shell = effective_shell.as_ref().unwrap_or(root.shell);
 
 	// Update args.run_context.shell if the target's effective shell differs
-	// from the parent's. This makes `$(RUN.shell)` reflect the shell that
+	// from the parent's. This makes `{{ RUN.shell }}` reflect the shell that
 	// actually runs the commands, even when a `forceShell` override applies.
 	// The namespace list is unchanged at this point — the top-level call
 	// already attached it, so we re-pass the same slice for the in-sync check.
@@ -441,7 +441,7 @@ fn run_target_inner_body(
 ///   iterations actually expand).
 ///
 /// Differences from `collect_all_commands`: condition strings and args
-/// templates do NOT count as steps (they're scannable for `$(ARGS.x)` but
+/// templates do NOT count as steps (they're scannable for `{{ ARGS.x }}` but
 /// don't contribute to the (N/total) display).
 fn count_target_leaves(target_name: &str, runfile: &Runfile) -> Result<usize, RunError> {
 	let mut cache: HashMap<String, usize> = HashMap::new();
@@ -485,14 +485,14 @@ fn count_step_leaves_recursive(
 		total += match step {
 			CommandStep::Shell(_) => 1,
 			CommandStep::TargetCall(call) => {
-				// Dynamic target names (containing `$(...)`, e.g. `@$(LOOP.ns):build`)
+				// Dynamic target names (containing `{{ ... }}`, e.g. `@{{ LOOP.ns }}:build`)
 				// resolve at runtime; we can't recurse into them statically. Count
 				// the call as 1 leaf and let `StepCounter::add_to_total` bump the
 				// total at runtime if the dispatched target exposes more leaves.
 				// Optional calls (`@?target`) on a static target name that
 				// doesn't exist contribute 0 leaves — they'll be silently
 				// skipped at runtime.
-				if call.target.contains("$(") {
+				if call.target.contains("{{") {
 					1
 				} else if call.optional && !runfile.targets.contains_key(&call.target) {
 					0
@@ -537,7 +537,7 @@ fn count_step_leaves_recursive(
 
 /// Collect all command templates from a target and its dependency tree —
 /// across `@target` invocations inside `commands` arrays. Used for
-/// arg-usage validation (so `$(ARGS.x)` in a transitively called target's
+/// arg-usage validation (so `{{ ARGS.x }}` in a transitively called target's
 /// condition / args template / shell command counts as a referenced arg).
 /// NOT used for sizing the step counter — see `count_target_leaves` for that.
 fn collect_all_commands(target_name: &str, runfile: &Runfile) -> Result<Vec<String>, RunError> {
@@ -579,7 +579,7 @@ fn collect_commands_recursive(
 /// Walk a `commands` array, pushing leaf templates to `commands` and
 /// recursing into `@target` invocations (with cycle detection). For
 /// arg-usage scanning we also include the `@target` arg-template itself
-/// (so `@build $(ARGS.x)` registers `x` as a referenced arg).
+/// (so `@build {{ ARGS.x }}` registers `x` as a referenced arg).
 fn collect_step_commands(
 	steps: &[CommandStep],
 	runfile: &Runfile,
@@ -592,8 +592,8 @@ fn collect_step_commands(
 			CommandStep::Shell(s) => commands.push(s.clone()),
 			CommandStep::TargetCall(call) => {
 				// `call.target` itself participates in arg-usage scanning so
-				// `$(ARGS.x)` references inside dynamic target names like
-				// `@$(LOOP.ns):build` still register.
+				// `{{ ARGS.x }}` references inside dynamic target names like
+				// `@{{ LOOP.ns }}:build` still register.
 				commands.push(call.target.clone());
 				if !call.args_template.is_empty() {
 					commands.push(call.args_template.clone());
@@ -603,7 +603,7 @@ fn collect_step_commands(
 				// captured above. Optional calls (`@?target`) on a static
 				// target name that doesn't exist also skip recursion — at
 				// runtime they're silently no-ops.
-				let is_dynamic = call.target.contains("$(");
+				let is_dynamic = call.target.contains("{{");
 				let optional_missing = call.optional && !runfile.targets.contains_key(&call.target);
 				if !is_dynamic && !optional_missing {
 					// Recurse into the called target's commands (cycle-safe).
@@ -656,7 +656,7 @@ fn collect_step_commands(
 				..
 			}) => {
 				// The `match` template participates in arg-usage scanning so
-				// `$(ARGS.x)` references inside it register. The case keys are
+				// `{{ ARGS.x }}` references inside it register. The case keys are
 				// literal strings (no substitution), so we don't push them.
 				commands.push(r#match.clone());
 				for branch in cases.values() {
@@ -678,7 +678,7 @@ fn is_ci_environment() -> bool {
 /// Return a cloned [`RunArgs`] with `run_context.shell` set to match the
 /// active shell AND `run_context.namespaces` populated from the merged
 /// Runfile; or `None` if `args.run_context` is already in sync (so the
-/// caller can keep the existing borrow). Keeps `$(RUN.shell)` / `$(RUN.os)`
+/// caller can keep the existing borrow). Keeps `{{ RUN.shell }}` / `{{ RUN.os }}`
 /// substitutions correct even when callers pass args from outside (e.g.
 /// tests that use `RunArgs::default()`), and ensures `for "in":
 /// "namespaces"` always sees the post-merge namespace list.
