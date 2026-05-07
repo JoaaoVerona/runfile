@@ -6809,9 +6809,7 @@ mod functions {
 		// Counts naturally come from runtime sources (ARGS / ENV / VARS) — the
 		// quoted-literal form is just for static numbers in the Runfile.
 		let args = RunArgs::parse(&["--n=4".into()]);
-		let result = args
-			.substitute("{{ repeat('ab', ARGS.n) }}", &HashMap::new())
-			.unwrap();
+		let result = args.substitute("{{ repeat('ab', ARGS.n) }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "abababab");
 	}
 
