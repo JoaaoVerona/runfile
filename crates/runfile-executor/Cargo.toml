@@ -22,4 +22,5 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_JobObjects", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
+runfile-crypto = { path = "../runfile-crypto" }
 tempfile = { workspace = true }

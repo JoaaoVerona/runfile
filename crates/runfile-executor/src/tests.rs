@@ -3199,9 +3199,7 @@ fn substitute_escape_does_not_interfere_with_real_substitution() {
 	// An escaped `\{{` followed by a real `{{ ARGS.x }}` should leave the
 	// escape literal and still resolve the substitution.
 	let args = RunArgs::parse(&["--name=alice".into()]);
-	let result = args
-		.substitute_no_env(r"prefix \{{ then {{ ARGS.name }}")
-		.unwrap();
+	let result = args.substitute_no_env(r"prefix \{{ then {{ ARGS.name }}").unwrap();
 	assert_eq!(result, "prefix {{ then alice");
 }
 
@@ -3541,10 +3539,83 @@ fn extract_with_working_directory_cwd() {
 		runfile_dir.path(),
 		caller_cwd.path(),
 		&std::collections::HashMap::new(),
+		None,
 	)
 	.unwrap();
 	assert_eq!(commands.len(), 1);
 	assert_eq!(commands[0].command, "echo test");
+}
+
+// Regression: --dry-run must thread `available_private_keys` into the env-build
+// pipeline so that envFiles containing `RUNFILE_ENCRYPTION_PUBLIC_KEY` +
+// encrypted values resolve the same way as a real run. Previously the extract
+// path hardcoded `None`, surfacing "no private keys are available" even when
+// the user had keys registered via `:env secret-keys add`.
+#[test]
+fn extract_decrypts_envfile_when_private_key_provided() {
+	use crate::extract::extract_target_with_cwd;
+	use runfile_parser::Runfile;
+	use std::fs;
+
+	let dir = TempDir::new().unwrap();
+	let key_hex = runfile_crypto::generate_key();
+	let public_key = runfile_crypto::derive_public_key(&key_hex).unwrap();
+	let encrypted = runfile_crypto::encrypt("super-secret-value", &key_hex).unwrap();
+	let private_keys = vec![key_hex];
+
+	let env_path = dir.path().join(".env.production");
+	fs::write(
+		&env_path,
+		format!(
+			"{}={public_key}\nMY_SECRET={encrypted}\n",
+			runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR,
+		),
+	)
+	.unwrap();
+
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "deploy": {
+                "commands": ["echo {{ ENV.MY_SECRET }}"],
+                "envFiles": [".env.production"]
+            }
+        }
+    }"#;
+	let runfile: Runfile = serde_json::from_str(json).unwrap();
+	let args = RunArgs::default();
+
+	// Without keys: should hit the same error path the real run would.
+	let err = extract_target_with_cwd(
+		"deploy",
+		&runfile,
+		&args,
+		dir.path(),
+		dir.path(),
+		&std::collections::HashMap::new(),
+		None,
+	)
+	.unwrap_err()
+	.to_string();
+	assert!(
+		err.contains("no private keys are available"),
+		"Expected no-keys error, got: {err}"
+	);
+
+	// With keys: decryption succeeds and the substituted command shows the
+	// plaintext (this is exactly what `--dry-run` prints).
+	let commands = extract_target_with_cwd(
+		"deploy",
+		&runfile,
+		&args,
+		dir.path(),
+		dir.path(),
+		&std::collections::HashMap::new(),
+		Some(&private_keys),
+	)
+	.unwrap();
+	assert_eq!(commands.len(), 1);
+	assert_eq!(commands[0].command, "echo super-secret-value");
 }
 
 #[test]

@@ -45,7 +45,15 @@ pub fn extract_target(
 	args: &RunArgs,
 	working_dir: &Path,
 ) -> Result<Vec<ExtractedCommand>, ExtractError> {
-	extract_target_with_cwd(target_name, runfile, args, working_dir, working_dir, &HashMap::new())
+	extract_target_with_cwd(
+		target_name,
+		runfile,
+		args,
+		working_dir,
+		working_dir,
+		&HashMap::new(),
+		None,
+	)
 }
 
 /// Extract all commands for a target with separate runfile dir and caller CWD.
@@ -59,13 +67,14 @@ pub fn extract_target(
 /// nothing. Cycles are detected via per-call-stack tracking; calling the
 /// same target twice from sibling sites expands twice (matching runtime
 /// no-dedup semantics).
-pub fn extract_target_with_cwd(
+pub fn extract_target_with_cwd<'a>(
 	target_name: &str,
-	runfile: &Runfile,
+	runfile: &'a Runfile,
 	args: &RunArgs,
-	runfile_dir: &Path,
-	caller_cwd: &Path,
-	source_dirs: &HashMap<String, PathBuf>,
+	runfile_dir: &'a Path,
+	caller_cwd: &'a Path,
+	source_dirs: &'a HashMap<String, PathBuf>,
+	available_private_keys: Option<&'a [String]>,
 ) -> Result<Vec<ExtractedCommand>, ExtractError> {
 	let all_commands = collect_all_extract_commands(target_name, runfile)?;
 	validate_args(args, &all_commands)?;
@@ -90,6 +99,7 @@ pub fn extract_target_with_cwd(
 		runfile_dir,
 		caller_cwd,
 		source_dirs,
+		available_private_keys,
 		in_progress: HashSet::new(),
 	};
 	extract_recursive(&mut ctx, target_name, args, None)
@@ -100,6 +110,7 @@ struct ExtractContext<'a> {
 	runfile_dir: &'a Path,
 	caller_cwd: &'a Path,
 	source_dirs: &'a HashMap<String, PathBuf>,
+	available_private_keys: Option<&'a [String]>,
 	in_progress: HashSet<String>,
 }
 
@@ -163,7 +174,14 @@ fn extract_recursive_inner(
 		_ => target_runfile_dir,
 	};
 
-	let env = build_env_with_base(spec, effective_working_dir, args, None, parent_env, None)?;
+	let env = build_env_with_base(
+		spec,
+		effective_working_dir,
+		args,
+		ctx.available_private_keys,
+		parent_env,
+		None,
+	)?;
 	check_env_case_duplicates(&env)?;
 
 	// Show only the spec-defined env keys (not envFiles or system env), but

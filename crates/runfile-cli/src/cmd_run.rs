@@ -313,6 +313,13 @@ pub fn cmd_dry_run(
 
 	let rt = resolve_target_setup(target_name, extra_args, file, cli_shell, stdin_args);
 
+	let private_keys = rt.settings.resolve_private_keys();
+	let pk_slice: Option<&[String]> = if private_keys.is_empty() {
+		None
+	} else {
+		Some(private_keys.as_slice())
+	};
+
 	match extract_target_with_cwd(
 		&rt.resolved_name,
 		&rt.runfile,
@@ -320,6 +327,7 @@ pub fn cmd_dry_run(
 		&rt.runfile_dir,
 		&rt.caller_cwd,
 		&rt.source_dirs,
+		pk_slice,
 	) {
 		Ok(commands) => {
 			let lines = format_extracted_commands(&commands, &rt.shell.kind);
