@@ -1,4 +1,4 @@
-use crate::dsl::{parse_condition, DslParseError};
+use crate::dsl::DslParseError;
 use crate::schema::{CommandStep, ForStep, IfStep, MatchStep, Runfile, TargetCallStep, WhenStep};
 use std::path::Path;
 use thiserror::Error;
@@ -212,7 +212,7 @@ fn validate_when_step(step: &mut WhenStep, context: &str) -> Result<(), ParseErr
 
 /// Walk `s` and check whether any whitespace character appears outside a
 /// `{{ ... }}` substitution block. Used by [`validate_target_call`] so that
-/// `@{{ LOOP.ns }}:dev` (which legitimately contains spaces inside `{{ ... }}`)
+/// `@{{ VARS.ns }}:dev` (which legitimately contains spaces inside `{{ ... }}`)
 /// passes validation.
 fn has_unbraced_whitespace(s: &str) -> bool {
 	let bytes = s.as_bytes();
@@ -264,7 +264,7 @@ fn validate_target_call(call: &TargetCallStep, context: &str) -> Result<(), Pars
 		});
 	}
 	// Whitespace inside a `{{ ... }}` substitution is fine (e.g.
-	// `@{{ LOOP.ns }}:dev`); we only reject whitespace OUTSIDE substitutions.
+	// `@{{ VARS.ns }}:dev`); we only reject whitespace OUTSIDE substitutions.
 	if has_unbraced_whitespace(&call.target) {
 		return Err(ParseError::InvalidTargetCall {
 			context: context.to_string(),
@@ -288,6 +288,11 @@ fn validate_target_call(call: &TargetCallStep, context: &str) -> Result<(), Pars
 }
 
 fn validate_if_step(step: &mut IfStep, context: &str) -> Result<(), ParseError> {
+	// The if condition is a substitution template, not a pre-parsed DSL.
+	// We don't pre-parse it here — the executor substitutes the value at
+	// runtime and compares the result against the literal string `"true"`.
+	// We still reject empty conditions so a syntactically obvious mistake
+	// is caught at load time.
 	let trimmed = step.condition.trim();
 	if trimmed.is_empty() {
 		return Err(ParseError::InvalidCondition {
@@ -296,12 +301,6 @@ fn validate_if_step(step: &mut IfStep, context: &str) -> Result<(), ParseError> 
 			error: DslParseError::EmptyCondition,
 		});
 	}
-	let ast = parse_condition(&step.condition).map_err(|error| ParseError::InvalidCondition {
-		context: context.to_string(),
-		condition: step.condition.clone(),
-		error,
-	})?;
-	step.condition_ast = Some(ast);
 
 	// Recurse into branches.
 	let then_ctx = format!("{context} > if/then");

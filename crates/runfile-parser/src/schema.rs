@@ -1,8 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
-use crate::dsl::DslExpr;
-
 /// A step in a `commands` array. Either a raw shell command, a target
 /// invocation (`@target args`), a `when`-guarded block, an `if`-block, a
 /// `for`-block, or a `match`-block. Backwards compatible with plain-string
@@ -343,7 +341,7 @@ impl CommandStep {
 
 /// Find the first whitespace that splits `target` from `args` in a target-call
 /// string, but skip whitespace inside a `{{ ... }}` substitution block. Lets
-/// `@{{ LOOP.ns }}:dev` keep its whole substituted name as the target.
+/// `@{{ VARS.ns }}:dev` keep its whole substituted name as the target.
 fn find_target_args_split(s: &str) -> Option<usize> {
 	let bytes = s.as_bytes();
 	let mut i = 0;
@@ -484,13 +482,21 @@ pub fn walk_spec_aux_templates<'a, F: FnMut(&'a str)>(spec: &'a CommandSpec, vis
 
 /// An `if` block within a `commands` array.
 ///
-/// The DSL condition is parsed at Runfile load time, so syntax errors
-/// surface during parsing rather than at runtime. The parsed AST is
-/// cached on this struct (`condition_ast`) and reused at evaluation time.
+/// The condition is a substitution template — at runtime the string is
+/// fully substituted via the executor's substitution machinery, and the
+/// branch is taken when the resolved string is exactly `"true"`. Any other
+/// value (including `"false"`, `"True"`, `"1"`, the empty string, etc.)
+/// counts as falsy.
+///
+/// The OLD form `"{{ ARGS.env }} == prod"` (with operators outside the
+/// `{{ ... }}` substitution) is no longer parsed at the if-level — that
+/// DSL is reachable inside a substitution: `"{{ ARGS.env == 'prod' }}"`
+/// resolves to `"true"` or `"false"` and is what the if then compares.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct IfStep {
-	/// The condition expression (DSL source).
+	/// The condition template. Resolved as a substitution string at runtime
+	/// and compared against the literal `"true"`.
 	#[serde(rename = "if")]
 	pub condition: String,
 
@@ -519,10 +525,6 @@ pub struct IfStep {
 	/// (or `Some(Success)`) means the block runs only while no prior failure.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub when: Option<WhenCondition>,
-
-	/// Parsed AST for the condition. Filled in by `validate_runfile`.
-	#[serde(skip)]
-	pub condition_ast: Option<DslExpr>,
 }
 
 /// Deserialize either a single string (treated as one shell command) or an
@@ -642,7 +644,7 @@ impl<'de> Deserialize<'de> for ForInValue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ForStep {
-	/// The loop variable name (referenced inside the body as `{{ LOOP.<var> }}`).
+	/// The loop variable name (referenced inside the body as `{{ VARS.<var> }}`).
 	#[serde(rename = "for")]
 	pub var: String,
 
@@ -683,7 +685,7 @@ pub struct ForStep {
 /// A `match`-block within a `commands` array.
 ///
 /// Resolves the `match` template through the normal substitution pipeline
-/// (so `{{ ARGS.x }}`, `{{ ENV.X }}`, `{{ LOOP.x }}`, chained fallbacks, etc. work),
+/// (so `{{ ARGS.x }}`, `{{ ENV.X }}`, `{{ VARS.x }}`, chained fallbacks, etc. work),
 /// then dispatches on string equality against `cases`. When no case matches
 /// and no `default` is set, execution errors out — listing the valid cases
 /// in the message — so users learn about valid values rather than silently

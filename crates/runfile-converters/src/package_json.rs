@@ -359,14 +359,13 @@ fn convert_npm_script(script: &str, script_name: &str, known_scripts: &HashSet<&
 		// block; non-Windows runs emit a friendly error and exit 1.
 		let win_commands = to_steps(commands);
 		let if_step = IfStep {
-			condition: "{{ RUN.os }} == windows".to_string(),
+			condition: "{{ RUN.os == 'windows' }}".to_string(),
 			then: win_commands,
 			r#else: Some(vec![CommandStep::Shell(
 				"echo \"Error: this target is Windows-only\" && exit 1".to_string(),
 			)]),
 			ignore_errors: None,
 			when: None,
-			condition_ast: None,
 		};
 		let mut spec = CommandSpec::new(vec![CommandStep::If(if_step)]);
 		spec.description = description;

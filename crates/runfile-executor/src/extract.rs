@@ -1,4 +1,4 @@
-use crate::args::{check_env_case_duplicates, validate_args, LoopScope, RunArgs, SubstitutionError};
+use crate::args::{check_env_case_duplicates, validate_args, LoopVarGuard, RunArgs, SubstitutionError};
 use crate::control_flow::{evaluate_if_condition, resolve_match_branch, ControlFlowError};
 use crate::env::{build_env_with_base, EnvFileError};
 use runfile_parser::{
@@ -251,8 +251,7 @@ fn extract_recursive_inner(
 	};
 
 	let mut out: Vec<ExtractedCommand> = Vec::new();
-	let mut loop_scope = LoopScope::new();
-	walk_extract_steps(ctx, &spec.commands, args, &env, &extra_env, &mut loop_scope, &mut out)?;
+	walk_extract_steps(ctx, &spec.commands, args, &env, &extra_env, &mut out)?;
 	Ok(out)
 }
 
@@ -268,27 +267,35 @@ fn resolve_working_directory_path(value: &str, base_dir: &Path) -> PathBuf {
 	}
 }
 
-/// Recursive walker that produces extract output with loop-scope awareness.
+/// Recursive walker that produces extract output with VARS-based loop scope.
 ///
 /// Iterator source templates (the `in` array elements, `glob` pattern, `shell`
 /// command) are NOT emitted as commands — they're metadata. `@target` calls
 /// recurse into the dep, inheriting the parent's resolved env as the dep's
 /// substitution base; the dep's own env block surfaces as inline assignments
-/// on its commands.
-#[allow(clippy::too_many_arguments)]
+/// on its commands. `for` blocks scope their iteration variable into VARS
+/// via [`LoopVarGuard`] (save prior, set per iteration, restore on exit).
 fn walk_extract_steps(
 	ctx: &mut ExtractContext<'_>,
 	steps: &[CommandStep],
 	args: &RunArgs,
 	env: &HashMap<String, String>,
 	extra_env: &[(String, String)],
-	loop_scope: &mut LoopScope,
 	out: &mut Vec<ExtractedCommand>,
 ) -> Result<(), ExtractError> {
 	for step in steps {
 		match step {
 			CommandStep::Shell(template) => {
-				let cmd = args.substitute_with_loop(template, env, loop_scope)?;
+				let cmd = args.substitute(template, env)?;
+				// Match runtime behaviour: a command line that resolves to
+				// pure whitespace (e.g. one consisting only of a
+				// `{{ define(...) }}` call) is not dispatched to the shell.
+				// `define` has already mutated `args.vars` during the
+				// `substitute` call above, so dropping the line here matches
+				// what a real `--dry-run` should print.
+				if cmd.trim().is_empty() {
+					continue;
+				}
 				out.push(ExtractedCommand {
 					command: cmd,
 					env_vars: extra_env.to_vec(),
@@ -296,8 +303,8 @@ fn walk_extract_steps(
 			}
 			CommandStep::TargetCall(call) => {
 				// Substitute the target name first so dynamic patterns like
-				// `@{{ LOOP.ns }}:dev` resolve to the namespace's concrete target.
-				let resolved = args.substitute_with_loop(&call.target, env, loop_scope)?;
+				// `@{{ VARS.ns }}:dev` resolve to the namespace's concrete target.
+				let resolved = args.substitute(&call.target, env)?;
 
 				let canonical = match ctx.runfile.resolve_target(&resolved) {
 					Some(n) => n.to_string(),
@@ -313,7 +320,7 @@ fn walk_extract_steps(
 				let argv = if call.args_template.is_empty() {
 					Vec::new()
 				} else {
-					let substituted = args.substitute_with_loop(&call.args_template, env, loop_scope)?;
+					let substituted = args.substitute(&call.args_template, env)?;
 					let trimmed = substituted.trim();
 					if trimmed.is_empty() {
 						Vec::new()
@@ -321,7 +328,9 @@ fn walk_extract_steps(
 						shlex::split(trimmed).unwrap_or_default()
 					}
 				};
-				let child_args = RunArgs::parse(&argv).with_run_context(args.run_context.clone());
+				let child_args = RunArgs::parse(&argv)
+					.with_run_context(args.run_context.clone())
+					.with_vars(args.vars.clone());
 
 				// Dep gets the parent's resolved env as substitution base
 				// (matches runtime `@target` env inheritance).
@@ -329,31 +338,30 @@ fn walk_extract_steps(
 				out.extend(dep_cmds);
 			}
 			CommandStep::When(WhenStep { commands, .. }) => {
-				walk_extract_steps(ctx, commands, args, env, extra_env, loop_scope, out)?;
+				walk_extract_steps(ctx, commands, args, env, extra_env, out)?;
 			}
 			CommandStep::If(if_step) => {
 				// Evaluate the condition against the same context the runner
-				// would see (args + resolved env + loop scope). Match the
-				// runtime branch instead of emitting both branches — output
-				// then matches what would actually execute.
-				let cond = evaluate_if_condition(if_step, args, env, loop_scope)?;
+				// would see (args + resolved env + VARS). Match the runtime
+				// branch instead of emitting both branches — output then
+				// matches what would actually execute.
+				let cond = evaluate_if_condition(if_step, args, env)?;
 				let branch: &[CommandStep] = if cond {
 					&if_step.then
 				} else {
 					if_step.r#else.as_deref().unwrap_or(&[])
 				};
-				walk_extract_steps(ctx, branch, args, env, extra_env, loop_scope, out)?;
+				walk_extract_steps(ctx, branch, args, env, extra_env, out)?;
 			}
 			CommandStep::For(ForStep { var, r#in, body, .. }) => {
 				use runfile_parser::ForInValue;
+				let guard = LoopVarGuard::enter(&args.vars, var.as_str());
 				match r#in {
 					Some(ForInValue::Literal(items)) => {
 						for item in items {
-							let value = args.substitute_with_loop(item, env, loop_scope)?;
-							loop_scope.push(var.as_str(), value);
-							let r = walk_extract_steps(ctx, body, args, env, extra_env, loop_scope, out);
-							loop_scope.pop();
-							r?;
+							let value = args.substitute(item, env)?;
+							guard.set(value);
+							walk_extract_steps(ctx, body, args, env, extra_env, out)?;
 						}
 					}
 					Some(ForInValue::Namespaces) => {
@@ -363,22 +371,19 @@ fn walk_extract_steps(
 						// rather than a placeholder.
 						let namespaces = args.run_context.namespaces.clone();
 						for ns in namespaces.iter() {
-							loop_scope.push(var.as_str(), ns.clone());
-							let r = walk_extract_steps(ctx, body, args, env, extra_env, loop_scope, out);
-							loop_scope.pop();
-							r?;
+							guard.set(ns.clone());
+							walk_extract_steps(ctx, body, args, env, extra_env, out)?;
 						}
 					}
 					None => {
 						// `for glob` / `for shell` — bind a placeholder so
-						// `{{ LOOP.var }}` references resolve without touching the
+						// `{{ VARS.<var> }}` references resolve without touching the
 						// filesystem or running side-effecting iterator commands.
-						loop_scope.push(var.as_str(), format!("<{var}>"));
-						let r = walk_extract_steps(ctx, body, args, env, extra_env, loop_scope, out);
-						loop_scope.pop();
-						r?;
+						guard.set(format!("<{var}>"));
+						walk_extract_steps(ctx, body, args, env, extra_env, out)?;
 					}
 				}
+				drop(guard);
 			}
 			CommandStep::Match(match_step) => {
 				// Same approach as `if`: dispatch using the same context the
@@ -386,8 +391,8 @@ fn walk_extract_steps(
 				// `MatchValueUnresolved` / `MatchNoCase` errors at extract time
 				// so dry-run output matches the runtime contract — users see
 				// the same case-validation diagnostics in both modes.
-				let branch = resolve_match_branch(match_step, args, env, loop_scope)?;
-				walk_extract_steps(ctx, branch, args, env, extra_env, loop_scope, out)?;
+				let branch = resolve_match_branch(match_step, args, env)?;
+				walk_extract_steps(ctx, branch, args, env, extra_env, out)?;
 			}
 		}
 	}

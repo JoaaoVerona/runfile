@@ -1159,6 +1159,7 @@ dependencies = [
 name = "runfile-executor"
 version = "0.8.0"
 dependencies = [
+ "base64",
  "dirs",
  "globset",
  "libc",

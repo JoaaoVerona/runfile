@@ -193,7 +193,8 @@ fn tokenize(source: &str) -> Result<Vec<Token>, DslParseError> {
 			}
 		}
 
-		// Single-char operators
+		// Single-char operators (top-level only — `(`/`)` inside a function
+		// call are part of the value token; see `read_value` below).
 		match b {
 			b'(' => {
 				tokens.push(Token {
@@ -227,18 +228,56 @@ fn tokenize(source: &str) -> Result<Vec<Token>, DslParseError> {
 
 		// `{{ ... }}` substitution — capture the raw text including delimiters.
 		// The substituter (in `runfile-executor::args`) handles the inner
-		// content; here we just need to find the matching `}}`.
-		if b == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+		// content; here we just need to find the matching `}}` while tracking
+		// nested `{{ }}` and quote state so we don't close on a `}}` that's
+		// part of a single-quoted interpolated string.
+		if b == b'{' && bytes.get(i + 1) == Some(&b'{') {
 			let start = i;
-			i += 2; // skip "{{"
+			i += 2;
+			let mut depth = 0i32;
+			let mut in_single = false;
+			let mut in_double = false;
 			let mut closed = false;
-			while i + 1 < bytes.len() {
-				if bytes[i] == b'}' && bytes[i + 1] == b'}' {
-					i += 2;
-					closed = true;
-					break;
+			while i < bytes.len() {
+				let c = bytes[i];
+				if in_single {
+					if c == b'\'' {
+						in_single = false;
+					}
+					i += 1;
+					continue;
 				}
-				i += 1;
+				if in_double {
+					if c == b'"' {
+						in_double = false;
+					}
+					i += 1;
+					continue;
+				}
+				match c {
+					b'\'' => {
+						in_single = true;
+						i += 1;
+					}
+					b'"' => {
+						in_double = true;
+						i += 1;
+					}
+					b'{' if bytes.get(i + 1) == Some(&b'{') => {
+						depth += 1;
+						i += 2;
+					}
+					b'}' if bytes.get(i + 1) == Some(&b'}') => {
+						if depth == 0 {
+							i += 2;
+							closed = true;
+							break;
+						}
+						depth -= 1;
+						i += 2;
+					}
+					_ => i += 1,
+				}
 			}
 			if !closed {
 				return Err(DslParseError::UnterminatedSubstitution(start));
@@ -252,47 +291,110 @@ fn tokenize(source: &str) -> Result<Vec<Token>, DslParseError> {
 			continue;
 		}
 
-		// Quoted string — single or double quotes, no escapes in v1.
-		if b == b'"' || b == b'\'' {
-			let quote = b;
-			let start = i;
-			i += 1;
-			let content_start = i;
-			while i < bytes.len() && bytes[i] != quote {
-				i += 1;
-			}
-			if i >= bytes.len() {
-				return Err(DslParseError::UnterminatedString(start));
-			}
-			let content = source[content_start..i].to_string();
-			i += 1; // closing quote
-			tokens.push(Token {
-				kind: TokKind::String,
-				text: content,
-				start,
-			});
-			continue;
-		}
-
-		// Bare-word: [A-Za-z0-9_./:\-]+
-		if is_bareword_byte(b) {
-			let start = i;
-			while i < bytes.len() && is_bareword_byte(bytes[i]) {
-				i += 1;
-			}
-			let content = source[start..i].to_string();
-			tokens.push(Token {
-				kind: TokKind::String,
-				text: content,
-				start,
-			});
-			continue;
-		}
-
-		return Err(DslParseError::UnexpectedChar(b as char, i));
+		// Read a Value token. Values are opaque chunks of substitution-body
+		// text — quoted strings, source refs (`ARGS.x`), or function calls
+		// (`to_upper(...)`). The DSL evaluator will hand the raw text back
+		// to the substitution machinery (see `runfile-executor::args::evaluate_arg`)
+		// so the same rules apply as inside a chain or function arg:
+		// single-quotes interpolate, double-quotes are kept literal, source
+		// refs resolve, function calls evaluate, raw barewords error.
+		let (next_i, text) = read_value(source, i)?;
+		tokens.push(Token {
+			kind: TokKind::String,
+			text,
+			start: i,
+		});
+		i = next_i;
 	}
 
 	Ok(tokens)
+}
+
+/// Read a single Value token (an opaque substitution-body fragment) starting
+/// at byte `start`. Handles:
+/// - `'...'` and `"..."` quoted strings (consumed verbatim, including quotes)
+/// - bareword identifiers (`ARGS.x`, `RUN.os`, `prod`, etc.)
+/// - function calls (`<ident>(...)` — the entire call including balanced
+///   parens is part of the value)
+///
+/// Returns the byte position after the consumed value and the raw text.
+fn read_value(source: &str, start: usize) -> Result<(usize, String), DslParseError> {
+	let bytes = source.as_bytes();
+	if start >= bytes.len() {
+		return Err(DslParseError::UnexpectedEnd("a value"));
+	}
+	let mut i = start;
+	let first = bytes[i];
+
+	// Quoted string — read until matching quote.
+	if first == b'"' || first == b'\'' {
+		i += 1;
+		while i < bytes.len() && bytes[i] != first {
+			i += 1;
+		}
+		if i >= bytes.len() {
+			return Err(DslParseError::UnterminatedString(start));
+		}
+		i += 1; // closing quote
+		return Ok((i, source[start..i].to_string()));
+	}
+
+	// Bareword (or source-ref or function-call name).
+	if is_bareword_byte(first) {
+		while i < bytes.len() && is_bareword_byte(bytes[i]) {
+			i += 1;
+		}
+		// If followed by `(`, this is a function call — read the balanced
+		// argument list as part of the value.
+		if i < bytes.len() && bytes[i] == b'(' {
+			i += 1;
+			let mut depth = 1i32;
+			let mut in_single = false;
+			let mut in_double = false;
+			while i < bytes.len() && depth > 0 {
+				let c = bytes[i];
+				if in_single {
+					if c == b'\'' {
+						in_single = false;
+					}
+					i += 1;
+					continue;
+				}
+				if in_double {
+					if c == b'"' {
+						in_double = false;
+					}
+					i += 1;
+					continue;
+				}
+				match c {
+					b'\'' => {
+						in_single = true;
+						i += 1;
+					}
+					b'"' => {
+						in_double = true;
+						i += 1;
+					}
+					b'(' => {
+						depth += 1;
+						i += 1;
+					}
+					b')' => {
+						depth -= 1;
+						i += 1;
+					}
+					_ => i += 1,
+				}
+			}
+			if depth != 0 {
+				return Err(DslParseError::UnbalancedParens);
+			}
+		}
+		return Ok((i, source[start..i].to_string()));
+	}
+
+	Err(DslParseError::UnexpectedChar(first as char, start))
 }
 
 fn is_bareword_byte(b: u8) -> bool {
@@ -444,7 +546,7 @@ mod dsl_unit_tests {
 			ast,
 			DslExpr::Inequality(
 				DslValue::Substitution("{{ ARGS.env }}".into()),
-				DslValue::Literal("staging".into()),
+				DslValue::Literal("\"staging\"".into()),
 			)
 		);
 	}
@@ -502,10 +604,18 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn parses_quoted_strings() {
+		// Under the new tokenizer, value tokens keep their RAW text (including
+		// the surrounding quotes). The evaluator (in `runfile-executor::args`)
+		// then unwraps single-quoted strings (interpolated) or keeps double-
+		// quoted strings verbatim — that decision happens at evaluation time,
+		// not parse time.
 		let ast = parse_condition("'foo bar' == \"baz\"").unwrap();
 		assert_eq!(
 			ast,
-			DslExpr::Equality(DslValue::Literal("foo bar".into()), DslValue::Literal("baz".into()),)
+			DslExpr::Equality(
+				DslValue::Literal("'foo bar'".into()),
+				DslValue::Literal("\"baz\"".into()),
+			)
 		);
 	}
 

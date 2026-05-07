@@ -79,7 +79,7 @@ fn parse_runfile_with_env_files() {
         "targets": {
             "dev": {
                 "commands": ["npm start"],
-                "envFiles": [".env", ".env.{{ ARGS.env ? development }}"]
+                "envFiles": [".env", ".env.{{ ARGS.env ? 'development' }}"]
             }
         },
         "globals": {
@@ -91,7 +91,7 @@ fn parse_runfile_with_env_files() {
 	let env_files = target.env_files.as_ref().unwrap();
 	assert_eq!(env_files.len(), 2);
 	assert_eq!(env_files[0], ".env");
-	assert_eq!(env_files[1], ".env.{{ ARGS.env ? development }}");
+	assert_eq!(env_files[1], ".env.{{ ARGS.env ? 'development' }}");
 
 	let globals = rf.globals.as_ref().unwrap();
 	let global_env_files = globals.env_files.as_ref().unwrap();
@@ -376,13 +376,16 @@ fn parse_command_with_conditional_args() {
         "targets": {
             "dev": {
                 "commands": ["npm run dev"],
-                "env": { "NODE_ENV": "{{ ARGS.env ? development }}" }
+                "env": { "NODE_ENV": "{{ ARGS.env ? 'development' }}" }
             }
         }
     }"#;
 	let rf = parse_runfile(json).unwrap();
 	let env = rf.targets["dev"].env.as_ref().unwrap();
-	assert_eq!(env["NODE_ENV"], EnvValue::String("{{ ARGS.env ? development }}".into()));
+	assert_eq!(
+		env["NODE_ENV"],
+		EnvValue::String("{{ ARGS.env ? 'development' }}".into())
+	);
 }
 
 #[test]
@@ -2331,7 +2334,6 @@ fn parse_if_block_with_string_then() {
 			assert_eq!(if_step.condition, "{{ ARGS.env }} == production");
 			assert_eq!(if_step.then.len(), 1);
 			assert!(if_step.r#else.is_none());
-			assert!(if_step.condition_ast.is_some());
 		}
 		_ => panic!("expected If block"),
 	}
@@ -2613,7 +2615,7 @@ fn parse_when_on_for_block() {
 		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"t": { "commands": [
-				{ "when": "failure", "for": "f", "glob": "logs/*", "do": ["cat {{ LOOP.f }}"] }
+				{ "when": "failure", "for": "f", "glob": "logs/*", "do": ["cat {{ VARS.f }}"] }
 			] }
 		}
 	}"#;
@@ -2753,7 +2755,7 @@ fn parse_target_call_inside_for_body() {
 			"build": { "commands": ["echo build"] },
 			"matrix": {
 				"commands": [
-					{ "for": "v", "in": ["1", "2"], "do": ["@build --version {{ LOOP.v }}"] }
+					{ "for": "v", "in": ["1", "2"], "do": ["@build --version {{ VARS.v }}"] }
 				]
 			}
 		}
@@ -2761,7 +2763,7 @@ fn parse_target_call_inside_for_body() {
 	let rf = parse_runfile(json).unwrap();
 	if let CommandStep::For(for_step) = &rf.targets["matrix"].commands[0] {
 		assert!(
-			matches!(&for_step.body[0], CommandStep::TargetCall(c) if c.target == "build" && c.args_template == "--version {{ LOOP.v }}")
+			matches!(&for_step.body[0], CommandStep::TargetCall(c) if c.target == "build" && c.args_template == "--version {{ VARS.v }}")
 		);
 	} else {
 		panic!("expected For");
@@ -2875,7 +2877,11 @@ fn parse_if_rejects_empty_condition() {
 }
 
 #[test]
-fn parse_if_rejects_malformed_condition() {
+fn parse_if_accepts_arbitrary_condition_text() {
+	// Under the new if-evaluation model the parser does NOT pre-parse the
+	// condition as DSL — it's just a substitution template. Syntax errors
+	// surface at runtime when the substitution machinery actually evaluates
+	// the body. So the parser accepts any non-empty string here.
 	let json = r#"{
 		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
@@ -2884,8 +2890,14 @@ fn parse_if_rejects_malformed_condition() {
 			] }
 		}
 	}"#;
-	let err = parse_runfile(json).unwrap_err();
-	assert!(err.to_string().contains("Invalid condition"));
+	let rf = parse_runfile(json).expect("parser should accept arbitrary if text");
+	let cmd = &rf.targets["bad"].commands[0];
+	match cmd {
+		CommandStep::If(if_step) => {
+			assert_eq!(if_step.condition, "a && b || c");
+		}
+		_ => panic!("expected If step"),
+	}
 }
 
 #[test]
@@ -2895,7 +2907,7 @@ fn parse_for_in_block() {
 		"targets": {
 			"build_each": {
 				"commands": [
-					{ "for": "service", "in": ["api", "web"], "do": ["echo {{ LOOP.service }}"] }
+					{ "for": "service", "in": ["api", "web"], "do": ["echo {{ VARS.service }}"] }
 				]
 			}
 		}
@@ -2920,7 +2932,7 @@ fn parse_for_do_accepts_single_string() {
 		"targets": {
 			"each": {
 				"commands": [
-					{ "for": "x", "in": ["a", "b"], "do": "echo {{ LOOP.x }}" }
+					{ "for": "x", "in": ["a", "b"], "do": "echo {{ VARS.x }}" }
 				]
 			}
 		}
@@ -2928,7 +2940,7 @@ fn parse_for_do_accepts_single_string() {
 	let rf = parse_runfile(json).unwrap();
 	if let CommandStep::For(for_step) = &rf.targets["each"].commands[0] {
 		assert_eq!(for_step.body.len(), 1);
-		assert_eq!(for_step.body[0], "echo {{ LOOP.x }}");
+		assert_eq!(for_step.body[0], "echo {{ VARS.x }}");
 	} else {
 		panic!("expected For block");
 	}
@@ -2943,7 +2955,7 @@ fn parse_for_in_namespaces_magic_string() {
 		"targets": {
 			"build_all": {
 				"commands": [
-					{ "for": "ns", "in": "namespaces", "do": "@{{ LOOP.ns }}:build" }
+					{ "for": "ns", "in": "namespaces", "do": "@{{ VARS.ns }}:build" }
 				]
 			}
 		}
@@ -2952,7 +2964,7 @@ fn parse_for_in_namespaces_magic_string() {
 	if let CommandStep::For(for_step) = &rf.targets["build_all"].commands[0] {
 		assert_eq!(for_step.var, "ns");
 		assert_eq!(for_step.r#in.as_ref().unwrap(), &crate::ForInValue::Namespaces);
-		// Body's "@{{ LOOP.ns }}:build" string starts with @, so it parses as a target call
+		// Body's "@{{ VARS.ns }}:build" string starts with @, so it parses as a target call
 		// with an empty target (the namespace is filled in at runtime).
 		assert_eq!(for_step.body.len(), 1);
 	} else {
@@ -2969,7 +2981,7 @@ fn parse_for_in_array_still_works_alongside_magic_string() {
 		"targets": {
 			"each": {
 				"commands": [
-					{ "for": "x", "in": ["a", "b", "c"], "do": "echo {{ LOOP.x }}" }
+					{ "for": "x", "in": ["a", "b", "c"], "do": "echo {{ VARS.x }}" }
 				]
 			}
 		}
@@ -3049,7 +3061,7 @@ fn parse_for_glob_block() {
 		"targets": {
 			"fmt": {
 				"commands": [
-					{ "for": "f", "glob": "src/**/*.rs", "do": ["rustfmt {{ LOOP.f }}"] }
+					{ "for": "f", "glob": "src/**/*.rs", "do": ["rustfmt {{ VARS.f }}"] }
 				]
 			}
 		}
@@ -3069,7 +3081,7 @@ fn parse_for_shell_block() {
 		"targets": {
 			"check": {
 				"commands": [
-					{ "for": "f", "shell": "git diff --name-only", "do": ["echo {{ LOOP.f }}"] }
+					{ "for": "f", "shell": "git diff --name-only", "do": ["echo {{ VARS.f }}"] }
 				]
 			}
 		}
@@ -3088,7 +3100,7 @@ fn parse_for_rejects_no_iterator() {
 		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
-				{ "for": "x", "do": ["echo {{ LOOP.x }}"] }
+				{ "for": "x", "do": ["echo {{ VARS.x }}"] }
 			] }
 		}
 	}"#;
@@ -3133,7 +3145,7 @@ fn parse_for_with_parallel_flag() {
 		"targets": {
 			"par": {
 				"commands": [
-					{ "for": "x", "in": ["1","2","3"], "parallel": true, "do": ["sleep {{ LOOP.x }}"] }
+					{ "for": "x", "in": ["1","2","3"], "parallel": true, "do": ["sleep {{ VARS.x }}"] }
 				]
 			}
 		}
@@ -3154,11 +3166,11 @@ fn parse_nested_control_flow() {
 			"complex": {
 				"commands": [
 					{ "for": "svc", "in": ["api","web"], "do": [
-						{ "if": "{{ LOOP.svc }} == api", "then": [
+						{ "if": "{{ VARS.svc }} == api", "then": [
 							"echo building api",
-							{ "for": "stage", "in": ["lint","test","build"], "do": ["echo api {{ LOOP.stage }}"] }
+							{ "for": "stage", "in": ["lint","test","build"], "do": ["echo api {{ VARS.stage }}"] }
 						], "else": [
-							"echo building {{ LOOP.svc }}"
+							"echo building {{ VARS.svc }}"
 						] }
 					] }
 				]
@@ -3237,8 +3249,8 @@ fn walk_step_templates_visits_all_string_payloads() {
 				"commands": [
 					"echo top",
 					{ "if": "{{ ARGS.flag }}", "then": ["echo then1", "echo then2"], "else": ["echo else1"] },
-					{ "for": "x", "in": ["a","b"], "do": ["echo {{ LOOP.x }}"] },
-					{ "for": "f", "glob": "*.rs", "do": ["rustfmt {{ LOOP.f }}"] }
+					{ "for": "x", "in": ["a","b"], "do": ["echo {{ VARS.x }}"] },
+					{ "for": "f", "glob": "*.rs", "do": ["rustfmt {{ VARS.f }}"] }
 				]
 			}
 		}
@@ -3254,9 +3266,9 @@ fn walk_step_templates_visits_all_string_payloads() {
 	assert!(seen.contains(&"echo else1".to_string()));
 	assert!(seen.contains(&"a".to_string()));
 	assert!(seen.contains(&"b".to_string()));
-	assert!(seen.contains(&"echo {{ LOOP.x }}".to_string()));
+	assert!(seen.contains(&"echo {{ VARS.x }}".to_string()));
 	assert!(seen.contains(&"*.rs".to_string()));
-	assert!(seen.contains(&"rustfmt {{ LOOP.f }}".to_string()));
+	assert!(seen.contains(&"rustfmt {{ VARS.f }}".to_string()));
 }
 
 #[test]
@@ -3273,7 +3285,7 @@ fn walk_spec_aux_templates_visits_all_substitutable_fields() {
 					"BL": true
 				},
 				"envFiles": [".env.{{ RUN.os }}", ".env"],
-				"forceShell": "{{ ARGS.shell ? bash }}",
+				"forceShell": "{{ ARGS.shell ? 'bash' }}",
 				"addToPath": ["bin/{{ ARGS.profile }}"],
 				"workingDirectory": "{{ ARGS.dir ? RUN.parent }}",
 				"confirm": "Run with {{ ARGS.env }}?",
@@ -3296,7 +3308,7 @@ fn walk_spec_aux_templates_visits_all_substitutable_fields() {
 
 	assert!(seen.iter().any(|s| s == ".env.{{ RUN.os }}"));
 	assert!(seen.iter().any(|s| s == ".env"));
-	assert!(seen.iter().any(|s| s == "{{ ARGS.shell ? bash }}"));
+	assert!(seen.iter().any(|s| s == "{{ ARGS.shell ? 'bash' }}"));
 	assert!(seen.iter().any(|s| s == "bin/{{ ARGS.profile }}"));
 	assert!(seen.iter().any(|s| s == "{{ ARGS.dir ? RUN.parent }}"));
 	assert!(seen.iter().any(|s| s == "Run with {{ ARGS.env }}?"));
@@ -3316,7 +3328,7 @@ fn parse_dsl_features_all_supported() {
 		"!(a == b)",
 		"(a && b) || c",
 		"a || (b && c)",
-		"{{ ARGS.x ? default }} == foo",
+		"{{ ARGS.x ? 'default' }} == foo",
 		"{{ ENV.HOME }} != \"\"",
 	];
 	for c in conditions {
@@ -3353,14 +3365,14 @@ fn parse_optional_target_call_marker() {
 
 #[test]
 fn parse_optional_target_call_with_dynamic_name() {
-	// `@?{{ LOOP.ns }}:build` is the canonical use case — combine optional with
+	// `@?{{ VARS.ns }}:build` is the canonical use case — combine optional with
 	// runtime substitution. The `?` is stripped, leaving the substitutable name.
 	let json = r#"{
 		"$schema": "x",
 		"targets": {
 			"a": {
 				"commands": [
-					{ "for": "ns", "in": "namespaces", "do": "@?{{ LOOP.ns }}:build" }
+					{ "for": "ns", "in": "namespaces", "do": "@?{{ VARS.ns }}:build" }
 				]
 			}
 		}
@@ -3368,7 +3380,7 @@ fn parse_optional_target_call_with_dynamic_name() {
 	let rf = parse_runfile(json).unwrap();
 	if let CommandStep::For(for_step) = &rf.targets["a"].commands[0] {
 		if let CommandStep::TargetCall(call) = &for_step.body[0] {
-			assert_eq!(call.target, "{{ LOOP.ns }}:build");
+			assert_eq!(call.target, "{{ VARS.ns }}:build");
 			assert!(call.optional);
 		} else {
 			panic!("expected TargetCall in for body");
@@ -3535,7 +3547,7 @@ fn parse_match_with_default_and_target_call() {
 			"dispatch": {
 				"commands": [
 					{
-						"match": "{{ ARGS.mode ? prod }}",
+						"match": "{{ ARGS.mode ? 'prod' }}",
 						"cases": {
 							"prod": "@a",
 							"dev": ["echo dev"]
@@ -3548,7 +3560,7 @@ fn parse_match_with_default_and_target_call() {
 	}"#;
 	let rf = parse_runfile(json).unwrap();
 	if let CommandStep::Match(m) = &rf.targets["dispatch"].commands[0] {
-		assert_eq!(m.r#match, "{{ ARGS.mode ? prod }}");
+		assert_eq!(m.r#match, "{{ ARGS.mode ? 'prod' }}");
 		// String case "prod" parsed as `@a` → TargetCall.
 		assert!(matches!(&m.cases["prod"][0], CommandStep::TargetCall(c) if c.target == "a"));
 		let default = m.default.as_ref().expect("default should be set");
@@ -3625,7 +3637,7 @@ fn parse_match_default_only_is_allowed() {
 		"targets": {
 			"t": {
 				"commands": [
-					{ "match": "{{ ARGS.x ? y }}", "cases": {}, "default": "echo y" }
+					{ "match": "{{ ARGS.x ? 'y' }}", "cases": {}, "default": "echo y" }
 				]
 			}
 		}

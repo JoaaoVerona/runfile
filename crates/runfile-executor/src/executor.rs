@@ -1,4 +1,4 @@
-use crate::args::{check_env_case_duplicates, LoopScope, RunArgs, SubstitutionError};
+use crate::args::{check_env_case_duplicates, LoopVarGuard, RunArgs, SubstitutionError};
 use crate::control_flow::{
 	count_leaves, evaluate_if_condition, expand_for_iterations, resolve_match_branch, ControlFlowError,
 };
@@ -287,7 +287,6 @@ pub fn execute_command_with_counter(
 		last_status: None,
 		failed: false,
 	};
-	let mut loop_scope = LoopScope::new();
 
 	let walk_result = execute_steps_walk(
 		&spec.commands,
@@ -298,7 +297,6 @@ pub fn execute_command_with_counter(
 		timings,
 		counter,
 		&force_kill_guard,
-		&mut loop_scope,
 		false, // not yet inside a parallel context
 		deps,
 		&mut state,
@@ -352,7 +350,6 @@ fn execute_steps_walk(
 	timings: bool,
 	counter: &StepCounter,
 	force_kill_guard: &Option<ForceKillGuard>,
-	loop_scope: &mut LoopScope,
 	in_parallel: bool,
 	deps: &dyn DependencyResolver,
 	state: &mut WalkState,
@@ -378,10 +375,9 @@ fn execute_steps_walk(
 				timings,
 				counter,
 				force_kill_guard,
-				loop_scope,
 				state,
 			)?,
-			CommandStep::TargetCall(call) => execute_one_target_call(call, setup, args, loop_scope, deps, state)?,
+			CommandStep::TargetCall(call) => execute_one_target_call(call, setup, args, deps, state)?,
 			CommandStep::When(when_step) => execute_when_block(
 				when_step,
 				setup,
@@ -391,7 +387,6 @@ fn execute_steps_walk(
 				timings,
 				counter,
 				force_kill_guard,
-				loop_scope,
 				in_parallel,
 				deps,
 				state,
@@ -405,7 +400,6 @@ fn execute_steps_walk(
 				timings,
 				counter,
 				force_kill_guard,
-				loop_scope,
 				in_parallel,
 				deps,
 				state,
@@ -419,7 +413,6 @@ fn execute_steps_walk(
 				timings,
 				counter,
 				force_kill_guard,
-				loop_scope,
 				in_parallel,
 				deps,
 				state,
@@ -433,7 +426,6 @@ fn execute_steps_walk(
 				timings,
 				counter,
 				force_kill_guard,
-				loop_scope,
 				in_parallel,
 				deps,
 				state,
@@ -468,7 +460,6 @@ fn execute_when_block(
 	timings: bool,
 	counter: &StepCounter,
 	force_kill_guard: &Option<ForceKillGuard>,
-	loop_scope: &mut LoopScope,
 	in_parallel: bool,
 	deps: &dyn DependencyResolver,
 	state: &mut WalkState,
@@ -493,7 +484,6 @@ fn execute_when_block(
 		timings,
 		counter,
 		force_kill_guard,
-		loop_scope,
 		in_parallel,
 		deps,
 		state,
@@ -525,14 +515,13 @@ fn execute_one_target_call(
 	call: &TargetCallStep,
 	setup: &ExecSetup,
 	args: &RunArgs,
-	loop_scope: &LoopScope,
 	deps: &dyn DependencyResolver,
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
-	// Substitute the target name so dynamic patterns like `@{{ LOOP.ns }}:build`
+	// Substitute the target name so dynamic patterns like `@{{ VARS.ns }}:build`
 	// dispatch to the correct namespaced target. No-op for static names.
-	let target = args.substitute_with_loop(&call.target, &setup.env, loop_scope)?;
-	let argv = resolve_target_call_argv(call, args, &setup.env, loop_scope)?;
+	let target = args.substitute(&call.target, &setup.env)?;
+	let argv = resolve_target_call_argv(call, args, &setup.env)?;
 	let result = deps.run_dependency(
 		&target,
 		argv,
@@ -555,12 +544,11 @@ fn resolve_target_call_argv(
 	call: &TargetCallStep,
 	args: &RunArgs,
 	env: &HashMap<String, String>,
-	loop_scope: &LoopScope,
 ) -> Result<Vec<String>, ExecuteError> {
 	if call.args_template.is_empty() {
 		return Ok(Vec::new());
 	}
-	let substituted = args.substitute_with_loop(&call.args_template, env, loop_scope)?;
+	let substituted = args.substitute(&call.args_template, env)?;
 	let trimmed = substituted.trim();
 	if trimmed.is_empty() {
 		return Ok(Vec::new());
@@ -587,14 +575,29 @@ fn execute_one_shell(
 	timings: bool,
 	counter: &StepCounter,
 	force_kill_guard: &Option<ForceKillGuard>,
-	loop_scope: &LoopScope,
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
-	let cmd_str = args.substitute_with_loop(template, &setup.env, loop_scope)?;
+	let cmd_str = args.substitute(template, &setup.env)?;
+
+	// Empty after substitution → no shell dispatch. The most common cause is
+	// a line whose only content is `{{ define(...) }}` (which resolves to
+	// `""`), but any all-whitespace template lands here too. We still
+	// advance the step counter so `(N/total)` numbering stays continuous,
+	// and treat the no-op as a successful command for `state.failures`.
+	if cmd_str.trim().is_empty() {
+		let (step, total) = counter.next_step();
+		if setup.logging {
+			let log_str = args.substitute_redacted(template, &setup.env)?;
+			log_command(&log_str, step, total);
+		}
+		state.commands_run += 1;
+		state.last_status = Some(dummy_success_status());
+		return Ok(());
+	}
 
 	let (step, total) = counter.next_step();
 	if setup.logging {
-		let log_str = args.substitute_redacted_with_loop(template, &setup.env, loop_scope)?;
+		let log_str = args.substitute_redacted(template, &setup.env)?;
 		log_command(&log_str, step, total);
 	}
 
@@ -661,12 +664,11 @@ fn execute_if_block(
 	timings: bool,
 	counter: &StepCounter,
 	force_kill_guard: &Option<ForceKillGuard>,
-	loop_scope: &mut LoopScope,
 	in_parallel: bool,
 	deps: &dyn DependencyResolver,
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
-	let condition_value = evaluate_if_condition(if_step, args, &setup.env, loop_scope)?;
+	let condition_value = evaluate_if_condition(if_step, args, &setup.env)?;
 
 	let chosen_branch: &[CommandStep] = if condition_value {
 		&if_step.then
@@ -704,7 +706,6 @@ fn execute_if_block(
 		timings,
 		counter,
 		force_kill_guard,
-		loop_scope,
 		in_parallel,
 		deps,
 		&mut local_state,
@@ -741,12 +742,11 @@ fn execute_match_block(
 	timings: bool,
 	counter: &StepCounter,
 	force_kill_guard: &Option<ForceKillGuard>,
-	loop_scope: &mut LoopScope,
 	in_parallel: bool,
 	deps: &dyn DependencyResolver,
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
-	let chosen_branch = resolve_match_branch(match_step, args, &setup.env, loop_scope)?;
+	let chosen_branch = resolve_match_branch(match_step, args, &setup.env)?;
 
 	let local_ignore = match_step.ignore_errors.unwrap_or(false);
 	let entered_in_failure_mode = match_step.when.unwrap_or_default() != WhenCondition::Success;
@@ -766,7 +766,6 @@ fn execute_match_block(
 		timings,
 		counter,
 		force_kill_guard,
-		loop_scope,
 		in_parallel,
 		deps,
 		&mut local_state,
@@ -796,12 +795,11 @@ fn execute_for_block(
 	timings: bool,
 	counter: &StepCounter,
 	force_kill_guard: &Option<ForceKillGuard>,
-	loop_scope: &mut LoopScope,
 	in_parallel: bool,
 	deps: &dyn DependencyResolver,
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
-	let iterations = expand_for_iterations(for_step, args, &setup.env, loop_scope, working_dir)?;
+	let iterations = expand_for_iterations(for_step, args, &setup.env, working_dir)?;
 
 	// Inflate the step counter total when actual iteration count exceeds
 	// the static estimate (which assumed 1 iteration for glob / shell /
@@ -841,7 +839,6 @@ fn execute_for_block(
 			timings,
 			counter,
 			force_kill_guard,
-			loop_scope,
 			deps,
 			local_ignore,
 			state,
@@ -860,8 +857,12 @@ fn execute_for_block(
 		};
 		let mut iter_error: Option<ExecuteError> = None;
 
+		// Scope the iteration variable into VARS for the duration of the loop;
+		// the guard restores any prior `VARS.<var>` value (or removes the entry
+		// if none) when it drops at end-of-loop.
+		let var_guard = LoopVarGuard::enter(&args.vars, for_step.var.as_str());
 		for value in &iterations {
-			loop_scope.push(&for_step.var, value.clone());
+			var_guard.set(value.clone());
 			let result = execute_steps_walk(
 				&for_step.body,
 				setup,
@@ -871,12 +872,10 @@ fn execute_for_block(
 				timings,
 				counter,
 				force_kill_guard,
-				loop_scope,
 				in_parallel,
 				deps,
 				&mut local_state,
 			);
-			loop_scope.pop();
 			// When the for-block has `ignoreErrors: true`, a failure in one
 			// iteration must NOT cause subsequent iterations' default-when
 			// steps to be skipped. Reset the local `failed` flag at the
@@ -893,6 +892,7 @@ fn execute_for_block(
 				break;
 			}
 		}
+		drop(var_guard);
 
 		state.commands_run += local_state.commands_run;
 		state.last_status = local_state.last_status.or(state.last_status);
@@ -931,7 +931,6 @@ fn execute_for_parallel(
 	timings: bool,
 	counter: &StepCounter,
 	force_kill_guard: &Option<ForceKillGuard>,
-	loop_scope: &mut LoopScope,
 	deps: &dyn DependencyResolver,
 	local_ignore: bool,
 	state: &mut WalkState,
@@ -943,12 +942,20 @@ fn execute_for_parallel(
 	// rule).
 	let mut leaves: Vec<ParallelLeaf> = Vec::new();
 
+	// Collection is sequential, so the `LoopVarGuard` save/restore semantics
+	// work the same as in `execute_for_block`: substitute each iteration's
+	// body with `VARS.<var>` set to the current iteration value, then restore
+	// at end of collection. Substituted leaves carry the iteration value
+	// baked in, so when the parallel batch dispatches later, no race on the
+	// shared VARS map matters for shell leaves. (TargetCall leaves dispatch
+	// fresh `RunArgs` whose body still reads the parent's VARS Arc — see
+	// the limitation note in CLAUDE.md.)
+	let var_guard = LoopVarGuard::enter(&args.vars, for_step.var.as_str());
 	for value in iterations {
-		loop_scope.push(&for_step.var, value.clone());
-		let leaves_result = collect_leaves_parallel(&for_step.body, setup, args, working_dir, loop_scope, &mut leaves);
-		loop_scope.pop();
-		leaves_result?;
+		var_guard.set(value.clone());
+		collect_leaves_parallel(&for_step.body, setup, args, working_dir, &mut leaves)?;
 	}
+	drop(var_guard);
 
 	if leaves.is_empty() {
 		return Ok(());
@@ -1022,10 +1029,9 @@ fn collect_leaves_parallel(
 	setup: &ExecSetup,
 	args: &RunArgs,
 	working_dir: &Path,
-	loop_scope: &mut LoopScope,
 	out: &mut Vec<ParallelLeaf>,
 ) -> Result<(), ExecuteError> {
-	collect_leaves_parallel_with_when(steps, setup, args, working_dir, loop_scope, WhenCondition::Success, out)
+	collect_leaves_parallel_with_when(steps, setup, args, working_dir, WhenCondition::Success, out)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1034,7 +1040,6 @@ fn collect_leaves_parallel_with_when(
 	setup: &ExecSetup,
 	args: &RunArgs,
 	working_dir: &Path,
-	loop_scope: &mut LoopScope,
 	outer_when: WhenCondition,
 	out: &mut Vec<ParallelLeaf>,
 ) -> Result<(), ExecuteError> {
@@ -1050,7 +1055,15 @@ fn collect_leaves_parallel_with_when(
 
 		match step {
 			CommandStep::Shell(template) => {
-				let substituted = args.substitute_with_loop(template, &setup.env, loop_scope)?;
+				let substituted = args.substitute(template, &setup.env)?;
+				// Drop empty leaves (typically `{{ define(...) }}` lines that
+				// resolve to ""). Side-effecting substitutions like `define`
+				// have already executed during `substitute`; a no-op shell
+				// leaf would just bloat the parallel batch and the step
+				// counter total.
+				if substituted.trim().is_empty() {
+					continue;
+				}
 				out.push(ParallelLeaf::Shell {
 					template: template.clone(),
 					substituted,
@@ -1058,10 +1071,10 @@ fn collect_leaves_parallel_with_when(
 				});
 			}
 			CommandStep::TargetCall(call) => {
-				// Substitute the target name so `@{{ LOOP.ns }}:build`-style
+				// Substitute the target name so `@{{ VARS.ns }}:build`-style
 				// dynamic targets dispatch to the right namespaced target.
-				let target = args.substitute_with_loop(&call.target, &setup.env, loop_scope)?;
-				let argv = resolve_target_call_argv(call, args, &setup.env, loop_scope)?;
+				let target = args.substitute(&call.target, &setup.env)?;
+				let argv = resolve_target_call_argv(call, args, &setup.env)?;
 				out.push(ParallelLeaf::TargetCall {
 					target,
 					argv,
@@ -1070,18 +1083,10 @@ fn collect_leaves_parallel_with_when(
 				});
 			}
 			CommandStep::When(when_step) => {
-				collect_leaves_parallel_with_when(
-					&when_step.commands,
-					setup,
-					args,
-					working_dir,
-					loop_scope,
-					effective,
-					out,
-				)?;
+				collect_leaves_parallel_with_when(&when_step.commands, setup, args, working_dir, effective, out)?;
 			}
 			CommandStep::If(if_step) => {
-				let condition_value = evaluate_if_condition(if_step, args, &setup.env, loop_scope)?;
+				let condition_value = evaluate_if_condition(if_step, args, &setup.env)?;
 				let branch: &[CommandStep] = if condition_value {
 					&if_step.then
 				} else {
@@ -1090,7 +1095,7 @@ fn collect_leaves_parallel_with_when(
 						None => &[],
 					}
 				};
-				collect_leaves_parallel_with_when(branch, setup, args, working_dir, loop_scope, effective, out)?;
+				collect_leaves_parallel_with_when(branch, setup, args, working_dir, effective, out)?;
 			}
 			CommandStep::For(for_step) => {
 				if for_step.parallel.unwrap_or(false) {
@@ -1098,27 +1103,19 @@ fn collect_leaves_parallel_with_when(
 						"[runfile] Warning: nested `for` block has parallel: true but is already inside a parallel context — running iterations sequentially."
 					);
 				}
-				let iterations = expand_for_iterations(for_step, args, &setup.env, loop_scope, working_dir)?;
+				let iterations = expand_for_iterations(for_step, args, &setup.env, working_dir)?;
+				let guard = LoopVarGuard::enter(&args.vars, for_step.var.as_str());
 				for value in iterations {
-					loop_scope.push(&for_step.var, value);
-					let r = collect_leaves_parallel_with_when(
-						&for_step.body,
-						setup,
-						args,
-						working_dir,
-						loop_scope,
-						effective,
-						out,
-					);
-					loop_scope.pop();
-					r?;
+					guard.set(value);
+					collect_leaves_parallel_with_when(&for_step.body, setup, args, working_dir, effective, out)?;
 				}
+				drop(guard);
 			}
 			CommandStep::Match(match_step) => {
 				// Like `if`, pick the chosen branch eagerly using the current
 				// substitution context and only collect that branch's leaves.
-				let branch = resolve_match_branch(match_step, args, &setup.env, loop_scope)?;
-				collect_leaves_parallel_with_when(branch, setup, args, working_dir, loop_scope, effective, out)?;
+				let branch = resolve_match_branch(match_step, args, &setup.env)?;
+				collect_leaves_parallel_with_when(branch, setup, args, working_dir, effective, out)?;
 			}
 		}
 	}
@@ -1643,8 +1640,7 @@ pub fn execute_parallel_with_counter(
 	// Inner `for` blocks are forced sequential (their parallel flag is moot
 	// once we're already in a parallel context).
 	let mut leaves: Vec<ParallelLeaf> = Vec::new();
-	let mut loop_scope = LoopScope::new();
-	collect_leaves_parallel(&spec.commands, &setup, args, working_dir, &mut loop_scope, &mut leaves)?;
+	collect_leaves_parallel(&spec.commands, &setup, args, working_dir, &mut leaves)?;
 
 	let mut state = WalkState {
 		commands_run: 0,

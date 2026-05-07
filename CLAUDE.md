@@ -94,9 +94,11 @@ crates/
   `TargetCall(TargetCallStep)` (a string starting with `@`), `When(WhenStep)`, `If(IfStep)`, `For(ForStep)`, or
   `Match(MatchStep)`.
   Backwards-compatible: an existing string entry deserializes as `CommandStep::Shell` unless it starts with `@`.
-  `IfStep` caches
-  the parsed condition AST in a `condition_ast: Option<DslExpr>` field (filled in by `validate_runfile`, never
-  serialized). `CommandSpec.commands`, `WhenStep.commands`, `IfStep.then`, `IfStep.else`, and `ForStep.body` all
+  `IfStep`'s `condition` is just a substitution template — the if-block evaluator (in
+  `runfile-executor::control_flow::evaluate_if_condition`) substitutes the value at runtime and checks if the
+  result equals the literal string `"true"`. The DSL form is reachable inside the substitution itself
+  (`{{ ARGS.env == 'prod' }}` resolves to `"true"` or `"false"`); see "DSL inside substitutions" below.
+  `CommandSpec.commands`, `WhenStep.commands`, `IfStep.then`, `IfStep.else`, and `ForStep.body` all
   accept either a bare string (sugar for a one-element array) or a `Vec<CommandStep>` — custom
   `deserialize_steps_or_string` / `deserialize_optional_steps_or_string` helpers in `schema.rs` handle the shorthand
   at parse time, so the in-memory shape always normalizes to `Vec<CommandStep>`. `ForStep` requires exactly one of
@@ -114,7 +116,7 @@ crates/
   constructor for string-only command lists.
 - DSL parsing (`dsl.rs`): tiny boolean expression language for `if` conditions. Hand-written tokenizer + recursive
   descent parser, no external deps. Grammar: comparisons (`==`, `!=`), logical operators (`&&`, `||`, `!`), parens,
-  substitution leaves (`{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` / `{{ LOOP.x }}`), quoted strings, bare-words. Mixing
+  substitution leaves (`{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` / `{{ VARS.x }}`), quoted strings, bare-words. Mixing
   `&&` and `||` in the same expression is a hard parse error — parens are required to disambiguate. Parsing happens
   eagerly during `validate_runfile`, so syntax errors surface at Runfile load time.
 - `MatchStep` (multi-way dispatch): `{ "match", "cases", "default"?, "ignoreErrors"?, "when"? }`. Stored on
@@ -234,7 +236,9 @@ crates/
   reads stdin, writes prompts to stderr, and caches answers in `Mutex<HashMap>`s). `Arc` cloning shares the
   cache, so the prompter propagates through `@target` calls (via `RunnerDependencyResolver::run_dependency`,
   which clones `parent.stdin_prompter`) without re-asking the user. Tests use a mock `StdinPrompter` to script
-  scripted answers.
+  scripted answers. The `vars: Arc<Mutex<HashMap<String, String>>>` field is the run-wide store for
+  `{{ define(...) }}` side effects — read by `{{ VARS.<name> }}` chain segments, shared via Arc-clone across
+  `@target` calls and parallel worker threads.
 - `substitute()` returns `Result` — `{{ ARGS.key }}` without `?` errors if arg is missing; `{{ ARGS.key ? }}` with empty
   right-side defaults to empty string; `{{ ARGS.key ? default }}` uses the default. The substituter walks the
   template once, resolving every `{{ ... }}` block it finds while leaving everything else (including bash
@@ -253,11 +257,89 @@ crates/
   shell, or when a target was defined in an included or global Runfile. `cwd` is captured once at top level and
   doesn't change. `forceShell` and `workingDirectory` themselves go through substitution before resolution —
   e.g. `"forceShell": "{{ ARGS.shell ? bash }}"` works.
-- `LoopScope`: stack of currently-active `for`-loop bindings (`var → value`). Pushed/popped by the executor when
-  entering/leaving a `for` block. `RunArgs::substitute_with_loop()` and `substitute_redacted_with_loop()` accept a
-  `&LoopScope` to resolve `{{ LOOP.<var> }}` references. The non-loop `substitute()` and `substitute_redacted()` are
-  now thin wrappers over the `_with_loop` variants with an empty scope. `{{ LOOP.x }}` participates in chained
-  fallbacks (`{{ ARGS.x ? LOOP.y ? default }}`); missing LOOP refs are a hard error like missing ARGS.
+- `LoopVarGuard`: RAII helper used by the executor and extract walker to scope a `for`-loop iteration variable
+  into the run-wide `VARS` map. `enter(&vars, name)` captures the prior value of `VARS.<name>` (if any); each
+  iteration calls `set(value)` to overwrite; on drop, the prior value is restored (or removed if there was no
+  prior). This gives lexical scoping for free: outer `VARS.x` is preserved while a `for x in [...]` runs, and
+  nested loops with the same variable name compose correctly. `{{ VARS.x }}` participates in chained fallbacks
+  (`{{ ARGS.x ? VARS.y ? default }}`); missing `VARS` refs error like missing `ARGS`.
+- **Quote-strict literals**: under the new substitution syntax, every string literal *inside a `{{ ... }}` block*
+  must be wrapped in single quotes (`'...'`) — bareword literals are rejected with
+  [`SubstitutionError::BarewordLiteralNotAllowed`]. Source references (`ARGS.x`, `VARS.x`, etc.) and function
+  calls remain bare. Two quote forms exist:
+  - **Single quotes (`'...'`) — interpolated string**: stripped at evaluation, with any nested `{{ ... }}` blocks
+    inside resolved through the regular substitution machinery. So `'docker -f {{ VARS.compose }} pull'`
+    becomes `docker -f services/web.yml pull`. Required if the literal contains `,`/`(`/`)`/`?`. The
+    substitution walker ([`find_substitution_close`]) is quote/depth-aware so the outer `}}` doesn't close on
+    a `}}` that's part of a single-quoted nested substitution.
+  - **Double quotes (`"..."`) — fully literal**: the quote characters are part of the value (so `"foo"` is the
+    5-character string `"foo"`). No interpolation inside. Rare-but-useful when you need the actual `"` chars in
+    your output. The splitter still treats `"..."` as a grouping boundary so commas / `?` inside don't split.
+  - The ONLY exception to the quote rule is the first argument of `define` — the var-name — which is always a
+    bareword identifier. `define('x', ...)` and `define("x", ...)` are both rejected as `InvalidVarName`.
+- **Function calls** (`{{ <funcname>(arg1, arg2, ...) }}`): identifier matches `[a-z][a-z0-9_]*` so it can't collide
+  with the uppercase source prefixes; `(` immediately follows the name; arguments are separated by `, ` (comma + one
+  space — strict whitespace, mirroring the chain `?` and FLAGS `:` rules). Built-in registry (in
+  `evaluate_function`): `to_upper(s)`, `to_lower(s)`, `base64_encode(s)`,
+  `base64_decode(s)` (errors on `InvalidBase64` / `NonUtf8Decoded`), `concat(s1, s2, ...)` (variadic, 1+ args),
+  `join(sep, s1, s2, ...)` (variadic, 1+ args; `join(sep)` with no items returns `""`),
+  `replace_all(haystack, needle, replacement)` (defers to Rust's `str::replace`; an empty `needle` produces
+  the replacement between every char, matching stdlib semantics), and `define(name, value)` (returns `""`, side
+  effect: sets `VARS.name`). Functions resolve as full substitution bodies
+  AND as chain segments — `{{ ARGS.host ? to_lower(ENV.HOST) }}` is a chain whose first segment is a source lookup
+  and second is a function call. Args themselves are chain / quoted-literal expressions, so nested calls
+  (`to_upper(to_lower(x))`) and chained args (`to_upper(ARGS.x ? 'default')`) work naturally. The chain splitter
+  (`split_chain_segments`) is paren / quote aware so ` ? ` inside `(...)` or `'...'`/`"..."` doesn't split.
+  Errors: `UnknownFunction`, `FunctionArity { name, expected, got }`, `InvalidBase64`, `NonUtf8Decoded`,
+  `UnbalancedParens`, `BarewordLiteralNotAllowed`, plus `MalformedSubstitution` for arg-list whitespace violations.
+- **DSL inside substitutions**: a substitution body containing the boolean operators `==`, `!=`, `&&`, `||`, or
+  unary `!` at top level (paren / quote / nested-substitution aware — see `looks_like_dsl`) is parsed as a DSL
+  expression and evaluated to the literal string `"true"` or `"false"`. Examples:
+  `{{ ARGS.env == 'prod' }}` → `"true"`/`"false"`,
+  `{{ ARGS.env != 'development' && ARGS.env != 'production' }}` → composite boolean,
+  `{{ to_upper(ARGS.x) == 'PROD' }}` → function-call values work, `{{ !(VARS.skip == 'yes') }}` → unary negation,
+  `{{ RUN.os == 'windows' && FLAGS.wsl }}` → bare `FLAGS.x` works because it resolves to `"true"`/`"false"`.
+  DSL value tokens are evaluated by the same machinery as function args (single-quoted interpolates, double-quoted
+  is verbatim, source refs resolve, function calls evaluate, plain barewords error). The DSL evaluator
+  ([`eval_dsl_ast`]) reuses the parser's [`runfile_parser::DslExpr`] / [`runfile_parser::DslValue`] AST.
+- **Strict DSL truthiness** (aligned with `if`-block rule): a `Truthy` value (anything used as a bare boolean
+  inside the DSL — e.g. `FLAGS.x`, `ARGS.x`, `VARS.x`, or a quoted literal) MUST resolve to `"true"` (truthy),
+  `"false"` (falsy), or `""` (falsy). Anything else surfaces as `SubstitutionError::DslValueNotBoolean`. This
+  catches patterns like `{{ ARGS.env && other }}` where the user expected non-empty-truthiness but `ARGS.env`
+  is some arbitrary string — the error points them at the explicit comparison form (`{{ ARGS.env == 'value' }}`).
+  Comparisons (`==` / `!=`) operate on raw strings without the boolean check, so any-string equality still
+  works. Short-circuiting (`&&` / `||`) still skips evaluation of later arms when the result is determined.
+- **`if` block evaluation** is a thin wrapper over substitution with a strict boolean check: the `condition`
+  field is a template string, [`evaluate_if_condition`] substitutes it via `args.substitute(...)`, and the
+  resolved value MUST be exactly `"true"` (truthy), `"false"` (falsy), or `""` (falsy). **Anything else
+  surfaces as [`ControlFlowError::IfConditionNotBoolean`]** — `"True"`, `"1"`, `"yes"`, `"hello"`, etc. all
+  error out instead of being silently coerced. The strict rule catches typos and missing comparisons (someone
+  writing `if: "{{ ARGS.x }}"` expecting truthiness when `ARGS.x` is "yes" gets a clear error pointing them
+  toward `{{ ARGS.x == 'yes' }}`). The OLD form (`if: "{{ X }} == Y"` with operators outside the `{{ }}`) no
+  longer works — migrate to `if: "{{ X == 'Y' }}"`. The if condition is not pre-parsed at Runfile load time;
+  errors surface at runtime when the substitution + boolean check run. `IfStep` no longer carries a cached
+  `condition_ast` field.
+- **`define(name, value)` semantics**: `name` MUST be a bareword identifier matching `[A-Za-z_][A-Za-z0-9_-]*` —
+  no quotes allowed. `parse_static_name` rejects substitutions, dotted names, and quoted forms with `InvalidVarName`.
+  `value` is resolved through the normal arg pipeline. Resolved value is stored in `RunArgs.vars`
+  (`Arc<Mutex<HashMap<String, String>>>`) — read by the `VARS.<name>` chain segment, returns `MissingVar` if not yet
+  set (or falls through to the chain default). The Arc is shared across `RunArgs::clone()` so `define`s in a parent
+  target are visible to `@target` children (the runner's `RunnerDependencyResolver` and the extract walker both
+  thread `with_vars(parent.vars.clone())` into the child `RunArgs`). `evaluate_function` skips the mutation when
+  `redact_env` is true so the redacted-pass log substitution doesn't overwrite real values with `***` between the
+  real-pass and the next command. Concurrent `define`s from a `parallel: true` block serialise on the lock; relative
+  ordering of writes is non-deterministic — last writer wins (documented footgun). `VARS.*` is **not** redacted in
+  logs (treated like ARGS) — putting secrets in VARS leaks them to `--logging` output.
+- **Empty-command skip**: when a command line resolves to a whitespace-only string (the typical cause is a line
+  consisting only of `{{ define(...) }}`), it is NOT dispatched to the shell. `execute_one_shell` short-circuits
+  and counts it as a successful no-op step (preserving `(N/total)` numbering); `collect_leaves_parallel_with_when`
+  drops empty leaves before they reach the parallel batch; `extract_target_with_cwd` skips them in dry-run output
+  so a `define`-only line doesn't show up as a blank line.
+- **`FLAGS.x` in chain segments and function args**: `resolve_chain_impl` recognises `FLAGS.<key>` as a value source
+  returning `"true"`/`"false"` (boolean form only — the ternary form's ` : ` would conflict with chain semantics).
+  Inside a function arg, `evaluate_arg` routes `FLAGS.x [? a [: b]]` to the dedicated FLAGS resolver so the full
+  ternary form works there too. Both paths thread `flag_keys` through (so `--key`-token consumption stays correct
+  for `{{ ARGS }}` rebuilds).
 - `control_flow.rs`: DSL evaluator + `for`-block iterator expansion. `evaluate(&DslExpr, args, env, scope)` walks
   the cached AST against the current substitution context. Truthiness rule: only `""` is falsy — `"false"`, `"0"`,
   etc. are truthy (matches what raw shell commands see). `{{ FLAGS.x }}` resolves to `"true"`/`"false"` strings, both
@@ -283,11 +365,11 @@ crates/
   `optional: true` and is stripped from the in-memory `target` field; the marker round-trips through serde via
   the manual `Serialize` impl on `CommandStep` (re-emits `@?` when `optional`). Optional calls silently skip
   when the (substituted) target isn't found in the merged Runfile — useful with `for in: "namespaces"` patterns
-  where some namespaces don't define the dispatched target (`@?{{ LOOP.ns }}:adb-forward`). The skip only suppresses
+  where some namespaces don't define the dispatched target (`@?{{ VARS.ns }}:adb-forward`). The skip only suppresses
   the *missing-target* error; failures *inside* the target's commands are not silenced (use `ignoreErrors` for
   that). At execute time, **both** `target` and `args_template` go through normal substitution (so `{{ ARGS }}` /
-  `{{ RUN.* }}` / `{{ ENV.* }}` / `{{ LOOP.* }}` resolve), then `args_template` is `shlex`-split into argv before being
-  dispatched. Substituting the target name lets dynamic patterns like `@{{ LOOP.ns }}:build` (the canonical use
+  `{{ RUN.* }}` / `{{ ENV.* }}` / `{{ VARS.* }}` resolve), then `args_template` is `shlex`-split into argv before being
+  dispatched. Substituting the target name lets dynamic patterns like `@{{ VARS.ns }}:build` (the canonical use
   case for `for in: "namespaces"`) dispatch to the right namespaced target on each iteration. The `?` character
   is reserved for the optional marker — declared target names, aliases, and `includes` namespaces are rejected
   at parse time if they contain `?` (`ParseError::TargetNameContainsQuestionMark`,
@@ -324,9 +406,12 @@ crates/
   `RunArgs::substitute` as the substitution closure. Re-exports `EnvFileError` and `parse_env_file` from `runfile-env`.
   Passes `available_private_keys` through for automatic encrypted env decryption.
 - `execute_command()`: walks `spec.commands: Vec<CommandStep>` recursively, executing each leaf shell through the
-  resolved shell. `if`/`for` blocks are expanded inline: `if` evaluates its cached `condition_ast` against the
-  substitution context and recurses into `then` or `else`; `for` calls `expand_for_iterations`, then for each
-  iteration value pushes a `LoopScope` binding, recurses into the body, and pops the binding. Behavior on failure
+  resolved shell. `if`/`for` blocks are expanded inline: `if` substitutes its `condition` template through
+  [`RunArgs::substitute`] and takes the `then` branch iff the resolved string equals `"true"` exactly. `"false"`
+  and `""` (empty) take the `else` branch; **any other value errors out with `IfConditionNotBoolean`**. `for`
+  calls `expand_for_iterations`, then for each
+  iteration calls `LoopVarGuard::set(value)` to write `VARS.<var>`, recurses into the body, and the guard restores
+  the prior `VARS.<var>` value when the loop ends. Behavior on failure
   respects `ignoreErrors` at both the target level and the per-block level (`IfStep.ignore_errors`,
   `ForStep.ignore_errors`). Thin wrapper over `execute_command_with_counter()` that creates a fresh step counter
   sized to `count_leaves(&spec.commands)` — used by tests.
@@ -347,7 +432,7 @@ crates/
   `output_prefix` parameter, the runner threads it through `run_target_inner` into the dispatched target's
   `ExecSetup.output_prefix`, and from there every shell (sequential `execute_one_shell` and any nested
   parallel batch) tags its piped output with that string. Result: `dev` targets that fan out via
-  `for in: "namespaces"` + `@{{ LOOP.ns }}:dev` get cleanly tagged per-branch output even when the leaves are
+  `for in: "namespaces"` + `@{{ VARS.ns }}:dev` get cleanly tagged per-branch output even when the leaves are
   `@target` calls rather than direct shells. Same counter-sharing pattern.
 - `parallel_output.rs`: line-buffered, prefixed stdout/stderr for parallel shell children. `spawn_line_pump`
   reads from a `ChildStdout`/`ChildStderr`, splits on `\n` and `\r` (CR-as-soft-break flattens progress-bar
@@ -398,7 +483,7 @@ crates/
   behaviour the removed `:extract` subcommand had. `--dry-run` recursively expands `@target` invocations: the
   dep's resolved leaf shell commands appear inline at the call site (with the dep's own env block reflected on
   each line), so aggregator targets whose body is purely `@target` dispatches (e.g. `for in: namespaces` with
-  `@{{ LOOP.ns }}:dev`) actually print every nested command rather than printing nothing. `if` blocks are
+  `@{{ VARS.ns }}:dev`) actually print every nested command rather than printing nothing. `if` blocks are
   evaluated (not flattened) against the same context the runner would see — only the matching branch is
   printed. Cycles are caught at extract time via per-call-stack tracking; sibling calls to the same target
   expand twice (matching runtime no-dedup semantics). Optional calls (`@?target`) silently skip when the target
@@ -485,7 +570,7 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   references prompt the user via stdin instead of erroring. The prompt key is the FIRST `ARGS.*` / `ENV.*` segment in
   the chain (the user-facing "primary name"); the chain's literal default (if any) is shown in `[brackets]`. A
   non-empty answer overrides the chain; an empty answer (just Enter) falls through to the default — or to the
-  existing `MissingArg`/`MissingEnv` error if no default exists. `LOOP.*` and `RUN.*` are NEVER prompted (they're
+  existing `MissingArg`/`MissingEnv` error if no default exists. `VARS.*` and `RUN.*` are NEVER prompted (they're
   runtime context, not user input). `FLAGS.x` prompts as `pass --x? (y/N)` and accepts `y`/`yes`/`true`/`1` as
   presence. Answers are cached per (kind, key) so the same value is asked at most once per run, even across
   `@target` invocations (the `Arc<dyn StdinPrompter>` is propagated through `RunnerDependencyResolver`). Works with
@@ -515,16 +600,22 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   `&&` and `||` in the same expression is a parse error — parens are required to disambiguate. `for` blocks accept
   one of `in: [...]` (literal array, each element substituted), `glob: "..."` (filesystem glob, sorted matches),
   or `shell: "..."` (run command at planning time, iterate trimmed non-blank stdout lines). `for shell` failure is
-  a hard error regardless of `ignoreErrors`. Loop variables are referenced as `{{ LOOP.<name> }}` and follow lexical
-  scoping (innermost wins). `parallel: true` on a `for` block runs iterations concurrently, but **outer parallel
-  only**: a nested `for parallel: true` inside an already-parallel context is forced sequential (with a warning).
+  a hard error regardless of `ignoreErrors`. Loop variables are written into the run-wide `VARS` map (the same
+  store `define(...)` populates) and referenced as `{{ VARS.<name> }}`. Scoping is save/restore via
+  `LoopVarGuard`: outer `VARS.x` is preserved across an inner `for x in [...]`, and nested loops with the same
+  name compose correctly. Loop iteration values are visible to dispatched `@target` children via the shared
+  `Arc<Mutex<HashMap>>`, but inside a `parallel: true` parent the children may race on the shared map (the
+  iteration value is baked into pre-substituted shell leaves, so direct shell uses are safe; only nested
+  `@target` bodies that read `{{ VARS.x }}` as a loop variable can race). `parallel: true` on a `for` block runs
+  iterations concurrently, but **outer parallel only**: a nested `for parallel: true` inside an already-parallel
+  context is forced sequential (with a warning).
 - `ignoreErrors` makes the CLI exit 0 even when commands fail — this is the specified behavior, not a bug.
 - `parallel` spawns all shell commands simultaneously; their stdout/stderr is piped through line-buffered reader
   threads that prefix every line with `[N]` (the global step number) and strip non-SGR ANSI cursor-control
   escapes — so progress-bar redraws (`docker compose pull`, etc.) become append-only chronological lines instead
   of corrupting interleaved output. Stdin is inherited. **`@target` calls inside a parallel parent propagate
   the parent's prefix through the entire dispatched dependency subtree** (via `DependencyResolver::run_dependency(..., output_prefix)`),
-  so a `dev` target that fans out via `for in: "namespaces"` + `@{{ LOOP.ns }}:dev` gets every nested shell tagged
+  so a `dev` target that fans out via `for in: "namespaces"` + `@{{ VARS.ns }}:dev` gets every nested shell tagged
   with its parallel branch identity. Set `RUNFILE_NO_LINE_PREFIX=1`/`true` to disable prefixing and inherit raw
   stdio. The target finishes when all commands exit. With `ignoreErrors`, failures are counted but exit is 0.
 - `detach` requires `parallel: true`. When both are set, commands are spawned in parallel as detached background

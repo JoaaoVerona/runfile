@@ -25,7 +25,7 @@ $ run dev --port=4000
         "@type-check",
         "vite build",
         {
-          "if": "{{ RUN.os }} == windows && {{ FLAGS.wsl }} == true",
+          "if": "{{ RUN.os == 'windows' && FLAGS.wsl }}",
           "then": "wsl --shell-type login -- vite build"
         }
       ],
@@ -172,19 +172,111 @@ Positional, named, flags, env vars, and runtime context (`{{ RUN.os }}` / `{{ RU
 avoids collisions with shell `$(...)` command substitution.
 
 ```jsonc
-"PORT": "{{ ARGS.port ? ENV.PORT ? 3000 }}",
-"OPTS": "{{ FLAGS.release ? --release : }} {{ FLAGS.verbose ? -v : }}",
+"PORT": "{{ ARGS.port ? ENV.PORT ? '3000' }}",
+"OPTS": "{{ FLAGS.release ? '--release' : }} {{ FLAGS.verbose ? '-v' : }}",
 "CARGO_TARGET_DIR": "target-{{ RUN.os }}",
-// Inline OS/shell branches:
-{ "if": "{{ RUN.os }} == windows", "then": ["del /S /Q build"], "else": ["rm -rf build"] },
-// User-supplied flags branch through {{ FLAGS.x }}:
-{ "if": "{{ FLAGS.debug }} == true", "then": ["./tool --verbose"], "else": ["./tool"] },
+// Inline OS/shell branches — the boolean DSL goes inside a single `{{ ... }}` block:
+{ "if": "{{ RUN.os == 'windows' }}", "then": ["del /S /Q build"], "else": ["rm -rf build"] },
+// User-supplied flags branch through `{{ FLAGS.x }}` (resolves to "true" / "false"):
+{ "if": "{{ FLAGS.debug }}", "then": ["./tool --verbose"], "else": ["./tool"] },
 // workingDirectory is a free-form path (defaults to {{ RUN.parent }}):
 "workingDirectory": "{{ ARGS.workdir ? RUN.cwd }}"
 ```
 
 Strict format: exactly one space after `{{` and before `}}`, exactly one space around `?` and `:` operators.
-Use `\{{` / `\}}` to emit a literal `{{` / `}}` in your output.
+**String literals must be wrapped in single quotes** — `'production'`, not `production`. Source references
+(`ARGS.x`, `VARS.x`, etc.) and function calls remain bare. Use `\{{` / `\}}` to emit a literal `{{` / `}}` in
+your output.
+
+#### Boolean conditions inside substitutions
+
+A substitution body containing `==`, `!=`, `&&`, `||`, or unary `!` at top level is evaluated as a boolean
+expression — the result is the string `"true"` or `"false"`. This is what powers the new `if`-block syntax,
+but you can use it anywhere:
+
+```jsonc
+"commands": [
+  // Branch on a CLI flag — `if` checks if the substitution resolves to the literal "true":
+  { "if": "{{ ARGS.env == 'production' }}",
+    "then": ["./deploy-prod.sh"],
+    "else": ["./deploy-staging.sh"] },
+
+  // Compose AND/OR/NOT freely:
+  { "if": "{{ ARGS.env != 'development' && ARGS.env != 'production' }}",
+    "then": ["./deploy-staging.sh"] },
+
+  // FLAGS.x works as a bare boolean inside DSL — no `== 'true'` needed:
+  { "if": "{{ RUN.os == 'windows' && FLAGS.wsl }}",
+    "then": "wsl --shell-type login -- vite build" },
+
+  // Inline in a command — useful for passing booleans to other tools:
+  "my-command --resolve {{ ARGS.env == 'production' }}"
+]
+```
+
+**Strict boolean rule.** Any value used as a bare boolean — both inside the DSL Truthy check (e.g. `&& FLAGS.x`,
+`!ARGS.y`) and as the entire `if` condition — must resolve to exactly one of:
+
+- `"true"` → truthy (the `then` branch runs / left arm of `&&` continues)
+- `"false"` → falsy
+- `""` (empty) → falsy
+
+Anything else (`"True"`, `"1"`, `"yes"`, `"hello"`, etc.) errors out with a clear message pointing you toward
+the explicit comparison form. So `if: "{{ ARGS.x }}"` and `{{ ARGS.x && ... }}` only work when `ARGS.x` is
+exactly `"true"` / `"false"` / empty — for any other check, use a comparison: `{{ ARGS.x == 'yes' }}`.
+
+Comparisons (`==` / `!=`) operate on raw strings — *those* don't have the boolean restriction, so
+`{{ ARGS.env == 'staging' }}` works for any value of `ARGS.env`.
+
+#### Functions: transform values inline
+
+Wrap any source or chain expression in a function call. Functions resolve at substitution time, can be nested,
+and work as full substitution bodies *or* as chain segments:
+
+```jsonc
+"commands": [
+  // Built-ins: to_upper, to_lower, base64_encode, base64_decode, concat, join, replace_all, define
+  "echo deploying-{{ to_upper(ARGS.env) }}",
+  "curl -H \"X-Auth: {{ base64_encode(ENV.TOKEN) }}\" ...",
+  "echo {{ concat('hello-', ARGS.name, '-2026') }}",
+  "echo {{ join(' AND ', flag-1, flag-2, ARGS.extra) }}",
+  // Tokenise-and-rejoin-style transforms via replace_all:
+  "go test {{ replace_all(ARGS.flags, ' ', ' -tag=') }}",
+
+  // Nested:
+  "echo {{ to_upper(to_lower(ARGS.x)) }}",
+
+  // As a chain fallback:
+  "echo host={{ ARGS.host ? to_lower(ENV.HOST) }}",
+
+  // Capture a value with `define(...)` and read it later via `VARS.<name>`:
+  "{{ define(sdk, ENV.SDK ? '/opt/sdk') }}",
+  "{{ VARS.sdk }}/bin/build",
+  "echo using sdk at {{ VARS.sdk }}",
+
+  // Single-quoted strings interpolate nested {{ }} substitutions:
+  "{{ define(cmd, 'docker compose -f {{ VARS.compose }} pull') }}",
+  "{{ VARS.cmd }}"
+]
+```
+
+`define(name, value)` returns an empty string and stores `value` in a run-wide map; a command line that resolves
+to only whitespace (i.e. one consisting solely of a `{{ define(...) }}` call) is silently skipped instead of
+being dispatched to the shell. `define`s in a parent target are visible to `@target` children. The `name` MUST
+be a bareword identifier matching `[A-Za-z_][A-Za-z0-9_-]*` — quotes are NOT allowed on the name.
+
+Function args are separated by `, ` (comma + exactly one space).
+
+**Quote semantics inside `{{ ... }}`:**
+
+- **Single quotes (`'...'`) — interpolated string**: surrounding quotes stripped, with any nested `{{ ... }}`
+  resolved through the regular substitution machinery. Use these for almost every literal — they handle the
+  full range of values including embedded substitutions: `concat('a, b', ARGS.x)`,
+  `'/var/log/{{ RUN.os }}.log'`, `define(cmd, 'docker -f {{ VARS.compose }} pull')`.
+- **Double quotes (`"..."`) — fully literal value**: the quote characters are part of the value (so `"test"` is
+  the 6-character string `"test"`). No interpolation. Useful when the literal you want to emit really should
+  contain `"` chars.
+- **Plain barewords are rejected** — `{{ ARGS.env ? development }}` is a parse-time error. Wrap in quotes.
 
 #### Conditionals and loops, no shell required
 
@@ -193,25 +285,25 @@ evaluated by Runfile itself, so the logic works the same on every shell and plat
 
 ```jsonc
 "commands": [
-  { "if": "{{ ARGS.env }} == production",
+  { "if": "{{ ARGS.env == 'production' }}",
     "then": ["./deploy-prod.sh"],
     "else": ["./deploy-staging.sh"] },
 
-  { "match": "{{ ARGS.tier ? 1 }}",  // chain default; case "1" runs when --tier missing
+  { "match": "{{ ARGS.tier ? '1' }}",  // chain default; case "1" runs when --tier missing
     "cases": {
       "1": "flutter emulators --launch Tier_1_Android_9",
       "2": "flutter emulators --launch Tier_2_Android_11",
       "3": "flutter emulators --launch Tier_3_Android_14"
-    } },                              // unknown values error out, listing the valid cases
+    } },                                // unknown values error out, listing the valid cases
 
   { "for": "service",
     "in": ["api", "web", "worker"],
     "parallel": true,
-    "do": ["docker build -t {{ LOOP.service }} services/{{ LOOP.service }}"] },
+    "do": ["docker build -t {{ VARS.service }} services/{{ VARS.service }}"] },
 
   { "for": "file",
     "shell": "git diff --name-only HEAD~1",
-    "do": ["clang-format -i {{ LOOP.file }}"] }
+    "do": ["clang-format -i {{ VARS.file }}"] }
 ]
 ```
 
@@ -230,8 +322,8 @@ namespace.
   "@lint",
   "@test --coverage",
   "@build {{ ARGS }}",
-  { "if": "{{ RUN.os }} == windows", "then": "@deploy-win", "else": "@deploy-unix" },
-  { "for": "ns", "in": "namespaces", "do": "@?{{ LOOP.ns }}:adb-forward" } // skip namespaces without the target
+  { "if": "{{ RUN.os == 'windows' }}", "then": "@deploy-win", "else": "@deploy-unix" },
+  { "for": "ns", "in": "namespaces", "do": "@?{{ VARS.ns }}:adb-forward" } // skip namespaces without the target
 ]
 ```
 
@@ -241,7 +333,7 @@ When commands run in parallel (`"parallel": true` on a target or `for` block), e
 line-buffered, prefixed with its step number `[N]`, and stripped of cursor-control escapes — so progress-bar
 redraws (`docker compose pull`, `cargo build`, etc.) become chronological append-only lines instead of corrupting
 each other's output. SGR colors flow through unchanged. The prefix propagates through `@target` invocations too,
-so monorepo fan-outs like `{ "for": "ns", "in": "namespaces", "do": "@{{ LOOP.ns }}:dev" }` tag every nested shell
+so monorepo fan-outs like `{ "for": "ns", "in": "namespaces", "do": "@{{ VARS.ns }}:dev" }` tag every nested shell
 with its branch identity. Set `RUNFILE_NO_LINE_PREFIX=1` to opt out and inherit raw stdio.
 
 ```text

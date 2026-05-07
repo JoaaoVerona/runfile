@@ -1,7 +1,7 @@
 //! Runtime support for `if` / `for` blocks inside the `commands` array.
 //!
 //! - [`evaluate`] turns a parsed [`DslExpr`] into a boolean against the
-//!   current substitution context (CLI args, env, loop scope).
+//!   current substitution context (CLI args, env, VARS).
 //! - [`expand_for_iterations`] computes the iteration values for a `for`
 //!   block (in-array / glob / shell capture). Side-effecting work (running
 //!   the `shell` iterator) happens here.
@@ -10,8 +10,13 @@
 //!   the literal length; `for glob` / `for shell` start with a
 //!   1-iteration estimate (the runtime adjusts the total dynamically as
 //!   iterators are expanded).
+//!
+//! `for`-loops write their iteration variable into the run-wide `VARS` map
+//! via [`LoopVarGuard`] (in `args`), so the body of a `for x in [...]` block
+//! reads the current iteration value as `{{ VARS.x }}`. The guard restores
+//! the prior value of `VARS.x` (if any) when the loop ends.
 
-use crate::args::{LoopScope, RunArgs, SubstitutionError};
+use crate::args::{LoopVarGuard, RunArgs, SubstitutionError};
 use globset::{Glob, GlobSetBuilder};
 use runfile_parser::{
 	walk_step_templates, CommandStep, DslExpr, DslValue, ForStep, IfStep, MatchStep, WhenCondition, WhenStep,
@@ -28,6 +33,9 @@ pub enum ControlFlowError {
 
 	#[error("Internal error: `if` condition was not pre-parsed (this is a bug)")]
 	UnparsedCondition,
+
+	#[error("`if` condition `{condition}` resolved to {resolved:?}, which is not a boolean. The condition must resolve to exactly the string \"true\" (truthy), \"false\" (falsy), or \"\" (empty, also falsy). Wrap in a boolean DSL expression — e.g. `{{{{ {condition} == 'value' }}}}` — or compare explicitly.")]
+	IfConditionNotBoolean { condition: String, resolved: String },
 
 	#[error("Failed to expand `for glob` pattern \"{0}\": {1}")]
 	BadGlob(String, String),
@@ -60,14 +68,9 @@ pub enum ControlFlowError {
 /// Resolve a [`DslValue`] to a string against the current substitution context.
 /// `Substitution` payloads are run through the existing substitutor, so all
 /// chained-fallback semantics work inside conditions just like in commands.
-fn resolve_value(
-	value: &DslValue,
-	args: &RunArgs,
-	env: &HashMap<String, String>,
-	loop_scope: &LoopScope,
-) -> Result<String, SubstitutionError> {
+fn resolve_value(value: &DslValue, args: &RunArgs, env: &HashMap<String, String>) -> Result<String, SubstitutionError> {
 	match value {
-		DslValue::Substitution(raw) => args.substitute_with_loop(raw, env, loop_scope),
+		DslValue::Substitution(raw) => args.substitute(raw, env),
 		DslValue::Literal(s) => Ok(s.clone()),
 	}
 }
@@ -82,31 +85,26 @@ fn is_truthy(s: &str) -> bool {
 }
 
 /// Evaluate a parsed condition AST against the current substitution context.
-pub fn evaluate(
-	expr: &DslExpr,
-	args: &RunArgs,
-	env: &HashMap<String, String>,
-	loop_scope: &LoopScope,
-) -> Result<bool, ControlFlowError> {
+pub fn evaluate(expr: &DslExpr, args: &RunArgs, env: &HashMap<String, String>) -> Result<bool, ControlFlowError> {
 	match expr {
 		DslExpr::Truthy(v) => {
-			let s = resolve_value(v, args, env, loop_scope)?;
+			let s = resolve_value(v, args, env)?;
 			Ok(is_truthy(&s))
 		}
 		DslExpr::Equality(l, r) => {
-			let lhs = resolve_value(l, args, env, loop_scope)?;
-			let rhs = resolve_value(r, args, env, loop_scope)?;
+			let lhs = resolve_value(l, args, env)?;
+			let rhs = resolve_value(r, args, env)?;
 			Ok(lhs == rhs)
 		}
 		DslExpr::Inequality(l, r) => {
-			let lhs = resolve_value(l, args, env, loop_scope)?;
-			let rhs = resolve_value(r, args, env, loop_scope)?;
+			let lhs = resolve_value(l, args, env)?;
+			let rhs = resolve_value(r, args, env)?;
 			Ok(lhs != rhs)
 		}
-		DslExpr::Not(inner) => Ok(!evaluate(inner, args, env, loop_scope)?),
+		DslExpr::Not(inner) => Ok(!evaluate(inner, args, env)?),
 		DslExpr::And(parts) => {
 			for part in parts {
-				if !evaluate(part, args, env, loop_scope)? {
+				if !evaluate(part, args, env)? {
 					return Ok(false);
 				}
 			}
@@ -114,7 +112,7 @@ pub fn evaluate(
 		}
 		DslExpr::Or(parts) => {
 			for part in parts {
-				if evaluate(part, args, env, loop_scope)? {
+				if evaluate(part, args, env)? {
 					return Ok(true);
 				}
 			}
@@ -123,19 +121,49 @@ pub fn evaluate(
 	}
 }
 
-/// Pre-parse a condition that arrived without a cached AST (defensive fallback).
-/// In practice `validate_runfile` always caches the AST, so this is effectively
-/// dead code unless something constructs an `IfStep` programmatically.
+/// Evaluate an `if` block's condition.
+///
+/// The condition value is a substitution template — at runtime it's
+/// resolved through the executor's substitution machinery (which handles
+/// nested `{{ ... }}` blocks, DSL boolean expressions inside substitutions,
+/// chains, function calls, etc.). The resolved string MUST be one of
+/// exactly three values:
+/// - `"true"` → truthy, the `then` branch runs
+/// - `"false"` → falsy, the `else` branch runs (or nothing if no else)
+/// - `""` (empty) → falsy
+///
+/// Anything else surfaces as [`ControlFlowError::IfConditionNotBoolean`].
+/// The strict rule keeps `if` blocks honest: a condition that produces
+/// e.g. `"True"`, `"yes"`, or `"hello"` is almost always a bug — usually
+/// a missing comparison or quoted literal. Wrap the whole condition in
+/// a DSL block (`{{ ARGS.x == 'value' }}`) so the result is guaranteed to
+/// be `"true"` / `"false"`, or compare explicitly.
+///
+/// Examples that evaluate to `true`:
+/// - `if: "{{ ARGS.env == 'prod' }}"` (when ARGS.env is "prod")
+/// - `if: "true"` (literal)
+/// - `if: "{{ ARGS.x }}"` ONLY if ARGS.x is exactly the string `"true"`
+///
+/// Examples that evaluate to `false` (no error):
+/// - `if: "false"` (literal)
+/// - `if: "{{ ARGS.x ? '' }}"` when ARGS.x is missing (resolves to empty)
+///
+/// Examples that ERROR:
+/// - `if: "TRUE"` (only `"true"` is recognised — case-sensitive)
+/// - `if: "1"`, `if: "yes"`, `if: "{{ ARGS.x }}"` when ARGS.x is "hello"
 pub fn evaluate_if_condition(
 	if_step: &IfStep,
 	args: &RunArgs,
 	env: &HashMap<String, String>,
-	loop_scope: &LoopScope,
 ) -> Result<bool, ControlFlowError> {
-	if let Some(ast) = &if_step.condition_ast {
-		evaluate(ast, args, env, loop_scope)
-	} else {
-		Err(ControlFlowError::UnparsedCondition)
+	let resolved = args.substitute(&if_step.condition, env)?;
+	match resolved.as_str() {
+		"true" => Ok(true),
+		"false" | "" => Ok(false),
+		_ => Err(ControlFlowError::IfConditionNotBoolean {
+			condition: if_step.condition.clone(),
+			resolved,
+		}),
 	}
 }
 
@@ -145,7 +173,6 @@ pub fn expand_for_iterations(
 	for_step: &ForStep,
 	args: &RunArgs,
 	env: &HashMap<String, String>,
-	loop_scope: &LoopScope,
 	working_dir: &Path,
 ) -> Result<Vec<String>, ControlFlowError> {
 	use runfile_parser::ForInValue;
@@ -153,10 +180,11 @@ pub fn expand_for_iterations(
 	match &for_step.r#in {
 		Some(ForInValue::Literal(items)) => {
 			// Substitute every element. Outer-loop variables ARE visible (this
-			// resolves at the time the `for` block is entered).
+			// resolves at the time the `for` block is entered) — outer loops
+			// have already written their var into VARS.
 			let mut result = Vec::with_capacity(items.len());
 			for item in items {
-				result.push(args.substitute_with_loop(item, env, loop_scope)?);
+				result.push(args.substitute(item, env)?);
 			}
 			Ok(result)
 		}
@@ -168,9 +196,9 @@ pub fn expand_for_iterations(
 		}
 		None => {
 			if let Some(pattern) = &for_step.glob {
-				expand_glob(pattern, args, env, loop_scope, working_dir)
+				expand_glob(pattern, args, env, working_dir)
 			} else if let Some(cmd) = &for_step.shell {
-				expand_shell(cmd, args, env, loop_scope, working_dir)
+				expand_shell(cmd, args, env, working_dir)
 			} else {
 				// Validation should already have rejected this. Defensive empty result.
 				Ok(Vec::new())
@@ -183,10 +211,9 @@ fn expand_glob(
 	pattern: &str,
 	args: &RunArgs,
 	env: &HashMap<String, String>,
-	loop_scope: &LoopScope,
 	working_dir: &Path,
 ) -> Result<Vec<String>, ControlFlowError> {
-	let resolved = args.substitute_with_loop(pattern, env, loop_scope)?;
+	let resolved = args.substitute(pattern, env)?;
 
 	// The glob is rooted at the working directory. We walk the filesystem
 	// and collect any path matching the pattern. Matches are returned as
@@ -234,10 +261,9 @@ fn expand_shell(
 	cmd: &str,
 	args: &RunArgs,
 	env: &HashMap<String, String>,
-	loop_scope: &LoopScope,
 	working_dir: &Path,
 ) -> Result<Vec<String>, ControlFlowError> {
-	let resolved = args.substitute_with_loop(cmd, env, loop_scope)?;
+	let resolved = args.substitute(cmd, env)?;
 
 	// We deliberately go through the platform's default shell here so users
 	// can write shell pipelines (`git diff --name-only | sort`, etc.) inside
@@ -309,9 +335,8 @@ pub fn resolve_match_branch<'a>(
 	step: &'a MatchStep,
 	args: &RunArgs,
 	env: &HashMap<String, String>,
-	loop_scope: &LoopScope,
 ) -> Result<&'a [CommandStep], ControlFlowError> {
-	let resolved = match args.substitute_with_loop(&step.r#match, env, loop_scope) {
+	let resolved = match args.substitute(&step.r#match, env) {
 		Ok(v) => v,
 		Err(e) => {
 			// Substitution failed — fall through to default if present so
@@ -464,8 +489,7 @@ pub fn collect_detach_leaves(
 	working_dir: &Path,
 ) -> Result<Vec<String>, DetachFlattenError> {
 	let mut out: Vec<String> = Vec::new();
-	let mut loop_scope = LoopScope::new();
-	collect_detach_leaves_inner(steps, args, env, working_dir, &mut loop_scope, &mut out)?;
+	collect_detach_leaves_inner(steps, args, env, working_dir, &mut out)?;
 	Ok(out)
 }
 
@@ -474,7 +498,6 @@ fn collect_detach_leaves_inner(
 	args: &RunArgs,
 	env: &HashMap<String, String>,
 	working_dir: &Path,
-	loop_scope: &mut LoopScope,
 	out: &mut Vec<String>,
 ) -> Result<(), DetachFlattenError> {
 	for step in steps {
@@ -485,38 +508,38 @@ fn collect_detach_leaves_inner(
 
 		match step {
 			CommandStep::Shell(template) => {
-				let substituted = args.substitute_with_loop(template, env, loop_scope)?;
+				let substituted = args.substitute(template, env)?;
 				out.push(substituted);
 			}
 			CommandStep::TargetCall(call) => {
 				return Err(DetachFlattenError::TargetCallNotAllowed(call.target.clone()));
 			}
 			CommandStep::When(WhenStep { commands, .. }) => {
-				collect_detach_leaves_inner(commands, args, env, working_dir, loop_scope, out)?;
+				collect_detach_leaves_inner(commands, args, env, working_dir, out)?;
 			}
 			CommandStep::If(if_step) => {
-				let cond = evaluate_if_condition(if_step, args, env, loop_scope)?;
+				let cond = evaluate_if_condition(if_step, args, env)?;
 				let branch: &[CommandStep] = if cond {
 					&if_step.then
 				} else {
 					if_step.r#else.as_deref().unwrap_or(&[])
 				};
-				collect_detach_leaves_inner(branch, args, env, working_dir, loop_scope, out)?;
+				collect_detach_leaves_inner(branch, args, env, working_dir, out)?;
 			}
 			CommandStep::For(for_step) => {
-				let iterations = expand_for_iterations(for_step, args, env, loop_scope, working_dir)?;
+				let iterations = expand_for_iterations(for_step, args, env, working_dir)?;
+				let guard = LoopVarGuard::enter(&args.vars, &for_step.var);
 				for value in iterations {
-					loop_scope.push(&for_step.var, value);
-					let r = collect_detach_leaves_inner(&for_step.body, args, env, working_dir, loop_scope, out);
-					loop_scope.pop();
-					r?;
+					guard.set(value);
+					collect_detach_leaves_inner(&for_step.body, args, env, working_dir, out)?;
 				}
+				drop(guard);
 			}
 			CommandStep::Match(match_step) => {
 				// Same approach as `if`: pick the matching branch using the
 				// current substitution context and only collect that one.
-				let branch = resolve_match_branch(match_step, args, env, loop_scope)?;
-				collect_detach_leaves_inner(branch, args, env, working_dir, loop_scope, out)?;
+				let branch = resolve_match_branch(match_step, args, env)?;
+				collect_detach_leaves_inner(branch, args, env, working_dir, out)?;
 			}
 		}
 	}
