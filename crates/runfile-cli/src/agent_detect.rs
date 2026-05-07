@@ -1,31 +1,8 @@
+use crate::ci_detect;
 use std::io::IsTerminal;
 
 /// Env vars checked for agent detection, with their expected "active" values.
 const AGENT_ENV_VARS: &[(&str, &str)] = &[("CLAUDECODE", "1"), ("LLM_INVOCATION", "true"), ("AGENT_MODE", "1")];
-
-/// Env vars whose presence indicates a CI environment (any non-empty value counts).
-///
-/// CI runners (GitHub Actions, GitLab CI, CircleCI, etc.) typically have non-terminal stdin,
-/// which would otherwise trip the stdin-not-a-terminal heuristic. We trust these signals to
-/// suppress *only* the stdin heuristic — explicit agent env vars still trigger regardless.
-const CI_ENV_VARS: &[&str] = &[
-	"CI",                     // de facto standard, set by GitHub Actions, GitLab, CircleCI, Travis, ...
-	"GITHUB_ACTIONS",         // GitHub Actions
-	"GITLAB_CI",              // GitLab CI
-	"CIRCLECI",               // CircleCI
-	"TRAVIS",                 // Travis CI
-	"BUILDKITE",              // Buildkite
-	"JENKINS_URL",            // Jenkins
-	"TF_BUILD",               // Azure Pipelines
-	"TEAMCITY_VERSION",       // TeamCity
-	"BITBUCKET_BUILD_NUMBER", // Bitbucket Pipelines
-];
-
-fn is_ci(env_lookup: &impl Fn(&str) -> Option<String>) -> bool {
-	CI_ENV_VARS
-		.iter()
-		.any(|&var| env_lookup(var).is_some_and(|v| !v.is_empty()))
-}
 
 /// Pure logic: returns `true` if any env var signals an agent, or stdin is not a terminal
 /// (unless a CI environment is detected, in which case the stdin heuristic is suppressed).
@@ -37,7 +14,7 @@ fn detect(env_lookup: impl Fn(&str) -> Option<String>, stdin_is_terminal: bool) 
 			return true;
 		}
 	}
-	if !stdin_is_terminal && !is_ci(&env_lookup) {
+	if !stdin_is_terminal && !ci_detect::is_ci_with(&env_lookup) {
 		return true;
 	}
 	false

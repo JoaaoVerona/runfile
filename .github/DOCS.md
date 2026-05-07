@@ -168,7 +168,7 @@ $ run dev --port=4000           # Named arguments
 | `run :env init [-p path] [--plain] [--key prefix]`    | Create a new `.env` file, optionally encrypted                                                     |
 | `run :env inject [-f file]... -- <command> [args...]` | Run a command with env vars loaded from one or more `.env` files (encrypted values auto-decrypted) |
 | `run :env rotate <file> [--delete-current-key]`       | Rotate the encryption key for an encrypted `.env` file                                             |
-| `run :env secret-keys add`                            | Interactively generate a new key or import an existing one                                         |
+| `run :env secret-keys add [--key <hex>]`              | Interactively generate or import a key (or, with `--key`, register one non-interactively in CI)    |
 | `run :env secret-keys list`                           | List the public key fingerprints of all stored keys                                                |
 | `run :env secret-keys get-private <public-prefix>`    | Print the full private key for sharing with teammates                                              |
 | `run :env secret-keys remove <public-prefix>`         | Remove a key by public key prefix                                                                  |

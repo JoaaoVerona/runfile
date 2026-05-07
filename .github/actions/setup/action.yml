@@ -6,6 +6,22 @@ inputs:
   version:
     description: 'Version to install. Defaults to latest.'
     default: latest
+  secret-keys:
+    description: |
+      Optional newline-separated list of private encryption keys (one 64-char hex
+      string per line) to register with `run :env secret-keys add` after install.
+
+      Required when targets in your Runfile decrypt env vars from encrypted .env files.
+      Pass GitHub secrets directly here — keys are stored in the runner's OS credential
+      store for the duration of the job. On Linux runners, a session keyring daemon is
+      bootstrapped automatically.
+
+      Example:
+        with:
+          secret-keys: |
+            ${{ secrets.RUNFILE_KEY_PROD }}
+            ${{ secrets.RUNFILE_KEY_STAGING }}
+    default: ''
 
 runs:
   using: composite
@@ -60,3 +76,40 @@ runs:
         mv "$RUNNER_TEMP/runfile-cli-${TARGET}"/run* "$install_dir/"
         echo "$install_dir" >> "$GITHUB_PATH"
         "$install_dir"/run* --version
+
+    # Linux runners ship without a Secret Service daemon. The `keyring` crate's
+    # linux-native backend talks to gnome-keyring over D-Bus, so we install both
+    # and start a session bus + keyring daemon. The DBUS_SESSION_BUS_ADDRESS
+    # exported here is what subsequent steps connect to. Skipped entirely when
+    # no keys need registering.
+    - name: Bootstrap Linux keyring
+      if: inputs.secret-keys != '' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq gnome-keyring dbus-x11
+
+        eval "$(dbus-launch --sh-syntax)"
+        eval "$(printf '\n' | gnome-keyring-daemon --start --daemonize --components=secrets)"
+
+        echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+        if [ -n "$DBUS_SESSION_BUS_PID" ]; then
+          echo "DBUS_SESSION_BUS_PID=$DBUS_SESSION_BUS_PID" >> "$GITHUB_ENV"
+        fi
+        if [ -n "$GNOME_KEYRING_CONTROL" ]; then
+          echo "GNOME_KEYRING_CONTROL=$GNOME_KEYRING_CONTROL" >> "$GITHUB_ENV"
+        fi
+
+    - name: Register secret keys
+      if: inputs.secret-keys != ''
+      shell: bash
+      env:
+        SECRET_KEYS: ${{ inputs.secret-keys }}
+      run: |
+        # One key per non-empty line. Whitespace inside a line is stripped so
+        # callers can indent freely in YAML without breaking hex parsing.
+        printf '%s\n' "$SECRET_KEYS" | while IFS= read -r line; do
+          key="$(printf '%s' "$line" | tr -d '[:space:]')"
+          [ -z "$key" ] && continue
+          run :env secret-keys add --key "$key"
+        done

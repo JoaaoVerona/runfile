@@ -391,6 +391,28 @@ fn config_global_files_has_subcommands() {
 // ── CLI parse tests ──────────────────────────────────────────────
 
 #[test]
+fn cli_parses_secret_keys_add_interactive() {
+	let result = try_parse(&["run", ":env", "secret-keys", "add"]);
+	assert!(result.is_ok(), "failed to parse ':env secret-keys add': {result:?}");
+}
+
+#[test]
+fn cli_parses_secret_keys_add_with_key() {
+	let result = try_parse(&[
+		"run",
+		":env",
+		"secret-keys",
+		"add",
+		"--key",
+		"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+	]);
+	assert!(
+		result.is_ok(),
+		"failed to parse ':env secret-keys add --key ...': {result:?}"
+	);
+}
+
+#[test]
 fn cli_parses_mcp_server() {
 	let result = try_parse(&["run", ":mcp", "server"]);
 	assert!(result.is_ok(), "failed to parse ':mcp server': {result:?}");

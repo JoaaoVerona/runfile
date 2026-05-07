@@ -1,4 +1,4 @@
-use crate::agent_detect;
+use crate::{agent_detect, ci_detect};
 use runfile_settings::Settings;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read};
@@ -108,10 +108,63 @@ pub fn cmd_init(path: &str, plain: bool, key_partial: Option<&str>) {
 // Secret key management
 // ══════════════════════════════════════════════════════════════════════
 
-/// Add a new private key interactively.
-/// Prompts the user to either generate a new key or paste an existing one.
-pub fn cmd_secret_keys_add() {
+/// CI-only path for `:env secret-keys add --key <hex>`.
+///
+/// Refuses to run outside a CI environment so dev-machine users don't accidentally bake
+/// their private key into shell history.
+fn add_secret_key_non_interactive(key_hex: &str) {
+	if !ci_detect::is_ci() {
+		eprintln!(
+			"Error: --key is only allowed inside a CI environment.\n\
+			 Run `run :env secret-keys add` interactively on dev machines so the key\n\
+			 doesn't end up in your shell history."
+		);
+		process::exit(1);
+	}
+
+	let key_hex = key_hex.trim().to_string();
+	if key_hex.len() != 64 || hex::decode(&key_hex).is_err() {
+		eprintln!("Error: --key must be a 64-character hex string (256-bit AES key).");
+		process::exit(1);
+	}
+
+	let public_key = runfile_crypto::derive_public_key(&key_hex).unwrap_or_else(|e| {
+		eprintln!("Error deriving public key: {e}");
+		process::exit(1);
+	});
+
+	let mut settings = load_settings();
+	match settings.add_secret_key_secure(key_hex) {
+		Ok(false) => {
+			println!("Key already registered (public {public_key}).");
+			return;
+		}
+		Err(e) => {
+			eprintln!("Error storing key: {e}");
+			process::exit(1);
+		}
+		Ok(true) => {}
+	}
+	save_settings(&settings);
+
+	println!("Private key added (public {public_key}).");
+}
+
+/// Add a new private key.
+///
+/// If `key_arg` is `Some`, the key is added non-interactively. This path is gated to
+/// CI environments only — running it on a dev machine would risk leaking the private
+/// key into shell history.
+///
+/// If `key_arg` is `None`, prompts the user to either generate a new key or paste an
+/// existing one.
+pub fn cmd_secret_keys_add(key_arg: Option<&str>) {
 	use std::io::{self, BufRead, Write};
+
+	if let Some(key_hex) = key_arg {
+		add_secret_key_non_interactive(key_hex);
+		return;
+	}
 
 	let mut settings = load_settings();
 

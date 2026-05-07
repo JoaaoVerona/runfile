@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process;
 
 mod agent_detect;
+mod ci_detect;
 mod cmd_config;
 mod cmd_env;
 mod cmd_mcp;
@@ -343,8 +344,15 @@ enum EnvAction {
 #[derive(Subcommand)]
 #[command(disable_help_subcommand = true)]
 enum SecretKeysAction {
-	/// Generate a new key or import an existing private encryption key (interactive)
-	Add,
+	/// Generate a new key or import an existing private encryption key (interactive,
+	/// unless `--key` is given for non-interactive CI use).
+	Add {
+		/// Add a known private key non-interactively. CI-only — refused on dev machines
+		/// to avoid leaking the key into shell history. Detection uses standard CI env
+		/// vars (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, etc.).
+		#[arg(long = "key")]
+		key: Option<String>,
+	},
 	/// Print the full private key for a given public key prefix (for sharing with teammates)
 	GetPrivate {
 		/// Public key hex prefix (partial match)
@@ -466,7 +474,7 @@ fn main() {
 			EnvAction::Init { path, plain, key } => cmd_env::cmd_init(&path, plain, key.as_deref()),
 			EnvAction::Inject { file, command } => cmd_env::cmd_inject(&file, &command),
 			EnvAction::SecretKeys { action } => match action {
-				SecretKeysAction::Add => cmd_env::cmd_secret_keys_add(),
+				SecretKeysAction::Add { key } => cmd_env::cmd_secret_keys_add(key.as_deref()),
 				SecretKeysAction::List => cmd_env::cmd_secret_keys_list(),
 				SecretKeysAction::GetPrivate { partial } => cmd_env::cmd_get_private_key(&partial),
 				SecretKeysAction::Remove { partial } => cmd_env::cmd_secret_keys_remove(&partial),
