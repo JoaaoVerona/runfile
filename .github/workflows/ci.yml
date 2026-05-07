@@ -16,7 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: Swatinem/rust-cache@v2.9.1
-      - uses: ./.github/actions/bootstrap
+      - uses: ./.github/actions/setup
+        with:
+          global-files: Runfile-ci.json
       - run: run ci:lint
 
   test:
@@ -31,5 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.1
         with:
           key: ${{ matrix.os }}
-      - uses: ./.github/actions/bootstrap
+      - uses: ./.github/actions/setup
+        with:
+          global-files: Runfile-ci.json
       - run: run ci:test

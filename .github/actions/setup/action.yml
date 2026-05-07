@@ -22,6 +22,18 @@ inputs:
             ${{ secrets.RUNFILE_KEY_PROD }}
             ${{ secrets.RUNFILE_KEY_STAGING }}
     default: ''
+  global-files:
+    description: |
+      Optional newline-separated list of Runfile.json paths to register as global files
+      via `run :config global-files add`. Useful for layering CI-only targets on top of
+      the project's main Runfile. Paths are resolved relative to the workflow's working
+      directory (typically the checkout root).
+
+      Example:
+        with:
+          global-files: |
+            Runfile-ci.json
+    default: ''
 
 runs:
   using: composite
@@ -106,10 +118,20 @@ runs:
       env:
         SECRET_KEYS: ${{ inputs.secret-keys }}
       run: |
-        # One key per non-empty line. Whitespace inside a line is stripped so
-        # callers can indent freely in YAML without breaking hex parsing.
         printf '%s\n' "$SECRET_KEYS" | while IFS= read -r line; do
           key="$(printf '%s' "$line" | tr -d '[:space:]')"
           [ -z "$key" ] && continue
           run :env secret-keys add --key "$key"
+        done
+
+    - name: Register global Runfiles
+      if: inputs.global-files != ''
+      shell: bash
+      env:
+        GLOBAL_FILES: ${{ inputs.global-files }}
+      run: |
+        printf '%s\n' "$GLOBAL_FILES" | while IFS= read -r line; do
+          path="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          [ -z "$path" ] && continue
+          run :config global-files add "$path"
         done

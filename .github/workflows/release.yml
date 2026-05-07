@@ -38,7 +38,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.1
         with:
           key: ${{ matrix.target }}
-      - uses: ./.github/actions/bootstrap
+      - uses: ./.github/actions/setup
+        with:
+          global-files: Runfile-ci.json
       - if: contains(matrix.target, 'linux-musl')
         run: run ci:install-musl-tools
       - run: run ci:rustup-add-target --target=${{ matrix.target }}
@@ -67,7 +69,9 @@ jobs:
           pattern: build-*
           merge-multiple: true
       - uses: Swatinem/rust-cache@v2.9.1
-      - uses: ./.github/actions/bootstrap
+      - uses: ./.github/actions/setup
+        with:
+          global-files: Runfile-ci.json
       - run: run ci:stage-release-assets
       - run: run ci:create-release --tag="$TAG"
 
@@ -94,6 +98,8 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
       - uses: Swatinem/rust-cache@v2.9.1
-      - uses: ./.github/actions/bootstrap
+      - uses: ./.github/actions/setup
+        with:
+          global-files: Runfile-ci.json
       - run: run ci:build-npm-packages --version="${TAG#v}"
       - run: run ci:publish-npm
