@@ -111,16 +111,16 @@ Sorted from where Runfile is most differentiated to where it lags behind.
 | Argument substitution with chained fallbacks                        |    ✅    |  ❌   |  ✅   |    ❌     |
 | JSON Schema autocomplete in editors                                 |    ✅    |  ❌   |  ❌   |    ✅     |
 | Watch mode, built-in                                                |    ✅    |  ❌   |  ❌   |    ✅     |
+| Output grouping / prefixing in parallel mode                        |    ✅    |  ❌   |  ❌   |    ✅     |
 | Native Windows (no WSL / msys2 needed)                              |    ✅    |  ❌   |  ✅   |    ✅     |
-| Parallel execution                                                  |    ✅    |  ✅   |  ❌   |    ✅     |
 | Shell completions                                                   |    ✅    |  ❌   |  ✅   |    ✅     |
 | Private / internal targets (`_name`)                                |    ✅    |  ❌   |  ✅   |    ✅     |
+| Built-in string functions (upper, replace, trim, regex, base64, …)  |    ✅    |  ❌   |  ✅   |    ✅     |
+| Parallel execution                                                  |    ✅    |  ✅   |  ❌   |    ✅     |
 | Single static binary                                                |    ✅    |  ✅   |  ✅   |    ✅     |
 | Pattern rules (`%.o: %.c`)                                          |    ❌    |  ✅   |  ❌   |    ❌     |
-| Output grouping / prefixing in parallel mode                        |    ❌    |  ❌   |  ❌   |    ✅     |
 | Preconditions / status checks                                       |    ❌    |  ❌   |  ❌   |    ✅     |
 | Incremental builds (sources / timestamps / checksums)               |    ❌    |  ✅   |  ❌   |    ✅     |
-| Built-in string functions (upper, replace, trim, …)                 |    ❌    |  ❌   |  ✅   |    ✅     |
 
 ---
 
