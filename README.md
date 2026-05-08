@@ -49,7 +49,7 @@ $ run dev --port=4000
 npm:
 
 ```bash
-npm install -g @skiley/runfile
+npm install -g @runfile/cli
 ```
 
 Linux / macOS:

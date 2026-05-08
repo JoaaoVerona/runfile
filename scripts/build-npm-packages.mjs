@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Build the npm packages for runfile using the optionalDependencies pattern.
+// Build the single npm package for runfile.
 //
 // Layout:
-//   - 6 per-platform packages (@skiley/runfile-<os>-<arch>) — each contains
-//     just the binary plus a minimal package.json with `os` and `cpu` so
-//     npm refuses to install on the wrong platform.
-//   - 1 wrapper package (@skiley/runfile) — a tiny stub that resolves the
-//     correct platform package at runtime and execs the binary. Lists all
-//     6 platform packages as optionalDependencies; npm installs only the
-//     matching one.
+//   - 1 package (@runfile/cli) — bundles all 6 platform binaries under
+//     `bin/<key>/run[.exe]` and ships a tiny stub at `bin/run.js` that
+//     dispatches at runtime by `process.platform + '-' + process.arch`.
 //
-// Result: 0 transitive dependencies, no postinstall download. Same pattern
-// as esbuild, @biomejs/biome, @swc/core, lightningcss, turbo.
+// Tradeoff vs. the optionalDependencies pattern (esbuild/swc/biome/turbo):
+// every install pulls all six binaries (~30–60 MB compressed total) instead
+// of one, but the install path is bulletproof — there's no
+// `--ignore-scripts` / `--no-optional` / corporate-mirror / sandbox failure
+// mode where the platform-specific package gets skipped and the wrapper
+// can't find its binary.
 //
 // Usage:
 //   node scripts/build-npm-packages.mjs \
@@ -28,53 +28,19 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync, existsSync, copyFileSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-const SCOPE = '@skiley';
-const PUBLIC_NAME = 'runfile';
+const SCOPE = '@runfile';
+const PUBLIC_NAME = 'cli';
+const REPO_URL = 'https://github.com/Skiley/runfile';
 
-// Platform table: npm-style key -> dist artifact info
+// Platform table: npm-style key -> dist artifact info. The `key` is what the
+// runtime stub matches against `process.platform + '-' + process.arch`.
 const PLATFORMS = [
-	{
-		key: 'darwin-arm64',
-		os: 'darwin',
-		cpu: 'arm64',
-		archive: 'runfile-cli-aarch64-apple-darwin.tar.xz',
-		bin: 'run',
-	},
-	{
-		key: 'darwin-x64',
-		os: 'darwin',
-		cpu: 'x64',
-		archive: 'runfile-cli-x86_64-apple-darwin.tar.xz',
-		bin: 'run',
-	},
-	{
-		key: 'linux-arm64',
-		os: 'linux',
-		cpu: 'arm64',
-		archive: 'runfile-cli-aarch64-unknown-linux-musl.tar.xz',
-		bin: 'run',
-	},
-	{
-		key: 'linux-x64',
-		os: 'linux',
-		cpu: 'x64',
-		archive: 'runfile-cli-x86_64-unknown-linux-musl.tar.xz',
-		bin: 'run',
-	},
-	{
-		key: 'win32-arm64',
-		os: 'win32',
-		cpu: 'arm64',
-		archive: 'runfile-cli-aarch64-pc-windows-msvc.zip',
-		bin: 'run.exe',
-	},
-	{
-		key: 'win32-x64',
-		os: 'win32',
-		cpu: 'x64',
-		archive: 'runfile-cli-x86_64-pc-windows-msvc.zip',
-		bin: 'run.exe',
-	},
+	{ key: 'darwin-arm64', archive: 'runfile-cli-aarch64-apple-darwin.tar.xz', bin: 'run' },
+	{ key: 'darwin-x64', archive: 'runfile-cli-x86_64-apple-darwin.tar.xz', bin: 'run' },
+	{ key: 'linux-arm64', archive: 'runfile-cli-aarch64-unknown-linux-musl.tar.xz', bin: 'run' },
+	{ key: 'linux-x64', archive: 'runfile-cli-x86_64-unknown-linux-musl.tar.xz', bin: 'run' },
+	{ key: 'win32-arm64', archive: 'runfile-cli-aarch64-pc-windows-msvc.zip', bin: 'run.exe' },
+	{ key: 'win32-x64', archive: 'runfile-cli-x86_64-pc-windows-msvc.zip', bin: 'run.exe' },
 ];
 
 // --- arg parsing --------------------------------------------------------
@@ -117,88 +83,65 @@ function extractBinary(archivePath, binName, destDir) {
 	}
 }
 
-// --- package builders ---------------------------------------------------
+// --- package builder ----------------------------------------------------
 
-function writePlatformPackage({ outDir, version, platform }) {
-	const pkgName = `${SCOPE}/${PUBLIC_NAME}-${platform.key}`;
-	const pkgDir = join(outDir, `${PUBLIC_NAME}-${platform.key}`);
-	mkdirSync(pkgDir, { recursive: true });
-
-	const pkgJson = {
-		name: pkgName,
-		version,
-		description: `${PUBLIC_NAME} binary for ${platform.os}-${platform.cpu}`,
-		repository: `https://github.com/Skiley/${PUBLIC_NAME}`,
-		license: 'MIT',
-		os: [platform.os],
-		cpu: [platform.cpu],
-		files: [platform.bin],
-	};
-	writeFileSync(join(pkgDir, 'package.json'), JSON.stringify(pkgJson, null, 2) + '\n');
-
-	const binDest = join(pkgDir, platform.bin);
-	chmodSync(binDest, 0o755);
-
-	return { pkgName, pkgDir };
-}
-
-function writeWrapperPackage({ outDir, version }) {
+function writePackage({ outDir, version, artifactsDir }) {
 	const pkgDir = join(outDir, PUBLIC_NAME);
 	const binDir = join(pkgDir, 'bin');
 	mkdirSync(binDir, { recursive: true });
 
-	const optionalDependencies = {};
-	for (const p of PLATFORMS) {
-		optionalDependencies[`${SCOPE}/${PUBLIC_NAME}-${p.key}`] = version;
+	// Extract each platform's binary into bin/<key>/<bin>.
+	for (const platform of PLATFORMS) {
+		const archivePath = join(artifactsDir, platform.archive);
+		if (!existsSync(archivePath)) {
+			throw new Error(`missing artifact: ${archivePath}`);
+		}
+		const platDir = join(binDir, platform.key);
+		extractBinary(archivePath, platform.bin, platDir);
+		// Best-effort exec bit — needed on Unix when the publisher runs on Linux
+		// (the source archives are .tar.xz so perms are usually preserved, but
+		// `unzip`-extracted .exe files don't carry a Unix mode and chmod is a
+		// no-op on Windows). The .exe doesn't need it.
+		if (platform.bin === 'run') {
+			chmodSync(join(platDir, platform.bin), 0o755);
+		}
+		console.log(`  bundled ${platform.key}`);
 	}
 
 	const pkgJson = {
 		name: `${SCOPE}/${PUBLIC_NAME}`,
 		version,
 		description: 'Runfile CLI — an easy-to-use, batteries-included task runner',
-		repository: `https://github.com/Skiley/${PUBLIC_NAME}`,
-		homepage: `https://github.com/Skiley/${PUBLIC_NAME}`,
+		repository: REPO_URL,
+		homepage: REPO_URL,
 		license: 'MIT',
 		bin: { run: 'bin/run.js' },
-		optionalDependencies,
+		files: ['bin'],
 		engines: { node: '>=16' },
 	};
 	writeFileSync(join(pkgDir, 'package.json'), JSON.stringify(pkgJson, null, 2) + '\n');
 
-	// Runtime stub. Resolves the matching platform package via
-	// require.resolve(), then execs the binary inside it. Zero dependencies.
+	// Runtime stub. Resolves the bundled binary by `process.platform + '-' +
+	// process.arch`, then execs it. Zero dependencies, no postinstall.
 	const stub = `#!/usr/bin/env node
-// Resolves the matching @skiley/${PUBLIC_NAME}-<platform> package and execs the binary.
+// Picks the bundled binary for the current platform/arch and execs it.
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const KEY = process.platform + '-' + process.arch;
-const PLATFORMS = ${JSON.stringify(
-		Object.fromEntries(
-			PLATFORMS.map(p => [p.key, { pkg: `${SCOPE}/${PUBLIC_NAME}-${p.key}`, bin: p.bin }]),
-		),
+const BINARIES = ${JSON.stringify(
+		Object.fromEntries(PLATFORMS.map(p => [p.key, p.bin])),
 		null,
 		2,
 	)};
 
-const entry = PLATFORMS[KEY];
-if (!entry) {
-	console.error(\`runfile: unsupported platform \${KEY}. Supported: \${Object.keys(PLATFORMS).join(', ')}\`);
+const bin = BINARIES[KEY];
+if (!bin) {
+	console.error(\`runfile: unsupported platform \${KEY}. Supported: \${Object.keys(BINARIES).join(', ')}\`);
 	process.exit(1);
 }
 
-let binPath;
-try {
-	const pkgJson = require.resolve(entry.pkg + '/package.json');
-	binPath = path.join(path.dirname(pkgJson), entry.bin);
-} catch {
-	console.error(
-		\`runfile: missing platform package \${entry.pkg}.\\n\` +
-		\`This usually means npm skipped optionalDependencies. Reinstall without --no-optional, --omit=optional, or --ignore-scripts.\`,
-	);
-	process.exit(1);
-}
-
+const binPath = path.join(__dirname, KEY, bin);
 const result = spawnSync(binPath, process.argv.slice(2), { stdio: 'inherit' });
 if (result.error) {
 	console.error(\`runfile: failed to spawn \${binPath}: \${result.error.message}\`);
@@ -208,10 +151,10 @@ process.exit(result.status == null ? 1 : result.status);
 `;
 	writeFileSync(join(binDir, 'run.js'), stub, { mode: 0o755 });
 
-	// README in the wrapper so npmjs.com has something to show.
+	// README in the package so npmjs.com has something to show.
 	writeFileSync(
 		join(pkgDir, 'README.md'),
-		`# ${SCOPE}/${PUBLIC_NAME}\n\nSee https://github.com/Skiley/${PUBLIC_NAME} for documentation.\n`,
+		`# ${SCOPE}/${PUBLIC_NAME}\n\nSee ${REPO_URL} for documentation.\n`,
 	);
 
 	return { pkgName: `${SCOPE}/${PUBLIC_NAME}`, pkgDir };
@@ -227,27 +170,12 @@ function main() {
 	if (existsSync(outAbs)) rmSync(outAbs, { recursive: true, force: true });
 	mkdirSync(outAbs, { recursive: true });
 
-	console.log(`Building npm packages for version ${version}`);
+	console.log(`Building ${SCOPE}/${PUBLIC_NAME} v${version}`);
 	console.log(`  artifacts: ${artifactsAbs}`);
 	console.log(`  out:       ${outAbs}`);
 
-	for (const platform of PLATFORMS) {
-		const archivePath = join(artifactsAbs, platform.archive);
-		if (!existsSync(archivePath)) {
-			throw new Error(`missing artifact: ${archivePath}`);
-		}
-		const pkgDir = join(outAbs, `${PUBLIC_NAME}-${platform.key}`);
-		mkdirSync(pkgDir, { recursive: true });
-		extractBinary(archivePath, platform.bin, pkgDir);
-		const { pkgName } = writePlatformPackage({ outDir: outAbs, version, platform });
-		console.log(`  built ${pkgName}`);
-	}
-
-	const { pkgName: wrapperName } = writeWrapperPackage({ outDir: outAbs, version });
-	console.log(`  built ${wrapperName} (wrapper)`);
-
-	console.log(`\nDone. Packages in ${outAbs}/`);
-	console.log(`Publish order: platform packages first, wrapper last.`);
+	const { pkgName } = writePackage({ outDir: outAbs, version, artifactsDir: artifactsAbs });
+	console.log(`\nDone. Built ${pkgName} in ${outAbs}/${PUBLIC_NAME}/`);
 }
 
 try {

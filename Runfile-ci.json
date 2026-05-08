@@ -37,7 +37,7 @@
 			"commands": "cargo build --release --target {{ ARGS.target }}"
 		},
 		"ci:package-archive": {
-			"description": "Package the built binary + README into a release archive (--target=<triple>). Produces stage/runfile-cli-<target>.{tar.xz|zip}.",
+			"description": "Package the built binary + README into a release archive (--target=<triple>); produces stage/runfile-cli-<target>.{tar.xz|zip}",
 			"commands": [
 				"mkdir -p stage/runfile-cli-{{ ARGS.target }}",
 				{
@@ -64,7 +64,7 @@
 			]
 		},
 		"ci:create-release": {
-			"description": "Create the GitHub Release with all staged assets (--tag=<vX.Y.Z>). Requires GH_TOKEN and GITHUB_REPOSITORY in env.",
+			"description": "Create the GitHub Release with all staged assets (--tag=<vX.Y.Z>)",
 			"commands": "gh release create \"{{ ARGS.tag }}\" --repo \"{{ ENV.GITHUB_REPOSITORY }}\" --title \"{{ ARGS.tag }}\" --generate-notes assets/*"
 		},
 		"ci:build-npm-packages": {
@@ -72,11 +72,8 @@
 			"commands": "node scripts/build-npm-packages.mjs --version {{ ARGS.version }} --artifacts dist-artifacts --out npm-dist"
 		},
 		"ci:publish-npm": {
-			"description": "Publish all per-platform npm packages, then the wrapper package. Requires NODE_AUTH_TOKEN in env.",
-			"commands": [
-				"for dir in npm-dist/runfile-*; do (cd \"$dir\" && npm publish --access public --provenance) || exit 1; done",
-				"cd npm-dist/runfile && npm publish --access public --provenance"
-			]
+			"description": "Publish the @runfile/cli npm package (bundles all platform binaries)",
+			"commands": "cd npm-dist/cli && npm publish --access public --provenance"
 		}
 	}
 }
