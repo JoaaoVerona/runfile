@@ -13,16 +13,16 @@ thiserror = { workspace = true }
 dirs = { workspace = true }
 runfile-parser = { path = "../runfile-parser" }
 runfile-crypto = { path = "../runfile-crypto" }
-keyring = { workspace = true }
+keyring-core = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-keyring = { workspace = true, features = ["windows-native"] }
+windows-native-keyring-store = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-keyring = { workspace = true, features = ["apple-native"] }
+apple-native-keyring-store = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { workspace = true, features = ["linux-native"] }
+linux-keyutils-keyring-store = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
