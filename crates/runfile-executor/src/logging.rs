@@ -59,6 +59,20 @@ impl StepCounter {
 	pub fn add_to_total(&self, n: usize) {
 		self.total.fetch_add(n, Ordering::SeqCst);
 	}
+
+	/// Reduce the total step count. Called when a shell template was
+	/// counted by the static [`crate::control_flow::count_leaves`] pass
+	/// but turns out to be a runtime no-op (typically a line that
+	/// resolves to whitespace — e.g. one consisting only of
+	/// `{{ define(...) }}` calls — which is dropped from execution).
+	/// Without this, the visible `(N/total)` ratio would drift because
+	/// the current counter never advances for the skipped step while
+	/// the total still includes it. Saturating: never underflows.
+	pub fn subtract_from_total(&self, n: usize) {
+		let _ = self
+			.total
+			.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_sub(n)));
+	}
 }
 
 /// Determine whether logging is enabled for a command.

@@ -365,10 +365,16 @@ crates/
   ordering of writes is non-deterministic — last writer wins (documented footgun). `VARS.*` is **not** redacted in
   logs (treated like ARGS) — putting secrets in VARS leaks them to `--logging` output.
 - **Empty-command skip**: when a command line resolves to a whitespace-only string (the typical cause is a line
-  consisting only of `{{ define(...) }}`), it is NOT dispatched to the shell. `execute_one_shell` short-circuits
-  and counts it as a successful no-op step (preserving `(N/total)` numbering); `collect_leaves_parallel_with_when`
-  drops empty leaves before they reach the parallel batch; `extract_target_with_cwd` skips them in dry-run output
-  so a `define`-only line doesn't show up as a blank line.
+  consisting only of `{{ define(...) }}`), it is NOT dispatched to the shell — and crucially, NOT counted as a
+  step in any way. `execute_one_shell` short-circuits *before* calling `counter.next_step()`, prints no log line,
+  and calls [`StepCounter::subtract_from_total(1)`] to roll back the static `count_leaves` estimate so the visible
+  `(N/total)` ratio reflects only commands that actually run. `state.commands_run` and `state.last_status` stay
+  untouched (a target whose body is purely `define`-only lines reports `commands_run = 0` and `final_status =
+  dummy_success_status()` via the standard fallback). `collect_leaves_parallel_with_when` does the equivalent for
+  the parallel path — drops empty leaves before they enter the batch *and* calls `subtract_from_total` per drop,
+  so `[parallel]` runs don't show inflated totals either; the counter is now threaded through the collector for
+  this. `extract_target_with_cwd` skips them in dry-run output so a `define`-only line doesn't show up as a blank
+  line.
 - **`FLAGS.x` in chain segments and function args**: `resolve_chain_impl` recognises `FLAGS.<key>` as a value source
   returning `"true"`/`"false"` (boolean form only — the ternary form's ` : ` would conflict with chain semantics).
   Inside a function arg, `evaluate_arg` routes `FLAGS.x [? a [: b]]` to the dedicated FLAGS resolver so the full
@@ -496,7 +502,10 @@ crates/
   cheaply cloneable; worker threads spawned by parallel `@target` calls share the same underlying counter. The
   total is computed once via `count_target_leaves` at the entry point (recurses into `@target` references,
   memoized per-target). `when: failure` / `when: always` blocks inflate the total — actual execution may stop
-  before reaching them, in which case the last shown step number will be lower than the total.
+  before reaching them, in which case the last shown step number will be lower than the total. `add_to_total(n)`
+  bumps the total when `for glob:`/`for shell:` runtime expansion exceeds the static 1-iteration estimate;
+  `subtract_from_total(n)` (saturating) shrinks it when a Shell step turns out to be a runtime no-op (empty
+  substitution) — both paths keep the visible ratio honest without ever printing a stale `(N/total)`.
 - `runner.rs`: high-level `run_target()` function that builds env and dispatches command execution. The CLI calls
   `run_target()` instead of `execute_command()` directly. No globals threading — everything is already on the
   `CommandSpec`. `RunRoot` holds a `StepCounter` initialized to `count_target_leaves(target_name, ...)`, threaded

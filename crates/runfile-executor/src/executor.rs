@@ -579,19 +579,20 @@ fn execute_one_shell(
 ) -> Result<(), ExecuteError> {
 	let cmd_str = args.substitute(template, &setup.env)?;
 
-	// Empty after substitution → no shell dispatch. The most common cause is
-	// a line whose only content is `{{ define(...) }}` (which resolves to
-	// `""`), but any all-whitespace template lands here too. We still
-	// advance the step counter so `(N/total)` numbering stays continuous,
-	// and treat the no-op as a successful command for `state.failures`.
+	// Empty after substitution → true no-op: no shell dispatch, no step
+	// number consumed, no log line, no contribution to the global step
+	// total. The most common cause is a line whose only content is
+	// `{{ define(...) }}` (which resolves to `""`), but any all-whitespace
+	// template lands here too. The static `count_leaves` estimate already
+	// counted this Shell step toward the total, so we decrement to keep
+	// the visible `(N/total)` ratio accurate. Side effects from `define`
+	// have already happened during `substitute` above. We deliberately
+	// don't touch `state.commands_run`/`state.last_status` either —
+	// `final_status` falls back to `dummy_success_status()` when no
+	// command set a status, so a target whose body is purely
+	// `define`-only lines still reports success.
 	if cmd_str.trim().is_empty() {
-		let (step, total) = counter.next_step();
-		if setup.logging {
-			let log_str = args.substitute_redacted(template, &setup.env)?;
-			log_command(&log_str, step, total);
-		}
-		state.commands_run += 1;
-		state.last_status = Some(dummy_success_status());
+		counter.subtract_from_total(1);
 		return Ok(());
 	}
 
@@ -953,7 +954,7 @@ fn execute_for_parallel(
 	let var_guard = LoopVarGuard::enter(&args.vars, for_step.var.as_str());
 	for value in iterations {
 		var_guard.set(value.clone());
-		collect_leaves_parallel(&for_step.body, setup, args, working_dir, &mut leaves)?;
+		collect_leaves_parallel(&for_step.body, setup, args, working_dir, counter, &mut leaves)?;
 	}
 	drop(var_guard);
 
@@ -1029,9 +1030,10 @@ fn collect_leaves_parallel(
 	setup: &ExecSetup,
 	args: &RunArgs,
 	working_dir: &Path,
+	counter: &StepCounter,
 	out: &mut Vec<ParallelLeaf>,
 ) -> Result<(), ExecuteError> {
-	collect_leaves_parallel_with_when(steps, setup, args, working_dir, WhenCondition::Success, out)
+	collect_leaves_parallel_with_when(steps, setup, args, working_dir, WhenCondition::Success, counter, out)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1041,6 +1043,7 @@ fn collect_leaves_parallel_with_when(
 	args: &RunArgs,
 	working_dir: &Path,
 	outer_when: WhenCondition,
+	counter: &StepCounter,
 	out: &mut Vec<ParallelLeaf>,
 ) -> Result<(), ExecuteError> {
 	for step in steps {
@@ -1059,9 +1062,12 @@ fn collect_leaves_parallel_with_when(
 				// Drop empty leaves (typically `{{ define(...) }}` lines that
 				// resolve to ""). Side-effecting substitutions like `define`
 				// have already executed during `substitute`; a no-op shell
-				// leaf would just bloat the parallel batch and the step
-				// counter total.
+				// leaf would just bloat the parallel batch and inflate the
+				// visible `(N/total)` ratio. The static `count_leaves`
+				// estimate already counted this Shell step toward the
+				// total, so we decrement to match what will actually run.
 				if substituted.trim().is_empty() {
+					counter.subtract_from_total(1);
 					continue;
 				}
 				out.push(ParallelLeaf::Shell {
@@ -1083,7 +1089,15 @@ fn collect_leaves_parallel_with_when(
 				});
 			}
 			CommandStep::When(when_step) => {
-				collect_leaves_parallel_with_when(&when_step.commands, setup, args, working_dir, effective, out)?;
+				collect_leaves_parallel_with_when(
+					&when_step.commands,
+					setup,
+					args,
+					working_dir,
+					effective,
+					counter,
+					out,
+				)?;
 			}
 			CommandStep::If(if_step) => {
 				let condition_value = evaluate_if_condition(if_step, args, &setup.env)?;
@@ -1095,7 +1109,7 @@ fn collect_leaves_parallel_with_when(
 						None => &[],
 					}
 				};
-				collect_leaves_parallel_with_when(branch, setup, args, working_dir, effective, out)?;
+				collect_leaves_parallel_with_when(branch, setup, args, working_dir, effective, counter, out)?;
 			}
 			CommandStep::For(for_step) => {
 				if for_step.parallel.unwrap_or(false) {
@@ -1107,7 +1121,15 @@ fn collect_leaves_parallel_with_when(
 				let guard = LoopVarGuard::enter(&args.vars, for_step.var.as_str());
 				for value in iterations {
 					guard.set(value);
-					collect_leaves_parallel_with_when(&for_step.body, setup, args, working_dir, effective, out)?;
+					collect_leaves_parallel_with_when(
+						&for_step.body,
+						setup,
+						args,
+						working_dir,
+						effective,
+						counter,
+						out,
+					)?;
 				}
 				drop(guard);
 			}
@@ -1115,7 +1137,7 @@ fn collect_leaves_parallel_with_when(
 				// Like `if`, pick the chosen branch eagerly using the current
 				// substitution context and only collect that branch's leaves.
 				let branch = resolve_match_branch(match_step, args, &setup.env)?;
-				collect_leaves_parallel_with_when(branch, setup, args, working_dir, effective, out)?;
+				collect_leaves_parallel_with_when(branch, setup, args, working_dir, effective, counter, out)?;
 			}
 		}
 	}
@@ -1640,7 +1662,7 @@ pub fn execute_parallel_with_counter(
 	// Inner `for` blocks are forced sequential (their parallel flag is moot
 	// once we're already in a parallel context).
 	let mut leaves: Vec<ParallelLeaf> = Vec::new();
-	collect_leaves_parallel(&spec.commands, &setup, args, working_dir, &mut leaves)?;
+	collect_leaves_parallel(&spec.commands, &setup, args, working_dir, counter, &mut leaves)?;
 
 	let mut state = WalkState {
 		commands_run: 0,
