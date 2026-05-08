@@ -523,6 +523,14 @@ crates/
   expand twice (matching runtime no-dedup semantics). Optional calls (`@?target`) silently skip when the target
   is missing. `extract_target_with_cwd` auto-syncs `args.run_context.namespaces` from the merged Runfile (matches
   the runner's `ensure_run_context`) so `for in: "namespaces"` resolves identically in dry-run.
+  `for` blocks expand at extract time wherever it's safe to do so: `for in: [...]` substitutes per element,
+  `for in: "namespaces"` snapshots the namespace list, and **`for glob:` walks the filesystem** (via
+  `control_flow::expand_glob`, threading the target's resolved `working_dir` into [`walk_extract_steps`]) so
+  matched paths bind to the loop variable just like at runtime — empty match set yields zero body emissions.
+  **`for shell:` is the lone exception**: extract emits the body once with `{{ VARS.<var> }}` bound to a `<var>`
+  placeholder, since running an arbitrary shell iterator would have side effects (process spawn, possibly slow
+  I/O, possibly stateful). Use `--dry-run` confidently as a read-only preview without worrying about iterator
+  commands firing.
 - Global flags: `-f`/`--file` (custom Runfile path), `--timings` (print execution times), `-y`/`--yes` (skip
   confirms), `--stdin-args` (prompt for missing `ARGS.*`/`ENV.*`/`FLAGS.*` instead of erroring),
   `--dry-run` (print resolved leaf shell commands without executing). For inline debug branching, declare

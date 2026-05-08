@@ -1639,6 +1639,12 @@ with the dep's own `env` block reflected on each line. Aggregator targets whose 
 nested command, not nothing. Cycles are detected at extract time; optional calls (`@?target`) silently skip when the
 dispatched target is absent.
 
+`for` blocks expand wherever it's safe: `for in: [...]` substitutes per element, `for in: "namespaces"` snapshots
+the namespace list, and `for glob: "..."` walks the filesystem (read-only) so the body prints once per matched
+file with the loop variable bound to the path. **`for shell: "..."` is the one exception** — running an arbitrary
+shell command would have side effects, so dry-run skips the iterator and prints the body once with `{{ VARS.<var> }}`
+bound to a `<var>` placeholder. Use `--dry-run` confidently as a read-only preview.
+
 > **Restricted to interactive use.** Because the resolved output inlines env-var values (including decrypted secrets) as
 > shell-ready assignments, `--dry-run` refuses to execute when an LLM-agent invocation is detected. Run it from your own
 > terminal.

@@ -2268,6 +2268,138 @@ fn extract_for_namespaces_aggregator() {
 }
 
 #[test]
+fn extract_for_in_literal_array_expands_per_iteration() {
+	// `for in: [...]` already expanded at extract time; this is a regression
+	// guard so the for-block refactor that added glob expansion didn't break
+	// the literal-array path.
+	use crate::extract::{extract_target, format_extracted_commands};
+	use runfile_parser::parse_runfile;
+
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "build-all": {
+                "commands": [
+                    { "for": "tier", "in": ["api", "web"], "do": "echo build {{ VARS.tier }}" }
+                ]
+            }
+        }
+    }"#;
+
+	let runfile = parse_runfile(json).unwrap();
+	let args = RunArgs::default();
+	let dir = TempDir::new().unwrap();
+
+	let commands = extract_target("build-all", &runfile, &args, dir.path()).unwrap();
+	let lines = format_extracted_commands(&commands, &ShellKind::Bash);
+
+	assert_eq!(lines, vec!["echo build api".to_string(), "echo build web".to_string()]);
+}
+
+#[test]
+fn extract_for_glob_walks_filesystem() {
+	// `for glob:` is read-only and side-effect-free, so dry-run expands it
+	// against the actual working directory — the user gets the same command
+	// list a real run would produce, with concrete paths bound to the loop
+	// variable on each iteration.
+	use crate::extract::{extract_target, format_extracted_commands};
+	use runfile_parser::parse_runfile;
+	use std::fs;
+
+	let dir = TempDir::new().unwrap();
+	// `expand_glob` walks recursively; pick names that are deterministic
+	// across platforms and won't collide with anything else in the temp
+	// dir.
+	fs::write(dir.path().join("alpha.txt"), b"a").unwrap();
+	fs::write(dir.path().join("beta.txt"), b"b").unwrap();
+	fs::write(dir.path().join("ignore.md"), b"c").unwrap();
+
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "lint": {
+                "commands": [
+                    { "for": "f", "glob": "*.txt", "do": "lint {{ VARS.f }}" }
+                ]
+            }
+        }
+    }"#;
+
+	let runfile = parse_runfile(json).unwrap();
+	let args = RunArgs::default();
+
+	let commands = extract_target("lint", &runfile, &args, dir.path()).unwrap();
+	let lines = format_extracted_commands(&commands, &ShellKind::Bash);
+
+	// `expand_glob` returns matches sorted alphabetically with forward
+	// slashes — `extract_target` plumbs `working_dir` into the walker so
+	// matches resolve against the same root the runner would use.
+	assert_eq!(lines, vec!["lint alpha.txt".to_string(), "lint beta.txt".to_string()]);
+}
+
+#[test]
+fn extract_for_glob_with_no_matches_emits_no_commands() {
+	// Empty match set → body emits zero commands. Mirrors runtime behaviour
+	// (an empty iteration list runs the body zero times).
+	use crate::extract::{extract_target, format_extracted_commands};
+	use runfile_parser::parse_runfile;
+
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "lint": {
+                "commands": [
+                    { "for": "f", "glob": "*.nonesuch", "do": "lint {{ VARS.f }}" }
+                ]
+            }
+        }
+    }"#;
+
+	let runfile = parse_runfile(json).unwrap();
+	let args = RunArgs::default();
+	let dir = TempDir::new().unwrap();
+
+	let commands = extract_target("lint", &runfile, &args, dir.path()).unwrap();
+	let lines = format_extracted_commands(&commands, &ShellKind::Bash);
+
+	assert!(lines.is_empty(), "no matches → no commands; got {:?}", lines);
+}
+
+#[test]
+fn extract_for_shell_emits_placeholder_without_running_iterator() {
+	// `for shell:` is deliberately NOT executed during extract — running
+	// arbitrary shell commands during a read-only preview would have side
+	// effects (process spawn, possibly slow I/O, possibly stateful). The
+	// iterator command here exits non-zero on purpose: if extract ran it,
+	// `expand_shell` would surface the failure as a `ControlFlowError` and
+	// the unwrap below would panic. Seeing the placeholder in the output
+	// proves extract bypassed the iterator.
+	use crate::extract::{extract_target, format_extracted_commands};
+	use runfile_parser::parse_runfile;
+
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "process-files": {
+                "commands": [
+                    { "for": "line", "shell": "exit 1", "do": "echo {{ VARS.line }}" }
+                ]
+            }
+        }
+    }"#;
+
+	let runfile = parse_runfile(json).unwrap();
+	let args = RunArgs::default();
+	let dir = TempDir::new().unwrap();
+
+	let commands = extract_target("process-files", &runfile, &args, dir.path()).unwrap();
+	let lines = format_extracted_commands(&commands, &ShellKind::Bash);
+
+	// Body emits exactly once with the loop var bound to `<line>`.
+	assert_eq!(lines, vec!["echo <line>".to_string()]);
+}
+
+#[test]
 fn extract_if_evaluates_condition_against_run_context() {
 	// Regression: dry-run used to emit BOTH `then` and `else` branches as
 	// a static-analysis approximation. Now that extract resolves args/env

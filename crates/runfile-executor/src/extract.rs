@@ -1,5 +1,5 @@
 use crate::args::{check_env_case_duplicates, validate_args, LoopVarGuard, RunArgs, SubstitutionError};
-use crate::control_flow::{evaluate_if_condition, resolve_match_branch, ControlFlowError};
+use crate::control_flow::{evaluate_if_condition, expand_glob, resolve_match_branch, ControlFlowError};
 use crate::env::{build_env_with_base, EnvFileError};
 use runfile_parser::{
 	walk_spec_aux_templates, walk_step_templates, CommandStep, ForStep, Runfile, WhenStep, WORKING_DIRECTORY_DEFAULT,
@@ -152,16 +152,19 @@ impl ExtractContext<'_> {
 	}
 }
 
-/// Runtime preview, with two narrow static-analysis fallbacks for sources
-/// we can't resolve without side effects:
+/// Runtime preview, with one narrow static-analysis fallback for the
+/// only iterator source we can't resolve without side effects:
 /// - `if` blocks evaluate the condition against the same context the runner
 ///   would see (args + resolved env + loop scope) and emit only the matching
 ///   branch.
 /// - `for in` blocks expand each literal iteration with `{{ LOOP.var }}` resolved
 ///   (and `for in: "namespaces"` snapshots the merged Runfile's namespace list).
-/// - `for glob` / `for shell` blocks emit the body once with the loop variable
-///   bound to a `<var>` placeholder (we don't touch the filesystem or run
-///   iterator commands during extract).
+/// - `for glob` blocks expand against the filesystem at extract time — the
+///   walker is read-only, so previewing iteration values is safe and lets
+///   users see the actual command list a real run would produce.
+/// - `for shell` blocks emit the body once with the loop variable bound to
+///   a `<var>` placeholder, since running the iterator command would have
+///   side effects (process spawn, possibly mutating state).
 /// - `@target` calls recurse, inheriting the parent's resolved env as their
 ///   substitution base.
 fn extract_recursive(
@@ -251,7 +254,15 @@ fn extract_recursive_inner(
 	};
 
 	let mut out: Vec<ExtractedCommand> = Vec::new();
-	walk_extract_steps(ctx, &spec.commands, args, &env, &extra_env, &mut out)?;
+	walk_extract_steps(
+		ctx,
+		&spec.commands,
+		args,
+		&env,
+		&extra_env,
+		effective_working_dir,
+		&mut out,
+	)?;
 	Ok(out)
 }
 
@@ -275,12 +286,17 @@ fn resolve_working_directory_path(value: &str, base_dir: &Path) -> PathBuf {
 /// substitution base; the dep's own env block surfaces as inline assignments
 /// on its commands. `for` blocks scope their iteration variable into VARS
 /// via [`LoopVarGuard`] (save prior, set per iteration, restore on exit).
+///
+/// `working_dir` is the target's resolved `workingDirectory` and is forwarded
+/// to [`expand_glob`] for `for glob:` previews so matches resolve against the
+/// same root the runner would see.
 fn walk_extract_steps(
 	ctx: &mut ExtractContext<'_>,
 	steps: &[CommandStep],
 	args: &RunArgs,
 	env: &HashMap<String, String>,
 	extra_env: &[(String, String)],
+	working_dir: &Path,
 	out: &mut Vec<ExtractedCommand>,
 ) -> Result<(), ExtractError> {
 	for step in steps {
@@ -338,7 +354,7 @@ fn walk_extract_steps(
 				out.extend(dep_cmds);
 			}
 			CommandStep::When(WhenStep { commands, .. }) => {
-				walk_extract_steps(ctx, commands, args, env, extra_env, out)?;
+				walk_extract_steps(ctx, commands, args, env, extra_env, working_dir, out)?;
 			}
 			CommandStep::If(if_step) => {
 				// Evaluate the condition against the same context the runner
@@ -351,17 +367,20 @@ fn walk_extract_steps(
 				} else {
 					if_step.r#else.as_deref().unwrap_or(&[])
 				};
-				walk_extract_steps(ctx, branch, args, env, extra_env, out)?;
+				walk_extract_steps(ctx, branch, args, env, extra_env, working_dir, out)?;
 			}
-			CommandStep::For(ForStep { var, r#in, body, .. }) => {
+			CommandStep::For(for_step) => {
 				use runfile_parser::ForInValue;
+				let ForStep {
+					var, r#in, body, glob, ..
+				} = for_step;
 				let guard = LoopVarGuard::enter(&args.vars, var.as_str());
 				match r#in {
 					Some(ForInValue::Literal(items)) => {
 						for item in items {
 							let value = args.substitute(item, env)?;
 							guard.set(value);
-							walk_extract_steps(ctx, body, args, env, extra_env, out)?;
+							walk_extract_steps(ctx, body, args, env, extra_env, working_dir, out)?;
 						}
 					}
 					Some(ForInValue::Namespaces) => {
@@ -372,15 +391,33 @@ fn walk_extract_steps(
 						let namespaces = args.run_context.namespaces.clone();
 						for ns in namespaces.iter() {
 							guard.set(ns.clone());
-							walk_extract_steps(ctx, body, args, env, extra_env, out)?;
+							walk_extract_steps(ctx, body, args, env, extra_env, working_dir, out)?;
 						}
 					}
 					None => {
-						// `for glob` / `for shell` — bind a placeholder so
-						// `{{ VARS.<var> }}` references resolve without touching the
-						// filesystem or running side-effecting iterator commands.
-						guard.set(format!("<{var}>"));
-						walk_extract_steps(ctx, body, args, env, extra_env, out)?;
+						if let Some(pattern) = glob {
+							// `for glob:` — read-only filesystem walk, safe to
+							// run during extract. Reuses the runner's
+							// [`expand_glob`] so dry-run iteration order and
+							// path normalisation match a real run exactly. Empty
+							// match set means the body emits zero commands —
+							// same as runtime behaviour.
+							let matches = expand_glob(pattern, args, env, working_dir)?;
+							for m in matches {
+								guard.set(m);
+								walk_extract_steps(ctx, body, args, env, extra_env, working_dir, out)?;
+							}
+						} else {
+							// `for shell:` (or invalid — defensive). We deliberately
+							// do NOT execute the iterator command during extract:
+							// `--dry-run` is a read-only preview and shell
+							// iterators can have side effects (process spawn,
+							// mutated state, slow I/O). Bind a placeholder so
+							// `{{ VARS.<var> }}` references inside the body still
+							// resolve, and emit the body once.
+							guard.set(format!("<{var}>"));
+							walk_extract_steps(ctx, body, args, env, extra_env, working_dir, out)?;
+						}
 					}
 				}
 				drop(guard);
@@ -392,7 +429,7 @@ fn walk_extract_steps(
 				// so dry-run output matches the runtime contract — users see
 				// the same case-validation diagnostics in both modes.
 				let branch = resolve_match_branch(match_step, args, env)?;
-				walk_extract_steps(ctx, branch, args, env, extra_env, out)?;
+				walk_extract_steps(ctx, branch, args, env, extra_env, working_dir, out)?;
 			}
 		}
 	}

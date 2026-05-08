@@ -207,7 +207,14 @@ pub fn expand_for_iterations(
 	}
 }
 
-fn expand_glob(
+/// Expand a `for glob:` iterator: substitute `pattern`, then walk
+/// `working_dir` recursively and collect every file path matching the glob.
+/// Matches are returned as forward-slash relative paths sorted lexically.
+/// Exposed so `--dry-run` (in `extract.rs`) can preview glob iterations
+/// the same way the runner does, without going through the full
+/// [`expand_for_iterations`] dispatcher (which would also run `for shell:`
+/// commands — undesirable in dry-run).
+pub fn expand_glob(
 	pattern: &str,
 	args: &RunArgs,
 	env: &HashMap<String, String>,
