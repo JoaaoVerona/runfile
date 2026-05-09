@@ -129,8 +129,14 @@ crates/
   `control_flow::resolve_match_branch`): substitute `match`; on substitution failure fall through to `default`
   if set, else surface `ControlFlowError::MatchValueUnresolved` with valid cases listed; on substitution
   success look up the value, run the case if found, else fall through to `default` or surface
-  `ControlFlowError::MatchNoCase`. Cases are looked up by exact string equality. `ignoreErrors`/`when` mirror
-  `IfStep`. `count_leaves` sums all cases + default (worst-case, like `if`'s both-branches counting).
+  `ControlFlowError::MatchNoCase`. Cases are looked up by exact string equality FIRST; if no exact match
+  hits, a second pass tries every case key wrapped in `/.../` as a regex pattern (alphabetical iteration via
+  the `BTreeMap`). Literal cases always win over regex-shaped cases — even when both would match — because
+  the exact-equality check runs before any regex compilation. Bad regex patterns surface as
+  `ControlFlowError::BadRegexCase { key, message }` at runtime (no parse-time validation; the parser crate
+  intentionally has no `regex` dep). The regex isn't anchored — wrap with `/^...$/` for full-string match.
+  `ignoreErrors`/`when` mirror `IfStep`. `count_leaves` sums all cases + default (worst-case, like
+  `if`'s both-branches counting).
   `walk_step_templates` visits the `match` template and every leaf in cases + default for static analysis.
   `collect_leaves_parallel_with_when`, `collect_detach_leaves_inner`, and `walk_extract_steps` all dispatch
   via `resolve_match_branch` so only the chosen branch is collected — same approach as `if`. Namespace
@@ -266,11 +272,15 @@ crates/
   doesn't change. `forceShell` and `workingDirectory` themselves go through substitution before resolution —
   e.g. `"forceShell": "{{ ARGS.shell ? bash }}"` works.
 - `LoopVarGuard`: RAII helper used by the executor and extract walker to scope a `for`-loop iteration variable
-  into the run-wide `VARS` map. `enter(&vars, name)` captures the prior value of `VARS.<name>` (if any); each
-  iteration calls `set(value)` to overwrite; on drop, the prior value is restored (or removed if there was no
-  prior). This gives lexical scoping for free: outer `VARS.x` is preserved while a `for x in [...]` runs, and
-  nested loops with the same variable name compose correctly. `{{ VARS.x }}` participates in chained fallbacks
-  (`{{ ARGS.x ? VARS.y ? default }}`); missing `VARS` refs error like missing `ARGS`.
+  into the run-wide `VARS` map. `enter(&vars, name)` captures the prior value of `VARS.<name>` AND
+  `VARS.<name>_index` (if any); each iteration calls `set(value)` to overwrite the value and bump the
+  internal counter (mirrored into `VARS.<name>_index` as a 0-based decimal); on drop, both prior values
+  are restored (or removed if there were no priors). This gives lexical scoping for free: outer `VARS.x` /
+  `VARS.x_index` are preserved while a `for x in [...]` runs, and nested loops with the same variable name
+  compose correctly. `{{ VARS.x }}` and `{{ VARS.x_index }}` participate in chained fallbacks
+  (`{{ ARGS.x ? VARS.y ? default }}`); missing `VARS` refs error like missing `ARGS`. The index counter is
+  per-guard (lives in a `std::cell::Cell<usize>`) so each loop starts at 0 even when nested with the same
+  variable name as an outer loop.
 - **Quote-strict literals**: under the new substitution syntax, every string literal *inside a `{{ ... }}` block*
   must be wrapped in single quotes (`'...'`) — bareword literals are rejected with
   [`SubstitutionError::BarewordLiteralNotAllowed`]. Source references (`ARGS.x`, `VARS.x`, etc.) and function
@@ -313,7 +323,23 @@ crates/
   [`SubstitutionError::InvalidRegex`]; replacement strings honour the `regex` crate's
   `$1`/`${name}` backreferences; `regex_matches` is unanchored, use `^...$` for full-string),
   `base64_encode(s)`,
-  `base64_decode(s)` (errors on `InvalidBase64` / `NonUtf8Decoded`), `concat(s1, s2, ...)` (variadic, 1+ args),
+  `base64_decode(s)` (errors on `InvalidBase64` / `NonUtf8Decoded`),
+  `sha256(s)` / `md5(s)` (hex-encoded digest of `s`'s UTF-8 bytes; `md5` is non-cryptographic — for cache-key /
+  fingerprint use, prefer `sha256` for security-sensitive contexts),
+  `read_file(path)` (read the file at `path` and return its UTF-8 contents; relative paths resolve against
+  `{{ RUN.parent }}` — same anchor as `envFiles` — so reads stay co-located with the Runfile; pair with
+  `try(...)` to recover from missing files; surfaces as [`SubstitutionError::ReadFileError`] on failure),
+  `file_exists(path)` (`"true"` / `"false"`, same path resolution as `read_file`; permission errors fold to
+  `"false"` — use `try(read_file(p))` to distinguish "missing" from "unreadable"),
+  `json_get(json, path)` (parse `json` and extract the value at the dotted `path`; numeric segments are
+  array indices, e.g. `users.0.name`; missing paths return `""`; strings come back unquoted, scalars use
+  their canonical text repr, objects/arrays serialize back to compact JSON; malformed JSON / paths surface
+  as [`SubstitutionError::InvalidJson`] / [`SubstitutionError::InvalidJsonPath`]),
+  `json_set(json, path, value)` (set the dotted `path` in `json` to `value` — interpreted as JSON if it
+  parses, else as a string; intermediate containers are created on demand: numeric segments → arrays
+  extended with `null`, non-numeric → objects; existing nodes of the wrong container type are replaced,
+  matching `jq` assignment semantics; returns the modified JSON as a compact string),
+  `concat(s1, s2, ...)` (variadic, 1+ args),
   `join(sep, s1, s2, ...)` (variadic, 1+ args; `join(sep)` with no items returns `""`),
   `nth(s, sep, i)` (split `s` by `sep`, return the `i`-th part; out-of-bounds → `""`; non-numeric or negative
   `i` → `InvalidNumber`; follows Rust `str::split` semantics including the empty-`sep` edge case),
@@ -324,9 +350,11 @@ crates/
   `shell_quote(s)` (per-shell single-arg quoting via [`quote_for_shell`] dispatching on `RUN.shell` —
   POSIX/fish use `'...'` with `'\''` escape, PowerShell uses `'...'` with `''` escape, cmd uses `"..."` with
   `""` escape; lets users inline arbitrary bytes — newlines, `$`, `"`, `'`, JSON, etc. — into shell commands
-  as single argv slots without env-var indirection), `define(name, value)` (returns `""`, side effect:
-  sets `VARS.name`), and `set_cwd(path)` (returns `""`, side effect: mutates `RunArgs.cwd_override` so every
-  subsequent shell spawn in the current target lands in `path` — see "**`set_cwd(path)` semantics**" below).
+  as single argv slots without env-var indirection), `try(expr)` (special-cased before the bulk arg-eval
+  pass so inner errors are catchable; see "**`try(expr)` semantics**" below), `define(name, value)`
+  (returns `""`, side effect: sets `VARS.name`), and `set_cwd(path)` (returns `""`, side effect: mutates
+  `RunArgs.cwd_override` so every subsequent shell spawn in the current target lands in `path` — see
+  "**`set_cwd(path)` semantics**" below).
   Functions resolve as full substitution bodies
   AND as chain segments — `{{ ARGS.host ? to_lower(ENV.HOST) }}` is a chain whose first segment is a source lookup
   and second is a function call. Args themselves are chain / quoted-literal expressions, so nested calls
@@ -334,7 +362,20 @@ crates/
   (`split_chain_segments`) is paren / quote aware so ` ? ` inside `(...)` or `'...'`/`"..."` doesn't split.
   Errors: `UnknownFunction`, `FunctionArity { name, expected, got }`, `InvalidBase64`, `NonUtf8Decoded`,
   `InvalidRegex { name, message }`, `InvalidNumber { name, message }`,
+  `ReadFileError(path, msg)`, `InvalidJson(name, msg)`, `InvalidJsonPath(path, msg)`,
   `UnbalancedParens`, `BarewordLiteralNotAllowed`, plus `MalformedSubstitution` for arg-list whitespace violations.
+- **`try(expr)` semantics**: catches errors from inner substitutions / function calls and either falls
+  through the chain (if there's another segment) or resolves to `""` (if standalone). Implementation: when
+  the inner expression errors, `try` returns the internal sentinel [`SubstitutionError::TryFailed`] (wrapping
+  the original error in `Box<...>` so the enum stays small). The chain resolver special-cases this variant
+  in its function-call branch — instead of propagating, it stores it in `last_error` and continues. If a
+  later chain segment succeeds, that value wins; otherwise the loop terminates with `Err(TryFailed)` which
+  [`resolve_substitution`] converts to `Ok(String::new())` at the substitution boundary. Net effect:
+  `{{ try(X) }}` resolves to `""` when X fails, `{{ try(X) ? 'fallback' }}` falls back to `'fallback'`,
+  and `{{ try(X) ? ARGS.y ? '' }}` chains naturally. Side-effect tracking (consumed args, flag keys) uses
+  scratch sets so a thrown-away inner failure doesn't pollute the caller; on inner success the scratch
+  state is committed back. Special-cased BEFORE the bulk arg evaluation in `evaluate_function` (same as
+  `define`) so missing `ENV.X` references inside the `try` body don't error out before dispatch.
 - **DSL inside substitutions**: a substitution body containing the boolean operators `==`, `!=`, `&&`, `||`, or
   unary `!` at top level (paren / quote / nested-substitution aware — see `looks_like_dsl`) is parsed as a DSL
   expression and evaluated to the literal string `"true"` or `"false"`. Examples:
@@ -698,7 +739,14 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
 - `parallel` spawns all shell commands simultaneously; their stdout/stderr is piped through line-buffered reader
   threads that prefix every line with `[N]` (the global step number) and strip non-SGR ANSI cursor-control
   escapes — so progress-bar redraws (`docker compose pull`, etc.) become append-only chronological lines instead
-  of corrupting interleaved output. Stdin is inherited. **`@target` calls inside a parallel parent propagate
+  of corrupting interleaved output. Stdin is inherited. **Failure summary**: when at least one leaf in a parallel
+  batch failed, [`log_parallel_failure_summary`] prints a final `[runfile] [parallel] N command(s) failed:` block
+  to stderr right after the batch completes, listing each failed leaf by its label (raw shell template, or
+  `@target args...` for dispatched targets) and its detail (`exit code N` / `terminated by signal` / `error: ...`).
+  This fires **regardless of `ignoreErrors`** (the flag silences the propagated error, not the diagnostic) — so
+  silent-failure cases like `parallel: true` aggregator targets that `@dep` into namespaced sub-targets stop
+  hiding which branch broke under interleaved output. Helpers: `format_target_call_label` (also reused by the
+  per-leaf log line so labels stay consistent), `dep_result_failure_detail`, `execute_error_failure_detail`. **`@target` calls inside a parallel parent propagate
   the parent's prefix through the entire dispatched dependency subtree** (via `DependencyResolver::run_dependency(..., output_prefix)`),
   so a `dev` target that fans out via `for in: "namespaces"` + `@{{ VARS.ns }}:dev` gets every nested shell tagged
   with its parallel branch identity. Set `RUNFILE_NO_LINE_PREFIX=1`/`true` to disable prefixing and inherit raw
@@ -762,10 +810,14 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   a fallback for the unresolvable value — only when there's no `default` does the substitution error propagate
   (with the case list appended). Cases are stored in a `BTreeMap` so error-message ordering is deterministic
   (alphabetical). `count_leaves` sums every case + default (worst case, like `if`'s both-branches counting).
-- `metadata` (free-form object): available on `globals` and on each target. Globals' `metadata` is merged
-  into each target's `metadata` at parse time by `bake_globals_into_target()` (the helper is `merge::merge_metadata`):
-  for each known key the target value wins; otherwise the global value carries through. Untyped extra keys are
-  preserved on the [`Metadata::extra`] flatten map (round-trips through serde, no validation, no `deny_unknown_fields`).
+- `metadata` (fully open object — accepts ANY property of ANY JSON type): available on `globals` and on each
+  target. The `Metadata` struct is intentionally NOT marked `deny_unknown_fields` and uses a
+  `#[serde(flatten)] extra: HashMap<String, serde_json::Value>` catch-all, so editor extensions, CI scripts,
+  and other tooling can stash arbitrary fields here — strings, numbers, booleans, arrays, deeply-nested
+  objects, mixed-type structures — without parser errors. Globals' `metadata` is merged into each target's
+  `metadata` at parse time by `bake_globals_into_target()` (the helper is `merge::merge_metadata`):
+  for each known key the target value wins; otherwise the global value carries through; arbitrary `extra`
+  entries from globals are folded into the target's `extra` map (target keys win on collision).
   Currently the only key Runfile itself interprets is `excludeFromGenerateCommand: bool` — when true (default false),
   `run :generate vscode-tasks` / `zed-tasks` / `jetbrains-run-configurations` skip the target entirely (no task /
   run-configuration is created and existing labelled entries are NOT updated). The merged value is observed via

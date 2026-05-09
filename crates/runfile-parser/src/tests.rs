@@ -3775,6 +3775,48 @@ fn metadata_preserves_unknown_keys() {
 }
 
 #[test]
+fn metadata_accepts_any_property_with_any_value_type() {
+	// Metadata is a fully open object — any key, any JSON value type
+	// (including deeply nested objects and mixed-type arrays) round-trips
+	// untouched. Editor extensions, CI scripts, and other tooling can stash
+	// arbitrary fields here without parser errors.
+	let json = r#"{
+		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"targets": {
+			"build": {
+				"commands": ["cargo build"],
+				"metadata": {
+					"string": "hello",
+					"number": 42,
+					"float": 1.5,
+					"boolean": true,
+					"null_value": null,
+					"array": [1, "two", false, null],
+					"nested": { "deep": { "deeper": { "value": 1 } } },
+					"mixed_array": [ { "k": "v" }, [1, 2, 3] ]
+				}
+			}
+		}
+	}"#;
+	let rf = parse_runfile(json).unwrap();
+	let meta = rf.targets["build"].metadata.as_ref().unwrap();
+	assert_eq!(meta.exclude_from_generate_command, None);
+	assert_eq!(meta.extra.get("string"), Some(&serde_json::json!("hello")));
+	assert_eq!(meta.extra.get("number"), Some(&serde_json::json!(42)));
+	assert_eq!(meta.extra.get("float"), Some(&serde_json::json!(1.5)));
+	assert_eq!(meta.extra.get("boolean"), Some(&serde_json::json!(true)));
+	assert_eq!(meta.extra.get("null_value"), Some(&serde_json::json!(null)));
+	assert_eq!(
+		meta.extra.get("nested"),
+		Some(&serde_json::json!({ "deep": { "deeper": { "value": 1 } } }))
+	);
+	assert_eq!(
+		meta.extra.get("mixed_array"),
+		Some(&serde_json::json!([ { "k": "v" }, [1, 2, 3] ]))
+	);
+}
+
+#[test]
 fn target_default_not_excluded_from_generate() {
 	let json = r#"{
 		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",

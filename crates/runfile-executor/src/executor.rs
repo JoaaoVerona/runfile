@@ -5,7 +5,10 @@ use crate::control_flow::{
 };
 use crate::env::{build_env_with_base, EnvFileError};
 use crate::force_kill::ForceKillGuard;
-use crate::logging::{is_logging_enabled, log_command, log_command_timing, log_parallel_command, StepCounter};
+use crate::logging::{
+	is_logging_enabled, log_command, log_command_timing, log_parallel_command, log_parallel_failure_summary,
+	StepCounter,
+};
 use crate::parallel_output::{
 	flush_writer_thread, format_parallel_prefix, line_prefixing_enabled, spawn_line_pump, OutputStream,
 };
@@ -1361,6 +1364,44 @@ fn collect_leaves_parallel_with_when(
 	Ok(())
 }
 
+/// Build the human-readable label for a `@target` invocation used in
+/// log lines and the parallel-failure summary (`@target` or
+/// `@?target arg1 arg2`).
+pub(crate) fn format_target_call_label(target: &str, argv: &[String], optional: bool) -> String {
+	let prefix = if optional { "@?" } else { "@" };
+	if argv.is_empty() {
+		format!("{prefix}{target}")
+	} else {
+		format!("{prefix}{target} {}", argv.join(" "))
+	}
+}
+
+/// Classify a [`ExecutionResult`] from a successful `run_dependency` call into
+/// a short failure-detail phrase, when the dep reported internal failures
+/// without surfacing them as an `Err`. Returns `None` when the dep had zero
+/// failures.
+pub(crate) fn dep_result_failure_detail(result: &ExecutionResult) -> Option<String> {
+	if result.failures == 0 {
+		return None;
+	}
+	let detail = match result.final_status.code() {
+		Some(0) => format!("{} command(s) failed", result.failures),
+		Some(code) => format!("exit code {code}"),
+		None => "terminated by signal".to_string(),
+	};
+	Some(detail)
+}
+
+/// Classify an `ExecuteError` from a `run_dependency` call into a short
+/// failure-detail phrase for the parallel-failure summary.
+pub(crate) fn execute_error_failure_detail(err: &ExecuteError) -> String {
+	match err {
+		ExecuteError::NonZeroExit(_, code) => format!("exit code {code}"),
+		ExecuteError::Signal(_) => "terminated by signal".to_string(),
+		other => format!("error: {other}"),
+	}
+}
+
 /// Spawn a flat list of [`ParallelLeaf`]s concurrently and wait for all to
 /// finish. Shell leaves spawn as child processes (with the standard
 /// process-tree tracker); target-call leaves run on worker threads via
@@ -1593,14 +1634,7 @@ fn run_parallel_batch(
 				ParallelLeaf::Shell { template, .. } => template.clone(),
 				ParallelLeaf::TargetCall {
 					target, argv, optional, ..
-				} => {
-					let prefix = if *optional { "@?" } else { "@" };
-					if argv.is_empty() {
-						format!("{}{}", prefix, target)
-					} else {
-						format!("{}{} {}", prefix, target, argv.join(" "))
-					}
-				}
+				} => format_target_call_label(target, argv, *optional),
 			};
 			log_parallel_command(&label, step, total);
 		}
@@ -1615,6 +1649,10 @@ fn run_parallel_batch(
 	let prefix_output = line_prefixing_enabled();
 	let mut shells: Vec<(String, String, Option<String>, Option<PathBuf>)> = Vec::new();
 	let mut target_calls: Vec<(String, Vec<String>, bool, Option<String>)> = Vec::new();
+	// Pre-computed labels for each target call, parallel to `target_calls`.
+	// Captured before the worker threads consume the call data so we can still
+	// build the failure summary after the fact (e.g. `@web-user:build:infrastructure`).
+	let mut target_labels: Vec<String> = Vec::new();
 	for (leaf, &(step, _total)) in leaves.into_iter().zip(step_pairs.iter()) {
 		let leaf_prefix = if !prefix_output {
 			None
@@ -1632,7 +1670,10 @@ fn run_parallel_batch(
 			} => shells.push((template, substituted, leaf_prefix, cwd_snapshot)),
 			ParallelLeaf::TargetCall {
 				target, argv, optional, ..
-			} => target_calls.push((target, argv, optional, leaf_prefix)),
+			} => {
+				target_labels.push(format_target_call_label(&target, &argv, optional));
+				target_calls.push((target, argv, optional, leaf_prefix));
+			}
 		}
 	}
 
@@ -1691,6 +1732,10 @@ fn run_parallel_batch(
 	let mut first_error: Option<ExecuteError> = None;
 	let mut wait_error: Option<std::io::Error> = None;
 	let mut last_status: Option<ExitStatus> = None;
+	// `(label, detail)` for every leaf that failed in this batch. Printed
+	// at the end so the user can clearly see which parallel branch broke
+	// and with what exit code, even when interleaved output buried it.
+	let mut failure_summary: Vec<(String, String)> = Vec::new();
 	let parent_env = &setup.env;
 	let parent_chain = setup.add_to_path_chain.as_slice();
 
@@ -1731,6 +1776,11 @@ fn run_parallel_batch(
 				last_status = Some(status);
 				if !status.success() {
 					failures += 1;
+					let detail = match status.code() {
+						Some(code) => format!("exit code {code}"),
+						None => "terminated by signal".to_string(),
+					};
+					failure_summary.push((template.clone(), detail));
 					if first_error.is_none() && !setup.ignore_errors && !local_ignore {
 						let code = status.code().unwrap_or(-1);
 						first_error = Some(if code == -1 {
@@ -1743,6 +1793,7 @@ fn run_parallel_batch(
 			}
 			Err(e) => {
 				failures += 1;
+				failure_summary.push((template.clone(), format!("wait failed: {e}")));
 				if wait_error.is_none() {
 					wait_error = Some(e);
 				}
@@ -1762,15 +1813,19 @@ fn run_parallel_batch(
 	// or return.
 	flush_writer_thread();
 
-	for result in dep_results {
+	for (label, result) in target_labels.into_iter().zip(dep_results) {
 		match result {
 			Ok(dep_res) => {
 				shells_run += dep_res.commands_run;
 				failures += dep_res.failures;
 				last_status = Some(dep_res.final_status).or(last_status);
+				if let Some(detail) = dep_result_failure_detail(&dep_res) {
+					failure_summary.push((label, detail));
+				}
 			}
 			Err(e) => {
 				failures += 1;
+				failure_summary.push((label, execute_error_failure_detail(&e)));
 				if first_error.is_none() && !setup.ignore_errors && !local_ignore {
 					first_error = Some(e);
 				}
@@ -1784,6 +1839,15 @@ fn run_parallel_batch(
 	state.commands_run += shells_run;
 	state.failures += failures;
 	state.last_status = last_status.or(state.last_status);
+
+	// Surface a summary of every leaf that failed in this batch — even when
+	// the outer error path is going to bubble up `first_error`, the parallel
+	// log lines and interleaved output can make it hard to tell which branch
+	// broke. Printed regardless of `ignore_errors` because that flag silences
+	// the propagated error, not the diagnostic.
+	if !failure_summary.is_empty() {
+		log_parallel_failure_summary(&failure_summary);
+	}
 
 	if let Some(err) = wait_error {
 		return Err(ExecuteError::Spawn(err));

@@ -9,8 +9,11 @@ description = "Command execution engine for Runfile"
 base64 = { workspace = true }
 dirs = { workspace = true }
 globset = { workspace = true }
+hex = { workspace = true }
+md-5 = { workspace = true }
 regex = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 shlex = { workspace = true }
 thiserror = { workspace = true }
 runfile-env = { path = "../runfile-env" }

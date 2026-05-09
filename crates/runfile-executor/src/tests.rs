@@ -4253,6 +4253,90 @@ fn parallel_with_ignore_errors() {
 	assert_eq!(result.failures, 1);
 }
 
+// ── parallel-failure summary helpers ─────────────────────────────────
+
+#[test]
+fn format_target_call_label_variants() {
+	use crate::executor::format_target_call_label;
+	assert_eq!(format_target_call_label("build", &[], false), "@build");
+	assert_eq!(format_target_call_label("build", &[], true), "@?build");
+	assert_eq!(
+		format_target_call_label("web-user:build:infrastructure", &[], false),
+		"@web-user:build:infrastructure"
+	);
+	assert_eq!(
+		format_target_call_label("dep", &["--env".into(), "prod".into()], false),
+		"@dep --env prod"
+	);
+	assert_eq!(
+		format_target_call_label("dep", &["a".into(), "b".into()], true),
+		"@?dep a b"
+	);
+}
+
+#[test]
+fn execute_error_failure_detail_classifies() {
+	use crate::executor::{execute_error_failure_detail, ExecuteError};
+	assert_eq!(
+		execute_error_failure_detail(&ExecuteError::NonZeroExit("cmd".into(), 1)),
+		"exit code 1"
+	);
+	assert_eq!(
+		execute_error_failure_detail(&ExecuteError::NonZeroExit("cmd".into(), 137)),
+		"exit code 137"
+	);
+	assert_eq!(
+		execute_error_failure_detail(&ExecuteError::Signal("cmd".into())),
+		"terminated by signal"
+	);
+	let other = ExecuteError::DependencyFailed("foo".into(), "boom".into());
+	assert!(execute_error_failure_detail(&other).starts_with("error: "));
+}
+
+#[test]
+fn dep_result_failure_detail_returns_none_when_no_failures() {
+	use crate::executor::{dep_result_failure_detail, ExecutionResult};
+	use std::process::ExitStatus;
+	#[cfg(unix)]
+	let success = {
+		use std::os::unix::process::ExitStatusExt;
+		ExitStatus::from_raw(0)
+	};
+	#[cfg(windows)]
+	let success = {
+		use std::os::windows::process::ExitStatusExt;
+		ExitStatus::from_raw(0)
+	};
+	let result = ExecutionResult {
+		commands_run: 3,
+		failures: 0,
+		final_status: success,
+	};
+	assert!(dep_result_failure_detail(&result).is_none());
+}
+
+#[test]
+fn dep_result_failure_detail_uses_final_exit_code() {
+	use crate::executor::{dep_result_failure_detail, ExecutionResult};
+	use std::process::ExitStatus;
+	#[cfg(unix)]
+	let nonzero = {
+		use std::os::unix::process::ExitStatusExt;
+		ExitStatus::from_raw(2 << 8)
+	};
+	#[cfg(windows)]
+	let nonzero = {
+		use std::os::windows::process::ExitStatusExt;
+		ExitStatus::from_raw(2)
+	};
+	let result = ExecutionResult {
+		commands_run: 4,
+		failures: 1,
+		final_status: nonzero,
+	};
+	assert_eq!(dep_result_failure_detail(&result).as_deref(), Some("exit code 2"));
+}
+
 // ── FLAGS substitution tests ─────────────────────────────────────────
 
 #[test]
@@ -6453,6 +6537,164 @@ fn match_count_leaves_sums_all_branches() {
 	assert_eq!(count_leaves(&spec.commands), 4);
 }
 
+#[test]
+fn match_regex_case_matches() {
+	// Case keys wrapped in `/.../` are treated as regex patterns. A literal
+	// case still beats a regex that would also match.
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let spec = parse_target(
+		r#"{"$schema":"x","targets":{"t":{"commands":[
+			{"match":"{{ ARGS.tag }}","cases":{
+				"/^v\\d+$/":"echo version-tag",
+				"latest":"echo latest-tag"
+			},"default":"echo other"}
+		]}}}"#,
+		"t",
+	);
+	let args = RunArgs::parse(&["--tag=v42".into()]);
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert_eq!(result.commands_run, 1);
+	assert!(result.final_status.success());
+}
+
+#[test]
+fn match_literal_case_wins_over_regex() {
+	// `latest` matches both the regex `/^l.+$/` and the literal `latest`.
+	// The literal must win — exact equality is checked first.
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let spec = parse_target(
+		r#"{"$schema":"x","targets":{"t":{"commands":[
+			{"match":"{{ ARGS.tag }}","cases":{
+				"/^l.+$/":"exit 1",
+				"latest":"echo got-literal"
+			}}
+		]}}}"#,
+		"t",
+	);
+	let args = RunArgs::parse(&["--tag=latest".into()]);
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert_eq!(result.commands_run, 1);
+	assert!(result.final_status.success(), "literal case should win");
+}
+
+#[test]
+fn match_regex_falls_through_to_default() {
+	// Regex that doesn't match falls through to default.
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let spec = parse_target(
+		r#"{"$schema":"x","targets":{"t":{"commands":[
+			{"match":"{{ ARGS.tag }}","cases":{
+				"/^v\\d+$/":"exit 1"
+			},"default":"echo defaulted"}
+		]}}}"#,
+		"t",
+	);
+	let args = RunArgs::parse(&["--tag=hello".into()]);
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert_eq!(result.commands_run, 1);
+	assert!(result.final_status.success());
+}
+
+#[test]
+fn match_bad_regex_surfaces_clear_error() {
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let spec = parse_target(
+		r#"{"$schema":"x","targets":{"t":{"commands":[
+			{"match":"{{ ARGS.tag }}","cases":{
+				"/[/":"echo bad"
+			},"default":"echo defaulted"}
+		]}}}"#,
+		"t",
+	);
+	let args = RunArgs::parse(&["--tag=anything".into()]);
+	let err = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap_err();
+	let msg = err.to_string();
+	assert!(msg.contains("Invalid regex"), "got: {msg}");
+	assert!(msg.contains("/[/"), "should mention the bad key, got: {msg}");
+}
+
+// ── for-loop index variable ───────────────────────────────────────
+
+#[test]
+fn for_loop_exposes_index_var() {
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let spec = parse_target(
+		r#"{"$schema":"x","targets":{"t":{"commands":[
+			{"for":"x","in":["a","b","c"],"do":"echo {{ VARS.x_index }}={{ VARS.x }}"}
+		]}}}"#,
+		"t",
+	);
+	let args = RunArgs::default();
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert_eq!(result.commands_run, 3);
+	assert!(result.final_status.success());
+}
+
+#[test]
+fn for_loop_index_resets_per_loop_and_restores() {
+	use crate::args::LoopVarGuard;
+	use std::collections::HashMap;
+	use std::sync::{Arc, Mutex};
+
+	let vars: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+	{
+		let g = LoopVarGuard::enter(&vars, "x");
+		g.set("a");
+		assert_eq!(vars.lock().unwrap().get("x").cloned(), Some("a".to_string()));
+		assert_eq!(vars.lock().unwrap().get("x_index").cloned(), Some("0".to_string()));
+		g.set("b");
+		assert_eq!(vars.lock().unwrap().get("x").cloned(), Some("b".to_string()));
+		assert_eq!(vars.lock().unwrap().get("x_index").cloned(), Some("1".to_string()));
+	}
+	assert!(vars.lock().unwrap().get("x").is_none(), "x should be restored");
+	assert!(
+		vars.lock().unwrap().get("x_index").is_none(),
+		"x_index should be restored"
+	);
+}
+
+#[test]
+fn for_loop_index_restores_prior_value() {
+	use crate::args::LoopVarGuard;
+	use std::collections::HashMap;
+	use std::sync::{Arc, Mutex};
+
+	let vars: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+	vars.lock().unwrap().insert("x".to_string(), "outer".to_string());
+	vars.lock().unwrap().insert("x_index".to_string(), "999".to_string());
+	{
+		let g = LoopVarGuard::enter(&vars, "x");
+		g.set("inner-a");
+		assert_eq!(vars.lock().unwrap().get("x_index").cloned(), Some("0".to_string()));
+	}
+	assert_eq!(vars.lock().unwrap().get("x").cloned(), Some("outer".to_string()));
+	assert_eq!(vars.lock().unwrap().get("x_index").cloned(), Some("999".to_string()));
+}
+
+#[test]
+fn for_loop_index_with_namespaces_iter() {
+	// Verify the for-loop index works for the array form via execute_command,
+	// double-checking that the index increments alongside the value.
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let spec = parse_target(
+		r#"{"$schema":"x","targets":{"t":{"commands":[
+			{"for":"item","in":["alpha","beta"],"do":[
+				"echo idx-{{ VARS.item_index }} val-{{ VARS.item }}"
+			]}
+		]}}}"#,
+		"t",
+	);
+	let args = RunArgs::default();
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert_eq!(result.commands_run, 2);
+}
+
 // ── --stdin-args prompter tests ────────────────────────────────────
 
 mod stdin_args {
@@ -8096,6 +8338,286 @@ mod functions {
 		let _ = args.substitute("{{ define(pw, ENV.PASSWORD) }}", &env).unwrap();
 		let log = args.substitute_redacted("auth={{ VARS.pw }}", &env).unwrap();
 		assert_eq!(log, "auth=hunter2");
+	}
+
+	// ── try() ──
+
+	#[test]
+	fn try_swallows_missing_env() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ try(ENV.NOPE) }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "");
+	}
+
+	#[test]
+	fn try_returns_value_when_inner_succeeds() {
+		let args = RunArgs::parse(&["--env=prod".into()]);
+		let result = args.substitute("{{ try(ARGS.env) }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "prod");
+	}
+
+	#[test]
+	fn try_chains_with_default() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ try(ENV.NOPE) ? 'fallback' }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "fallback");
+	}
+
+	#[test]
+	fn try_swallows_decode_error() {
+		// base64_decode of garbage normally errors out; wrapping in try
+		// reduces it to an empty string.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ try(base64_decode('not!base64*')) }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "");
+	}
+
+	#[test]
+	fn try_arity_one() {
+		let args = RunArgs::parse(&[]);
+		let err = args.substitute("{{ try('a', 'b') }}", &HashMap::new()).unwrap_err();
+		assert!(matches!(err, SubstitutionError::FunctionArity { .. }));
+	}
+
+	#[test]
+	fn try_failure_does_not_consume_args() {
+		// If the inner expression errors, neither --foo nor any other ARGS
+		// reference should be marked consumed (so they remain in {{ ARGS }}).
+		let args = RunArgs::parse(&["--foo=bar".into(), "--missing".into(), "x".into()]);
+		// `try(ARGS.missing)` resolves OK ("x"), so --missing IS consumed.
+		// `try(ARGS.never)` errors and `--foo` stays untouched.
+		let result = args
+			.substitute("{{ try(ARGS.never) ? 'gone' }} {{ ARGS }}", &HashMap::new())
+			.unwrap();
+		// --foo and --missing/x both still present.
+		assert!(result.starts_with("gone "));
+		assert!(result.contains("--foo=bar"));
+		assert!(result.contains("--missing"));
+	}
+
+	// ── sha256() / md5() ──
+
+	#[test]
+	fn sha256_known_value() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ sha256('hello') }}", &HashMap::new()).unwrap();
+		assert_eq!(
+			result,
+			"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+		);
+	}
+
+	#[test]
+	fn sha256_empty_string() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ sha256('') }}", &HashMap::new()).unwrap();
+		assert_eq!(
+			result,
+			"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+		);
+	}
+
+	#[test]
+	fn md5_known_value() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ md5('hello') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "5d41402abc4b2a76b9719d911017c592");
+	}
+
+	#[test]
+	fn md5_with_arg() {
+		let args = RunArgs::parse(&["--data=abc".into()]);
+		let result = args.substitute("{{ md5(ARGS.data) }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "900150983cd24fb0d6963f7d28e17f72");
+	}
+
+	// ── read_file() / file_exists() ──
+
+	#[test]
+	fn read_file_absolute_path() {
+		let dir = tempfile::tempdir().unwrap();
+		let p = dir.path().join("secret.txt");
+		std::fs::write(&p, "the-content\n").unwrap();
+		let args = RunArgs::parse(&[]);
+		let template = format!("{{{{ read_file('{}') }}}}", p.to_string_lossy().replace('\\', "/"));
+		let result = args.substitute(&template, &HashMap::new()).unwrap();
+		assert_eq!(result, "the-content\n");
+	}
+
+	#[test]
+	fn read_file_relative_uses_run_parent() {
+		let dir = tempfile::tempdir().unwrap();
+		let p = dir.path().join("data.txt");
+		std::fs::write(&p, "abc").unwrap();
+		let mut args = RunArgs::parse(&[]);
+		args.run_context.parent = dir.path().to_string_lossy().into_owned();
+		let result = args.substitute("{{ read_file('data.txt') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "abc");
+	}
+
+	#[test]
+	fn read_file_missing_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute("{{ read_file('/no-such-file-runfile-test-xyz') }}", &HashMap::new())
+			.unwrap_err();
+		assert!(matches!(err, SubstitutionError::ReadFileError(..)));
+	}
+
+	#[test]
+	fn read_file_wrapped_in_try_returns_empty_on_missing() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(
+				"{{ try(read_file('/no-such-file-runfile-test-xyz')) }}",
+				&HashMap::new(),
+			)
+			.unwrap();
+		assert_eq!(result, "");
+	}
+
+	#[test]
+	fn file_exists_true() {
+		let dir = tempfile::tempdir().unwrap();
+		let p = dir.path().join("present.txt");
+		std::fs::write(&p, "x").unwrap();
+		let args = RunArgs::parse(&[]);
+		let template = format!("{{{{ file_exists('{}') }}}}", p.to_string_lossy().replace('\\', "/"));
+		let result = args.substitute(&template, &HashMap::new()).unwrap();
+		assert_eq!(result, "true");
+	}
+
+	#[test]
+	fn file_exists_false() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ file_exists('/no-such-file-runfile-test-xyz') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "false");
+	}
+
+	// ── json_get() / json_set() ──
+
+	#[test]
+	fn json_get_simple_string() {
+		// Inside a single-quoted substitution literal, `"` is itself literal
+		// (single quotes don't escape) — so we just write JSON with plain
+		// `"` chars without any escaping dance.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(r#"{{ json_get('{"name":"runfile"}', 'name') }}"#, &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "runfile");
+	}
+
+	#[test]
+	fn json_get_nested() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(r#"{{ json_get('{"a":{"b":{"c":42}}}', 'a.b.c') }}"#, &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "42");
+	}
+
+	#[test]
+	fn json_get_array_index() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(
+				r#"{{ json_get('{"users":[{"name":"alice"},{"name":"bob"}]}', 'users.1.name') }}"#,
+				&HashMap::new(),
+			)
+			.unwrap();
+		assert_eq!(result, "bob");
+	}
+
+	#[test]
+	fn json_get_missing_returns_empty() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(r#"{{ json_get('{"a":1}', 'b.c.d') }}"#, &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "");
+	}
+
+	#[test]
+	fn json_get_invalid_json_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute(r#"{{ json_get('not json', 'a') }}"#, &HashMap::new())
+			.unwrap_err();
+		assert!(matches!(err, SubstitutionError::InvalidJson(..)));
+	}
+
+	#[test]
+	fn json_get_object_returns_compact_json() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(r#"{{ json_get('{"a":{"b":1}}', 'a') }}"#, &HashMap::new())
+			.unwrap();
+		assert_eq!(result, r#"{"b":1}"#);
+	}
+
+	#[test]
+	fn json_set_simple() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(r#"{{ json_set('{"a":1}', 'b', '2') }}"#, &HashMap::new())
+			.unwrap();
+		// 2 parses as JSON number, gets stored as number.
+		assert_eq!(result, r#"{"a":1,"b":2}"#);
+	}
+
+	#[test]
+	fn json_set_string_value_when_not_json() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(r#"{{ json_set('{}', 'name', 'hello') }}"#, &HashMap::new())
+			.unwrap();
+		assert_eq!(result, r#"{"name":"hello"}"#);
+	}
+
+	#[test]
+	fn json_set_creates_intermediate_objects() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(r#"{{ json_set('{}', 'a.b.c', 'true') }}"#, &HashMap::new())
+			.unwrap();
+		assert_eq!(result, r#"{"a":{"b":{"c":true}}}"#);
+	}
+
+	#[test]
+	fn json_set_creates_arrays_for_numeric_segments() {
+		// The replacement value `"x"` is a fully-double-quoted literal that
+		// passes through with the surrounding `"` chars — `json_set` then
+		// parses it as a JSON string `"x"` (3 chars including the quotes).
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(r#"{{ json_set('{}', 'items.2', "x") }}"#, &HashMap::new())
+			.unwrap();
+		assert_eq!(result, r#"{"items":[null,null,"x"]}"#);
+	}
+
+	#[test]
+	fn json_set_invalid_json_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute(r#"{{ json_set('not json', 'k', 'v') }}"#, &HashMap::new())
+			.unwrap_err();
+		assert!(matches!(err, SubstitutionError::InvalidJson(..)));
+	}
+
+	#[test]
+	fn json_path_empty_segment_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute(r#"{{ json_get('{"a":1}', 'a..b') }}"#, &HashMap::new())
+			.unwrap_err();
+		assert!(matches!(err, SubstitutionError::InvalidJsonPath(..)));
 	}
 }
 

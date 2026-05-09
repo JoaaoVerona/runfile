@@ -63,6 +63,9 @@ pub enum ControlFlowError {
 		value: String,
 		valid_cases: String,
 	},
+
+	#[error("Invalid regex in `match` case `{key}`: {message}")]
+	BadRegexCase { key: String, message: String },
 }
 
 /// Resolve a [`DslValue`] to a string against the current substitution context.
@@ -368,6 +371,22 @@ pub fn resolve_match_branch<'a>(
 	if let Some(branch) = step.cases.get(&resolved) {
 		return Ok(branch.as_slice());
 	}
+	// Regex cases: a key wrapped in `/.../` is treated as a regex pattern.
+	// Tried in alphabetical order (BTreeMap iteration is sorted) AFTER the
+	// exact-match lookup above, so a literal case key always wins over a
+	// regex that happens to also match. A bad pattern surfaces as
+	// `BadRegexCase` so the user knows which key has the syntax error.
+	for (key, branch) in &step.cases {
+		if let Some(pattern) = strip_regex_delimiters(key) {
+			let re = regex::Regex::new(pattern).map_err(|e| ControlFlowError::BadRegexCase {
+				key: key.clone(),
+				message: e.to_string(),
+			})?;
+			if re.is_match(&resolved) {
+				return Ok(branch.as_slice());
+			}
+		}
+	}
 	if let Some(default) = step.default.as_deref() {
 		return Ok(default);
 	}
@@ -376,6 +395,20 @@ pub fn resolve_match_branch<'a>(
 		value: resolved,
 		valid_cases: format_match_cases(step),
 	})
+}
+
+/// If `key` is wrapped in `/.../` (length ≥ 2), return the inner pattern.
+/// Otherwise return `None` — the key is a literal-equality case. A single
+/// `/` is *not* treated as a regex delimiter (it would be ambiguous).
+fn strip_regex_delimiters(key: &str) -> Option<&str> {
+	let bytes = key.as_bytes();
+	if bytes.len() < 2 {
+		return None;
+	}
+	if bytes[0] != b'/' || bytes[bytes.len() - 1] != b'/' {
+		return None;
+	}
+	Some(&key[1..key.len() - 1])
 }
 
 /// Static count of leaf shell commands inside a slice of [`CommandStep`]s.

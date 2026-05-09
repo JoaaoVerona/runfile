@@ -244,6 +244,10 @@ and work as full substitution bodies *or* as chain segments:
   //   build     : concat, join
   //   split     : nth, first, last, count_parts
   //   encoding  : base64_encode, base64_decode
+  //   hashing   : sha256, md5
+  //   files     : read_file, file_exists
+  //   json      : json_get, json_set
+  //   error     : try
   //   shell     : shell_quote
   //   variables : define
   //   cwd       : set_cwd
@@ -269,6 +273,28 @@ and work as full substitution bodies *or* as chain segments:
   // Safely inline arbitrary content (newlines, quotes, JSON) as a CLI arg —
   // `shell_quote` picks the right quoting for the active shell:
   "some-tool --json {{ shell_quote(base64_decode(ENV.SECRET_BASE64)) }}",
+
+  // Cache keys / content fingerprints. `sha256` for security-sensitive use,
+  // `md5` for cheap fingerprinting (NOT cryptographically secure).
+  "echo cache-key={{ sha256(read_file('package-lock.json')) }}",
+
+  // Branch on file presence without forking a shell. `file_exists` returns
+  // the literal "true" / "false", so it doubles as a DSL truthy value.
+  // "if": "{{ file_exists('.env.local') }}"
+
+  // Read a file inline — relative paths anchor to the Runfile directory.
+  // Use `try(...)` to recover from missing files.
+  "echo version={{ try(read_file('VERSION')) ? '0.0.0-dev' }}",
+
+  // Pull values out of arbitrary JSON without `jq` (works on every shell):
+  "echo db_host={{ json_get(read_file('config.json'), 'database.host') }}",
+
+  // Modify a JSON document in place (returns the new compact JSON):
+  "echo {{ json_set('{\"port\":3000}', 'env', 'production') }}",
+
+  // `try(expr)` swallows inner errors. Standalone returns "" on failure;
+  // chained, the next segment runs as a fallback.
+  "echo {{ try(base64_decode(ARGS.maybe_b64)) ? ARGS.maybe_b64 }}",
 
   // Nested:
   "echo {{ to_upper(to_lower(ARGS.x)) }}",
@@ -343,13 +369,18 @@ evaluated by Runfile itself, so the logic works the same on every shell and plat
     "cases": {
       "1": "flutter emulators --launch Tier_1_Android_9",
       "2": "flutter emulators --launch Tier_2_Android_11",
-      "3": "flutter emulators --launch Tier_3_Android_14"
+      "3": "flutter emulators --launch Tier_3_Android_14",
+      // Case keys wrapped in `/.../` are treated as regex patterns.
+      // Literal cases always win over a regex that would also match.
+      "/^v\\d+$/": "echo version-tag",
+      "/^pr-\\d+$/": "echo preview-build"
     } },                                // unknown values error out, listing the valid cases
 
   { "for": "service",
     "in": ["api", "web", "worker"],
     "parallel": true,
-    "do": ["docker build -t {{ VARS.service }} services/{{ VARS.service }}"] },
+    // VARS.<name>_index exposes the 0-based iteration counter.
+    "do": ["echo [{{ VARS.service_index }}] docker build -t {{ VARS.service }} services/{{ VARS.service }}"] },
 
   { "for": "file",
     "shell": "git diff --name-only HEAD~1",
@@ -449,6 +480,11 @@ $ run :generate vscode-tasks
 $ run :generate zed-tasks
 $ run :generate jetbrains-run-configurations
 ```
+
+Skip a target from the generated configs by setting `metadata.excludeFromGenerateCommand: true`. The
+`metadata` block on `globals` and on each target is **fully open** — any property of any JSON type
+(strings, numbers, booleans, arrays, deeply-nested objects) is accepted and round-trips untouched, so
+editor extensions and CI scripts can stash arbitrary tooling-specific fields here.
 
 #### Migrate in seconds
 

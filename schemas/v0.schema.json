@@ -540,7 +540,7 @@
 		},
 		"Metadata": {
 			"type": "object",
-			"description": "Free-form metadata block. Available on `globals` and on each individual target. Globals' metadata is merged into each target's metadata at parse time — target-defined keys win over globals. Currently only `excludeFromGenerateCommand` is interpreted by built-in tooling; other fields round-trip untouched and can be used by external tools.",
+			"description": "Free-form metadata block. Available on `globals` and on each individual target. **Any property is accepted** — this is an open object: editor extensions, CI scripts, and any other tooling can stash arbitrary fields here without parser errors. Values may be of any JSON type (strings, numbers, booleans, arrays, nested objects). Globals' metadata is merged into each target's metadata at parse time — target-defined keys win over globals; otherwise the global value carries through. Currently `excludeFromGenerateCommand` is the only key interpreted by built-in tooling; all other fields round-trip untouched.",
 			"additionalProperties": true,
 			"properties": {
 				"excludeFromGenerateCommand": {

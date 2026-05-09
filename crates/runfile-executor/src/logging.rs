@@ -10,6 +10,7 @@ const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const CYAN: &str = "\x1b[36m";
 const DIM: &str = "\x1b[2m";
+const RED: &str = "\x1b[31m";
 
 /// Tracks the global step number across an entire run, so that nested
 /// `@target` invocations and `when:` blocks share one continuous
@@ -107,6 +108,30 @@ pub fn log_parallel_command(command: &str, step: usize, total: usize) {
 		eprintln!("{BOLD}{CYAN}[runfile]{RESET} {DIM}({step}/{total}) [parallel]{RESET} {BOLD}{command}{RESET}");
 	} else {
 		eprintln!("{BOLD}{CYAN}[runfile]{RESET} {DIM}[parallel]{RESET} {BOLD}{command}{RESET}");
+	}
+}
+
+/// Print a summary of which leaves failed in a parallel batch and with what
+/// exit code. Called at the end of `run_parallel_batch` whenever at least
+/// one leaf failed — even when `ignoreErrors` is set, because the whole
+/// point is to surface failures that would otherwise get swallowed by the
+/// interleaved parallel output.
+///
+/// Each entry is `(label, detail)` where `label` is the leaf identity
+/// (raw shell template, or `@target args...` for dispatched targets) and
+/// `detail` is a short human-readable phrase describing how it failed
+/// (e.g. `exit code 1`, `terminated by signal`, `error: ...`).
+pub fn log_parallel_failure_summary(failures: &[(String, String)]) {
+	if failures.is_empty() {
+		return;
+	}
+	#[cfg(windows)]
+	enable_ansi_support();
+	let n = failures.len();
+	let plural = if n == 1 { "" } else { "s" };
+	eprintln!("{BOLD}{CYAN}[runfile]{RESET} {BOLD}{RED}[parallel] {n} command{plural} failed:{RESET}");
+	for (label, detail) in failures {
+		eprintln!("  {BOLD}{RED}-{RESET} {BOLD}{label}{RESET} {DIM}—{RESET} {RED}{detail}{RESET}");
 	}
 }
 
