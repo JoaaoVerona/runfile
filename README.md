@@ -246,6 +246,7 @@ and work as full substitution bodies *or* as chain segments:
   //   encoding  : base64_encode, base64_decode
   //   shell     : shell_quote
   //   variables : define
+  //   cwd       : set_cwd
   "echo deploying-{{ to_upper(ARGS.env) }}",
   "curl -H \"X-Auth: {{ base64_encode(ENV.TOKEN) }}\" ...",
   "echo {{ concat('hello-', ARGS.name, '-2026') }}",
@@ -280,6 +281,13 @@ and work as full substitution bodies *or* as chain segments:
   "{{ VARS.sdk }}/bin/build",
   "echo using sdk at {{ VARS.sdk }}",
 
+  // `set_cwd(path)` switches the cwd subsequent commands spawn in — like
+  // shell `cd`, but works on every shell / OS without forking. Relative
+  // paths chain (matching `cd a; cd b` → `a/b`); absolute paths replace.
+  "{{ set_cwd(ARGS.subproject ? 'packages/api') }}",
+  "npm install",
+  "npm run build",
+
   // Single-quoted strings interpolate nested {{ }} substitutions:
   "{{ define(cmd, 'docker compose -f {{ VARS.compose }} pull') }}",
   "{{ VARS.cmd }}"
@@ -290,6 +298,22 @@ and work as full substitution bodies *or* as chain segments:
 to only whitespace (i.e. one consisting solely of a `{{ define(...) }}` call) is silently skipped instead of
 being dispatched to the shell. `define`s in a parent target are visible to `@target` children. The `name` MUST
 be a bareword identifier matching `[A-Za-z_][A-Za-z0-9_-]*` — quotes are NOT allowed on the name.
+
+`set_cwd(path)` is the cwd analog of `define`: returns an empty string and changes the cwd that subsequent shell
+commands in the *current target* spawn in. Behaves like shell `cd`, but works uniformly across every shell / OS
+(no forked process, no `cd` binary needed). Resolution rules:
+
+- **Absolute path** → fully replaces the current override (matches `cd /abs`).
+- **Relative path** → joins onto the existing override, or onto the target's `workingDirectory` if no override
+  has been set yet. So `set_cwd('a'); set_cwd('b')` lands subsequent commands in `<workingDirectory>/a/b`,
+  matching how `cd a; cd b` chains in a shell.
+
+`set_cwd` is **per-target**: each `@target` invocation starts with a clean override (the dispatched target sees
+its own `workingDirectory`, not the caller's `set_cwd` state). Inside `parallel: true` targets each leaf
+captures the override at the moment of its substitution, so siblings don't race on the spawn cwd. Like
+`define`, the side effect is skipped on the redacted-logging pass so log lines don't double-apply it. With
+`sameShell: true`, only the *final* `set_cwd` value applies (everything joins into one shell invocation) — use
+shell `cd` directly between leaves there if you need intermediate cwd changes.
 
 Function args are separated by `, ` (comma + exactly one space).
 

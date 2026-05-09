@@ -887,6 +887,106 @@ fn execute_with_args_substitution() {
 	assert!(result.final_status.success());
 }
 
+#[test]
+fn execute_set_cwd_changes_spawn_dir() {
+	// `set_cwd('subdir')` should make subsequent commands spawn in `dir/subdir`.
+	// We verify this by writing a marker file from the spawned shell — its
+	// final location tells us which cwd the shell saw.
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let subdir = dir.path().join("subdir");
+	std::fs::create_dir(&subdir).unwrap();
+
+	let marker_name = "set_cwd_marker.txt";
+	let create_marker = if shell.kind == ShellKind::Cmd {
+		format!("echo done > {marker_name}")
+	} else {
+		format!("touch {marker_name}")
+	};
+
+	let spec = CommandSpec::new_shell(vec!["{{ set_cwd('subdir') }}".into(), create_marker]);
+	let args = RunArgs::default();
+
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert!(result.final_status.success());
+	// The `set_cwd` line is a side-effect-only substitution that resolves to "" —
+	// it must NOT count as a dispatched command.
+	assert_eq!(result.commands_run, 1, "set_cwd line should not count as a step");
+	assert!(
+		subdir.join(marker_name).exists(),
+		"marker should land in subdir (cwd switched via set_cwd)"
+	);
+	assert!(
+		!dir.path().join(marker_name).exists(),
+		"marker should NOT land in parent dir"
+	);
+}
+
+#[test]
+fn execute_set_cwd_chains_relative() {
+	// Two relative `set_cwd` calls should compose: dir/sub1/sub2.
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let nested = dir.path().join("sub1").join("sub2");
+	std::fs::create_dir_all(&nested).unwrap();
+
+	let marker_name = "chained.txt";
+	let create_marker = if shell.kind == ShellKind::Cmd {
+		format!("echo done > {marker_name}")
+	} else {
+		format!("touch {marker_name}")
+	};
+
+	let spec = CommandSpec::new_shell(vec![
+		"{{ set_cwd('sub1') }}".into(),
+		"{{ set_cwd('sub2') }}".into(),
+		create_marker,
+	]);
+	let args = RunArgs::default();
+
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert!(result.final_status.success());
+	assert!(
+		nested.join(marker_name).exists(),
+		"marker should land in sub1/sub2 after two relative set_cwd calls"
+	);
+}
+
+#[test]
+fn execute_set_cwd_absolute_path() {
+	// An absolute `set_cwd` should fully replace the working_dir.
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let other = TempDir::new().unwrap();
+
+	let marker_name = "absolute.txt";
+	let create_marker = if shell.kind == ShellKind::Cmd {
+		format!("echo done > {marker_name}")
+	} else {
+		format!("touch {marker_name}")
+	};
+
+	// Embed the absolute path inside a single-quoted literal — backslashes
+	// pass through verbatim because Runfile single-quoted strings are not
+	// re-escaped.
+	let absolute = other.path().display().to_string();
+	let set_cwd_line = format!("{{{{ set_cwd('{}') }}}}", absolute.replace('\\', "/"));
+
+	let spec = CommandSpec::new_shell(vec![set_cwd_line, create_marker]);
+	let args = RunArgs::default();
+
+	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
+	assert!(result.final_status.success());
+	assert!(
+		other.path().join(marker_name).exists(),
+		"marker should land in the absolute path passed to set_cwd"
+	);
+	assert!(
+		!dir.path().join(marker_name).exists(),
+		"marker should NOT land in the original working_dir"
+	);
+}
+
 // ── Runner / dependency tests ──────────────────────────────────────
 
 /// Escape backslashes for embedding paths in JSON strings.
@@ -7675,6 +7775,143 @@ mod functions {
 		let _ = args.substitute_redacted("{{ define(x, ENV.SECRET) }}", &env).unwrap();
 		let v = args.substitute("{{ VARS.x }}", &env).unwrap();
 		assert_eq!(v, "real-secret", "redacted pass must not overwrite VARS");
+	}
+
+	// ── set_cwd ──
+
+	#[test]
+	fn set_cwd_returns_empty_string() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ set_cwd('subdir') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "");
+	}
+
+	#[test]
+	fn set_cwd_relative_path_joins_working_dir() {
+		let args = RunArgs::parse(&[]);
+		let _ = args.substitute("{{ set_cwd('subdir') }}", &HashMap::new()).unwrap();
+		let working_dir = PathBuf::from("/base");
+		let resolved = args.spawn_cwd(&working_dir);
+		assert_eq!(resolved, PathBuf::from("/base").join("subdir"));
+	}
+
+	#[test]
+	fn set_cwd_absolute_path_replaces_working_dir() {
+		// On Windows, absolute paths look like `C:\foo`; on Unix, `/foo`.
+		// `is_absolute` is platform-sensitive — pick a value the platform accepts.
+		let absolute = if cfg!(windows) {
+			r"C:\absolute\dir"
+		} else {
+			"/absolute/dir"
+		};
+		let args = RunArgs::parse(&[]);
+		let _ = args
+			.substitute(
+				&format!("{{{{ set_cwd('{}') }}}}", absolute.replace('\\', "\\\\")),
+				&HashMap::new(),
+			)
+			.unwrap();
+		let working_dir = PathBuf::from(if cfg!(windows) { r"D:\base" } else { "/base" });
+		let resolved = args.spawn_cwd(&working_dir);
+		assert_eq!(resolved, PathBuf::from(absolute));
+	}
+
+	#[test]
+	fn set_cwd_chains_relative_calls() {
+		// `set_cwd('a'); set_cwd('b')` joins `a/b` onto working_dir, mirroring
+		// shell `cd a; cd b` — relative paths compose.
+		let args = RunArgs::parse(&[]);
+		let _ = args.substitute("{{ set_cwd('a') }}", &HashMap::new()).unwrap();
+		let _ = args.substitute("{{ set_cwd('b') }}", &HashMap::new()).unwrap();
+		let working_dir = PathBuf::from("/base");
+		let resolved = args.spawn_cwd(&working_dir);
+		assert_eq!(resolved, PathBuf::from("/base").join("a").join("b"));
+	}
+
+	#[test]
+	fn set_cwd_absolute_resets_chain() {
+		// An absolute path replaces the override — prior relative calls are
+		// discarded. Matches `cd a; cd /abs` shell behaviour.
+		let absolute = if cfg!(windows) { r"C:\reset" } else { "/reset" };
+		let args = RunArgs::parse(&[]);
+		let _ = args.substitute("{{ set_cwd('a') }}", &HashMap::new()).unwrap();
+		let _ = args
+			.substitute(
+				&format!("{{{{ set_cwd('{}') }}}}", absolute.replace('\\', "\\\\")),
+				&HashMap::new(),
+			)
+			.unwrap();
+		let working_dir = PathBuf::from(if cfg!(windows) { r"D:\base" } else { "/base" });
+		let resolved = args.spawn_cwd(&working_dir);
+		assert_eq!(resolved, PathBuf::from(absolute));
+	}
+
+	#[test]
+	fn set_cwd_with_substituted_arg() {
+		let args = RunArgs::parse(&["--target=build".into()]);
+		let _ = args
+			.substitute("{{ set_cwd(ARGS.target ? 'default') }}", &HashMap::new())
+			.unwrap();
+		let working_dir = PathBuf::from("/base");
+		let resolved = args.spawn_cwd(&working_dir);
+		assert_eq!(resolved, PathBuf::from("/base").join("build"));
+	}
+
+	#[test]
+	fn set_cwd_default_no_override() {
+		let args = RunArgs::parse(&[]);
+		let working_dir = PathBuf::from("/base");
+		let resolved = args.spawn_cwd(&working_dir);
+		assert_eq!(resolved, PathBuf::from("/base"));
+	}
+
+	#[test]
+	fn set_cwd_does_not_mutate_during_redacted_pass() {
+		// Same guarantee as `define`: the redacted-logging pass must not
+		// duplicate the side effect, otherwise the override would be
+		// re-applied for every command's log line.
+		let args = RunArgs::parse(&[]);
+		let _ = args.substitute("{{ set_cwd('first') }}", &HashMap::new()).unwrap();
+		let _ = args
+			.substitute_redacted("{{ set_cwd('second') }}", &HashMap::new())
+			.unwrap();
+		let working_dir = PathBuf::from("/base");
+		let resolved = args.spawn_cwd(&working_dir);
+		// Redacted pass would have chained to `first/second` if it had run.
+		assert_eq!(resolved, PathBuf::from("/base").join("first"));
+	}
+
+	#[test]
+	fn set_cwd_arity_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args.substitute("{{ set_cwd() }}", &HashMap::new()).unwrap_err();
+		assert!(matches!(
+			err,
+			SubstitutionError::FunctionArity { ref name, got: 0, .. } if name == "set_cwd"
+		));
+	}
+
+	#[test]
+	fn set_cwd_two_args_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args.substitute("{{ set_cwd('a', 'b') }}", &HashMap::new()).unwrap_err();
+		assert!(matches!(
+			err,
+			SubstitutionError::FunctionArity { ref name, got: 2, .. } if name == "set_cwd"
+		));
+	}
+
+	#[test]
+	fn set_cwd_snapshot_captures_state() {
+		// Verifies the parallel-collector helper: each leaf carries its own
+		// snapshot of `cwd_override` so siblings can't race on the shared mutex.
+		let args = RunArgs::parse(&[]);
+		let _ = args.substitute("{{ set_cwd('first') }}", &HashMap::new()).unwrap();
+		let snap1 = args.snapshot_cwd_override();
+		let _ = args.substitute("{{ set_cwd('second') }}", &HashMap::new()).unwrap();
+		let snap2 = args.snapshot_cwd_override();
+		assert_eq!(snap1, Some(PathBuf::from("first")));
+		assert_eq!(snap2, Some(PathBuf::from("first").join("second")));
 	}
 
 	// ── Parser errors ──

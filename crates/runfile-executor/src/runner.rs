@@ -376,6 +376,12 @@ fn run_target_inner_body(
 		// because there's no runtime failure tracking in detached mode.
 		let resolved_commands = collect_detach_leaves(&spec.commands, target_args, &env, &effective_working_dir)?;
 
+		// Apply any `set_cwd(...)` that ran while collecting the detach leaves
+		// — `target_args.cwd_override` carries the final state and is what
+		// every spawned background process should land in. Bare working_dir
+		// is the no-op fallback when `set_cwd` was never called.
+		let detach_cwd = target_args.spawn_cwd(&effective_working_dir);
+
 		if same_shell {
 			// `detach + sameShell`: join every leaf into a single shell
 			// command and spawn it as ONE detached process. State changes
@@ -401,7 +407,7 @@ fn run_target_inner_body(
 				resolved_commands.len()
 			);
 
-			execute_detached(&joined, shell, &env, &effective_working_dir)?;
+			execute_detached(&joined, shell, &env, &detach_cwd)?;
 		} else {
 			for cmd in &resolved_commands {
 				let (step, total) = root.step_counter.next_step();
@@ -414,7 +420,7 @@ fn run_target_inner_body(
 			);
 
 			for cmd in &resolved_commands {
-				execute_detached(cmd, shell, &env, &effective_working_dir)?;
+				execute_detached(cmd, shell, &env, &detach_cwd)?;
 			}
 		}
 

@@ -324,8 +324,10 @@ crates/
   `shell_quote(s)` (per-shell single-arg quoting via [`quote_for_shell`] dispatching on `RUN.shell` —
   POSIX/fish use `'...'` with `'\''` escape, PowerShell uses `'...'` with `''` escape, cmd uses `"..."` with
   `""` escape; lets users inline arbitrary bytes — newlines, `$`, `"`, `'`, JSON, etc. — into shell commands
-  as single argv slots without env-var indirection), and `define(name, value)` (returns `""`, side effect:
-  sets `VARS.name`). Functions resolve as full substitution bodies
+  as single argv slots without env-var indirection), `define(name, value)` (returns `""`, side effect:
+  sets `VARS.name`), and `set_cwd(path)` (returns `""`, side effect: mutates `RunArgs.cwd_override` so every
+  subsequent shell spawn in the current target lands in `path` — see "**`set_cwd(path)` semantics**" below).
+  Functions resolve as full substitution bodies
   AND as chain segments — `{{ ARGS.host ? to_lower(ENV.HOST) }}` is a chain whose first segment is a source lookup
   and second is a function call. Args themselves are chain / quoted-literal expressions, so nested calls
   (`to_upper(to_lower(x))`) and chained args (`to_upper(ARGS.x ? 'default')`) work naturally. The chain splitter
@@ -371,6 +373,27 @@ crates/
   real-pass and the next command. Concurrent `define`s from a `parallel: true` block serialise on the lock; relative
   ordering of writes is non-deterministic — last writer wins (documented footgun). `VARS.*` is **not** redacted in
   logs (treated like ARGS) — putting secrets in VARS leaks them to `--logging` output.
+- **`set_cwd(path)` semantics**: cwd analog of `define` — universal `cd` for the substitution layer that works on
+  every shell / OS without forking a process. `path` is resolved through the normal arg pipeline (substitutions,
+  function calls, chained fallbacks). The result is stored on `RunArgs.cwd_override`
+  (`Arc<Mutex<Option<PathBuf>>>`) and applied by every spawn site via [`RunArgs::spawn_cwd(working_dir)`]:
+  absolute override → use as-is; relative override → `working_dir.join(override)`; no override → `working_dir`
+  unchanged. Resolution rules at `set_cwd` call time mirror shell `cd`: an absolute new path REPLACES the
+  override entirely; a relative new path JOINS onto the existing override (if any) or falls through to be
+  joined with `working_dir` at spawn time. So `set_cwd('a'); set_cwd('b')` lands subsequent commands in
+  `working_dir/a/b`, matching `cd a; cd b`. The `Arc` is **NOT** propagated to `@target` children
+  (`RunnerDependencyResolver` builds the child via `RunArgs::parse(...)` whose default is `None`), so each
+  dispatched target starts fresh from its own `workingDirectory` and the parent's override doesn't leak in.
+  Inside `parallel: true` parents, `collect_leaves_parallel*` snapshots `args.cwd_override` after each leaf's
+  substitution and stores it on the [`ParallelLeaf::Shell.cwd_snapshot`] — the spawn then resolves cwd from
+  that per-leaf snapshot via [`RunArgs::spawn_cwd_from_snapshot`], so siblings don't race on the shared mutex
+  at spawn time. Sequential, sameShell, parallel, and detached spawn paths all consult the override
+  (sameShell collapses every leaf into one shell invocation, so only the *final* `set_cwd` value applies —
+  use shell `cd` directly between sameShell leaves if you need intermediate changes). `for shell:` iterators
+  also respect the override (they spawn a shell at planning time). `evaluate_function` skips the mutation
+  when `redact_env` is true (same pattern as `define`) so the log-substitute pass doesn't double-apply.
+  Returns `""` so a line whose only content is `{{ set_cwd(...) }}` resolves to whitespace and is dropped by
+  the empty-command-skip path without consuming a step number.
 - **Empty-command skip**: when a command line resolves to a whitespace-only string (the typical cause is a line
   consisting only of `{{ define(...) }}`), it is NOT dispatched to the shell — and crucially, NOT counted as a
   step in any way. `execute_one_shell` short-circuits *before* calling `counter.next_step()`, prints no log line,

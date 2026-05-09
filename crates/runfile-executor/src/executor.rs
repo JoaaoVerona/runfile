@@ -15,7 +15,7 @@ use runfile_parser::{
 };
 use runfile_shell::{ResolvedShell, ShellKind};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -477,7 +477,8 @@ pub fn execute_same_shell_with_counter(
 
 	let cmd_start = Instant::now();
 	let mut cmd = Command::new(&shell.path);
-	cmd.args(&shell_args).envs(&setup.env).current_dir(working_dir);
+	let spawn_cwd = args.spawn_cwd(working_dir);
+	cmd.args(&shell_args).envs(&setup.env).current_dir(&spawn_cwd);
 
 	let status = if let Some(prefix) = setup.output_prefix.as_deref() {
 		// Inherited from a parallel ancestor: pipe stdio + line-prefix the output.
@@ -804,7 +805,11 @@ fn execute_one_shell(
 
 	let cmd_start = Instant::now();
 	let mut cmd = Command::new(&shell.path);
-	cmd.args(&shell_args).envs(&setup.env).current_dir(working_dir);
+	// `set_cwd(...)` may have run during the substitute pass above. Resolve
+	// the spawn cwd against the override now (the resolver short-circuits to
+	// `working_dir` when no override is set).
+	let spawn_cwd = args.spawn_cwd(working_dir);
+	cmd.args(&shell_args).envs(&setup.env).current_dir(&spawn_cwd);
 
 	let status = if let Some(prefix) = setup.output_prefix.as_deref() {
 		// Inherited from a parallel ancestor: pipe stdout/stderr and route
@@ -1184,6 +1189,12 @@ enum ParallelLeaf {
 		template: String,
 		substituted: String,
 		when: WhenCondition,
+		/// Snapshot of `args.cwd_override` taken right after this leaf's
+		/// substitution, so the parallel spawn uses the cwd that was
+		/// effective for *this* leaf — not whatever later leaves wrote
+		/// into the shared override during the rest of the collect pass.
+		/// `None` when no `set_cwd` had been called yet.
+		cwd_snapshot: Option<PathBuf>,
 	},
 	TargetCall {
 		target: String,
@@ -1257,21 +1268,29 @@ fn collect_leaves_parallel_with_when(
 		match step {
 			CommandStep::Shell(template) => {
 				let substituted = args.substitute(template, &setup.env)?;
-				// Drop empty leaves (typically `{{ define(...) }}` lines that
-				// resolve to ""). Side-effecting substitutions like `define`
-				// have already executed during `substitute`; a no-op shell
-				// leaf would just bloat the parallel batch and inflate the
-				// visible `(N/total)` ratio. The static `count_leaves`
-				// estimate already counted this Shell step toward the
-				// total, so we decrement to match what will actually run.
+				// Drop empty leaves (typically `{{ define(...) }}` or
+				// `{{ set_cwd(...) }}` lines that resolve to ""). Side-effecting
+				// substitutions like `define` / `set_cwd` have already executed
+				// during `substitute`; a no-op shell leaf would just bloat the
+				// parallel batch and inflate the visible `(N/total)` ratio. The
+				// static `count_leaves` estimate already counted this Shell step
+				// toward the total, so we decrement to match what will actually
+				// run.
 				if substituted.trim().is_empty() {
 					counter.subtract_from_total(1);
 					continue;
 				}
+				// Snapshot the cwd override AFTER substitution so this leaf
+				// captures whatever cwd a `{{ set_cwd(...) }}` in `template`
+				// (or a prior leaf's template) just wrote. Without this snapshot,
+				// every leaf would race on the shared override at spawn time
+				// and only the last writer's value would apply.
+				let cwd_snapshot = args.snapshot_cwd_override();
 				out.push(ParallelLeaf::Shell {
 					template: template.clone(),
 					substituted,
 					when: effective,
+					cwd_snapshot,
 				});
 			}
 			CommandStep::TargetCall(call) => {
@@ -1471,14 +1490,18 @@ fn run_sequential_leaves(
 		};
 		match leaf {
 			ParallelLeaf::Shell {
-				template, substituted, ..
+				template,
+				substituted,
+				cwd_snapshot,
+				..
 			} => {
 				if setup.logging {
 					log_command(&template, step, total);
 				}
 				let shell_args = shell.exec_args(&substituted);
 				let mut cmd = Command::new(&shell.path);
-				cmd.args(&shell_args).envs(&setup.env).current_dir(working_dir);
+				let spawn_cwd = RunArgs::spawn_cwd_from_snapshot(cwd_snapshot.as_deref(), working_dir);
+				cmd.args(&shell_args).envs(&setup.env).current_dir(&spawn_cwd);
 				let status = if let Some(prefix) = leaf_prefix.as_deref() {
 					cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 					let mut child = cmd.spawn()?;
@@ -1590,7 +1613,7 @@ fn run_parallel_batch(
 	// identity); otherwise each leaf gets a per-step prefix `[N]` matching
 	// the upfront `(N/total)` log line.
 	let prefix_output = line_prefixing_enabled();
-	let mut shells: Vec<(String, String, Option<String>)> = Vec::new();
+	let mut shells: Vec<(String, String, Option<String>, Option<PathBuf>)> = Vec::new();
 	let mut target_calls: Vec<(String, Vec<String>, bool, Option<String>)> = Vec::new();
 	for (leaf, &(step, _total)) in leaves.into_iter().zip(step_pairs.iter()) {
 		let leaf_prefix = if !prefix_output {
@@ -1602,8 +1625,11 @@ fn run_parallel_batch(
 		};
 		match leaf {
 			ParallelLeaf::Shell {
-				template, substituted, ..
-			} => shells.push((template, substituted, leaf_prefix)),
+				template,
+				substituted,
+				cwd_snapshot,
+				..
+			} => shells.push((template, substituted, leaf_prefix, cwd_snapshot)),
 			ParallelLeaf::TargetCall {
 				target, argv, optional, ..
 			} => target_calls.push((target, argv, optional, leaf_prefix)),
@@ -1614,10 +1640,13 @@ fn run_parallel_batch(
 	let mut tree_tracker = ProcessTreeTracker::new();
 
 	let mut children: Vec<(String, Child, Vec<JoinHandle<()>>)> = Vec::with_capacity(shells.len());
-	for (template, substituted, leaf_prefix) in &shells {
+	for (template, substituted, leaf_prefix, cwd_snapshot) in &shells {
 		let shell_args = shell.exec_args(substituted);
 		let mut cmd = Command::new(&shell.path);
-		cmd.args(&shell_args).envs(&setup.env).current_dir(working_dir);
+		// Per-leaf cwd: each parallel leaf captured the override at the moment
+		// of its substitution so siblings can't race on the shared mutex.
+		let spawn_cwd = RunArgs::spawn_cwd_from_snapshot(cwd_snapshot.as_deref(), working_dir);
+		cmd.args(&shell_args).envs(&setup.env).current_dir(&spawn_cwd);
 
 		if leaf_prefix.is_some() {
 			cmd.stdout(Stdio::piped()).stderr(Stdio::piped());

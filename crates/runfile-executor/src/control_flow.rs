@@ -289,9 +289,13 @@ fn expand_shell(
 		c
 	};
 
+	// `for shell:` iterators run inline at planning time, so they should see
+	// any `set_cwd(...)` that ran in earlier sequential steps. Resolve the
+	// override against `working_dir` here — same rule as command spawn sites.
+	let iterator_cwd = args.spawn_cwd(working_dir);
 	let output = command
 		.envs(env)
-		.current_dir(working_dir)
+		.current_dir(&iterator_cwd)
 		.stdout(Stdio::piped())
 		.stderr(Stdio::inherit())
 		.output()?;
