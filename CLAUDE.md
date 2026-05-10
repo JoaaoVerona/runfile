@@ -121,7 +121,7 @@ crates/
   eagerly during `validate_runfile`, so syntax errors surface at Runfile load time.
 - `MatchStep` (multi-way dispatch): `{ "match", "cases", "default"?, "ignoreErrors"?, "when"? }`. Stored on
   `CommandStep::Match`. The `match` field is a substitution template — same pipeline as any other `{{ ... }}`
-  reference, so chained fallbacks work (`{{ ARGS.tier ? ENV.TIER ? 1 }}`). `cases` is a `BTreeMap<String,
+  reference, so chained fallbacks work (`{{ ARGS.tier ? ENV.TIER ? '1' }}`). `cases` is a `BTreeMap<String,
   Vec<CommandStep>>` (sorted; alphabetical iteration order in error messages); each case body accepts the usual
   string-or-array sugar via the same `Value`-based deserializer pattern as `IfStep.then`. `default` is an
   optional branch run when no case matches. Validation lives in `parse.rs::validate_match_step`: empty
@@ -275,7 +275,7 @@ crates/
   `{{ define(...) }}` side effects — read by `{{ VARS.<name> }}` chain segments, shared via Arc-clone across
   `@target` calls and parallel worker threads.
 - `substitute()` returns `Result` — `{{ ARGS.key }}` without `?` errors if arg is missing; `{{ ARGS.key ? }}` with empty
-  right-side defaults to empty string; `{{ ARGS.key ? default }}` uses the default. The substituter walks the
+  right-side defaults to empty string; `{{ ARGS.key ? 'default' }}` uses the default. The substituter walks the
   template once, resolving every `{{ ... }}` block it finds while leaving everything else (including bash
   `$(...)` command substitutions) untouched — so `echo $(date)` passes through verbatim, and
   `$(echo "{{ ARGS.env }}")` becomes `$(echo "development")` (the inner `{{ ... }}` resolves; the outer
@@ -291,7 +291,7 @@ crates/
   per target so `shell` / `file` / `parent` stay accurate when a target-level `forceShell` swaps the effective
   shell, or when a target was defined in an included or global Runfile. `cwd` is captured once at top level and
   doesn't change. `forceShell` and `workingDirectory` themselves go through substitution before resolution —
-  e.g. `"forceShell": "{{ ARGS.shell ? bash }}"` works.
+  e.g. `"forceShell": "{{ ARGS.shell ? 'bash' }}"` works.
 - `LoopVarGuard`: RAII helper used by the executor and extract walker to scope a `for`-loop iteration variable
   into the run-wide `VARS` map. `enter(&vars, name)` captures the prior value of `VARS.<name>` AND
   `VARS.<name>_index` (if any); each iteration calls `set(value)` to overwrite the value and bump the
@@ -299,7 +299,7 @@ crates/
   are restored (or removed if there were no priors). This gives lexical scoping for free: outer `VARS.x` /
   `VARS.x_index` are preserved while a `for x in [...]` runs, and nested loops with the same variable name
   compose correctly. `{{ VARS.x }}` and `{{ VARS.x_index }}` participate in chained fallbacks
-  (`{{ ARGS.x ? VARS.y ? default }}`); missing `VARS` refs error like missing `ARGS`. The index counter is
+  (`{{ ARGS.x ? VARS.y ? 'default' }}`); missing `VARS` refs error like missing `ARGS`. The index counter is
   per-guard (lives in a `std::cell::Cell<usize>`) so each loop starts at 0 even when nested with the same
   variable name as an outer loop.
 - **Quote-strict literals**: under the new substitution syntax, every string literal *inside a `{{ ... }}` block*
@@ -827,7 +827,7 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   See `run_parallel_leaves` in `executor.rs`.
 - `match` blocks (`{ "match", "cases", "default"?, "ignoreErrors"?, "when"? }`) provide multi-way dispatch on a
   substituted value with built-in case validation. The `match` template goes through the normal substitution
-  pipeline (chained fallbacks supported, e.g. `{{ ARGS.tier ? ENV.TIER ? 1 }}`). `cases` keys are compared by exact
+  pipeline (chained fallbacks supported, e.g. `{{ ARGS.tier ? ENV.TIER ? '1' }}`). `cases` keys are compared by exact
   string equality against the resolved value. When no case matches, `default` runs if set; otherwise execution
   errors out and the message lists every valid case so the user knows what values to pass. When the `match`
   substitution itself fails (e.g. `{{ ARGS.tier }}` with no `--tier` and no chain default), `default` also runs as

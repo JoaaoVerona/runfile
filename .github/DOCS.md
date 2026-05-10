@@ -147,6 +147,7 @@ $ run dev --port=4000           # Named arguments
 | `run :list`                                           | List all targets with their descriptions                                                           |
 | `run :init [-p path]`                                 | Create a default `Runfile.json` in the current directory                                           |
 | `run --dry-run <target> [args...]`                    | Print the resolved shell commands for a target without running them                                |
+| `run :config --path`                                  | Print the absolute path to the local settings file                                                 |
 | `run :config shell set <name> <path>`                 | Save a custom shell executable path to local settings                                              |
 | `run :config shell list`                              | Show all shells with their resolved paths and availability                                         |
 | `run :config path-alias add <alias> <path>`           | Save a path alias for use with `-f`                                                                |
@@ -473,7 +474,7 @@ Flags are always optional — they resolve to `"false"` when absent.
 	"targets": {
 		"build": {
 			"commands": [
-				"cargo build {{ FLAGS.release ? --release : }} {{ FLAGS.verbose ? -v : }}"
+				"cargo build {{ FLAGS.release ? '--release' : }} {{ FLAGS.verbose ? '-v' : }}"
 			]
 		}
 	}
@@ -514,7 +515,7 @@ URLs and paths work naturally:
 	"targets": {
 		"serve": {
 			"commands": [
-				"curl {{ FLAGS.ssl ? https://localhost:3443 : http://localhost:3000 }}"
+				"curl {{ FLAGS.ssl ? 'https://localhost:3443' : 'http://localhost:3000' }}"
 			]
 		}
 	}
@@ -582,8 +583,8 @@ global level:
 				"node server.js"
 			],
 			"env": {
-				"PORT": "{{ ARGS.port ? 3000 }}",
-				"NODE_OPTIONS": "{{ FLAGS.debug ? --inspect : }}"
+				"PORT": "{{ ARGS.port ? '3000' }}",
+				"NODE_OPTIONS": "{{ FLAGS.debug ? '--inspect' : }}"
 			}
 		}
 	}
@@ -680,7 +681,7 @@ one space — strict whitespace).
   "echo deploying-{{ to_upper(ARGS.env) }}",
   "curl -H \"X-Auth: {{ base64_encode(ENV.TOKEN) }}\"",
   "echo {{ concat('hello-', ARGS.name, '-2026') }}",
-  "echo {{ join(' AND ', flag-1, flag-2, ARGS.extra) }}",
+  "echo {{ join(' AND ', 'flag-1', 'flag-2', ARGS.extra) }}",
 
   // As a chain fallback:
   "echo host={{ ARGS.host ? to_lower(ENV.HOST) }}",
@@ -1940,6 +1941,17 @@ real time (not buffered). The target finishes when **all** commands have exited.
 When `parallel: true` and `ignoreErrors: true` are both set, all commands run to completion and failures are counted,
 but the CLI exits with code 0.
 
+### Output prefixing
+
+Each parallel branch's stdout/stderr is line-buffered, prefixed with its step number `[N]`, and stripped of cursor-control
+ANSI escapes — so progress-bar redraws (`docker compose pull`, `cargo build`, etc.) become chronological append-only
+lines instead of corrupting each other's output. SGR colours flow through unchanged. The prefix propagates through
+`@target` invocations too, so a `parallel` parent that fans out via `for in: "namespaces"` + `@{{ VARS.ns }}:dev` tags
+every nested shell with its branch identity.
+
+Set `RUNFILE_NO_LINE_PREFIX=1` (or `true`) to opt out and inherit raw stdio instead. Useful when you need exact byte-level
+output preservation, or when piping through another tool that already prefixes lines.
+
 `parallel` is a **target-only** property (not available in `globals`). To make it conditional per-platform, dispatch
 into specialized targets via `if "{{ RUN.os == '...' }}"` + `@target`.
 
@@ -2163,7 +2175,8 @@ Runfile stores user-level settings (like custom shell paths) in a platform-appro
 | Windows  | `%APPDATA%\runfile\settings.json`                     |
 
 Settings are created automatically when you use `run :config shell set` or `run :config path-alias add`. You
-don't need to create or edit this file manually.
+don't need to create or edit this file manually. Run `run :config --path` to print the absolute path of the
+settings file on your system.
 
 For the [encrypted environment variables](#encrypted-environment-variables) feature, **secret keys are stored
 exclusively in your platform's OS credential store** (Windows Credential Manager / macOS Keychain / Linux Secret

@@ -254,7 +254,7 @@ and work as full substitution bodies *or* as chain segments:
   "echo deploying-{{ to_upper(ARGS.env) }}",
   "curl -H \"X-Auth: {{ base64_encode(ENV.TOKEN) }}\" ...",
   "echo {{ concat('hello-', ARGS.name, '-2026') }}",
-  "echo {{ join(' AND ', flag-1, flag-2, ARGS.extra) }}",
+  "echo {{ join(' AND ', 'flag-1', 'flag-2', ARGS.extra) }}",
   // Tokenise-and-rejoin-style transforms via replace_all:
   "go test {{ replace_all(ARGS.flags, ' ', ' -tag=') }}",
   // Strip every match of a regex (here: collapse whitespace runs to a single space):
