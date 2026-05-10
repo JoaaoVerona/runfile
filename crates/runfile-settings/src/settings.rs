@@ -1,4 +1,3 @@
-use crate::keyring_store;
 use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,9 +17,6 @@ pub enum SettingsError {
 
 	#[error("Cannot determine settings directory on this platform")]
 	NoSettingsDir,
-
-	#[error("OS credential store error: {0}")]
-	Keyring(String),
 }
 
 /// Local user settings for Runfile.
@@ -37,12 +33,6 @@ pub struct Settings {
 	/// Global Runfile.json files that are always merged with the local Runfile.
 	#[serde(default, rename = "globalFiles", skip_serializing_if = "Vec::is_empty")]
 	pub global_files: Vec<PathBuf>,
-
-	/// Public key fingerprints whose private keys are stored in the OS
-	/// credential store (Windows Credential Manager / macOS Keychain /
-	/// Linux Secret Service). This field is non-sensitive.
-	#[serde(default, rename = "secureKeyFingerprints", skip_serializing_if = "Vec::is_empty")]
-	pub secure_key_fingerprints: Vec<String>,
 }
 
 impl Settings {
@@ -119,70 +109,6 @@ impl Settings {
 		let before = self.global_files.len();
 		self.global_files.retain(|p| p != path);
 		self.global_files.len() < before
-	}
-
-	// ── Secure keyring-backed key management ────────────────────────
-
-	/// Add a private key to the OS credential store.
-	/// Stores the fingerprint in settings and the private key in the keyring.
-	/// Returns an error if the OS credential store is unavailable.
-	pub fn add_secret_key_secure(&mut self, private_key_hex: String) -> Result<bool, SettingsError> {
-		let fingerprint =
-			runfile_crypto::derive_public_key(&private_key_hex).map_err(|e| SettingsError::Keyring(e.to_string()))?;
-
-		// Check for duplicates
-		if self.secure_key_fingerprints.contains(&fingerprint) {
-			return Ok(false);
-		}
-
-		if !keyring_store::is_available() {
-			return Err(SettingsError::Keyring(
-				"OS credential store is unavailable. Private keys require a working \
-				 credential store (Windows Credential Manager / macOS Keychain / \
-				 Linux Secret Service)."
-					.to_string(),
-			));
-		}
-
-		keyring_store::store_key(&fingerprint, &private_key_hex).map_err(|e| SettingsError::Keyring(e.to_string()))?;
-		self.secure_key_fingerprints.push(fingerprint);
-
-		Ok(true)
-	}
-
-	/// Remove a private key from the OS credential store by its fingerprint.
-	pub fn remove_secret_key_secure(&mut self, fingerprint: &str) -> Result<bool, SettingsError> {
-		let was_secure = self.secure_key_fingerprints.len();
-		self.secure_key_fingerprints.retain(|f| f != fingerprint);
-		let removed_secure = self.secure_key_fingerprints.len() < was_secure;
-
-		if removed_secure {
-			// Best-effort removal from keyring (may already be gone)
-			let _ = keyring_store::delete_key(fingerprint);
-			return Ok(true);
-		}
-
-		Ok(false)
-	}
-
-	/// Resolve all private keys from the OS credential store.
-	/// Returns the actual private key hex strings ready for use in decryption.
-	pub fn resolve_private_keys(&self) -> Vec<String> {
-		let mut keys = Vec::new();
-
-		for fingerprint in &self.secure_key_fingerprints {
-			match keyring_store::load_key(fingerprint) {
-				Ok(Some(private_key)) => keys.push(private_key),
-				Ok(None) => {
-					eprintln!("Warning: private key for fingerprint {fingerprint} not found in OS credential store.");
-				}
-				Err(e) => {
-					eprintln!("Warning: failed to load key {fingerprint} from credential store: {e}");
-				}
-			}
-		}
-
-		keys
 	}
 
 	/// Delete the settings file from the default platform location.

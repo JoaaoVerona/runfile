@@ -1,5 +1,5 @@
 use crate::{agent_detect, ci_detect};
-use runfile_settings::Settings;
+use runfile_settings::keyring_keys;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read};
 use std::path::Path;
@@ -35,13 +35,12 @@ pub fn cmd_init(path: &str, plain: bool, key_partial: Option<&str>) {
 	}
 
 	// Encrypted mode
-	let mut settings = load_settings();
 	let auto_generated;
 	let key_hex;
 
 	if let Some(partial) = key_partial {
 		// Match against existing keys by public key prefix
-		let all_keys = settings.resolve_private_keys();
+		let all_keys = keyring_keys::all_private_keys();
 		key_hex = match runfile_crypto::find_private_key_by_public_prefix(partial, &all_keys) {
 			Ok(k) => k,
 			Err(e) => {
@@ -53,7 +52,7 @@ pub fn cmd_init(path: &str, plain: bool, key_partial: Option<&str>) {
 	} else {
 		// Generate a new key
 		key_hex = runfile_crypto::generate_key();
-		match settings.add_secret_key_secure(key_hex.clone()) {
+		match keyring_keys::add(&key_hex) {
 			Ok(false) => {
 				// Extremely unlikely: generated key already exists
 				eprintln!("Error: generated key already exists. Try again.");
@@ -65,7 +64,6 @@ pub fn cmd_init(path: &str, plain: bool, key_partial: Option<&str>) {
 			}
 			Ok(true) => {}
 		}
-		save_settings(&settings);
 		auto_generated = true;
 	}
 
@@ -133,8 +131,7 @@ fn add_secret_key_non_interactive(key_hex: &str) {
 		process::exit(1);
 	});
 
-	let mut settings = load_settings();
-	match settings.add_secret_key_secure(key_hex) {
+	match keyring_keys::add(&key_hex) {
 		Ok(false) => {
 			println!("Key already registered (public {public_key}).");
 			return;
@@ -145,7 +142,6 @@ fn add_secret_key_non_interactive(key_hex: &str) {
 		}
 		Ok(true) => {}
 	}
-	save_settings(&settings);
 
 	println!("Private key added (public {public_key}).");
 }
@@ -165,8 +161,6 @@ pub fn cmd_secret_keys_add(key_arg: Option<&str>) {
 		add_secret_key_non_interactive(key_hex);
 		return;
 	}
-
-	let mut settings = load_settings();
 
 	// Prompt user for choice
 	eprintln!("How would you like to add a secret key?");
@@ -213,7 +207,7 @@ pub fn cmd_secret_keys_add(key_arg: Option<&str>) {
 		process::exit(1);
 	});
 
-	match settings.add_secret_key_secure(key_hex) {
+	match keyring_keys::add(&key_hex) {
 		Ok(false) => {
 			eprintln!("Key already exists.");
 			process::exit(1);
@@ -224,8 +218,6 @@ pub fn cmd_secret_keys_add(key_arg: Option<&str>) {
 		}
 		Ok(true) => {}
 	}
-
-	save_settings(&settings);
 
 	println!();
 	println!("Private key added.");
@@ -240,34 +232,35 @@ pub fn cmd_secret_keys_add(key_arg: Option<&str>) {
 pub fn cmd_secret_keys_list() {
 	agent_detect::refuse_if_agent("list secret keys");
 
-	let settings = load_settings();
+	let fingerprints = match keyring_keys::list_fingerprints() {
+		Ok(fps) => fps,
+		Err(e) => {
+			eprintln!("Error reading keyring: {e}");
+			process::exit(1);
+		}
+	};
 
-	if settings.secure_key_fingerprints.is_empty() {
+	if fingerprints.is_empty() {
 		println!("No secret keys configured.");
 		return;
 	}
 
-	for fingerprint in &settings.secure_key_fingerprints {
+	for fingerprint in &fingerprints {
 		println!("  {fingerprint}  (secure: OS credential store)");
 	}
 }
 
 /// Remove a private key by matching public key prefix.
 pub fn cmd_secret_keys_remove(public_prefix: &str) {
-	let mut settings = load_settings();
-
-	let all_keys = settings.resolve_private_keys();
-	let matched = match runfile_crypto::find_private_key_by_public_prefix(public_prefix, &all_keys) {
-		Ok(k) => k,
+	let fingerprint = match keyring_keys::resolve_prefix(public_prefix) {
+		Ok(fp) => fp,
 		Err(e) => {
 			eprintln!("Error: {e}");
 			process::exit(1);
 		}
 	};
 
-	let fingerprint = runfile_crypto::derive_public_key(&matched).unwrap_or_else(|_| "???".to_string());
-
-	match settings.remove_secret_key_secure(&fingerprint) {
+	match keyring_keys::remove(&fingerprint) {
 		Ok(true) => {}
 		Ok(false) => {
 			eprintln!("Error: key not found.");
@@ -279,8 +272,6 @@ pub fn cmd_secret_keys_remove(public_prefix: &str) {
 		}
 	}
 
-	save_settings(&settings);
-
 	println!("Key removed (public: {fingerprint}).");
 }
 
@@ -289,9 +280,7 @@ pub fn cmd_secret_keys_remove(public_prefix: &str) {
 pub fn cmd_get_private_key(public_prefix: &str) {
 	agent_detect::refuse_if_agent("print private key");
 
-	let settings = load_settings();
-
-	let all_keys = settings.resolve_private_keys();
+	let all_keys = keyring_keys::all_private_keys();
 	let matched = match runfile_crypto::find_private_key_by_public_prefix(public_prefix, &all_keys) {
 		Ok(k) => k,
 		Err(e) => {
@@ -532,8 +521,7 @@ pub fn cmd_encrypt_file(source: &str, output: &str, partial_key: &str) {
 		}
 	}
 
-	let settings = load_settings();
-	let all_keys = settings.resolve_private_keys();
+	let all_keys = keyring_keys::all_private_keys();
 	let key_hex = match runfile_crypto::find_private_key_by_public_prefix(partial_key, &all_keys) {
 		Ok(k) => k,
 		Err(e) => {
@@ -770,9 +758,8 @@ pub fn cmd_rotate(file: &str, delete_current_key: bool) {
 	let old_key_hex = resolve_private_key_by_public(&old_public_key);
 
 	// Generate a new private key and store it
-	let mut settings = load_settings();
 	let new_key_hex = runfile_crypto::generate_key();
-	match settings.add_secret_key_secure(new_key_hex.clone()) {
+	match keyring_keys::add(&new_key_hex) {
 		Ok(true) => {}
 		Ok(false) => {
 			eprintln!("Error: generated key already exists. Try again.");
@@ -882,7 +869,7 @@ pub fn cmd_rotate(file: &str, delete_current_key: bool) {
 
 	// Optionally delete the old key
 	if delete_current_key {
-		match settings.remove_secret_key_secure(&old_public_key) {
+		match keyring_keys::remove(&old_public_key) {
 			Ok(true) => {}
 			Ok(false) => {
 				eprintln!("Warning: old key not found in credential store (already removed?).");
@@ -892,8 +879,6 @@ pub fn cmd_rotate(file: &str, delete_current_key: bool) {
 			}
 		}
 	}
-
-	save_settings(&settings);
 
 	println!("Key rotated for {file}.");
 	println!();
@@ -913,23 +898,6 @@ pub fn cmd_rotate(file: &str, delete_current_key: bool) {
 // ══════════════════════════════════════════════════════════════════════
 // Helpers
 // ══════════════════════════════════════════════════════════════════════
-
-fn load_settings() -> Settings {
-	match Settings::load() {
-		Ok(s) => s,
-		Err(e) => {
-			eprintln!("Error loading settings: {e}");
-			process::exit(1);
-		}
-	}
-}
-
-fn save_settings(settings: &Settings) {
-	if let Err(e) = settings.save() {
-		eprintln!("Error saving settings: {e}");
-		process::exit(1);
-	}
-}
 
 fn read_file_content(file: &str) -> String {
 	match std::fs::read_to_string(file) {
@@ -981,8 +949,7 @@ fn resolve_private_key_by_public(public_key: &str) -> String {
 		}
 	}
 
-	let settings = load_settings();
-	let all_keys = settings.resolve_private_keys();
+	let all_keys = keyring_keys::all_private_keys();
 	match runfile_crypto::find_matching_private_key(public_key, &all_keys) {
 		Some(key) => key,
 		None => {

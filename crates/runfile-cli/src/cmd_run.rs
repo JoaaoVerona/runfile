@@ -3,7 +3,7 @@ use runfile_executor::{
 	InteractiveStdinPrompter, RunArgs, RunContext, StdinPrompter,
 };
 use runfile_parser::{is_internal_target_name, CommandSpec, Runfile, SourceKind};
-use runfile_settings::Settings;
+use runfile_settings::{keyring_keys, Settings};
 use runfile_shell::ResolvedShell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -24,7 +24,6 @@ struct ResolvedTarget {
 	caller_cwd: PathBuf,
 	source_dirs: HashMap<String, PathBuf>,
 	source_files: HashMap<String, PathBuf>,
-	settings: Settings,
 	shell: ResolvedShell,
 	args: RunArgs,
 }
@@ -83,7 +82,6 @@ fn resolve_target_setup(
 		caller_cwd,
 		source_dirs,
 		source_files,
-		settings,
 		shell,
 		args,
 	}
@@ -256,7 +254,7 @@ pub fn cmd_run(
 		return cmd_watch(target_name, extra_args, file, timings, yes, stdin_args);
 	}
 
-	let private_keys = rt.settings.resolve_private_keys();
+	let private_keys = keyring_keys::all_private_keys();
 	let pk_slice: Option<&[String]> = if private_keys.is_empty() {
 		None
 	} else {
@@ -309,7 +307,7 @@ pub fn cmd_dry_run(target_name: &str, extra_args: &[String], file: Option<&std::
 
 	let rt = resolve_target_setup(target_name, extra_args, file, stdin_args);
 
-	let private_keys = rt.settings.resolve_private_keys();
+	let private_keys = keyring_keys::all_private_keys();
 	let pk_slice: Option<&[String]> = if private_keys.is_empty() {
 		None
 	} else {
@@ -400,7 +398,7 @@ pub fn cmd_watch(
 	let include_set = include_builder.build().unwrap();
 	let exclude_set = exclude_builder.build().unwrap();
 
-	let private_keys = rt.settings.resolve_private_keys();
+	let private_keys = keyring_keys::all_private_keys();
 	let pk_slice: Option<&[String]> = if private_keys.is_empty() {
 		None
 	} else {

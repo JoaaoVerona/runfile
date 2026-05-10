@@ -2016,14 +2016,18 @@ Runfile stores user-level settings (like custom shell paths) in a platform-appro
 | macOS    | `~/Library/Application Support/runfile/settings.json` |
 | Windows  | `%APPDATA%\runfile\settings.json`                     |
 
-Settings are created automatically when you use `run :config shell set`, `run :config path-alias add`, or
-`run :env secret-keys add`. You don't need to create or edit this file manually.
+Settings are created automatically when you use `run :config shell set` or `run :config path-alias add`. You
+don't need to create or edit this file manually.
 
-For the [encrypted environment variables](#encrypted-environment-variables) feature, the settings file stores only *
-*public-key fingerprints** in a `secureKeyFingerprints` array — the actual private keys live in your platform's OS
-credential store (Windows Credential Manager / macOS Keychain / Linux Secret Service). Each fingerprint (SHA-256 hash of
-the private key) is used to automatically match against encrypted `.env` files and look up the corresponding key from
-the credential store.
+For the [encrypted environment variables](#encrypted-environment-variables) feature, **secret keys are stored
+exclusively in your platform's OS credential store** (Windows Credential Manager / macOS Keychain / Linux Secret
+Service / kernel keyutils) and never touch `settings.json`. `run :env secret-keys add` writes directly to the
+credential store; `:list`, `:remove`, and decryption all read from the same single source of truth. The
+fingerprint (SHA-256 hash of the private key) is used to match encrypted `.env` files against the right key.
+
+> If you are upgrading from a version that wrote secret-key fingerprints into `settings.json`, those entries
+> are not auto-migrated — the field is silently ignored on load and stripped on the next save. Re-add your
+> keys with `run :env secret-keys add` after upgrading.
 
 ---
 

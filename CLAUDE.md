@@ -30,7 +30,7 @@ schemas/v0.schema.json         # JSON Schema for Runfile.json (editor autocomple
 crates/
   runfile-parser/              # Runfile.json discovery and parsing
   runfile-shell/               # Shell detection, types, and resolution
-  runfile-settings/            # Local user settings (~/.config/runfile/)
+  runfile-settings/            # Local user settings (~/.config/runfile/) and OS keyring access for secret keys
   runfile-crypto/              # AES-256-GCM encryption/decryption for env vars
   runfile-env/                 # Environment variable building (env files, merging, PATH, decryption)
   runfile-executor/            # Command execution, args substitution
@@ -166,13 +166,34 @@ crates/
 
 ### runfile-settings
 
-**Files:** `settings.rs`, `paths.rs`, `tests.rs`
+**Files:** `settings.rs`, `paths.rs`, `keyring_store.rs`, `keyring_keys.rs`, `tests.rs`
 
-- `Settings` struct with `shell_paths`, `path_aliases`, `global_files` (HashMap/Vec), and `secret_keys: Vec<String>`
-- `secret_keys`: stores hex-encoded AES-256 private keys (not named — matched by public key fingerprint)
+- `Settings` struct holds `shell_paths`, `path_aliases`, `global_files` only — secret-key state
+  is **not** part of settings.json in any form. Older binaries wrote a `secureKeyFingerprints`
+  array; that field is silently ignored on load (Settings doesn't use `deny_unknown_fields`) and
+  stripped from disk on the next save. There is no migration of legacy keyring entries — keys
+  pre-dating the keyring-only storage layout must be re-added via `run :env secret-keys add`.
 - Platform paths: Linux `~/.config/runfile/`, macOS `~/Library/Application Support/runfile/`, Windows
   `%APPDATA%\runfile\`
-- Load returns defaults if file doesn't exist; save creates parent dirs automatically
+- Load returns defaults if file doesn't exist; save creates parent dirs automatically.
+- **Secret keys live exclusively in the OS credential store.** All private keys for a given install
+  are stored as a single keyring entry at `(service="runfile", user="__keystore__")` whose value is
+  a JSON object `{ fingerprint -> private_key_hex }`. One source of truth — settings.json never
+  tracks fingerprints, so drift between settings.json and the credential store is impossible by
+  construction. The `keyring_keys` module is the only path through which the CLI talks to that
+  storage:
+  - `add(private_key_hex) -> Result<bool>` — `Ok(false)` if a key with the same fingerprint is
+    already in the blob.
+  - `remove(fingerprint) -> Result<bool>` — exact-match deletion.
+  - `resolve_prefix(prefix) -> Result<String>` — prefix-match against stored fingerprints (errors
+    on zero or multiple matches). Replaces the old "load all keys, derive fingerprints, match" flow,
+    so orphan deletion works even when private-key recovery would fail.
+  - `list_fingerprints() -> Result<Vec<String>>` — sorted snapshot.
+  - `all_private_keys() -> Vec<String>` — best-effort decryption pool. On keyring error prints a
+    warning and returns an empty vec, matching the executor's "no keys → no decryption" contract.
+- `keyring_store` is the low-level wrapper: `load_blob`/`store_blob`/`delete_blob` operate on the
+  single keystore entry. `is_available()` is the public probe used by callers to surface
+  "credential store not running" early.
 
 ### runfile-crypto
 
@@ -650,10 +671,10 @@ crates/
 - `:env secret-keys add --key <hex>` is the non-interactive path used by CI (e.g. the
   `.github/actions/setup` action's `secret-keys` input). Gated by `ci_detect::is_ci()` — refuses to run on dev
   machines so the private key doesn't end up in shell history. Validates the key is 64-char hex, derives the
-  public-key fingerprint, and stores via `Settings::add_secret_key_secure` (same OS credential store path the
-  interactive flow uses). Without `--key`, the existing interactive prompt-based flow runs unchanged. The
-  GitHub Action also bootstraps a session D-Bus + `gnome-keyring-daemon` on Linux runners (where no Secret
-  Service is present by default) before calling this command.
+  public-key fingerprint, and stores via `keyring_keys::add` (same OS credential store path the interactive
+  flow uses). Without `--key`, the existing interactive prompt-based flow runs unchanged. The GitHub Action
+  also bootstraps a session D-Bus + `gnome-keyring-daemon` on Linux runners (where no Secret Service is
+  present by default) before calling this command.
 
 ## Runfile.json Schema Quick Reference
 

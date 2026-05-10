@@ -1,3 +1,4 @@
+pub mod keyring_keys;
 pub mod keyring_store;
 mod paths;
 mod settings;

@@ -388,54 +388,41 @@ fn delete_settings_file_error_message_includes_path() {
 	assert!(err.contains("mydir"), "error should include the path: {err}");
 }
 
-// ── Secret key management tests ───────────────────────────────────
+// ── Secret-key isolation tests ────────────────────────────────────
 
 #[test]
-fn settings_never_serializes_secret_keys() {
+fn settings_never_serializes_secret_key_state() {
+	// Settings.json carries no secret-key state in any form. The keyring
+	// is the sole source of truth.
 	let settings = Settings::default();
 	let json = serde_json::to_string(&settings).unwrap();
+	assert!(!json.contains("secretKeys"), "unexpected secretKeys field: {json}");
 	assert!(
-		!json.contains("secretKeys"),
-		"secretKeys should never appear in output: {json}"
+		!json.contains("secureKeyFingerprints"),
+		"unexpected secureKeyFingerprints field: {json}"
 	);
 }
 
 #[test]
-fn settings_rejects_unknown_secret_keys_field() {
+fn settings_silently_drops_legacy_secret_key_fields() {
+	// Older binaries wrote `secureKeyFingerprints`. Settings doesn't use
+	// deny_unknown_fields, so the field is silently ignored on load and
+	// stripped from disk on the next save.
 	let dir = TempDir::new().unwrap();
 	let path = dir.path().join("settings.json");
-	// Old settings files with "secretKeys" are rejected (field no longer exists)
-	let legacy_json = r#"{"secretKeys": ["aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233"]}"#;
+	let legacy_json = r#"{
+		"secureKeyFingerprints": [
+			"abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+		]
+	}"#;
 	std::fs::write(&path, legacy_json).unwrap();
 
-	// Settings doesn't use deny_unknown_fields, so unknown fields are silently ignored
 	let settings = Settings::load_from(&path).unwrap();
-	// No legacy keys accessible — field doesn't exist
-	assert!(settings.secure_key_fingerprints.is_empty());
-}
-
-#[test]
-fn secure_key_fingerprints_roundtrip() {
-	let dir = TempDir::new().unwrap();
-	let path = dir.path().join("settings.json");
-
-	let mut settings = Settings::default();
-	settings
-		.secure_key_fingerprints
-		.push("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string());
 	settings.save_to(&path).unwrap();
 
-	let loaded = Settings::load_from(&path).unwrap();
-	assert_eq!(loaded.secure_key_fingerprints.len(), 1);
-	assert_eq!(
-		loaded.secure_key_fingerprints[0],
-		"abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	let reread = std::fs::read_to_string(&path).unwrap();
+	assert!(
+		!reread.contains("secureKeyFingerprints"),
+		"saved settings.json must not carry legacy secret-key fields: {reread}"
 	);
-}
-
-#[test]
-fn remove_secret_key_secure_returns_false_for_unknown() {
-	let mut settings = Settings::default();
-	let result = settings.remove_secret_key_secure("nonexistent_fingerprint").unwrap();
-	assert!(!result);
 }
