@@ -588,7 +588,7 @@ fn count_step_leaves_recursive(
 		total += match step {
 			CommandStep::Shell(_) => 1,
 			CommandStep::TargetCall(call) => {
-				// Dynamic target names (containing `{{ ... }}`, e.g. `@{{ LOOP.ns }}:build`)
+				// Dynamic target names (containing `{{ ... }}`, e.g. `@{{ VARS.ns }}:build`)
 				// resolve at runtime; we can't recurse into them statically. Count
 				// the call as 1 leaf and let `StepCounter::add_to_total` bump the
 				// total at runtime if the dispatched target exposes more leaves.
@@ -696,7 +696,7 @@ fn collect_step_commands(
 			CommandStep::TargetCall(call) => {
 				// `call.target` itself participates in arg-usage scanning so
 				// `{{ ARGS.x }}` references inside dynamic target names like
-				// `@{{ LOOP.ns }}:build` still register.
+				// `@{{ VARS.ns }}:build` still register.
 				commands.push(call.target.clone());
 				if !call.args_template.is_empty() {
 					commands.push(call.args_template.clone());

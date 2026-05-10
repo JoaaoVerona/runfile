@@ -174,7 +174,7 @@ impl ExtractContext<'_> {
 /// - `if` blocks evaluate the condition against the same context the runner
 ///   would see (args + resolved env + loop scope) and emit only the matching
 ///   branch.
-/// - `for in` blocks expand each literal iteration with `{{ LOOP.var }}` resolved
+/// - `for in` blocks expand each literal iteration with `{{ VARS.var }}` resolved
 ///   (and `for in: "namespaces"` snapshots the merged Runfile's namespace list).
 /// - `for glob` blocks expand against the filesystem at extract time — the
 ///   walker is read-only, so previewing iteration values is safe and lets

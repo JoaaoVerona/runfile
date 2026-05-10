@@ -186,7 +186,7 @@ $ run dev --port=4000           # Named arguments
 | `--timings`              | Print per-target and per-command execution times to stderr                                                         |
 | `-y`, `--yes`            | Skip confirmation prompts (same as CI auto-skip)                                                                   |
 | `--dry-run`              | Show what would be executed without running anything (like `make -n`)                                              |
-| `--stdin-args`           | Prompt via stdin for any missing `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` values instead of failing                 |
+| `--stdin-args`           | Prompt via stdin for any missing `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` values instead of failing        |
 | `--version`              | Print version                                                                                                      |
 | `--help`                 | Print help                                                                                                         |
 
@@ -280,26 +280,26 @@ Each target is an object under `targets`:
 }
 ```
 
-| Property            | Type                      | Required | Description                                                                                                                                                 |
-|---------------------|---------------------------|----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `commands`          | `(string \| if \| for)[]` | Yes      | Command steps to run sequentially. Each entry is either a shell command string or a control-flow object (`if` / `for`). See [Control Flow](#control-flow).  |
-| `description`       | `string`                  | No       | Shown in `run :list` output.                                                                                                                                |
-| `envFiles`          | `string[]`                | No       | File paths to load environment variables from. Supports `{{ ARGS }}` and `{{ ENV }}` substitution. Loaded before `env`.                                           |
-| `env`               | `object`                  | No       | Environment variables for this target. Values can be strings, numbers, or booleans.                                                                         |
-| `addToPath`         | `string[]`                | No       | Directories to prepend to `PATH`. Relative paths always resolve from the source `Runfile.json` directory (`{{ RUN.parent }}`), regardless of `workingDirectory`. Use `{{ RUN.cwd }}/bin` if you want CWD-relative behaviour. |
-| `forceShell`        | `string`                  | No       | Force a specific shell for this target.                                                                                                                     |
-| `logging`           | `boolean`                 | No       | Print each command before running it.                                                                                                                       |
-| `ignoreErrors`      | `boolean`                 | No       | Continue running commands even if one fails, and exit with code 0.                                                                                          |
-| `parallel`          | `boolean`                 | No       | Execute all commands in parallel instead of sequentially. All commands spawn at once; the target finishes when all exit.                                    |
-| `detach`            | `boolean`                 | No       | Spawn commands as detached background processes and exit immediately. Requires `parallel: true` (or `sameShell: true`) when there are multiple commands.    |
+| Property            | Type                      | Required | Description                                                                                                                                                                                                                                                                                                                                                                                 |
+|---------------------|---------------------------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `commands`          | `(string \| if \| for)[]` | Yes      | Command steps to run sequentially. Each entry is either a shell command string or a control-flow object (`if` / `for`). See [Control Flow](#control-flow).                                                                                                                                                                                                                                  |
+| `description`       | `string`                  | No       | Shown in `run :list` output.                                                                                                                                                                                                                                                                                                                                                                |
+| `envFiles`          | `string[]`                | No       | File paths to load environment variables from. Supports `{{ ARGS }}` and `{{ ENV }}` substitution. Loaded before `env`.                                                                                                                                                                                                                                                                     |
+| `env`               | `object`                  | No       | Environment variables for this target. Values can be strings, numbers, or booleans.                                                                                                                                                                                                                                                                                                         |
+| `addToPath`         | `string[]`                | No       | Directories to prepend to `PATH`. Relative paths always resolve from the source `Runfile.json` directory (`{{ RUN.parent }}`), regardless of `workingDirectory`. Use `{{ RUN.cwd }}/bin` if you want CWD-relative behaviour.                                                                                                                                                                |
+| `forceShell`        | `string`                  | No       | Force a specific shell for this target.                                                                                                                                                                                                                                                                                                                                                     |
+| `logging`           | `boolean`                 | No       | Print each command before running it.                                                                                                                                                                                                                                                                                                                                                       |
+| `ignoreErrors`      | `boolean`                 | No       | Continue running commands even if one fails, and exit with code 0.                                                                                                                                                                                                                                                                                                                          |
+| `parallel`          | `boolean`                 | No       | Execute all commands in parallel instead of sequentially. All commands spawn at once; the target finishes when all exit.                                                                                                                                                                                                                                                                    |
+| `detach`            | `boolean`                 | No       | Spawn commands as detached background processes and exit immediately. Requires `parallel: true` (or `sameShell: true`) when there are multiple commands.                                                                                                                                                                                                                                    |
 | `sameShell`         | `boolean`                 | No       | Run every command step in a single shell instance instead of one shell per step. Steps are joined with `&&` (or `;` / `&` with `ignoreErrors`) so state changes (e.g. `cd`, exported vars) persist. `@target` calls inside the body are rejected. Composes with `detach` (joined command spawns as one detached process) and overrides `parallel` (which collapses to a single invocation). |
-| `workingDirectory`  | `string`                  | No       | Working directory for command execution — a free-form path (absolute or relative) that supports `{{ ... }}` substitution. Defaults to `{{ RUN.parent }}` (the source Runfile directory); use `{{ RUN.cwd }}` to run in the caller's current working directory. Relative paths resolve against the target's source Runfile directory. |
-| `aliases`           | `string[]`                | No       | Alternative names for this target.                                                                                                                          |
-| `confirm`           | `string`                  | No       | Prompt message shown before executing. Requires `y/N` confirmation. Skipped in CI or with `--yes`. The string is shown verbatim — no `{{ ... }}` substitution. |
-| `forceKillOnSigInt` | `boolean`                 | No       | When true, forcefully kill the entire spawned process tree on SIGINT/CTRL+C. See [Force-kill on Ctrl+C](#force-kill-on-ctrlc).                              |
-| `extendStdio`       | `object[]`                | No       | Tail one or more log files during execution and route new lines to `stdout` or `stderr`. See [extendStdio](#extendstdio).                                   |
-| `watch`             | `string[]`                | No       | Glob patterns for watch mode. When present, the target automatically re-runs on matching file changes. Use `!` prefix to exclude.                           |
-| `onlyInDirectories` | `string[]`                | No       | Restrict this target to only be invocable when the current working directory is at or under one of the listed paths (relative to the Runfile location).     |
+| `workingDirectory`  | `string`                  | No       | Working directory for command execution — a free-form path (absolute or relative) that supports `{{ ... }}` substitution. Defaults to `{{ RUN.parent }}` (the source Runfile directory); use `{{ RUN.cwd }}` to run in the caller's current working directory. Relative paths resolve against the target's source Runfile directory.                                                        |
+| `aliases`           | `string[]`                | No       | Alternative names for this target.                                                                                                                                                                                                                                                                                                                                                          |
+| `confirm`           | `string`                  | No       | Prompt message shown before executing. Requires `y/N` confirmation. Skipped in CI or with `--yes`. The string is shown verbatim — no `{{ ... }}` substitution.                                                                                                                                                                                                                              |
+| `forceKillOnSigInt` | `boolean`                 | No       | When true, forcefully kill the entire spawned process tree on SIGINT/CTRL+C. See [Force-kill on Ctrl+C](#force-kill-on-ctrlc).                                                                                                                                                                                                                                                              |
+| `extendStdio`       | `object[]`                | No       | Tail one or more log files during execution and route new lines to `stdout` or `stderr`. See [extendStdio](#extendstdio).                                                                                                                                                                                                                                                                   |
+| `watch`             | `string[]`                | No       | Glob patterns for watch mode. When present, the target automatically re-runs on matching file changes. Use `!` prefix to exclude.                                                                                                                                                                                                                                                           |
+| `onlyInDirectories` | `string[]`                | No       | Restrict this target to only be invocable when the current working directory is at or under one of the listed paths (relative to the Runfile location).                                                                                                                                                                                                                                     |
 
 ### Global Properties
 
@@ -321,18 +321,18 @@ Everything in `globals` applies to all targets. Target-level settings always tak
 }
 ```
 
-| Property            | Type       | Description                                                                                                                                                          |
-|---------------------|------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `addToPath`         | `string[]` | Directories prepended to `PATH` for every target. Target-level `addToPath` entries go before global ones.                                                            |
-| `envFiles`          | `string[]` | File paths to load environment variables from for all targets. Supports `{{ ARGS }}` and `{{ ENV }}` substitution.                                                         |
-| `env`               | `object`   | Environment variables for all targets. Target-level `env` overrides these.                                                                                           |
-| `forceShell`        | `string`   | Default shell for all targets. Overridden by target-level `forceShell`.                                                                                              |
-| `logging`           | `boolean`  | Enable command logging globally. Overridden per-target.                                                                                                              |
-| `ignoreErrors`      | `boolean`  | Ignore command failures globally. Overridden per-target.                                                                                                             |
-| `sameShell`         | `boolean`  | Run every command step in a single shell instance for all targets. Overridden per-target with `sameShell: false`. See the [target-level `sameShell`](#runfilejson-reference) for the full semantics.                                                                                                                                                |
-| `workingDirectory`  | `string`   | Default working directory for all targets — a free-form path that supports `{{ ... }}` substitution. Defaults to `{{ RUN.parent }}` (the source Runfile directory). Overridden per-target.                                                   |
-| `forceKillOnSigInt` | `boolean`  | Default for [`forceKillOnSigInt`](#force-kill-on-ctrlc). Overridden per-target.                                                                                      |
-| `onlyInDirectories` | `string[]` | Restrict this Runfile's targets to only be available when the current working directory is under one of the listed directories (relative to the Runfile's location). |
+| Property            | Type       | Description                                                                                                                                                                                          |
+|---------------------|------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `addToPath`         | `string[]` | Directories prepended to `PATH` for every target. Target-level `addToPath` entries go before global ones.                                                                                            |
+| `envFiles`          | `string[]` | File paths to load environment variables from for all targets. Supports `{{ ARGS }}` and `{{ ENV }}` substitution.                                                                                   |
+| `env`               | `object`   | Environment variables for all targets. Target-level `env` overrides these.                                                                                                                           |
+| `forceShell`        | `string`   | Default shell for all targets. Overridden by target-level `forceShell`.                                                                                                                              |
+| `logging`           | `boolean`  | Enable command logging globally. Overridden per-target.                                                                                                                                              |
+| `ignoreErrors`      | `boolean`  | Ignore command failures globally. Overridden per-target.                                                                                                                                             |
+| `sameShell`         | `boolean`  | Run every command step in a single shell instance for all targets. Overridden per-target with `sameShell: false`. See the [target-level `sameShell`](#runfilejson-reference) for the full semantics. |
+| `workingDirectory`  | `string`   | Default working directory for all targets — a free-form path that supports `{{ ... }}` substitution. Defaults to `{{ RUN.parent }}` (the source Runfile directory). Overridden per-target.           |
+| `forceKillOnSigInt` | `boolean`  | Default for [`forceKillOnSigInt`](#force-kill-on-ctrlc). Overridden per-target.                                                                                                                      |
+| `onlyInDirectories` | `string[]` | Restrict this Runfile's targets to only be available when the current working directory is under one of the listed directories (relative to the Runfile's location).                                 |
 
 ---
 
@@ -389,7 +389,8 @@ $ run dev --env=production        # PORT=3000, NODE_ENV=production
 
 ### Environment variables — `{{ ENV.key ? default }}`
 
-Reference environment variables (including those defined in the target's `env` property) with `{{ ENV.key }}`. Lookups are
+Reference environment variables (including those defined in the target's `env` property) with `{{ ENV.key }}`. Lookups
+are
 case-insensitive:
 
 ```json
@@ -456,7 +457,7 @@ Resolution order with `--stdin-args` set:
 4. An empty answer falls through to the chain's default — or surfaces the existing
    `MissingArg` / `MissingEnv` error if no default exists.
 
-`LOOP.*` and `RUN.*` are never prompted (they're runtime context). Answers are cached per `(kind, key)` so the
+`VARS.*` and `RUN.*` are never prompted (they're runtime context). Answers are cached per `(kind, key)` so the
 same value is asked at most once per run, even across `@target` invocations. Works with `--dry-run` too — the
 dry-run path goes through the same substitution layer.
 
@@ -502,7 +503,8 @@ $ run test --dry-run                  # echo dry_run=true
 $ run test                            # echo dry_run=false
 ```
 
-The ternary form `{{ FLAGS.key ? true_val : false_val }}` uses ` : ` (colon with spaces) as the separator, so colons inside
+The ternary form `{{ FLAGS.key ? true_val : false_val }}` uses ` : ` (colon with spaces) as the separator, so colons
+inside
 URLs and paths work naturally:
 
 ```json
@@ -527,14 +529,14 @@ Flags referenced by `{{ FLAGS.key }}` are consumed and will not appear in `{{ AR
 Reference the active execution context to write conditional commands without
 duplicating logic into multiple targets. Six runtime values are exposed as substitutions:
 
-| Substitution    | Resolves to                                                                                                                                 |
-|-----------------|---------------------------------------------------------------------------------------------------------------------------------------------|
-| `{{ RUN.os }}`     | `"windows"`, `"linux"`, or `"mac"`.                                                                                                         |
-| `{{ RUN.arch }}`   | `"x86-64"`, `"arm64"`, `"riscv64"`, or `"unknown"` (friendly names mapped from the binary's compile-time target arch).                      |
-| `{{ RUN.shell }}`  | `"bash"`, `"zsh"`, `"sh"`, `"fish"`, `"powershell"`, or `"cmd"` — the shell that will run the commands (after any `forceShell` override).   |
-| `{{ RUN.cwd }}`    | Caller's current working directory (absolute path). Fixed for the whole run.                                                                |
+| Substitution       | Resolves to                                                                                                                                                  |
+|--------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `{{ RUN.os }}`     | `"windows"`, `"linux"`, or `"mac"`.                                                                                                                          |
+| `{{ RUN.arch }}`   | `"x86-64"`, `"arm64"`, `"riscv64"`, or `"unknown"` (friendly names mapped from the binary's compile-time target arch).                                       |
+| `{{ RUN.shell }}`  | `"bash"`, `"zsh"`, `"sh"`, `"fish"`, `"powershell"`, or `"cmd"` — the shell that will run the commands (after any `forceShell` override).                    |
+| `{{ RUN.cwd }}`    | Caller's current working directory (absolute path). Fixed for the whole run.                                                                                 |
 | `{{ RUN.file }}`   | Path to the source `Runfile.json` of the currently-executing target. Refreshed per-target so a target defined in an included file shows that include's path. |
-| `{{ RUN.parent }}` | Directory of `RUN.file`. The default for `workingDirectory`.                                                                                |
+| `{{ RUN.parent }}` | Directory of `RUN.file`. The default for `workingDirectory`.                                                                                                 |
 
 These plug straight into `if` conditions, `for` iterators, command bodies, and
 `env` values:
@@ -566,7 +568,8 @@ keys are `os`, `shell`, `cwd`, `file`, and `parent`. `RUN.*` participates in cha
 fallbacks just like ARGS/ENV: `{{ ARGS.shell ? RUN.shell }}` or
 `{{ ARGS.workdir ? RUN.parent }}`.
 
-All substitution syntax (`{{ ARGS }}`, `{{ FLAGS }}`, `{{ ENV }}`, `{{ RUN }}`) works in `env` values too, both at the target and
+All substitution syntax (`{{ ARGS }}`, `{{ FLAGS }}`, `{{ ENV }}`, `{{ RUN }}`) works in `env` values too, both at the
+target and
 global level:
 
 ```json
@@ -592,8 +595,8 @@ $ run dev                        # PORT=3000, NODE_OPTIONS=
 
 ### Substitution Syntax
 
-| Syntax                    | Behavior                                                         |
-|---------------------------|------------------------------------------------------------------|
+| Syntax                       | Behavior                                                         |
+|------------------------------|------------------------------------------------------------------|
 | `{{ ARGS }}`                 | All positional arguments, joined by spaces.                      |
 | `{{ ARGS.key ? default }}`   | Named argument `--key`, or `default` if not provided.            |
 | `{{ ARGS.key ? }}`           | Named argument `--key`, or empty string if not provided.         |
@@ -676,7 +679,7 @@ failures from the target's own commands.
   "@deploy --env={{ ENV.STAGE }}",   // any substitution works in the args template
   "@?nightly-cleanup",            // silently skipped if `nightly-cleanup` isn't defined
   // common pattern: per-namespace target that's only defined in some namespaces
-  { "for": "ns", "in": "namespaces", "do": "@?{{ LOOP.ns }}:adb-forward" }
+  { "for": "ns", "in": "namespaces", "do": "@?{{ VARS.ns }}:adb-forward" }
 ]
 ```
 
@@ -685,14 +688,14 @@ they contain `?`.
 
 | Behavior              | Detail                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 |-----------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Argument parsing      | The args template is **substituted first** (all `{{ ARGS }}` / `{{ ENV.* }}` / `{{ RUN.* }}` / `{{ LOOP.* }}` / `{{ FLAGS.* }}` resolve), then **shlex-split** into argv. Quoted args (`"hello world"`) are kept intact.                                                                                                                                                                                                                                                                                                                     |
+| Argument parsing      | The args template is **substituted first** (all `{{ ARGS }}` / `{{ ENV.* }}` / `{{ RUN.* }}` / `{{ VARS.* }}` / `{{ FLAGS.* }}` resolve), then **shlex-split** into argv. Quoted args (`"hello world"`) are kept intact.                                                                                                                                                                                                                                                                                                      |
 | No dedup              | Calling `@build` three times runs `build` three times, with their respective args. There is no diamond-dependency dedup at this level.                                                                                                                                                                                                                                                                                                                                                                                        |
 | Cycle detection       | A target that (transitively) calls itself errors at runtime: `Dependency cycle detected: foo`.                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Env propagation       | The parent target's resolved env is passed to the dependency as a substitution base. The dep's own `envFiles` / `env` layer on top (dep wins per key), then the **current shell env always wins** over both. For PATH, the dep's `addToPath` ends up at the very front, then the parent's, then the shell `PATH` (`[dep_addToPath…, parent_addToPath…, …, shell PATH]`). Chains compose recursively — a grandchild's `addToPath` lands further forward than its parent's, which lands further forward than the grandparent's. |
 | Target-level config   | `forceShell`, `workingDirectory`, `parallel`, `confirm`, etc. are **not inherited** — each target picks its own. Only env flows.                                                                                                                                                                                                                                                                                                                                                                                              |
 | Inside `if` / `for`   | `@target` is a normal command step — works inside `then` / `else` / `for` body. `if` shorthand `"then": "@deploy"` is the same as `"then": ["@deploy"]`.                                                                                                                                                                                                                                                                                                                                                                      |
 | Parallel parents      | When the parent has `parallel: true`, `@target` invocations run on worker threads alongside the sibling shell commands. Nested `parallel: true` deps fan out further (no enforced sequentialization).                                                                                                                                                                                                                                                                                                                         |
-| Optional calls        | `@?target` silently skips when the target doesn't exist (no error, no failure counted). Static analysis treats statically-missing optional calls as 0 leaves; dynamic optional calls (`@?{{ ... }}`) still reserve 1 counter slot per dispatch and skip at runtime. Failures *inside* a present target's commands are not silenced — use `ignoreErrors` for that.                                                                                                                                                                |
+| Optional calls        | `@?target` silently skips when the target doesn't exist (no error, no failure counted). Static analysis treats statically-missing optional calls as 0 leaves; dynamic optional calls (`@?{{ ... }}`) still reserve 1 counter slot per dispatch and skip at runtime. Failures *inside* a present target's commands are not silenced — use `ignoreErrors` for that.                                                                                                                                                             |
 | Plain `@` not allowed | `"@"` or `"@ "` (no target name) is a parse error. Same for `"@?"` / `"@? "`. To run a shell command starting literally with `@`, prefix with a space or wrap in `sh -c`.                                                                                                                                                                                                                                                                                                                                                     |
 
 For an exhaustive table of target invocation semantics (no dedup, env layering, cycle detection), see
@@ -723,36 +726,36 @@ For an exhaustive table of target invocation semantics (no dedup, env layering, 
 
 ```jsonc
 // Inline list:
-{ "for": "service", "in": ["api", "web"], "do": ["docker build {{ LOOP.service }}"] }
+{ "for": "service", "in": ["api", "web"], "do": ["docker build {{ VARS.service }}"] }
 
 // File glob (relative to the working directory):
-{ "for": "f", "glob": "src/**/*.rs", "do": ["rustfmt {{ LOOP.f }}"] }
+{ "for": "f", "glob": "src/**/*.rs", "do": ["rustfmt {{ VARS.f }}"] }
 
 // Lines of stdout from a shell command (run once, at planning time):
-{ "for": "f", "shell": "git diff --name-only", "do": ["clang-format -i {{ LOOP.f }}"] }
+{ "for": "f", "shell": "git diff --name-only", "do": ["clang-format -i {{ VARS.f }}"] }
 
 // Iterate over every namespace prefix declared via `includes` — handy for
 // monorepo-style "build everything" targets that compose namespaced subprojects.
-// `@{{ LOOP.ns }}:build` substitutes the loop var into the target name and
+// `@{{ VARS.ns }}:build` substitutes the loop var into the target name and
 // dispatches to the matching namespaced target on each iteration.
-{ "for": "ns", "in": "namespaces", "do": "@{{ LOOP.ns }}:build" }
+{ "for": "ns", "in": "namespaces", "do": "@{{ VARS.ns }}:build" }
 
 // Concurrent iterations:
-{ "for": "x", "in": ["a","b","c"], "parallel": true, "do": ["./worker.sh {{ LOOP.x }}"] }
+{ "for": "x", "in": ["a","b","c"], "parallel": true, "do": ["./worker.sh {{ VARS.x }}"] }
 ```
 
-| Field          | Type                         | Required             | Description                                                                                                                                                                                                                                                                                                                                               |
-|----------------|------------------------------|----------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `for`          | `string`                     | Yes                  | Loop variable name. Matches `[A-Za-z_][A-Za-z0-9_]*`. Reference inside the body as `{{ LOOP.<name> }}`.                                                                                                                                                                                                                                                      |
+| Field          | Type                         | Required             | Description                                                                                                                                                                                                                                                                                                                                                  |
+|----------------|------------------------------|----------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `for`          | `string`                     | Yes                  | Loop variable name. Matches `[A-Za-z_][A-Za-z0-9_]*`. Reference inside the body as `{{ VARS.<name> }}`.                                                                                                                                                                                                                                                      |
 | `in`           | `string[]` or `"namespaces"` | One of in/glob/shell | Iterate over each element of an explicit array (each element is substituted, so `{{ ARGS.x }}` etc. work), OR pass the magic string `"namespaces"` to iterate over every namespace prefix declared via `includes` (alphabetically sorted, deduplicated, composed across nested includes — a chain `outer:inner` shows up as both `outer` and `outer:inner`). |
-| `glob`         | `string`                     | One of in/glob/shell | Iterate over file paths matching the pattern, relative to the working directory.                                                                                                                                                                                                                                                                          |
-| `shell`        | `string`                     | One of in/glob/shell | Iterate over each non-empty line of the command's stdout. Lines are trimmed; blank lines are dropped. The iterator runs once at planning time. **A non-zero exit is a hard error.**                                                                                                                                                                       |
-| `do`           | `string \| commandStep[]`    | Yes                  | Body steps run once per iteration. May be empty. Accepts either a single shell-command string (sugar for a one-element array) or an array of command steps.                                                                                                                                                                                               |
-| `parallel`     | `boolean`                    | No                   | Run iterations concurrently. **Outer parallel only:** an inner `for` block is forced sequential when its parent context is already parallel (a warning is printed).                                                                                                                                                                                       |
-| `ignoreErrors` | `boolean`                    | No                   | When true, body failures do not flip the run's success state and do not stop iteration.                                                                                                                                                                                                                                                                   |
+| `glob`         | `string`                     | One of in/glob/shell | Iterate over file paths matching the pattern, relative to the working directory.                                                                                                                                                                                                                                                                             |
+| `shell`        | `string`                     | One of in/glob/shell | Iterate over each non-empty line of the command's stdout. Lines are trimmed; blank lines are dropped. The iterator runs once at planning time. **A non-zero exit is a hard error.**                                                                                                                                                                          |
+| `do`           | `string \| commandStep[]`    | Yes                  | Body steps run once per iteration. May be empty. Accepts either a single shell-command string (sugar for a one-element array) or an array of command steps.                                                                                                                                                                                                  |
+| `parallel`     | `boolean`                    | No                   | Run iterations concurrently. **Outer parallel only:** an inner `for` block is forced sequential when its parent context is already parallel (a warning is printed).                                                                                                                                                                                          |
+| `ignoreErrors` | `boolean`                    | No                   | When true, body failures do not flip the run's success state and do not stop iteration.                                                                                                                                                                                                                                                                      |
 
 > **Dynamic target names.** `@target` invocations now substitute their target
-> name at dispatch time, so patterns like `@{{ LOOP.ns }}:build` (or
+> name at dispatch time, so patterns like `@{{ VARS.ns }}:build` (or
 > `@{{ ARGS.target }}`) resolve to a concrete target at runtime. Static analysis
 > (the `(N/total)` step counter, arg-usage scanning, cycle detection of
 > *known* names) treats dynamic names as a single leaf with no recursion —
@@ -779,13 +782,13 @@ clearer error story when the value doesn't match any case (and no `default` is c
 ]
 ```
 
-| Field          | Type                                 | Required | Description                                                                                                                                                                                                                                          |
-|----------------|--------------------------------------|----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `match`        | `string`                             | Yes      | The substitution template whose resolved value selects a case. Goes through the same substitution pipeline as any other `{{ ... }}` reference, so chained fallbacks (`{{ ARGS.tier ? ENV.TIER ? 1 }}`) and all source kinds (`ARGS`, `ENV`, `LOOP`, `RUN`) work. |
-| `cases`        | `object<string, string \| commandStep[]>` | Yes (or `default`) | Map from case value (compared as a string against the resolved match value) to the steps to run. Each value is either a single shell-command string (sugar for a one-element array) or an array of command steps.                                                                                       |
-| `default`      | `string \| commandStep[]`            | No       | Steps run when no case matches the resolved value. Also runs when the `match` substitution itself fails (e.g. missing arg with no chain default). When omitted, an unmatched value is a hard error that lists the valid cases.                       |
-| `ignoreErrors` | `boolean`                            | No       | When true, failures inside the chosen branch do not flip the run's success state.                                                                                                                                                                    |
-| `when`         | `"success" \| "failure" \| "always"` | No       | State guard for the entire `match` block. Default `"success"`. See [When-guarded blocks](#when-guarded-blocks-when).                                                                                                                                 |
+| Field          | Type                                      | Required           | Description                                                                                                                                                                                                                                                     |
+|----------------|-------------------------------------------|--------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `match`        | `string`                                  | Yes                | The substitution template whose resolved value selects a case. Goes through the same substitution pipeline as any other `{{ ... }}` reference, so chained fallbacks (`{{ ARGS.tier ? ENV.TIER ? 1 }}`) and all source kinds (`ARGS`, `ENV`, `RUN`, `VAR`) work. |
+| `cases`        | `object<string, string \| commandStep[]>` | Yes (or `default`) | Map from case value (compared as a string against the resolved match value) to the steps to run. Each value is either a single shell-command string (sugar for a one-element array) or an array of command steps.                                               |
+| `default`      | `string \| commandStep[]`                 | No                 | Steps run when no case matches the resolved value. Also runs when the `match` substitution itself fails (e.g. missing arg with no chain default). When omitted, an unmatched value is a hard error that lists the valid cases.                                  |
+| `ignoreErrors` | `boolean`                                 | No                 | When true, failures inside the chosen branch do not flip the run's success state.                                                                                                                                                                               |
+| `when`         | `"success" \| "failure" \| "always"`      | No                 | State guard for the entire `match` block. Default `"success"`. See [When-guarded blocks](#when-guarded-blocks-when).                                                                                                                                            |
 
 **Match semantics.** The `match` template is substituted, then the resolved string is looked up in `cases` by exact
 equality. A case match runs that case's steps. Otherwise, `default` runs if set. Without `default`, an unmatched
@@ -809,20 +812,20 @@ Use chained substitution in `match` for a default *value* (`{{ ARGS.tier ? 1 }}`
 *branch* — they compose. Cases iterate in alphabetical order in error messages (because internally they're stored
 in a sorted map).
 
-### `{{ LOOP.var }}` — loop variable substitution
+### `{{ VARS.var }}` — loop variable substitution
 
-Inside a `for` block's body (and in nested blocks), reference the loop variable as `{{ LOOP.<var> }}`:
+Inside a `for` block's body (and in nested blocks), reference the loop variable as `{{ VARS.<var> }}`:
 
 ```jsonc
 { "for": "stage", "in": ["lint", "test", "build"], "do": [
   { "for": "service", "in": ["api", "web"], "do": [
-    "echo running {{ LOOP.stage }} on {{ LOOP.service }}"
+    "echo running {{ VARS.stage }} on {{ VARS.service }}"
   ] }
 ] }
 ```
 
 Inner loop variables shadow outer ones with the same name. Referencing a loop variable outside its scope is a hard
-error. `{{ LOOP.x }}` participates in chained fallbacks just like ARGS/ENV: `{{ LOOP.x ? default }}`.
+error. `{{ VARS.x }}` participates in chained fallbacks just like ARGS/ENV: `{{ VARS.x ? default }}`.
 
 ### Condition expressions
 
@@ -842,13 +845,15 @@ Conditions in `if` blocks use a tiny boolean DSL.
 
 **Values** can be:
 
-- A substitution: `{{ ARGS.x }}`, `{{ ENV.X }}`, `{{ FLAGS.x }}`, `{{ LOOP.x }}`, `{{ RUN.os }}` / `{{ RUN.shell }}`, with chained
+- A substitution: `{{ ARGS.x }}`, `{{ ENV.X }}`, `{{ FLAGS.x }}`, `{{ VARS.x }}`, `{{ RUN.os }}` / `{{ RUN.shell }}`,
+  with chained
   fallbacks.
 - A quoted string: `"foo bar"` or `'foo bar'`. No escapes in v1.
 - A bare word: `production`, `path/to/file`, `1.2.3`.
 
 **Truthiness rule.** Only the empty string is falsy. Every other string — including `"false"`, `"0"`, and `"no"` — is
-truthy. This matches what the shell sees when given a `{{ ... }}` substitution. In particular, `{{ FLAGS.x }}` resolves to
+truthy. This matches what the shell sees when given a `{{ ... }}` substitution. In particular, `{{ FLAGS.x }}` resolves
+to
 `"true"` when present and `"false"` when absent — *both non-empty* — so flag presence checks must use explicit
 comparison:
 
@@ -1573,7 +1578,7 @@ wrapper:
 
 ```jsonc
 { "when": "always", "if": "{{ RUN.os }} == windows", "then": "rm -rf ./tmp_data", "else": "rm -rf /tmp/data" }
-{ "when": "failure", "for": "f", "glob": "logs/*", "do": ["cat {{ LOOP.f }}"] }
+{ "when": "failure", "for": "f", "glob": "logs/*", "do": ["cat {{ VARS.f }}"] }
 ```
 
 ### Semantics in detail
@@ -1632,12 +1637,13 @@ scp target/release/app server:/opt/
 echo Deploy complete.
 ```
 
-Substitutions (`{{ ARGS.x }}`, `{{ ENV.x }}`, `{{ RUN.os }}`, etc.) are fully resolved against the current invocation, so the
+Substitutions (`{{ ARGS.x }}`, `{{ ENV.x }}`, `{{ RUN.os }}`, etc.) are fully resolved against the current invocation,
+so the
 printed lines are the exact commands that would be sent to the shell. `if` blocks are evaluated against the same
 context the runner would see (args + resolved env + loop scope) and only the matching branch is printed.
 `@target` invocations are recursively expanded: each dep's resolved shell commands appear inline at the call site,
 with the dep's own `env` block reflected on each line. Aggregator targets whose body is purely `@target` dispatches
-(for example a `for in: "namespaces"` loop running `@{{ LOOP.ns }}:dev` for every namespaced subproject) print every
+(for example a `for in: "namespaces"` loop running `@{{ VARS.ns }}:dev` for every namespaced subproject) print every
 nested command, not nothing. Cycles are detected at extract time; optional calls (`@?target`) silently skip when the
 dispatched target is absent.
 
@@ -1856,10 +1862,10 @@ Docker daemons, IDE-launched servers, etc.).
 
 Each entry is `{ "fromFile": <path>, "stream": "stdout" | "stderr" }`.
 
-| Property   | Description                                                                                                                                          |
-|------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `fromFile` | Path to the file to tail. Relative paths resolve from the target's working directory. Supports `{{ ... }}` substitution (e.g. `"logs/{{ RUN.os }}.log"`).  |
-| `stream`   | Either `"stdout"` or `"stderr"`. New lines from the file are written to that stream, prefixed with nothing — they appear inline with command output. |
+| Property   | Description                                                                                                                                               |
+|------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `fromFile` | Path to the file to tail. Relative paths resolve from the target's working directory. Supports `{{ ... }}` substitution (e.g. `"logs/{{ RUN.os }}.log"`). |
+| `stream`   | Either `"stdout"` or `"stderr"`. New lines from the file are written to that stream, prefixed with nothing — they appear inline with command output.      |
 
 Behavior:
 
@@ -2294,7 +2300,8 @@ $ run :generate zed-tasks
 
 Generates (or updates) `.zed/tasks.json` with one task per Runfile target. Existing user-added fields are preserved on
 update. Targets that use `{{ ARGS }}` get `$ZED_CUSTOM_ARGS` appended so Zed prompts for arguments. Every generated task
-is invoked with `--stdin-args` so any unsupplied `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` value is prompted in the Zed
+is invoked with `--stdin-args` so any unsupplied `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` value is prompted in
+the Zed
 terminal at run time.
 
 ### JetBrains (IntelliJ, CLion, RustRover, WebStorm, etc.)
@@ -2306,7 +2313,8 @@ $ run :generate jetbrains-run-configurations
 Generates Shell Script run configurations (one `.xml` file per target) in the `.run/` directory. Each configuration runs
 `run --stdin-args <target>` with the working directory set to `$PROJECT_DIR$` — JetBrains run configs are static (no
 per-invocation parameter UI), so `--stdin-args` covers targets that need user input by prompting at run time for any
-unsupplied `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` value. Re-generating upgrades configs created by older Runfile
+unsupplied `{{ ARGS.x }}` / `{{ ENV.X }}` / `{{ FLAGS.x }}` value. Re-generating upgrades configs created by older
+Runfile
 versions in place.
 
 Options:
