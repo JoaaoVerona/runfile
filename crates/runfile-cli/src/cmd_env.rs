@@ -5,6 +5,20 @@ use std::io::{IsTerminal, Read};
 use std::path::Path;
 use std::process;
 
+/// Environment variable that supplies a default env file path for `:env inject`
+/// and `:env decrypt` when no positional path is given. Set by the `setup`
+/// GitHub Action when `env-file-source` is passed, so open-source repos can
+/// keep their encrypted `.env` in a secret instead of committing the ciphertext.
+pub const RUNFILE_ENV_FILE_TARGET_ENV_VAR: &str = "RUNFILE_ENV_FILE_TARGET";
+
+/// Read [`RUNFILE_ENV_FILE_TARGET_ENV_VAR`] and return the path it points to,
+/// if set to a non-empty value. Returns `None` otherwise.
+pub fn env_file_target() -> Option<String> {
+	std::env::var(RUNFILE_ENV_FILE_TARGET_ENV_VAR)
+		.ok()
+		.filter(|s| !s.is_empty())
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // Init
 // ══════════════════════════════════════════════════════════════════════
@@ -406,7 +420,22 @@ pub fn cmd_set(file: &str, var: &str, value: Option<&str>, plain: bool) {
 }
 
 /// Decrypt an encrypted env file. Writes to `output` if provided, otherwise prints to stdout.
-pub fn cmd_decrypt_file(source: &str, output: Option<&str>) {
+/// When `source` is `None`, falls back to [`RUNFILE_ENV_FILE_TARGET_ENV_VAR`] — set by the
+/// `setup` action's `env-file-source` input so CI can decrypt a secret-supplied file
+/// without writing the path into the workflow.
+pub fn cmd_decrypt_file(source: Option<&str>, output: Option<&str>) {
+	let source_owned = match source {
+		Some(s) => s.to_string(),
+		None => env_file_target().unwrap_or_else(|| {
+			eprintln!(
+				"Error: no source file specified.\n\
+				 Usage: run :env decrypt <source> [output]\n\
+				 (Or set {RUNFILE_ENV_FILE_TARGET_ENV_VAR} to provide one.)"
+			);
+			process::exit(1);
+		}),
+	};
+	let source = source_owned.as_str();
 	let (pairs, _) = read_env_file(source);
 	let env_map: HashMap<String, String> = pairs.iter().cloned().collect();
 
@@ -636,22 +665,39 @@ pub fn cmd_inject(files: &[String], command_args: &[String]) {
 		process::exit(1);
 	}
 
-	let user_specified_files = !files.is_empty();
-	let files_to_load: Vec<&str> = if user_specified_files {
+	// File resolution order:
+	//   1. Explicit positional paths (one or more)
+	//   2. RUNFILE_ENV_FILE_TARGET — set by the setup action's `env-file-source` so
+	//      open-source repos can keep their encrypted .env in a secret
+	//   3. Error — there's no implicit `.env` fallback; the user must opt in
+	//
+	// Once a source is chosen, missing files are a hard error (no silent skipping).
+	let env_target;
+	let files_to_load: Vec<&str> = if !files.is_empty() {
 		files.iter().map(String::as_str).collect()
 	} else {
-		vec![".env"]
+		match env_file_target() {
+			Some(t) => {
+				env_target = t;
+				vec![env_target.as_str()]
+			}
+			None => {
+				eprintln!(
+					"Error: no env file specified.\n\
+					 Usage: run :env inject <file>... -- <command> [args...]\n\
+					 (Or set {RUNFILE_ENV_FILE_TARGET_ENV_VAR} to provide one.)"
+				);
+				process::exit(1);
+			}
+		}
 	};
 
 	let mut env_map: HashMap<String, String> = HashMap::new();
 	for file in &files_to_load {
 		let path = Path::new(file);
 		if !path.exists() {
-			if user_specified_files {
-				eprintln!("Error: file not found: {file}");
-				process::exit(1);
-			}
-			continue;
+			eprintln!("Error: file not found: {file}");
+			process::exit(1);
 		}
 		let content = read_file_content(file);
 		let pairs = match runfile_env::parse_env_file(&content) {

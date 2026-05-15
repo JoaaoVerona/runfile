@@ -168,8 +168,8 @@ $ run dev --port=4000           # Named arguments
 | `run :completions install <shell>`                    | Install the completion script for a shell (bash, zsh, fish, powershell)                            |
 | `run :completions output <shell>`                     | Print the completion script to stdout (for `eval` or manual install)                               |
 | `run :completions uninstall <shell>`                  | Remove a previously installed completion script                                                    |
-| `run :env init [-p path] [--plain] [--key prefix]`    | Create a new `.env` file, optionally encrypted                                                     |
-| `run :env inject [-f file]... -- <command> [args...]` | Run a command with env vars loaded from one or more `.env` files (encrypted values auto-decrypted) |
+| `run :env init [path] [--plain] [--key prefix]`      | Create a new `.env` file, optionally encrypted (`path` defaults to `.env`)                         |
+| `run :env inject [file]... -- <command> [args...]`   | Run a command with env vars loaded from one or more `.env` files (encrypted values auto-decrypted; with no `file`, uses `$RUNFILE_ENV_FILE_TARGET`) |
 | `run :env rotate <file> [--delete-current-key]`       | Rotate the encryption key for an encrypted `.env` file                                             |
 | `run :env secret-keys add [--key <hex>]`              | Interactively generate or import a key (or, with `--key`, register one non-interactively in CI)    |
 | `run :env secret-keys list`                           | List the public key fingerprints of all stored keys                                                |
@@ -177,7 +177,7 @@ $ run dev --port=4000           # Named arguments
 | `run :env secret-keys remove <public-prefix>`         | Remove a key by public key prefix                                                                  |
 | `run :env get <file> <var>`                           | Read a variable (auto-decrypts if file is encrypted)                                               |
 | `run :env set <file> <var> <value>`                   | Set a variable (auto-encrypts if file is encrypted)                                                |
-| `run :env decrypt <source> [output]`                  | Decrypt an encrypted `.env` file (omit `output` to print to stdout)                                |
+| `run :env decrypt [source] [output]`                  | Decrypt an encrypted `.env` file (omit `output` to print to stdout; with no `source`, uses `$RUNFILE_ENV_FILE_TARGET`) |
 | `run :env encrypt <source> <output> <public-prefix>`  | Encrypt a plaintext `.env` file (key matched by public prefix)                                     |
 
 ### Flags
@@ -1312,7 +1312,7 @@ The easiest way is to use `run :env init`, which generates a new private key and
 step:
 
 ```
-$ run :env init -p .env.production
+$ run :env init .env.production
 Created .env.production (encrypted).
 
   Public key: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
@@ -1457,13 +1457,17 @@ memory), then `exec`s a child command with those variables in its environment. U
 Runfile targets but still need the same secrets.
 
 ```
-$ run :env inject -- node scripts/seed.js
-$ run :env inject -f .env -f .env.production -- npx prisma migrate deploy
-$ run :env inject -f .env.production -- bash -c 'echo $DATABASE_URL'
+$ run :env inject .env -- node scripts/seed.js
+$ run :env inject .env .env.production -- npx prisma migrate deploy
+$ run :env inject .env.production -- bash -c 'echo $DATABASE_URL'
 ```
 
-- `-f <file>` is repeatable. If omitted, defaults to a single `.env` in the working directory.
-- Files are merged in order — later `-f` files override earlier ones for the same key.
+- File paths are positional and may be repeated. When none are given, the path comes from
+  `$RUNFILE_ENV_FILE_TARGET` (set by the [`setup` action](actions/setup/action.yml)'s
+  `env-file-source` input so open-source repos can ship the file via a GitHub secret). If
+  neither a positional path nor the env var is set, the command errors — there's no implicit
+  `.env` fallback.
+- Files are merged in order — later files override earlier ones for the same key.
 - The `--` separator is required: everything after `--` is the command + args, passed through verbatim (so flags like
   `-v` aren't intercepted by Runfile).
 - `RUNFILE_ENCRYPTION_PUBLIC_KEY` is **stripped** from the env before injection — child processes never see the key

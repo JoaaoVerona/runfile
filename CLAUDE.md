@@ -642,6 +642,20 @@ crates/
   private `effective_file()`) and applied by `resolve_runfile_path`, `resolve_and_merge`, `cmd_list_targets` (in
   `completions.rs`), and `cmd_mcp_server`. Empty string is treated as unset. When set, the path is required to exist
   (or be a registered path alias) — no fallback to discovery — so misconfigured CI fails fast. `-f` always wins.
+- `RUNFILE_ENV_FILE_TARGET` env var: complement of `RUNFILE_TARGET` for `:env` commands. Defined in `cmd_env.rs`
+  (`RUNFILE_ENV_FILE_TARGET_ENV_VAR`, `env_file_target()`). Consumed by **`:env inject`** (when no positional file
+  paths are given) and **`:env decrypt`** (when no positional source is given). Empty string is treated as unset.
+  There is **no implicit `.env` fallback** anymore — `:env inject` without a positional file and without the env var
+  is a hard error. `:env get/set/encrypt/rotate` still require an explicit positional file (the env var is ignored for
+  them; the secret-supplied file is meant for run/decrypt flows, not for mutating commands). Set by the
+  `.github/actions/setup` action's `env-file-source` input, which writes the supplied source to
+  `$RUNNER_TEMP/runfile-source/.env` and exports the env var via `$GITHUB_ENV`, so open-source repos can keep the
+  encrypted env file in a GitHub secret instead of committing the ciphertext.
+- `:env` positional-file convention: every `:env` subcommand takes the file path as the **first positional
+  argument**. `:env init [path]` defaults `path` to `.env` (the legacy `-p`/`--path` flag was removed). `:env inject
+  [file...]` takes one or more files as positionals before `--` (the legacy `-f`/`--file` flag was removed; multi-file
+  semantics — later files override earlier — are unchanged). Parser-level: `Inject.command` uses `last = true` to
+  require the `--` separator before the command, and `file: Vec<String>` collects positionals before `--`.
 - Shell resolution priority: target `forceShell` (which may come from globals merge) > auto-detect. There is no
   CLI-level shell override — pin a shell per target via `forceShell` if needed.
 - When no subcommand and no args: prints help. When args given: first arg is target name, rest are passed through.

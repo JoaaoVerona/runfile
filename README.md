@@ -146,7 +146,7 @@ AES-256-GCM secrets you can commit to git. Auto-decrypted at runtime, never writ
 tool, no wrapper.
 
 ```bash
-$ run :env init -p .env.production
+$ run :env init .env.production
 $ run :env set .env.production DB_PASS "s3cr3t"   # auto-encrypted
 $ run :env set .env.production DB_PASS            # omit value → read from stdin (no shell history, no escaping)
 ```
@@ -160,9 +160,17 @@ You can also use Runfile as a drop-in `dotenvx`/`dotenv` replacement to inject e
 any command — no Runfile needed:
 
 ```bash
-$ run :env inject -- node app.js                          # uses .env by default
-$ run :env inject -f .env -f .env.local -- pnpm dev       # multiple files, last wins; parent env always wins
-$ run :env inject -f .env.production -- ./deploy.sh       # encrypted values auto-decrypted
+$ run :env inject .env -- node app.js                     # one file
+$ run :env inject .env .env.local -- pnpm dev             # multiple files, last wins; parent env always wins
+$ run :env inject .env.production -- ./deploy.sh          # encrypted values auto-decrypted
+```
+
+In CI, the file path can be supplied via `RUNFILE_ENV_FILE_TARGET` (set automatically by the
+[setup action's `env-file-source` input](.github/actions/setup/action.yml) for open-source
+repos that keep their encrypted `.env` in a GitHub secret):
+
+```bash
+$ run :env inject -- node app.js                          # uses $RUNFILE_ENV_FILE_TARGET
 ```
 
 #### Powerful argument substitution

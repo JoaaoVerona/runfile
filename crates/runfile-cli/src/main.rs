@@ -254,10 +254,12 @@ enum ShellAction {
 #[derive(Subcommand)]
 #[command(disable_help_subcommand = true)]
 enum EnvAction {
-	/// Decrypt an encrypted env file (prints to stdout if no output path is given)
+	/// Decrypt an encrypted env file (prints to stdout if no output path is given).
+	/// `source` may be omitted when RUNFILE_ENV_FILE_TARGET is set (e.g. via the
+	/// setup action's `env-file-source` input).
 	Decrypt {
-		/// Source encrypted .env file
-		source: String,
+		/// Source encrypted .env file (uses RUNFILE_ENV_FILE_TARGET when absent)
+		source: Option<String>,
 		/// Output plaintext .env file (omit to print to stdout)
 		output: Option<String>,
 	},
@@ -278,31 +280,34 @@ enum EnvAction {
 		/// Variable name to read
 		var: String,
 	},
-	/// Run a command with environment variables loaded from one or more .env files
+	/// Run a command with environment variables loaded from one or more .env files.
+	/// Files are passed as positional paths before `--`; with none and
+	/// RUNFILE_ENV_FILE_TARGET set, that env var supplies the file. There is no
+	/// implicit `.env` fallback.
 	Inject {
-		/// Path to a .env file (can be specified multiple times; defaults to .env).
-		/// Files are merged in order — later files override earlier ones.
-		#[arg(short = 'f', long = "file")]
+		/// Paths to .env files (zero or more, before `--`). Merged in order; later
+		/// files override earlier ones. When absent, falls back to
+		/// RUNFILE_ENV_FILE_TARGET (set by the setup action's `env-file-source`).
 		file: Vec<String>,
 
-		/// The command to run, followed by its arguments. Use `--` to separate from flags.
-		#[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
+		/// The command to run, followed by its arguments. Must be preceded by `--`.
+		#[arg(last = true, required = true, allow_hyphen_values = true)]
 		command: Vec<String>,
 	},
 	/// Create a new .env file, optionally encrypted
 	Init {
-		/// Public key (or prefix) to identify which key to encrypt with.
-		/// If omitted and encryption is enabled, a new key is generated automatically.
-		#[arg(long = "key")]
-		key: Option<String>,
-
 		/// Path to the .env file (defaults to .env)
-		#[arg(short = 'p', long = "path", default_value = ".env")]
+		#[arg(default_value = ".env")]
 		path: String,
 
 		/// Create a plaintext .env file (no encryption)
 		#[arg(long = "plain")]
 		plain: bool,
+
+		/// Public key (or prefix) to identify which key to encrypt with.
+		/// If omitted and encryption is enabled, a new key is generated automatically.
+		#[arg(long = "key")]
+		key: Option<String>,
 	},
 	/// Rotate the encryption key for an encrypted env file
 	Rotate {
@@ -479,7 +484,7 @@ fn main() {
 				value,
 				plain,
 			} => cmd_env::cmd_set(&file, &var, value.as_deref(), plain),
-			EnvAction::Decrypt { source, output } => cmd_env::cmd_decrypt_file(&source, output.as_deref()),
+			EnvAction::Decrypt { source, output } => cmd_env::cmd_decrypt_file(source.as_deref(), output.as_deref()),
 			EnvAction::Encrypt {
 				source,
 				output,

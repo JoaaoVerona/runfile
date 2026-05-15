@@ -810,19 +810,7 @@ fn cli_parses_env_inject_default_file() {
 
 #[test]
 fn cli_parses_env_inject_with_files() {
-	let cli = Cli::try_parse_from([
-		"run",
-		":env",
-		"inject",
-		"-f",
-		".env",
-		"-f",
-		".env.local",
-		"--",
-		"node",
-		"app.js",
-	])
-	.unwrap();
+	let cli = Cli::try_parse_from(["run", ":env", "inject", ".env", ".env.local", "--", "node", "app.js"]).unwrap();
 	match cli.subcommand {
 		Some(crate::Commands::Env {
 			action: crate::EnvAction::Inject { file, command },
@@ -851,7 +839,9 @@ fn cli_parses_env_inject_with_command_flags_after_dashdash() {
 #[test]
 fn cli_rejects_env_inject_without_command() {
 	assert!(try_parse(&["run", ":env", "inject"]).is_err());
-	assert!(try_parse(&["run", ":env", "inject", "-f", ".env"]).is_err());
+	// File positional without `--` followed by a command is still incomplete:
+	// the parser needs at least one arg after `--`.
+	assert!(try_parse(&["run", ":env", "inject", ".env"]).is_err());
 }
 
 #[test]
@@ -871,7 +861,7 @@ fn cli_parses_env_init_defaults() {
 
 #[test]
 fn cli_parses_env_init_with_path() {
-	let cli = Cli::try_parse_from(["run", ":env", "init", "-p", ".env.production"]).unwrap();
+	let cli = Cli::try_parse_from(["run", ":env", "init", ".env.production"]).unwrap();
 	match cli.subcommand {
 		Some(crate::Commands::Env {
 			action: crate::EnvAction::Init { path, .. },
@@ -1064,5 +1054,52 @@ fn resolve_runfile_path_explicit_flag_wins_over_env_var() {
 		let expected = std::fs::canonicalize(&flag_runfile).unwrap();
 		let resolved_canon = std::fs::canonicalize(&resolved).unwrap();
 		assert_eq!(resolved_canon, expected);
+	});
+}
+
+// ── RUNFILE_ENV_FILE_TARGET env var tests ─────────────────────────
+//
+// Mirrors the RUNFILE_TARGET pattern: the env var feeds a default into
+// `:env inject` / `:env decrypt` when no positional path is given.
+
+use crate::cmd_env::{env_file_target, RUNFILE_ENV_FILE_TARGET_ENV_VAR};
+
+static RUNFILE_ENV_FILE_TARGET_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn with_runfile_env_file_target<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
+	let _guard = RUNFILE_ENV_FILE_TARGET_TEST_LOCK
+		.lock()
+		.unwrap_or_else(|e| e.into_inner());
+	let prev = std::env::var(RUNFILE_ENV_FILE_TARGET_ENV_VAR).ok();
+	match value {
+		Some(v) => std::env::set_var(RUNFILE_ENV_FILE_TARGET_ENV_VAR, v),
+		None => std::env::remove_var(RUNFILE_ENV_FILE_TARGET_ENV_VAR),
+	}
+	let result = f();
+	match prev {
+		Some(v) => std::env::set_var(RUNFILE_ENV_FILE_TARGET_ENV_VAR, v),
+		None => std::env::remove_var(RUNFILE_ENV_FILE_TARGET_ENV_VAR),
+	}
+	result
+}
+
+#[test]
+fn env_file_target_returns_none_when_unset() {
+	with_runfile_env_file_target(None, || {
+		assert!(env_file_target().is_none());
+	});
+}
+
+#[test]
+fn env_file_target_returns_path_when_set() {
+	with_runfile_env_file_target(Some("custom/.env"), || {
+		assert_eq!(env_file_target().as_deref(), Some("custom/.env"));
+	});
+}
+
+#[test]
+fn env_file_target_returns_none_when_set_empty() {
+	with_runfile_env_file_target(Some(""), || {
+		assert!(env_file_target().is_none());
 	});
 }

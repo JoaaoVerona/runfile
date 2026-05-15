@@ -30,6 +30,32 @@ inputs:
       the project's main Runfile. Paths are resolved relative to the workflow's working
       directory (typically the checkout root).
     default: ''
+  runfile-source:
+    description: |
+      Optional raw Runfile.json (or Runfile.json5) source. When set, the contents are
+      written to a temp file on the runner and `RUNFILE_TARGET` is exported so every
+      subsequent `run` invocation without an explicit `-f` flag uses that file instead
+      of discovering one in the workspace.
+
+      Intended for open-source repositories that want to keep their full Runfile
+      private: pass the source via a GitHub secret (`${{ secrets.RUNFILE_SOURCE }}`)
+      and the action will materialize it for the job. The file lives in `$RUNNER_TEMP`
+      and disappears when the runner is torn down. Combine with `global-files` to
+      layer secret content on top of a public base Runfile.
+    default: ''
+  env-file-source:
+    description: |
+      Optional raw `.env` file source (plaintext or encrypted). When set, the contents
+      are written to a temp file on the runner and `RUNFILE_ENV_FILE_TARGET` is exported
+      so `run :env inject` and `run :env decrypt` use that file by default when no
+      positional path is given.
+
+      Same rationale as `runfile-source`: encrypted env files are safer than plaintext
+      ones, but exposing the ciphertext in an open-source repo is unnecessary attack
+      surface. Pass the contents via a GitHub secret
+      (`${{ secrets.RUNFILE_ENV_SOURCE }}`) and the action will materialize it for the
+      job. The file lives in `$RUNNER_TEMP` and disappears with the runner.
+    default: ''
 
 runs:
   using: composite
@@ -131,6 +157,28 @@ runs:
           [ -z "$key" ] && continue
           run :env secret-keys add --key "$key"
         done
+
+    - name: Materialize Runfile source
+      if: inputs.runfile-source != ''
+      shell: bash
+      env:
+        RUNFILE_SOURCE: ${{ inputs.runfile-source }}
+      run: |
+        path="$RUNNER_TEMP/runfile-source/Runfile.json5"
+        mkdir -p "$(dirname "$path")"
+        printf '%s\n' "$RUNFILE_SOURCE" > "$path"
+        echo "RUNFILE_TARGET=$path" >> "$GITHUB_ENV"
+
+    - name: Materialize env file source
+      if: inputs.env-file-source != ''
+      shell: bash
+      env:
+        ENV_FILE_SOURCE: ${{ inputs.env-file-source }}
+      run: |
+        path="$RUNNER_TEMP/runfile-source/.env"
+        mkdir -p "$(dirname "$path")"
+        printf '%s\n' "$ENV_FILE_SOURCE" > "$path"
+        echo "RUNFILE_ENV_FILE_TARGET=$path" >> "$GITHUB_ENV"
 
     - name: Register global Runfiles
       if: inputs.global-files != ''
