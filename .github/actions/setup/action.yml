@@ -37,11 +37,10 @@ inputs:
       subsequent `run` invocation without an explicit `-f` flag uses that file instead
       of discovering one in the workspace.
 
-      Intended for open-source repositories that want to keep their full Runfile
-      private: pass the source via a GitHub secret (`${{ secrets.RUNFILE_SOURCE }}`)
-      and the action will materialize it for the job. The file lives in `$RUNNER_TEMP`
-      and disappears when the runner is torn down. Combine with `global-files` to
-      layer secret content on top of a public base Runfile.
+      Intended for repositories that want to keep their full Runfile private: pass the
+      source via a GitHub secret and the action will materialize it for the job.
+      The file lives in `$RUNNER_TEMP` and disappears when the runner is torn down.
+      Combine with `global-files` to layer secret content on top of a public base Runfile.
     default: ''
   env-file-source:
     description: |
@@ -52,9 +51,8 @@ inputs:
 
       Same rationale as `runfile-source`: encrypted env files are safer than plaintext
       ones, but exposing the ciphertext in an open-source repo is unnecessary attack
-      surface. Pass the contents via a GitHub secret
-      (`${{ secrets.RUNFILE_ENV_SOURCE }}`) and the action will materialize it for the
-      job. The file lives in `$RUNNER_TEMP` and disappears with the runner.
+      surface. Pass the contents via a GitHub secret and the action will materialize
+      it for the job. The file lives in `$RUNNER_TEMP` and disappears with the runner.
     default: ''
 
 runs:
