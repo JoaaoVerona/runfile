@@ -343,6 +343,11 @@ crates/
   `regex_matches(haystack, pattern)` (compile via `compile_regex`; pattern errors surface as
   [`SubstitutionError::InvalidRegex`]; replacement strings honour the `regex` crate's
   `$1`/`${name}` backreferences; `regex_matches` is unanchored, use `^...$` for full-string),
+  `regex_capture(haystack, pattern, group_idx)` (returns the substring captured by group
+  `group_idx` of the FIRST match — `0` is the whole match; no match or out-of-range group both
+  return `""`, mirroring `nth`'s out-of-bounds convention; non-numeric `group_idx` errors as
+  `InvalidNumber`; bad pattern errors as `InvalidRegex`; this is the idiom for "pull a substring
+  out of a file" without the `(?s)^.*X(...)X.*$` greedy-replace trick),
   `base64_encode(s)`,
   `base64_decode(s)` (errors on `InvalidBase64` / `NonUtf8Decoded`),
   `sha256(s)` / `md5(s)` (hex-encoded digest of `s`'s UTF-8 bytes; `md5` is non-cryptographic — for cache-key /
@@ -371,7 +376,29 @@ crates/
   `shell_quote(s)` (per-shell single-arg quoting via [`quote_for_shell`] dispatching on `RUN.shell` —
   POSIX/fish use `'...'` with `'\''` escape, PowerShell uses `'...'` with `''` escape, cmd uses `"..."` with
   `""` escape; lets users inline arbitrary bytes — newlines, `$`, `"`, `'`, JSON, etc. — into shell commands
-  as single argv slots without env-var indirection), `try(expr)` (special-cased before the bulk arg-eval
+  as single argv slots without env-var indirection),
+  `capture(shell_cmd)` (run `shell_cmd` through the platform's default shell — `sh -c` on Unix,
+  `cmd /C` on Windows, matching `for shell:` iterators — at substitution time and return stdout
+  with a single trailing `\n` / `\r\n` stripped; non-zero exit, spawn failure, or non-UTF-8 stdout
+  all surface as [`SubstitutionError::CaptureFailed`]; results are memoized in
+  `RunArgs.capture_cache` keyed by the resolved command string so the real and redacted
+  substitution passes don't double-execute and repeats within a target collapse to a single spawn;
+  the cache `Arc` is propagated through `@target` invocations so children reuse the parent's
+  captures; during `args.dry_run` the call short-circuits to the placeholder
+  `<capture: '<resolved-cmd>'>` instead of spawning, mirroring `for shell:`'s dry-run rule),
+  `one_of(value, opt1, opt2, ...)` (variadic ≥2; returns `value` if it matches any option by
+  exact string equality, else errors as [`SubstitutionError::OneOfNoMatch`] with every valid
+  option listed; designed to collapse the `match { major: define(part, 'major'), ... }`
+  boilerplate that's purely value-validation),
+  `add(a, b, ...)` / `subtract(a, b, ...)` / `multiply(a, b, ...)` / `divide(a, b, ...)`
+  (variadic ≥2; each arg goes through [`parse_numeric`] which accepts decimal integers, decimals,
+  and scientific notation via `f64::from_str` and rejects `inf` / `nan` as
+  [`SubstitutionError::InvalidNumeric`]; whitespace is trimmed; the fold is left-to-right; result
+  formatted via [`format_number`] which prints as an integer when `value.fract() == 0.0` and as
+  the shortest round-trip `f64` Display otherwise — so `add('5', '3')` → `"8"`, `add('5.5',
+  '2.3', '1.2')` → `"9"`, `add('5', '1.1')` → `"6.1"`, `subtract('5', '5')` → `"0"`; `divide`
+  errors as [`SubstitutionError::DivideByZero`] on any zero divisor in the fold),
+  `try(expr)` (special-cased before the bulk arg-eval
   pass so inner errors are catchable; see "**`try(expr)` semantics**" below), `define(name, value)`
   (returns `""`, side effect: sets `VARS.name`), and `set_cwd(path)` (returns `""`, side effect: mutates
   `RunArgs.cwd_override` so every subsequent shell spawn in the current target lands in `path` — see
@@ -383,8 +410,17 @@ crates/
   (`split_chain_segments`) is paren / quote aware so ` ? ` inside `(...)` or `'...'`/`"..."` doesn't split.
   Errors: `UnknownFunction`, `FunctionArity { name, expected, got }`, `InvalidBase64`, `NonUtf8Decoded`,
   `InvalidRegex { name, message }`, `InvalidNumber { name, message }`,
+  `InvalidNumeric { name, message }` (arithmetic family — non-numeric / non-finite input),
+  `DivideByZero` (any divisor in the `divide` fold is `0`),
+  `OneOfNoMatch { value, options }` (`one_of` value didn't match the allow-list),
+  `CaptureFailed { command, message }` (`capture` shell exited non-zero, failed to spawn, or
+  produced non-UTF-8 stdout),
   `ReadFileError(path, msg)`, `InvalidJson(name, msg)`, `InvalidJsonPath(path, msg)`,
   `UnbalancedParens`, `BarewordLiteralNotAllowed`, plus `MalformedSubstitution` for arg-list whitespace violations.
+  Bare `ARGS` (no `.key`) is special-cased in [`evaluate_arg`] so it works as a function
+  argument too — `one_of(ARGS, 'major', ...)` resolves to the positional-args string at
+  evaluation time via `RunArgs::build_remaining_args(...)` (same builder the top-level
+  sentinel-replace path uses), so the value snapshots the current `consumed` / `flag_keys` state.
 - **`try(expr)` semantics**: catches errors from inner substitutions / function calls and either falls
   through the chain (if there's another segment) or resolves to `""` (if standalone). Implementation: when
   the inner expression errors, `try` returns the internal sentinel [`SubstitutionError::TryFailed`] (wrapping

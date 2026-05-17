@@ -389,7 +389,9 @@ fn walk_extract_steps(
 				};
 				let child_args = RunArgs::parse(&argv)
 					.with_run_context(args.run_context.clone())
-					.with_vars(args.vars.clone());
+					.with_vars(args.vars.clone())
+					.with_capture_cache(args.capture_cache.clone())
+					.with_dry_run(args.dry_run);
 
 				// Dep gets the parent's resolved env as substitution base
 				// (matches runtime `@target` env inheritance).

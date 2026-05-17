@@ -128,7 +128,8 @@ impl DependencyResolver for RunnerDependencyResolver<'_> {
 		let child_args = RunArgs::parse(&args)
 			.with_run_context(self.root.base_args.run_context.clone())
 			.with_stdin_prompter(self.root.base_args.stdin_prompter.clone())
-			.with_vars(self.root.base_args.vars.clone());
+			.with_vars(self.root.base_args.vars.clone())
+			.with_capture_cache(self.root.base_args.capture_cache.clone());
 
 		// Dependency invocations don't dedup — every `@target` call runs.
 		// Cycle detection uses the per-call chain.

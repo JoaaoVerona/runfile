@@ -248,15 +248,17 @@ and work as full substitution bodies *or* as chain segments:
   //   trim      : trim, trim_start, trim_end
   //   inspect   : length, starts_with, ends_with, contains
   //   transform : escape, repeat, replace_all, remove_all
-  //   regex     : regex_replace, regex_remove, regex_matches
+  //   regex     : regex_replace, regex_remove, regex_matches, regex_capture
   //   build     : concat, join
   //   split     : nth, first, last, count_parts
+  //   math      : add, subtract, multiply, divide
+  //   validate  : one_of
   //   encoding  : base64_encode, base64_decode
   //   hashing   : sha256, md5
   //   files     : read_file, file_exists
   //   json      : json_get, json_set
   //   error     : try
-  //   shell     : shell_quote
+  //   shell     : shell_quote, capture
   //   variables : define
   //   cwd       : set_cwd
   "echo deploying-{{ to_upper(ARGS.env) }}",
@@ -267,6 +269,10 @@ and work as full substitution bodies *or* as chain segments:
   "go test {{ replace_all(ARGS.flags, ' ', ' -tag=') }}",
   // Strip every match of a regex (here: collapse whitespace runs to a single space):
   "echo {{ regex_replace(ARGS.text, '\\s+', ' ') }}",
+  // Pull a capture group out of the first regex match — no `(?s)^.*X(...)X.*$`
+  // greedy-replace trick needed. Group 0 is the whole match; group N is the
+  // N-th `(...)`. Out-of-bounds returns "" (same convention as `nth`).
+  "echo version={{ regex_capture(read_file('app/build.gradle.kts'), 'versionName = \"([^\"]+)\"', '1') }}",
   // Split-by-separator scalar accessors — string in, string out, no list type:
   // basename idiom (last segment after `/`); empty string when input ends in `/`.
   "echo basename={{ last(ARGS.path, '/') }}",
@@ -281,6 +287,26 @@ and work as full substitution bodies *or* as chain segments:
   // Safely inline arbitrary content (newlines, quotes, JSON) as a CLI arg —
   // `shell_quote` picks the right quoting for the active shell:
   "some-tool --json {{ shell_quote(base64_decode(ENV.SECRET_BASE64)) }}",
+
+  // Slurp shell-command stdout straight into a substitution. `capture` runs
+  // the command through the platform's default shell (sh / cmd) and trims
+  // the trailing newline. Results are memoized per-target so the same
+  // capture in multiple commands runs once. `--dry-run` substitutes a
+  // readable placeholder instead of spawning the shell.
+  "echo built-at={{ capture('date -u +%Y-%m-%dT%H:%M:%SZ') }}",
+  "{{ define(sha, capture('git rev-parse HEAD')) }}",
+
+  // Arithmetic — variadic (2+ args), coerces strings to numbers, errors on
+  // non-numeric input. The result is formatted as an integer when whole and
+  // as a decimal otherwise (so `add('5', '3')` → "8", `add('5', '1.1')` →
+  // "6.1"). Divide-by-zero errors out.
+  "echo next-build={{ add(VARS.versionCode, '1') }}",
+  "echo half={{ divide(VARS.total, '2') }}",
+
+  // Validate a value against a fixed allow-list. Returns the value on
+  // match; lists every valid option in the error on mismatch. Collapses
+  // the four-case `match { major: define(part, 'major'), ... }` boilerplate.
+  "{{ define(part, one_of(ARGS, 'major', 'minor', 'patch', 'build')) }}",
 
   // Cache keys / content fingerprints. `sha256` for security-sensitive use,
   // `md5` for cheap fingerprinting (NOT cryptographically secure).

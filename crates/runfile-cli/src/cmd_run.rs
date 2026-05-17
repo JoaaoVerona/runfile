@@ -302,7 +302,13 @@ pub fn cmd_run(
 }
 
 pub fn cmd_dry_run(target_name: &str, extra_args: &[String], file: Option<&std::path::Path>, stdin_args: bool) {
-	let rt = resolve_target_setup(target_name, extra_args, file, stdin_args);
+	let mut rt = resolve_target_setup(target_name, extra_args, file, stdin_args);
+	// Flip the dry-run flag so side-effecting substitution functions
+	// (`capture(...)`) substitute a readable placeholder instead of actually
+	// spawning the command. Pure reads stay live so the printed output
+	// matches what the runtime would actually see.
+	let args = std::mem::take(&mut rt.args);
+	rt.args = args.with_dry_run(true);
 
 	let private_keys = keyring_keys::all_private_keys();
 	let pk_slice: Option<&[String]> = if private_keys.is_empty() {

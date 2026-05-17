@@ -2845,6 +2845,47 @@ fn scan_args_no_patterns() {
 }
 
 #[test]
+fn scan_args_detects_positional_inside_function_call() {
+	// `one_of(ARGS, 'a', 'b')` consumes positional args even though the
+	// substitution body isn't bare `ARGS`. validate_args would otherwise
+	// reject the command for being unable to consume the user's input.
+	let cmds = vec!["{{ one_of(ARGS, 'major', 'minor') }}".into()];
+	let (positional, named) = scan_args_usage(&cmds);
+	assert!(positional);
+	assert!(named.is_empty());
+}
+
+#[test]
+fn scan_args_detects_positional_inside_define() {
+	// `{{ define(x, ARGS) }}` is the natural form for stashing the
+	// positional input — also has to count as positional usage.
+	let cmds = vec!["{{ define(part, ARGS) }}".into()];
+	let (positional, _named) = scan_args_usage(&cmds);
+	assert!(positional);
+}
+
+#[test]
+fn scan_args_distinguishes_bare_args_from_named_form() {
+	// `ARGS.env` is a named-key reference, NOT a bare-ARGS consumer.
+	// Confirms the scanner doesn't double-count the same `ARGS` token.
+	let cmds = vec!["{{ one_of(ARGS.env, 'dev', 'prod') }}".into()];
+	let (positional, named) = scan_args_usage(&cmds);
+	assert!(!positional);
+	assert!(named.contains("env"));
+}
+
+#[test]
+fn scan_args_does_not_misread_word_containing_args() {
+	// Identifiers that merely contain "ARGS" (e.g. `MYARGS`, `ARGS_FOO`)
+	// must NOT register as positional usage. They're invalid barewords
+	// that surface elsewhere — the scanner just has to ignore them.
+	let cmds = vec!["echo {{ ENV.MYARGS ? 'none' }}".into()];
+	let (positional, named) = scan_args_usage(&cmds);
+	assert!(!positional);
+	assert!(named.is_empty());
+}
+
+#[test]
 fn validate_args_no_args_always_ok() {
 	let args = RunArgs::default();
 	let cmds = vec!["echo hello".into()];
@@ -8705,6 +8746,448 @@ mod functions {
 			.substitute(r#"{{ json_get('{"a":1}', 'a..b') }}"#, &HashMap::new())
 			.unwrap_err();
 		assert!(matches!(err, SubstitutionError::InvalidJsonPath(..)));
+	}
+
+	// ── regex_capture ──
+
+	#[test]
+	fn regex_capture_extracts_named_group_via_index() {
+		// `regex_capture(haystack, pattern, group_idx)` — common idiom for
+		// "pull a substring out of a file" without the greedy
+		// `(?s)^.*X(...)X.*$` + `regex_replace` dance.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(
+				"{{ regex_capture('versionName = \"3.0.0\"', 'versionName = \"([^\"]+)\"', '1') }}",
+				&HashMap::new(),
+			)
+			.unwrap();
+		assert_eq!(result, "3.0.0");
+	}
+
+	#[test]
+	fn regex_capture_group_zero_is_whole_match() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ regex_capture('foo=42', '[a-z]+=\\d+', '0') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "foo=42");
+	}
+
+	#[test]
+	fn regex_capture_returns_empty_on_no_match() {
+		// Out-of-bounds convention matches `nth`: missing match / missing
+		// group → "". Pair with regex_matches to bound-check if you need to
+		// distinguish "not found" from "matched but group is empty".
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ regex_capture('hello', 'world', '0') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "");
+	}
+
+	#[test]
+	fn regex_capture_returns_empty_on_out_of_range_group() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ regex_capture('abc', 'a(b)c', '5') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "");
+	}
+
+	#[test]
+	fn regex_capture_finds_first_match_only() {
+		// `regex_capture` returns the FIRST match's capture, not all of them
+		// — keeps the contract single-string in / single-string out.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(
+				"{{ regex_capture('a=1 b=2 c=3', '([a-z])=(\\d)', '2') }}",
+				&HashMap::new(),
+			)
+			.unwrap();
+		assert_eq!(result, "1");
+	}
+
+	#[test]
+	fn regex_capture_bad_pattern_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute("{{ regex_capture('hello', '(unclosed', '1') }}", &HashMap::new())
+			.unwrap_err();
+		assert!(matches!(
+			err,
+			SubstitutionError::InvalidRegex { ref name, .. } if name == "regex_capture"
+		));
+	}
+
+	#[test]
+	fn regex_capture_non_numeric_group_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute("{{ regex_capture('abc', 'a(b)c', 'oops') }}", &HashMap::new())
+			.unwrap_err();
+		assert!(matches!(
+			err,
+			SubstitutionError::InvalidNumber { ref name, .. } if name == "regex_capture"
+		));
+	}
+
+	// ── one_of ──
+
+	#[test]
+	fn one_of_passes_through_matching_value() {
+		// The canonical use case: validate an enum-like positional arg
+		// against the allow-list, return it untouched, no surrounding
+		// `match` block needed.
+		let args = RunArgs::parse(&["patch".into()]);
+		let result = args
+			.substitute(
+				"{{ one_of(ARGS, 'major', 'minor', 'patch', 'build') }}",
+				&HashMap::new(),
+			)
+			.unwrap();
+		assert_eq!(result, "patch");
+	}
+
+	#[test]
+	fn one_of_rejects_unknown_value_with_options_list() {
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute("{{ one_of('huge', 'small', 'medium', 'large') }}", &HashMap::new())
+			.unwrap_err();
+		match err {
+			SubstitutionError::OneOfNoMatch { value, options } => {
+				assert_eq!(value, "huge");
+				assert!(options.contains("\"small\""));
+				assert!(options.contains("\"medium\""));
+				assert!(options.contains("\"large\""));
+			}
+			other => panic!("expected OneOfNoMatch, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn one_of_single_option_works() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ one_of('only', 'only') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "only");
+	}
+
+	#[test]
+	fn one_of_requires_at_least_two_args() {
+		let args = RunArgs::parse(&[]);
+		let err = args.substitute("{{ one_of('value') }}", &HashMap::new()).unwrap_err();
+		assert!(matches!(
+			err,
+			SubstitutionError::FunctionArity { ref name, got: 1, .. } if name == "one_of"
+		));
+	}
+
+	#[test]
+	fn one_of_composes_with_define() {
+		// The whole point: collapse a 4-case `match { ... define(part, ...) ... }`
+		// block down to a single `define(part, one_of(ARGS, ...))` line.
+		let args = RunArgs::parse(&["minor".into()]);
+		let template = "{{ define(part, one_of(ARGS, 'major', 'minor', 'patch')) }}target={{ VARS.part }}";
+		let result = args.substitute(template, &HashMap::new()).unwrap();
+		assert_eq!(result, "target=minor");
+	}
+
+	// ── add / subtract / multiply / divide ──
+
+	#[test]
+	fn add_integers_returns_integer_string() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ add('5', '3') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "8");
+	}
+
+	#[test]
+	fn add_floats_with_whole_result_returns_integer_string() {
+		// 5.5 + 2.3 + 1.2 = 9.0 exactly — must format as "9", not "9.0".
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ add('5.5', '2.3', '1.2') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "9");
+	}
+
+	#[test]
+	fn add_mixed_int_and_float_returns_float() {
+		// 5 + 1.1 = 6.1 — fractional result formats with decimals.
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ add('5', '1.1') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "6.1");
+	}
+
+	#[test]
+	fn add_is_variadic_two_or_more() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ add('1', '2', '3', '4', '5') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "15");
+	}
+
+	#[test]
+	fn add_rejects_single_argument() {
+		let args = RunArgs::parse(&[]);
+		let err = args.substitute("{{ add('1') }}", &HashMap::new()).unwrap_err();
+		assert!(matches!(
+			err,
+			SubstitutionError::FunctionArity { ref name, got: 1, .. } if name == "add"
+		));
+	}
+
+	#[test]
+	fn add_rejects_non_numeric() {
+		let args = RunArgs::parse(&[]);
+		let err = args.substitute("{{ add('5', 'oops') }}", &HashMap::new()).unwrap_err();
+		assert!(matches!(
+			err,
+			SubstitutionError::InvalidNumeric { ref name, .. } if name == "add"
+		));
+	}
+
+	#[test]
+	fn add_rejects_infinity_string() {
+		// `f64::from_str` accepts "inf" / "nan"; we reject them so downstream
+		// arithmetic stays well-defined.
+		let args = RunArgs::parse(&[]);
+		assert!(args.substitute("{{ add('5', 'inf') }}", &HashMap::new()).is_err());
+		assert!(args.substitute("{{ add('5', 'nan') }}", &HashMap::new()).is_err());
+	}
+
+	#[test]
+	fn subtract_left_folds() {
+		let args = RunArgs::parse(&[]);
+		// 10 - 3 - 2 = 5
+		let result = args
+			.substitute("{{ subtract('10', '3', '2') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "5");
+	}
+
+	#[test]
+	fn subtract_can_produce_negative() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ subtract('3', '5') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "-2");
+	}
+
+	#[test]
+	fn subtract_zero_result_formats_as_zero() {
+		// -0.0 must format as "0", not "-0".
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ subtract('5', '5') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "0");
+	}
+
+	#[test]
+	fn multiply_variadic() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ multiply('2', '3', '4') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "24");
+	}
+
+	#[test]
+	fn multiply_float_result() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ multiply('2.5', '4') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "10");
+	}
+
+	#[test]
+	fn divide_integer_result_drops_decimal() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ divide('10', '2') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "5");
+	}
+
+	#[test]
+	fn divide_fractional_result_keeps_decimal() {
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ divide('10', '4') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "2.5");
+	}
+
+	#[test]
+	fn divide_left_folds_variadic() {
+		// 100 / 5 / 4 = 5
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ divide('100', '5', '4') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "5");
+	}
+
+	#[test]
+	fn divide_by_zero_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args.substitute("{{ divide('5', '0') }}", &HashMap::new()).unwrap_err();
+		assert!(matches!(err, SubstitutionError::DivideByZero));
+	}
+
+	#[test]
+	fn divide_by_zero_at_any_step_errors() {
+		// Zero divisor anywhere in the fold trips the error.
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute("{{ divide('100', '5', '0', '2') }}", &HashMap::new())
+			.unwrap_err();
+		assert!(matches!(err, SubstitutionError::DivideByZero));
+	}
+
+	#[test]
+	fn arithmetic_nests_naturally() {
+		// add(multiply(a, b), c) — exercises the recursive arg-resolution
+		// path used by every nested-function case.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ add(multiply('3', '4'), '5') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "17");
+	}
+
+	#[test]
+	fn arithmetic_consumes_vars_and_args() {
+		// Real-world bump pattern: `add(VARS.current_code, '1')`. Confirms
+		// the arithmetic family routes through the normal arg-resolution
+		// chain (so ARGS / VARS / chain fallbacks all just work).
+		let args = RunArgs::parse(&["--n=10".into()]);
+		let template = "{{ define(x, '5') }}sum={{ add(VARS.x, ARGS.n) }}";
+		let result = args.substitute(template, &HashMap::new()).unwrap();
+		assert_eq!(result, "sum=15");
+	}
+
+	#[test]
+	fn arithmetic_scientific_notation_accepted() {
+		// f64::from_str accepts scientific notation — keep that behaviour
+		// so `add('1e3', '1')` works as expected.
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ add('1e3', '1') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "1001");
+	}
+
+	#[test]
+	fn arithmetic_trims_whitespace() {
+		// Captures often arrive with whitespace; `parse_numeric` trims so
+		// `add(capture('echo 5'), '3')` works without an explicit `trim`.
+		let args = RunArgs::parse(&[]);
+		let result = args.substitute("{{ add(' 5 ', '3') }}", &HashMap::new()).unwrap();
+		assert_eq!(result, "8");
+	}
+
+	// ── capture ──
+
+	#[test]
+	#[cfg(not(windows))]
+	fn capture_runs_shell_and_strips_trailing_newline() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ capture('printf hello') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "hello");
+	}
+
+	#[test]
+	#[cfg(not(windows))]
+	fn capture_strips_only_single_trailing_newline() {
+		// Internal newlines stay; only the LAST `\n` (or `\r\n`) is stripped.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ capture('printf \"a\\nb\\n\"') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "a\nb");
+	}
+
+	#[test]
+	#[cfg(not(windows))]
+	fn capture_non_zero_exit_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args.substitute("{{ capture('exit 7') }}", &HashMap::new()).unwrap_err();
+		match err {
+			SubstitutionError::CaptureFailed { command, message } => {
+				assert_eq!(command, "exit 7");
+				assert!(message.contains("7"));
+			}
+			other => panic!("expected CaptureFailed, got {:?}", other),
+		}
+	}
+
+	#[test]
+	fn capture_dry_run_returns_placeholder() {
+		// Dry-run flag suppresses the side effect. The placeholder shows the
+		// resolved command verbatim so the user can see what would have run.
+		let args = RunArgs::parse(&[]).with_dry_run(true);
+		let result = args
+			.substitute("{{ capture('rm -rf /important') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "<capture: 'rm -rf /important'>");
+	}
+
+	#[test]
+	#[cfg(not(windows))]
+	fn capture_memoizes_repeated_calls() {
+		// Cache hit avoids re-running the shell. We verify by routing through
+		// a tiny script that increments a counter file: the second `capture`
+		// must return the SAME value as the first (because it hits the cache
+		// without spawning), even though running the script again would yield
+		// a higher number.
+		//
+		// The script avoids nested single quotes in the Runfile-level
+		// `capture('...')` literal, which would otherwise terminate the
+		// outer single-quoted string early.
+		let dir = tempfile::tempdir().unwrap();
+		let counter = dir.path().join("c.txt");
+		std::fs::write(&counter, "0").unwrap();
+		let script = dir.path().join("incr.sh");
+		std::fs::write(
+			&script,
+			"#!/bin/sh\nn=$(cat \"$1\")\necho $((n+1)) > \"$1\"\ncat \"$1\"\n",
+		)
+		.unwrap();
+		let args = RunArgs::parse(&[]);
+		let cmd = format!(
+			"sh {} {}",
+			script.to_string_lossy().replace('\\', "/"),
+			counter.to_string_lossy().replace('\\', "/"),
+		);
+		let template = format!("{{{{ capture('{}') }}}}", cmd);
+		let first = args.substitute(&template, &HashMap::new()).unwrap();
+		let second = args.substitute(&template, &HashMap::new()).unwrap();
+		assert_eq!(first, "1");
+		assert_eq!(second, "1");
+		// File reflects a single increment (the second `capture` hit the cache).
+		assert_eq!(std::fs::read_to_string(&counter).unwrap().trim(), "1");
+	}
+
+	#[test]
+	#[cfg(not(windows))]
+	fn capture_feeds_into_other_functions() {
+		// Composes with the arithmetic family — the motivating use case:
+		// "git rev-count + 1" or similar dynamic bump pipelines.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ add(capture('printf 41'), '1') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "42");
+	}
+
+	#[test]
+	#[cfg(not(windows))]
+	fn capture_works_with_try_fallback() {
+		// `try(capture(...))` should swallow CaptureFailed and fall through.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ try(capture('exit 1')) ? 'fallback' }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "fallback");
 	}
 }
 

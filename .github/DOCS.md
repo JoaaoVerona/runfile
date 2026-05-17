@@ -667,15 +667,17 @@ one space — strict whitespace).
   //   trim      : trim, trim_start, trim_end
   //   inspect   : length, starts_with, ends_with, contains
   //   transform : escape, repeat, replace_all, remove_all
-  //   regex     : regex_replace, regex_remove, regex_matches
+  //   regex     : regex_replace, regex_remove, regex_matches, regex_capture
   //   build     : concat, join
   //   split     : nth, first, last, count_parts
+  //   math      : add, subtract, multiply, divide
+  //   validate  : one_of
   //   encoding  : base64_encode, base64_decode
   //   hashing   : sha256, md5
   //   files     : read_file, file_exists
   //   json      : json_get, json_set
   //   error     : try
-  //   shell     : shell_quote
+  //   shell     : shell_quote, capture
   //   variables : define
   //   cwd       : set_cwd
   "echo deploying-{{ to_upper(ARGS.env) }}",
@@ -704,15 +706,17 @@ one space — strict whitespace).
 | **trim**      | `trim(s)`, `trim_start(s)`, `trim_end(s)` — strip whitespace per Rust's `str::trim*`.                                                                                                                                      |
 | **inspect**   | `length(s)` (Unicode scalar count), `starts_with(h, n)`, `ends_with(h, n)`, `contains(h, n)` — boolean returns are `"true"` / `"false"`.                                                                                   |
 | **transform** | `escape(s)` (backslash-escape control chars + `"`), `repeat(s, n)`, `replace_all(h, n, r)`, `remove_all(h, n)` (sugar for `replace_all(h, n, '')`).                                                                        |
-| **regex**     | `regex_replace(h, p, r)`, `regex_remove(h, p)`, `regex_matches(h, p)` (boolean). Replacement honours `$1`/`${name}` backrefs. Patterns are unanchored — use `^...$` for full-string match.                                 |
+| **regex**     | `regex_replace(h, p, r)`, `regex_remove(h, p)`, `regex_matches(h, p)` (boolean), `regex_capture(h, p, i)` — `regex_capture` returns the `i`-th group of the first match (`0` = whole match); no match or out-of-range group → `""`. Replacement honours `$1`/`${name}` backrefs. Patterns are unanchored — use `^...$` for full-string match. |
 | **build**     | `concat(s1, s2, …)` (variadic ≥1), `join(sep, s1, s2, …)` (variadic ≥1; `join(sep)` returns `""`).                                                                                                                         |
 | **split**     | `nth(s, sep, i)`, `first(s, sep)`, `last(s, sep)` (canonical "basename" idiom), `count_parts(s, sep)` (decimal string).                                                                                                    |
+| **math**      | `add(a, b, …)`, `subtract(a, b, …)`, `multiply(a, b, …)`, `divide(a, b, …)` — variadic (≥2 args). Coerce strings to numbers (decimal integer, float, or scientific); non-numeric, `inf`, and `nan` error as `InvalidNumeric`. Result formats as an integer when the value has no fractional part and as a decimal otherwise (`add('5', '3')` → `"8"`, `add('5.5', '2.3', '1.2')` → `"9"`, `add('5', '1.1')` → `"6.1"`). `divide` errors as `DivideByZero` if any divisor in the fold is `0`.                                                                                                                              |
+| **validate**  | `one_of(value, opt1, opt2, …)` (variadic ≥2) — returns `value` if it matches one of the options by exact string equality; else errors as `OneOfNoMatch` with every valid option listed. Collapses the "validate against an enum-shaped allow-list" pattern (otherwise a `match` block whose only purpose is rebinding the value to itself).                                                                                                                                       |
 | **encoding**  | `base64_encode(s)`, `base64_decode(s)` (errors on invalid base64 or non-UTF-8).                                                                                                                                            |
 | **hashing**   | `sha256(s)`, `md5(s)` — hex digest of UTF-8 bytes. **`md5` is non-cryptographic** — use `sha256` for security-sensitive contexts.                                                                                          |
 | **files**     | `read_file(path)`, `file_exists(path)` (`"true"`/`"false"`). Relative paths anchor to `{{ RUN.parent }}`. Permission errors fold to `"false"` for `file_exists`; pair with `try(read_file(p))` to distinguish unreadable.  |
 | **json**      | `json_get(json, path)` (dotted path; numeric segments are array indices; missing → `""`), `json_set(json, path, value)` — returns the modified JSON as compact text. Intermediate containers are created on demand.       |
 | **error**     | `try(expr)` — swallow errors from inner expressions. Standalone returns `""` on failure; chained, the next segment runs as a fallback. See below.                                                                          |
-| **shell**     | `shell_quote(s)` — quote `s` correctly for the active `RUN.shell`. Lets you safely inline arbitrary bytes (newlines, `$`, quotes, JSON) as a single argv slot without env-var indirection.                                 |
+| **shell**     | `shell_quote(s)` — quote `s` correctly for the active `RUN.shell`. Lets you safely inline arbitrary bytes (newlines, `$`, quotes, JSON) as a single argv slot without env-var indirection. `capture(cmd)` runs `cmd` through the platform's default shell (sh / cmd) at substitution time and returns stdout with the trailing newline stripped; non-zero exit errors as `CaptureFailed`. Results are memoized per resolved command string within a run (shared across `@target` boundaries) so repeats don't re-spawn and the real/redacted log passes don't double-execute. `--dry-run` substitutes `<capture: '<cmd>'>` instead of spawning. |
 | **variables** | `define(name, value)` — store `value` in the run-wide `VARS` map; returns `""`. `name` MUST be a bareword identifier (`[A-Za-z_][A-Za-z0-9_-]*`) — quotes are NOT allowed.                                                 |
 | **cwd**       | `set_cwd(path)` — change the cwd subsequent commands in this target spawn in (per-target; not inherited by `@target` children). Absolute paths replace; relative paths join. Returns `""`.                                 |
 
