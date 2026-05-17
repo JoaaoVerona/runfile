@@ -8628,6 +8628,152 @@ mod functions {
 		assert_eq!(result, "false");
 	}
 
+	// ── write_file() ──
+
+	#[test]
+	fn write_file_absolute_path() {
+		let dir = tempfile::tempdir().unwrap();
+		let p = dir.path().join("out.txt");
+		let args = RunArgs::parse(&[]);
+		let template = format!(
+			"{{{{ write_file('{}', 'hello world') }}}}",
+			p.to_string_lossy().replace('\\', "/")
+		);
+		let result = args.substitute(&template, &HashMap::new()).unwrap();
+		// Returns "" so a line containing only the call is empty-command-skip-eligible.
+		assert_eq!(result, "");
+		assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello world");
+	}
+
+	#[test]
+	fn write_file_relative_uses_run_parent() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut args = RunArgs::parse(&[]);
+		args.run_context.parent = dir.path().to_string_lossy().into_owned();
+		let result = args
+			.substitute("{{ write_file('data.txt', 'abc') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "");
+		let p = dir.path().join("data.txt");
+		assert_eq!(std::fs::read_to_string(&p).unwrap(), "abc");
+	}
+
+	#[test]
+	fn write_file_overwrites_existing() {
+		let dir = tempfile::tempdir().unwrap();
+		let p = dir.path().join("out.txt");
+		std::fs::write(&p, "old content").unwrap();
+		let args = RunArgs::parse(&[]);
+		let template = format!(
+			"{{{{ write_file('{}', 'new') }}}}",
+			p.to_string_lossy().replace('\\', "/")
+		);
+		args.substitute(&template, &HashMap::new()).unwrap();
+		assert_eq!(std::fs::read_to_string(&p).unwrap(), "new");
+	}
+
+	#[test]
+	fn write_file_round_trip_large_content_with_apostrophes() {
+		// The motivating case: bump-style replace-and-write on a file containing
+		// apostrophes. The naive shell `printf %s '...' > file` approach
+		// truncates on MSYS-on-Windows past ~5KB; `write_file` bypasses the
+		// shell entirely so size and quoting are irrelevant.
+		let dir = tempfile::tempdir().unwrap();
+		let src = dir.path().join("src.txt");
+		let dst = dir.path().join("dst.txt");
+		// Big content (~30KB) with apostrophes peppered throughout — the exact
+		// shape that breaks the shell-roundtrip path.
+		let mut content = String::new();
+		for i in 0..1000 {
+			content.push_str(&format!(
+				"line {} with an 'apostrophe' and a \"quote\" and a $dollar\n",
+				i
+			));
+		}
+		std::fs::write(&src, &content).unwrap();
+		let args = RunArgs::parse(&[]);
+		let template = format!(
+			"{{{{ write_file('{}', read_file('{}')) }}}}",
+			dst.to_string_lossy().replace('\\', "/"),
+			src.to_string_lossy().replace('\\', "/"),
+		);
+		args.substitute(&template, &HashMap::new()).unwrap();
+		assert_eq!(std::fs::read_to_string(&dst).unwrap(), content);
+	}
+
+	#[test]
+	fn write_file_dry_run_skips_side_effect() {
+		// Dry-run pass must NOT touch the filesystem — same rule `capture`
+		// follows. Useful so `--dry-run` is safe on targets that overwrite
+		// build artifacts.
+		let dir = tempfile::tempdir().unwrap();
+		let p = dir.path().join("must-not-exist.txt");
+		let args = RunArgs::parse(&[]).with_dry_run(true);
+		let template = format!(
+			"{{{{ write_file('{}', 'data') }}}}",
+			p.to_string_lossy().replace('\\', "/")
+		);
+		let result = args.substitute(&template, &HashMap::new()).unwrap();
+		assert_eq!(result, "");
+		assert!(!p.exists(), "dry-run must not create the file");
+	}
+
+	#[test]
+	fn write_file_redacted_pass_skips_side_effect() {
+		// The executor calls `substitute` (real) and `substitute_redacted` (log)
+		// back-to-back on the same template. write_file must skip the second
+		// pass so a target's file write doesn't fire twice and the log line
+		// stays a no-op.
+		let dir = tempfile::tempdir().unwrap();
+		let p = dir.path().join("count.txt");
+		let args = RunArgs::parse(&[]);
+		let template = format!(
+			"{{{{ write_file('{}', 'once') }}}}",
+			p.to_string_lossy().replace('\\', "/")
+		);
+		// Real pass: writes the file.
+		args.substitute(&template, &HashMap::new()).unwrap();
+		assert_eq!(std::fs::read_to_string(&p).unwrap(), "once");
+		// Now simulate the redacted pass by writing different content first and
+		// confirming substitute_redacted does NOT overwrite it.
+		std::fs::write(&p, "kept").unwrap();
+		args.substitute_redacted(&template, &HashMap::new()).unwrap();
+		assert_eq!(std::fs::read_to_string(&p).unwrap(), "kept");
+	}
+
+	#[test]
+	fn write_file_errors_on_bad_path() {
+		// Writing into a non-existent directory surfaces as WriteFileError so
+		// the user sees what went wrong instead of a silent skip.
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute(
+				"{{ write_file('/no/such/dir/xyz-runfile/out.txt', 'x') }}",
+				&HashMap::new(),
+			)
+			.unwrap_err();
+		assert!(matches!(err, SubstitutionError::WriteFileError(..)));
+	}
+
+	#[test]
+	fn write_file_composes_with_read_and_regex() {
+		// The bump-target pattern: read → regex_replace → write.
+		let dir = tempfile::tempdir().unwrap();
+		let p = dir.path().join("gradle.kts");
+		std::fs::write(&p, "versionCode = 42\nversionName = \"1.0.0\"\n").unwrap();
+		let args = RunArgs::parse(&[]);
+		let p_str = p.to_string_lossy().replace('\\', "/");
+		let template = format!(
+			"{{{{ write_file('{0}', regex_replace(read_file('{0}'), 'versionCode = [0-9]+', 'versionCode = 43')) }}}}",
+			p_str
+		);
+		args.substitute(&template, &HashMap::new()).unwrap();
+		assert_eq!(
+			std::fs::read_to_string(&p).unwrap(),
+			"versionCode = 43\nversionName = \"1.0.0\"\n"
+		);
+	}
+
 	// ── json_get() / json_set() ──
 
 	#[test]

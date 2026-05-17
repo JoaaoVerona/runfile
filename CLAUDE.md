@@ -355,6 +355,14 @@ crates/
   `read_file(path)` (read the file at `path` and return its UTF-8 contents; relative paths resolve against
   `{{ RUN.parent }}` — same anchor as `envFiles` — so reads stay co-located with the Runfile; pair with
   `try(...)` to recover from missing files; surfaces as [`SubstitutionError::ReadFileError`] on failure),
+  `write_file(path, content)` (write `content` to `path`; same path-resolution rules as `read_file`; goes
+  through Rust's `std::fs::write` so the shell is never involved — this is the recommended path for
+  read-modify-write pipelines because the naive `printf %s {{ shell_quote(VARS.x) }} > file` pattern is
+  broken on Windows for payloads larger than ~5KB: when Rust spawns `sh.exe -c <command>` via
+  `CreateProcessW`, MSYS's argv-reconstruction logic drops the pipe/redirect operators and stdout leaks
+  to the terminal; returns `""` so a `{{ write_file(...) }}`-only line is dropped by the
+  empty-command-skip path; side effect is skipped on `args.dry_run` and on the `redact_env` log pass —
+  same pattern as `define` / `set_cwd` / `capture`; IO failure surfaces as [`SubstitutionError::WriteFileError`]),
   `file_exists(path)` (`"true"` / `"false"`, same path resolution as `read_file`; permission errors fold to
   `"false"` — use `try(read_file(p))` to distinguish "missing" from "unreadable"),
   `json_get(json, path)` (parse `json` and extract the value at the dotted `path`; numeric segments are
@@ -415,7 +423,8 @@ crates/
   `OneOfNoMatch { value, options }` (`one_of` value didn't match the allow-list),
   `CaptureFailed { command, message }` (`capture` shell exited non-zero, failed to spawn, or
   produced non-UTF-8 stdout),
-  `ReadFileError(path, msg)`, `InvalidJson(name, msg)`, `InvalidJsonPath(path, msg)`,
+  `ReadFileError(path, msg)`, `WriteFileError(path, msg)` (`write_file` could not write — bad
+  directory, permissions, etc.), `InvalidJson(name, msg)`, `InvalidJsonPath(path, msg)`,
   `UnbalancedParens`, `BarewordLiteralNotAllowed`, plus `MalformedSubstitution` for arg-list whitespace violations.
   Bare `ARGS` (no `.key`) is special-cased in [`evaluate_arg`] so it works as a function
   argument too — `one_of(ARGS, 'major', ...)` resolves to the positional-args string at

@@ -255,7 +255,7 @@ and work as full substitution bodies *or* as chain segments:
   //   validate  : one_of
   //   encoding  : base64_encode, base64_decode
   //   hashing   : sha256, md5
-  //   files     : read_file, file_exists
+  //   files     : read_file, write_file, file_exists
   //   json      : json_get, json_set
   //   error     : try
   //   shell     : shell_quote, capture
@@ -319,6 +319,15 @@ and work as full substitution bodies *or* as chain segments:
   // Read a file inline — relative paths anchor to the Runfile directory.
   // Use `try(...)` to recover from missing files.
   "echo version={{ try(read_file('VERSION')) ? '0.0.0-dev' }}",
+
+  // Write a file straight from a substitution — pairs with `read_file` for
+  // read-modify-write pipelines (version bumps, config edits, …). Returns
+  // an empty string, so a line containing only this call is dropped silently
+  // (same convention as `define`). Goes through Rust's `std::fs::write`, so
+  // it sidesteps the shell entirely — safe for large content, content with
+  // quotes, embedded newlines, anything that would break a
+  // `printf > file`-style redirect on Windows. `--dry-run` skips the write.
+  "{{ write_file('build.gradle.kts', regex_replace(read_file('build.gradle.kts'), 'versionCode = [0-9]+', 'versionCode = 43')) }}",
 
   // Pull values out of arbitrary JSON without `jq` (works on every shell):
   "echo db_host={{ json_get(read_file('config.json'), 'database.host') }}",

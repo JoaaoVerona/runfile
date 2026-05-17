@@ -674,7 +674,7 @@ one space — strict whitespace).
   //   validate  : one_of
   //   encoding  : base64_encode, base64_decode
   //   hashing   : sha256, md5
-  //   files     : read_file, file_exists
+  //   files     : read_file, write_file, file_exists
   //   json      : json_get, json_set
   //   error     : try
   //   shell     : shell_quote, capture
@@ -713,7 +713,7 @@ one space — strict whitespace).
 | **validate**  | `one_of(value, opt1, opt2, …)` (variadic ≥2) — returns `value` if it matches one of the options by exact string equality; else errors as `OneOfNoMatch` with every valid option listed. Collapses the "validate against an enum-shaped allow-list" pattern (otherwise a `match` block whose only purpose is rebinding the value to itself).                                                                                                                                       |
 | **encoding**  | `base64_encode(s)`, `base64_decode(s)` (errors on invalid base64 or non-UTF-8).                                                                                                                                            |
 | **hashing**   | `sha256(s)`, `md5(s)` — hex digest of UTF-8 bytes. **`md5` is non-cryptographic** — use `sha256` for security-sensitive contexts.                                                                                          |
-| **files**     | `read_file(path)`, `file_exists(path)` (`"true"`/`"false"`). Relative paths anchor to `{{ RUN.parent }}`. Permission errors fold to `"false"` for `file_exists`; pair with `try(read_file(p))` to distinguish unreadable.  |
+| **files**     | `read_file(path)`, `write_file(path, content)`, `file_exists(path)` (`"true"`/`"false"`). Relative paths anchor to `{{ RUN.parent }}`. Permission errors fold to `"false"` for `file_exists`; pair with `try(read_file(p))` to distinguish unreadable. `write_file` returns `""` (so a line containing only the call is empty-command-skipped), goes through `std::fs::write` to bypass the shell entirely, and skips on `--dry-run` and the redacted-logging pass. IO failure surfaces as `WriteFileError`. |
 | **json**      | `json_get(json, path)` (dotted path; numeric segments are array indices; missing → `""`), `json_set(json, path, value)` — returns the modified JSON as compact text. Intermediate containers are created on demand.       |
 | **error**     | `try(expr)` — swallow errors from inner expressions. Standalone returns `""` on failure; chained, the next segment runs as a fallback. See below.                                                                          |
 | **shell**     | `shell_quote(s)` — quote `s` correctly for the active `RUN.shell`. Lets you safely inline arbitrary bytes (newlines, `$`, quotes, JSON) as a single argv slot without env-var indirection. `capture(cmd)` runs `cmd` through the platform's default shell (sh / cmd) at substitution time and returns stdout with the trailing newline stripped; non-zero exit errors as `CaptureFailed`. Results are memoized per resolved command string within a run (shared across `@target` boundaries) so repeats don't re-spawn and the real/redacted log passes don't double-execute. `--dry-run` substitutes `<capture: '<cmd>'>` instead of spawning. |
