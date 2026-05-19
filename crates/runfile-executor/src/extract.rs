@@ -3,7 +3,7 @@ use crate::control_flow::{
 	collect_shell_only_leaves, evaluate_if_condition, expand_glob, resolve_match_branch, ControlFlowError,
 	ShellLeafContext, ShellLeafFlattenError,
 };
-use crate::env::{build_env_with_base, EnvFileError};
+use crate::env::{build_env_with_base, EnvFileError, PrivateKeyProvider};
 use crate::executor::join_shell_commands;
 use runfile_parser::{
 	walk_spec_aux_templates, walk_step_templates, CommandStep, ForStep, Runfile, WhenStep, WORKING_DIRECTORY_DEFAULT,
@@ -93,7 +93,7 @@ pub fn extract_target_with_cwd<'a>(
 	caller_cwd: &'a Path,
 	source_dirs: &'a HashMap<String, PathBuf>,
 	source_files: &'a HashMap<String, PathBuf>,
-	available_private_keys: Option<&'a [String]>,
+	available_private_keys: Option<&'a dyn PrivateKeyProvider>,
 	shell_kind: &'a ShellKind,
 ) -> Result<Vec<ExtractedCommand>, ExtractError> {
 	let all_commands = collect_all_extract_commands(target_name, runfile)?;
@@ -145,7 +145,7 @@ struct ExtractContext<'a> {
 	runfile_dir: &'a Path,
 	source_dirs: &'a HashMap<String, PathBuf>,
 	source_files: &'a HashMap<String, PathBuf>,
-	available_private_keys: Option<&'a [String]>,
+	available_private_keys: Option<&'a dyn PrivateKeyProvider>,
 	/// Shell kind used to pick the correct sequencing operator (`&&` / `;` /
 	/// `&`) when joining `sameShell: true` targets into a single command line.
 	/// Doesn't affect substitution; only the join separator.

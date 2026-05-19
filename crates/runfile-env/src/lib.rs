@@ -6,11 +6,63 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use thiserror::Error;
 
 // Re-export crypto utilities for convenience
 pub use runfile_crypto::has_encrypted_values;
 pub use runfile_crypto::is_encrypted;
+
+/// Provider of decryption private keys. `EnvBuildParams.available_private_keys`
+/// takes a `&dyn PrivateKeyProvider` so callers can decide *when* the keys are
+/// actually obtained. The trait's `keys()` method is only invoked from
+/// [`resolve_decryption_key`], which itself only runs when the merged env
+/// actually contains an `encrypted:` value — so a target that does no
+/// decryption never triggers the underlying lookup.
+///
+/// The CLI uses [`LazyPrivateKeys`] to defer the credential-store fetch
+/// (and any user-facing unlock prompt) until it's strictly needed.
+///
+/// `Sync` is a supertrait because a provider can be shared by reference
+/// across parallel-execution worker threads.
+pub trait PrivateKeyProvider: Sync {
+	/// Return the key pool to try when matching `RUNFILE_ENCRYPTION_PUBLIC_KEY`.
+	fn keys(&self) -> &[String];
+}
+
+// Blanket impl so any `Sync` type that hands out a `&[String]` is a provider.
+// Covers `Vec<String>` and `[String; N]` directly — call sites that pass
+// `Some(&vec_of_keys)` coerce automatically to `Option<&dyn PrivateKeyProvider>`.
+impl<T: AsRef<[String]> + Sync + ?Sized> PrivateKeyProvider for T {
+	fn keys(&self) -> &[String] {
+		self.as_ref()
+	}
+}
+
+/// Lazy [`PrivateKeyProvider`]: invokes `loader` on first `keys()` call and
+/// memoizes the result for the lifetime of the value. The CLI wraps the
+/// `keyring_keys::all_private_keys()` lookup in one of these so the OS
+/// credential store is only touched when an encrypted env value is actually
+/// encountered during env build.
+pub struct LazyPrivateKeys {
+	cell: OnceLock<Vec<String>>,
+	loader: Box<dyn Fn() -> Vec<String> + Send + Sync>,
+}
+
+impl LazyPrivateKeys {
+	pub fn new(loader: impl Fn() -> Vec<String> + Send + Sync + 'static) -> Self {
+		Self {
+			cell: OnceLock::new(),
+			loader: Box::new(loader),
+		}
+	}
+}
+
+impl PrivateKeyProvider for LazyPrivateKeys {
+	fn keys(&self) -> &[String] {
+		self.cell.get_or_init(|| (self.loader)())
+	}
+}
 
 #[derive(Debug, Error)]
 pub enum EnvError {
@@ -60,8 +112,14 @@ pub struct EnvBuildParams<'a> {
 	/// Available private keys for decrypting `encrypted:` prefixed values.
 	/// After merging, if encrypted values are detected, the key is resolved by:
 	/// 1. `RUNFILE_ENCRYPTION_KEY` env var (for CI/CD)
-	/// 2. Auto-matching `RUNFILE_ENCRYPTION_PUBLIC_KEY` against these private keys
-	pub available_private_keys: Option<&'a [String]>,
+	/// 2. Auto-matching `RUNFILE_ENCRYPTION_PUBLIC_KEY` against this provider's keys
+	///
+	/// The provider's `keys()` is invoked at most once per `build_env` call —
+	/// and only when an encrypted value is actually present in the merged env.
+	/// Callers that load keys from a slow or interactive source (e.g. an OS
+	/// credential store) should wrap them in [`LazyPrivateKeys`] so the
+	/// lookup is deferred until strictly needed.
+	pub available_private_keys: Option<&'a dyn PrivateKeyProvider>,
 	/// Optional override for the env-var base. When `Some`, this map replaces
 	/// the default `std::env::vars()` snapshot as the starting layer of the
 	/// merged env. Used to pass a parent target's already-resolved env into a
@@ -298,7 +356,7 @@ fn apply_add_to_path_chain(
 /// 3. Error if no key can be resolved
 fn resolve_decryption_key(
 	env_map: &HashMap<String, String>,
-	available_private_keys: Option<&[String]>,
+	available_private_keys: Option<&dyn PrivateKeyProvider>,
 ) -> Result<String, EnvError> {
 	// 1. Check RUNFILE_ENCRYPTION_KEY in the merged env (includes system env)
 	if let Some(key) = env_map.get("RUNFILE_ENCRYPTION_KEY") {
@@ -329,7 +387,8 @@ fn resolve_decryption_key(
 
 	// 2. Check RUNFILE_ENCRYPTION_PUBLIC_KEY and match against available private keys
 	if let Some(public_key) = env_map.get(runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR) {
-		if let Some(private_keys) = available_private_keys {
+		if let Some(provider) = available_private_keys {
+			let private_keys = provider.keys();
 			if let Some(matched) = runfile_crypto::find_matching_private_key(public_key, private_keys) {
 				return Ok(matched);
 			}

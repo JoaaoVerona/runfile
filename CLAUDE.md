@@ -248,9 +248,13 @@ crates/
   earlier in the same block (via `{{ ENV.X }}`) and gets that lexically-prior value, even if the shell's value will
   ultimately win in step 4. This keeps existing Runfiles working — the only observable change is the final value of
   any key the shell also defines.
-- `EnvBuildParams.available_private_keys`: optional list of private keys; when encrypted values are detected, the key is
-  auto-resolved via `RUNFILE_ENCRYPTION_KEY` env var or by matching `RUNFILE_ENCRYPTION_PUBLIC_KEY` against the
-  available private keys.
+- `EnvBuildParams.available_private_keys`: `Option<&dyn PrivateKeyProvider>` — invoked only when encrypted values are
+  detected in the merged env, after which the key is auto-resolved via `RUNFILE_ENCRYPTION_KEY` env var or by matching
+  `RUNFILE_ENCRYPTION_PUBLIC_KEY` against the provider's keys. Any `T: AsRef<[String]> + Sync` satisfies the trait via
+  a blanket impl (so existing `Some(&vec_of_keys)` call sites Just Work). `LazyPrivateKeys::new(loader)` memoizes the
+  loader via `OnceLock<Vec<String>>` — used by the CLI to wrap `keyring_keys::all_private_keys` so the OS credential
+  store is never touched for runs whose env has no `encrypted:` values, and only once per run when it is needed. This
+  is what keeps the macOS Keychain unlock prompt from firing on every invocation regardless of target.
 - `check_env_case_duplicates()`: validates no env var keys differ only by casing.
 - `collect_runfile_env()`: collects only Runfile-defined env vars (not system), sorted by key. Takes a single
   `Option<&HashMap<String, String>>` (no global/command distinction).
@@ -580,8 +584,9 @@ crates/
   `run_dependency` call, so optional skip semantics work uniformly in sequential, parallel-shell, and
   parallel-`@target` contexts. Nested `parallel: true` deps fan out further (no enforced sequentialization).
 - `env.rs`: thin bridge that converts `CommandSpec` (parser type) into raw data for `runfile-env`, wiring
-  `RunArgs::substitute` as the substitution closure. Re-exports `EnvFileError` and `parse_env_file` from `runfile-env`.
-  Passes `available_private_keys` through for automatic encrypted env decryption.
+  `RunArgs::substitute` as the substitution closure. Re-exports `EnvFileError`, `parse_env_file`, `PrivateKeyProvider`,
+  and `LazyPrivateKeys` from `runfile-env`. Threads `available_private_keys: Option<&dyn PrivateKeyProvider>` through
+  every executor path so callers control when key resolution actually happens.
 - `execute_command()`: walks `spec.commands: Vec<CommandStep>` recursively, executing each leaf shell through the
   resolved shell. `if`/`for` blocks are expanded inline: `if` substitutes its `condition` template through
   [`RunArgs::substitute`] and takes the `then` branch iff the resolved string equals `"true"` exactly. `"false"`

@@ -6,6 +6,7 @@ use std::path::Path;
 // Re-export the core env types and functions from runfile-env
 pub use runfile_env::parse_env_file;
 pub use runfile_env::EnvError as EnvFileError;
+pub use runfile_env::{LazyPrivateKeys, PrivateKeyProvider};
 
 /// Convert an `Option<HashMap<String, EnvValue>>` to `Option<HashMap<String, String>>`.
 pub fn convert_env_map(env: Option<&HashMap<String, EnvValue>>) -> Option<HashMap<String, String>> {
@@ -45,7 +46,7 @@ pub fn build_env(
 	working_dir: &Path,
 	env_files_base_dir: &Path,
 	args: &RunArgs,
-	available_private_keys: Option<&[String]>,
+	available_private_keys: Option<&dyn PrivateKeyProvider>,
 ) -> Result<HashMap<String, String>, EnvFileError> {
 	build_env_with_base(
 		command_spec,
@@ -72,7 +73,7 @@ pub fn build_env_with_base(
 	working_dir: &Path,
 	env_files_base_dir: &Path,
 	args: &RunArgs,
-	available_private_keys: Option<&[String]>,
+	available_private_keys: Option<&dyn PrivateKeyProvider>,
 	base_env: Option<&HashMap<String, String>>,
 	parent_add_to_path_chain: Option<&[Vec<String>]>,
 ) -> Result<HashMap<String, String>, EnvFileError> {

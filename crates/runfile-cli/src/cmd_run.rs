@@ -1,6 +1,6 @@
 use runfile_executor::{
 	extract_target_with_cwd, format_extracted_commands, log_total_timing, run_target_with_cwd,
-	InteractiveStdinPrompter, RunArgs, RunContext, StdinPrompter,
+	InteractiveStdinPrompter, LazyPrivateKeys, RunArgs, RunContext, StdinPrompter,
 };
 use runfile_parser::{is_internal_target_name, CommandSpec, Runfile, SourceKind};
 use runfile_settings::{keyring_keys, Settings};
@@ -253,12 +253,12 @@ pub fn cmd_run(
 		return cmd_watch(target_name, extra_args, file, timings, yes, stdin_args);
 	}
 
-	let private_keys = keyring_keys::all_private_keys();
-	let pk_slice: Option<&[String]> = if private_keys.is_empty() {
-		None
-	} else {
-		Some(private_keys.as_slice())
-	};
+	// Defer the keyring read until the env-build path actually encounters an
+	// `encrypted:` value — for the common case (no encrypted env), the OS
+	// credential store is never touched, and on macOS we don't trigger the
+	// Keychain unlock prompt for unrelated runs.
+	let private_keys = LazyPrivateKeys::new(keyring_keys::all_private_keys);
+	let pk_provider = Some(&private_keys as &dyn runfile_executor::PrivateKeyProvider);
 
 	let total_start = Instant::now();
 
@@ -274,7 +274,7 @@ pub fn cmd_run(
 		&rt.source_files,
 		timings,
 		yes,
-		pk_slice,
+		pk_provider,
 	) {
 		Ok(result) => {
 			if timings {
@@ -310,12 +310,10 @@ pub fn cmd_dry_run(target_name: &str, extra_args: &[String], file: Option<&std::
 	let args = std::mem::take(&mut rt.args);
 	rt.args = args.with_dry_run(true);
 
-	let private_keys = keyring_keys::all_private_keys();
-	let pk_slice: Option<&[String]> = if private_keys.is_empty() {
-		None
-	} else {
-		Some(private_keys.as_slice())
-	};
+	// Same lazy-keys treatment as `cmd_run`: only hit the credential store if
+	// the dry-run actually walks into an encrypted env.
+	let private_keys = LazyPrivateKeys::new(keyring_keys::all_private_keys);
+	let pk_provider = Some(&private_keys as &dyn runfile_executor::PrivateKeyProvider);
 
 	match extract_target_with_cwd(
 		&rt.resolved_name,
@@ -326,7 +324,7 @@ pub fn cmd_dry_run(target_name: &str, extra_args: &[String], file: Option<&std::
 		&rt.caller_cwd,
 		&rt.source_dirs,
 		&rt.source_files,
-		pk_slice,
+		pk_provider,
 		&rt.shell.kind,
 	) {
 		Ok(commands) => {
@@ -401,12 +399,11 @@ pub fn cmd_watch(
 	let include_set = include_builder.build().unwrap();
 	let exclude_set = exclude_builder.build().unwrap();
 
-	let private_keys = keyring_keys::all_private_keys();
-	let pk_slice: Option<&[String]> = if private_keys.is_empty() {
-		None
-	} else {
-		Some(private_keys.as_slice())
-	};
+	// One lazy provider for the whole watch session — the credential store is
+	// touched at most once across all re-runs (and only if an encrypted env is
+	// hit), and never for watch sessions whose target needs no decryption.
+	let private_keys = LazyPrivateKeys::new(keyring_keys::all_private_keys);
+	let pk_provider = Some(&private_keys as &dyn runfile_executor::PrivateKeyProvider);
 
 	// Run the target once initially
 	eprintln!(
@@ -425,7 +422,7 @@ pub fn cmd_watch(
 		&rt.source_files,
 		timings,
 		yes,
-		pk_slice,
+		pk_provider,
 	);
 
 	// Set up file watcher
@@ -517,7 +514,7 @@ pub fn cmd_watch(
 			&rt.source_files,
 			timings,
 			yes,
-			pk_slice,
+			pk_provider,
 		);
 
 		eprintln!("{BOLD}{CYAN}[runfile]{RESET} {DIM}Watching for changes... (Ctrl+C to stop){RESET}");

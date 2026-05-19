@@ -3,7 +3,7 @@ use crate::control_flow::{
 	collect_shell_only_leaves, count_leaves, evaluate_if_condition, expand_for_iterations, resolve_match_branch,
 	ControlFlowError, ShellLeafContext, ShellLeafFlattenError,
 };
-use crate::env::{build_env_with_base, EnvFileError};
+use crate::env::{build_env_with_base, EnvFileError, PrivateKeyProvider};
 use crate::force_kill::ForceKillGuard;
 use crate::logging::{
 	is_logging_enabled, log_command, log_command_timing, log_parallel_command, log_parallel_failure_summary,
@@ -148,7 +148,7 @@ impl ExecSetup {
 		args: &RunArgs,
 		working_dir: &Path,
 		env_files_base_dir: &Path,
-		available_private_keys: Option<&[String]>,
+		available_private_keys: Option<&dyn PrivateKeyProvider>,
 		parent_env: Option<&HashMap<String, String>>,
 		parent_add_to_path_chain: &[Vec<String>],
 		output_prefix: Option<&str>,
@@ -233,7 +233,7 @@ pub fn execute_command(
 	shell: &ResolvedShell,
 	args: &RunArgs,
 	working_dir: &Path,
-	available_private_keys: Option<&[String]>,
+	available_private_keys: Option<&dyn PrivateKeyProvider>,
 	timings: bool,
 ) -> Result<ExecutionResult, ExecuteError> {
 	let counter = StepCounter::new(count_leaves(&spec.commands));
@@ -270,7 +270,7 @@ pub fn execute_command_with_counter(
 	args: &RunArgs,
 	working_dir: &Path,
 	env_files_base_dir: &Path,
-	available_private_keys: Option<&[String]>,
+	available_private_keys: Option<&dyn PrivateKeyProvider>,
 	timings: bool,
 	counter: &StepCounter,
 	deps: &dyn DependencyResolver,
@@ -389,7 +389,7 @@ pub fn execute_same_shell_with_counter(
 	args: &RunArgs,
 	working_dir: &Path,
 	env_files_base_dir: &Path,
-	available_private_keys: Option<&[String]>,
+	available_private_keys: Option<&dyn PrivateKeyProvider>,
 	timings: bool,
 	counter: &StepCounter,
 	parent_env: Option<&HashMap<String, String>>,
@@ -1901,7 +1901,7 @@ pub fn execute_parallel(
 	shell: &ResolvedShell,
 	args: &RunArgs,
 	working_dir: &Path,
-	available_private_keys: Option<&[String]>,
+	available_private_keys: Option<&dyn PrivateKeyProvider>,
 	timings: bool,
 ) -> Result<ExecutionResult, ExecuteError> {
 	let counter = StepCounter::new(count_leaves(&spec.commands));
@@ -1930,7 +1930,7 @@ pub fn execute_parallel_with_counter(
 	args: &RunArgs,
 	working_dir: &Path,
 	env_files_base_dir: &Path,
-	available_private_keys: Option<&[String]>,
+	available_private_keys: Option<&dyn PrivateKeyProvider>,
 	_timings: bool,
 	counter: &StepCounter,
 	deps: &dyn DependencyResolver,

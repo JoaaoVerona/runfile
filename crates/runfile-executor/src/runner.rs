@@ -1,6 +1,6 @@
 use crate::args::{validate_args, RunArgs, SubstitutionError};
 use crate::control_flow::{collect_detach_leaves, DetachFlattenError};
-use crate::env::EnvFileError;
+use crate::env::{EnvFileError, PrivateKeyProvider};
 use crate::executor::{
 	execute_command_with_counter, execute_detached, execute_parallel_with_counter, execute_same_shell_with_counter,
 	join_shell_commands, DependencyResolver, ExecuteError, ExecutionResult,
@@ -61,7 +61,7 @@ struct RunRoot<'a> {
 	source_files: &'a HashMap<String, PathBuf>,
 	timings: bool,
 	yes: bool,
-	available_private_keys: Option<&'a [String]>,
+	available_private_keys: Option<&'a dyn PrivateKeyProvider>,
 	step_counter: StepCounter,
 }
 
@@ -230,7 +230,7 @@ pub fn run_target_with_cwd(
 	source_files: &HashMap<String, PathBuf>,
 	timings: bool,
 	yes: bool,
-	available_private_keys: Option<&[String]>,
+	available_private_keys: Option<&dyn PrivateKeyProvider>,
 ) -> Result<ExecutionResult, RunError> {
 	// Make sure the run_context is in sync with the resolved shell the caller
 	// decided on AND carries the merged Runfile's namespace list (for `for
