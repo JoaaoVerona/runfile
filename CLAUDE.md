@@ -678,7 +678,7 @@ crates/
 **Files:** `main.rs`
 
 - Clap-based CLI with colon-prefixed subcommands: `:list`, `:config`, `:env`, `:mcp`, `:completions`, `:generate`,
-  `:convert`, `:init`. `--dry-run` is a top-level flag (not a subcommand) that prints the resolved leaf shell
+  `:convert`, `:init`, `:update`. `--dry-run` is a top-level flag (not a subcommand) that prints the resolved leaf shell
   commands to stdout (one per line, no `[runfile]` prefix, no ANSI) instead of executing them — exactly the
   behaviour the removed `:extract` subcommand had. `--dry-run` recursively expands `@target` invocations: the
   dep's resolved leaf shell commands appear inline at the call site (with the dep's own env block reflected on
@@ -697,6 +697,29 @@ crates/
   placeholder, since running an arbitrary shell iterator would have side effects (process spawn, possibly slow
   I/O, possibly stateful). Use `--dry-run` confidently as a read-only preview without worrying about iterator
   commands firing.
+- `:update` (`cmd_update.rs`): self-update by re-running the published install script — NOT a bespoke
+  download/unpack/swap path. `classify_install(current_exe)` (pure, unit-tested) returns `Npm` when any path
+  component is `node_modules` (the npm package extracts to `.../node_modules/@runfile/cli/bin/<platform>/run`),
+  else `Standalone`. Npm-managed installs are handled by `update_via_npm`: on Unix it runs `npm install -g
+  <spec>` directly (replacing a running binary's file is fine there); on Windows it only PRINTS the command —
+  npm would have to overwrite the locked, running `run.exe` and, since npm owns the extraction, the rename-aside
+  trick can't be applied, so a mid-reify failure could corrupt the global package. `npm_package_spec(version)`
+  (pure, unit-tested) strips a leading `v` from the tag so `--version v0.19.0` and `0.19.0` both yield
+  `@runfile/cli@0.19.0`; `None` → `@runfile/cli@latest`. For standalone installs, it sets `RUNFILE_INSTALL_DIR`
+  to the running binary's parent dir and shells out to the
+  README one-liner — `sh -c "curl -fsSL <install.sh> | sh -s -- <version>"` on Unix, `powershell -NoProfile
+  -Command "& ([scriptblock]::Create((iwr <install.ps1>).Content)) <version>"` on Windows (the scriptblock form
+  is what lets the version arg reach the script's `$args[0]`, which a bare `iex` can't). `--version <tag>` pins a
+  release; absent → latest. The install-script URLs are `cfg`-gated per platform so each compile only references
+  the one it uses. **Windows self-replacement**: you can't overwrite a running `.exe`, but you can rename it —
+  `install.ps1` renames any existing `run.exe` to `run.exe.old` (deleting a stale prior `.old` first) before
+  moving the new binary in, so `:update` works while `run.exe` is executing. `install.ps1` then tries to delete
+  the `.old` immediately, which succeeds on a manual `iwr | iex` upgrade (the old binary isn't running) but fails
+  during `:update` (it's the live process image). For the `:update` case, `schedule_old_deletion_at_reboot(exe)`
+  (Windows-only, via `windows-sys`) calls `MoveFileExW(<exe>.old, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)` to register
+  the locked `.old` for deletion at the next boot. That registry write needs admin, so on the common per-user
+  install it silently no-ops — `install.ps1`'s start-of-next-update sweep is the guaranteed fallback either way.
+  Unix `mv`-over-running-binary already works, so `install.sh` is unchanged.
 - Global flags: `-f`/`--file` (custom Runfile path), `--timings` (print execution times), `-y`/`--yes` (skip
   confirms), `--stdin-args` (prompt for missing `ARGS.*`/`ENV.*`/`FLAGS.*` instead of erroring),
   `--dry-run` (print resolved leaf shell commands without executing). For inline debug branching, declare

@@ -28,9 +28,28 @@ try {
   Expand-Archive -Path (Join-Path $tmp $archive) -DestinationPath $tmp
 
   New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-  Move-Item -Path (Join-Path $tmp "runfile-cli-$target\run.exe") -Destination (Join-Path $installDir 'run.exe') -Force
+  $dest = Join-Path $installDir 'run.exe'
 
-  Write-Host "Installed run.exe to $installDir\run.exe"
+  # Windows won't let you overwrite a running .exe, but it WILL let you rename
+  # one. Move any existing binary aside first so `run :update` (which runs
+  # this script while run.exe is executing) works. The running process keeps
+  # its on-disk image at run.exe.old; we delete any stale .old from a previous
+  # update first (it's a dead file by now and safe to remove).
+  if (Test-Path $dest) {
+    $old = "$dest.old"
+    Remove-Item -Path $old -Force -ErrorAction SilentlyContinue
+    Rename-Item -Path $dest -NewName 'run.exe.old' -ErrorAction SilentlyContinue
+  }
+  Move-Item -Path (Join-Path $tmp "runfile-cli-$target\run.exe") -Destination $dest -Force
+
+  # Try to drop the .old now. Succeeds on a manual upgrade (the old binary
+  # isn't running), so that path leaves no litter. During `run :update` it's
+  # the live process image and stays locked — the updater schedules it for
+  # deletion at the next reboot, and the next update sweeps it regardless.
+  $old = "$dest.old"
+  if (Test-Path $old) { Remove-Item -Path $old -Force -ErrorAction SilentlyContinue }
+
+  Write-Host "Installed run.exe to $dest"
 
   $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
   if (-not ($userPath -split ';' -contains $installDir)) {

@@ -85,6 +85,17 @@ $ run dev --port=4000
 $ run :completions install bash # or zsh, fish, powershell
 ```
 
+**5. Keep it up to date:**
+
+```bash
+$ run :update                     # update to the latest release in place
+$ run :update --version v0.19.0   # or pin a specific release tag
+```
+
+`:update` re-runs the install script for your platform, replacing the binary where it already lives. npm-managed
+installs are handled too: on Linux/macOS `:update` runs `npm install -g @runfile/cli@latest` for you; on Windows it
+prints that command to run from a fresh shell (npm can't overwrite the running `run.exe` there).
+
 ---
 
 ## Why Runfile?

@@ -7,6 +7,7 @@ mod cmd_config;
 mod cmd_env;
 mod cmd_mcp;
 mod cmd_run;
+mod cmd_update;
 mod cmd_utilities;
 mod completions;
 mod runfile_helpers;
@@ -119,6 +120,13 @@ enum Commands {
 
 		#[command(subcommand)]
 		action: Option<McpAction>,
+	},
+	/// Update the runfile binary in place by re-running the install script
+	#[command(name = ":update")]
+	Update {
+		/// Release tag to install (e.g. v0.19.0). Defaults to the latest release.
+		#[arg(long = "version")]
+		version: Option<String>,
 	},
 }
 
@@ -495,6 +503,7 @@ fn main() {
 				delete_current_key,
 			} => cmd_env::cmd_rotate(&file, delete_current_key),
 		},
+		Some(Commands::Update { version }) => cmd_update::cmd_update(version.as_deref()),
 		Some(Commands::Init { path }) => cmd_utilities::cmd_init(path),
 		None => {
 			if cli.args.is_empty() {

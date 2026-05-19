@@ -146,6 +146,7 @@ $ run dev --port=4000           # Named arguments
 |-------------------------------------------------------|----------------------------------------------------------------------------------------------------|
 | `run :list`                                           | List all targets with their descriptions                                                           |
 | `run :init [-p path]`                                 | Create a default `Runfile.json` in the current directory                                           |
+| `run :update [--version <tag>]`                       | Update the `run` binary in place by re-running the install script (latest, or a pinned release tag)|
 | `run --dry-run <target> [args...]`                    | Print the resolved shell commands for a target without running them                                |
 | `run :config --path`                                  | Print the absolute path to the local settings file                                                 |
 | `run :config shell set <name> <path>`                 | Save a custom shell executable path to local settings                                              |

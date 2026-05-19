@@ -203,6 +203,7 @@ fn cli_has_all_top_level_subcommands() {
 	assert!(names.contains(&":generate"), "missing :generate");
 	assert!(names.contains(&":convert"), "missing :convert");
 	assert!(names.contains(&":env"), "missing :env");
+	assert!(names.contains(&":update"), "missing :update");
 }
 
 #[test]
