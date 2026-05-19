@@ -7,7 +7,6 @@ description = "Environment variable building for Runfile"
 
 [dependencies]
 runfile-crypto = { path = "../runfile-crypto" }
-hex = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

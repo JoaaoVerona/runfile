@@ -1172,7 +1172,6 @@ dependencies = [
 name = "runfile-env"
 version = "0.18.0"
 dependencies = [
- "hex",
  "runfile-crypto",
  "tempfile",
  "thiserror",

@@ -16,12 +16,12 @@ inputs:
   secret-keys:
     description: |
       Optional newline-separated list of private encryption keys (one 64-char hex
-      string per line) to register with `run :env secret-keys add` after install.
+      string per line) to make available for decrypting `encrypted:` env values.
 
       Required when targets in your Runfile decrypt env vars from encrypted .env files.
-      Pass GitHub secrets directly here — keys are stored in the runner's OS credential
-      store for the duration of the job. On Linux runners, a session keyring daemon is
-      bootstrapped automatically.
+      Pass GitHub secrets directly here — the action exports them as
+      `RUNFILE_PRIVATE_KEYS` for the job, so no OS credential store / keyring daemon
+      is involved. The env var disappears with the runner.
     default: ''
   global-files:
     description: |
@@ -121,40 +121,25 @@ runs:
         echo "$bin_dir" >> "$GITHUB_PATH"
         "$bin" --version
 
-    # Linux runners ship without a Secret Service daemon. The `keyring` crate's
-    # linux-native backend talks to gnome-keyring over D-Bus, so we install both
-    # and start a session bus + keyring daemon. The DBUS_SESSION_BUS_ADDRESS
-    # exported here is what subsequent steps connect to. Skipped entirely when
-    # no keys need registering.
-    - name: Bootstrap Linux keyring
-      if: inputs.secret-keys != '' && runner.os == 'Linux'
-      shell: bash
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq gnome-keyring dbus-x11
-
-        eval "$(dbus-launch --sh-syntax)"
-        eval "$(printf '\n' | gnome-keyring-daemon --start --daemonize --components=secrets)"
-
-        echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
-        if [ -n "$DBUS_SESSION_BUS_PID" ]; then
-          echo "DBUS_SESSION_BUS_PID=$DBUS_SESSION_BUS_PID" >> "$GITHUB_ENV"
-        fi
-        if [ -n "$GNOME_KEYRING_CONTROL" ]; then
-          echo "GNOME_KEYRING_CONTROL=$GNOME_KEYRING_CONTROL" >> "$GITHUB_ENV"
-        fi
-
+    # Export keys as `RUNFILE_PRIVATE_KEYS` instead of round-tripping them
+    # through an OS credential store. On a single-use runner the keyring buys
+    # us nothing — secrets already live in the job's env — and avoiding it
+    # skips an apt-get + dbus-launch + gnome-keyring-daemon bootstrap that
+    # only exists to support that round trip. `RUNFILE_PRIVATE_KEYS` is read
+    # by the CLI's `keyring_keys::all_private_keys`, merged ahead of any
+    # keyring blob, and only consulted when the env-build path actually hits
+    # an `encrypted:` value.
     - name: Register secret keys
       if: inputs.secret-keys != ''
       shell: bash
       env:
         SECRET_KEYS: ${{ inputs.secret-keys }}
       run: |
-        printf '%s\n' "$SECRET_KEYS" | while IFS= read -r line; do
-          key="$(printf '%s' "$line" | tr -d '[:space:]')"
-          [ -z "$key" ] && continue
-          run :env secret-keys add --key "$key"
-        done
+        {
+          echo 'RUNFILE_PRIVATE_KEYS<<__RUNFILE_KEYS_EOF__'
+          printf '%s\n' "$SECRET_KEYS"
+          echo '__RUNFILE_KEYS_EOF__'
+        } >> "$GITHUB_ENV"
 
     - name: Materialize Runfile source
       if: inputs.runfile-source != ''

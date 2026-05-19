@@ -189,8 +189,19 @@ crates/
     on zero or multiple matches). Replaces the old "load all keys, derive fingerprints, match" flow,
     so orphan deletion works even when private-key recovery would fail.
   - `list_fingerprints() -> Result<Vec<String>>` — sorted snapshot.
-  - `all_private_keys() -> Vec<String>` — best-effort decryption pool. On keyring error prints a
-    warning and returns an empty vec, matching the executor's "no keys → no decryption" contract.
+  - `all_private_keys() -> Vec<String>` — best-effort decryption pool. Merges the env-supplied
+    `RUNFILE_PRIVATE_KEYS` pool (newline-separated hex keys, first) with the keyring blob (second),
+    deduplicating so `find_private_key_by_public_prefix` doesn't see spurious ambiguity. On keyring
+    error returns whatever the env pool gave (possibly empty), matching the executor's "no keys →
+    no decryption" contract. The credential-store warning is suppressed when the env pool is
+    non-empty — the caller has explicitly opted into env-only key supply (CI runners, ephemeral
+    containers) and doesn't need to be nagged about a missing keyring.
+- `RUNFILE_PRIVATE_KEYS` (in `keyring_keys::ENV_PRIVATE_KEYS_VAR`): newline-separated 64-char hex
+  private keys. Whitespace-only lines are skipped. Designed for environments where round-tripping
+  a secret through an OS credential store is wasted work — CI runners in particular, where the
+  GitHub setup action exports this from the `secret-keys` input via `$GITHUB_ENV` instead of
+  bootstrapping gnome-keyring + dbus. Read pure helpers `parse_env_pool` / `merge_key_sources` are
+  exercised by unit tests without mutating process env.
 - `keyring_store` is the low-level wrapper: `load_blob`/`store_blob`/`delete_blob` operate on the
   single keystore entry. `is_available()` is the public probe used by callers to surface
   "credential store not running" early.
@@ -249,12 +260,16 @@ crates/
   ultimately win in step 4. This keeps existing Runfiles working — the only observable change is the final value of
   any key the shell also defines.
 - `EnvBuildParams.available_private_keys`: `Option<&dyn PrivateKeyProvider>` — invoked only when encrypted values are
-  detected in the merged env, after which the key is auto-resolved via `RUNFILE_ENCRYPTION_KEY` env var or by matching
-  `RUNFILE_ENCRYPTION_PUBLIC_KEY` against the provider's keys. Any `T: AsRef<[String]> + Sync` satisfies the trait via
-  a blanket impl (so existing `Some(&vec_of_keys)` call sites Just Work). `LazyPrivateKeys::new(loader)` memoizes the
-  loader via `OnceLock<Vec<String>>` — used by the CLI to wrap `keyring_keys::all_private_keys` so the OS credential
-  store is never touched for runs whose env has no `encrypted:` values, and only once per run when it is needed. This
-  is what keeps the macOS Keychain unlock prompt from firing on every invocation regardless of target.
+  detected in the merged env, after which `RUNFILE_ENCRYPTION_PUBLIC_KEY` from the env is matched against the
+  provider's keys to pick the right one. There is **no longer** a `RUNFILE_ENCRYPTION_KEY` env-var fallback — that
+  shorthand was removed when `RUNFILE_PRIVATE_KEYS` (in `runfile-settings`) subsumed it. Encrypted files MUST carry a
+  `RUNFILE_ENCRYPTION_PUBLIC_KEY` header (which `:env init`/`encrypt`/`set` always write); hand-crafted files without
+  the header now error with a clear message rather than silently relying on a separate env var. Any
+  `T: AsRef<[String]> + Sync` satisfies the trait via a blanket impl (so existing `Some(&vec_of_keys)` call sites Just
+  Work). `LazyPrivateKeys::new(loader)` memoizes the loader via `OnceLock<Vec<String>>` — used by the CLI to wrap
+  `keyring_keys::all_private_keys` so the OS credential store is never touched for runs whose env has no `encrypted:`
+  values, and only once per run when it is needed. This is what keeps the macOS Keychain unlock prompt from firing on
+  every invocation regardless of target.
 - `check_env_case_duplicates()`: validates no env var keys differ only by casing.
 - `collect_runfile_env()`: collects only Runfile-defined env vars (not system), sorted by key. Takes a single
   `Option<&HashMap<String, String>>` (no global/command distinction).
@@ -924,8 +939,11 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
 - Each encrypted `.env` file contains a `RUNFILE_ENCRYPTION_PUBLIC_KEY` variable — a SHA-256 fingerprint of the private
   key. Private keys are stored in user settings as a `Vec<String>` of 64-char hex strings. Key matching is automatic:
   Runfile derives the public key from each stored private key and matches against the file's public key.
-- Encryption key resolution order: `RUNFILE_ENCRYPTION_KEY` env var → auto-match `RUNFILE_ENCRYPTION_PUBLIC_KEY` against
-  stored private keys → error. The env var allows CI/CD without local settings.
+- Encryption key resolution: `RUNFILE_ENCRYPTION_PUBLIC_KEY` from the env is matched against the private-key pool
+  returned by `keyring_keys::all_private_keys()`, which itself merges `RUNFILE_PRIVATE_KEYS` (env-supplied,
+  newline-separated, ephemeral — meant for CI/CD) with the OS credential store (persistent local registration). No
+  match → error. The earlier `RUNFILE_ENCRYPTION_KEY` single-key shortcut is gone — `RUNFILE_PRIVATE_KEYS` covers
+  every case it served plus multi-key scenarios.
 - The `:env` subcommand operates on `.env` files: `init` (create new, optionally encrypted with `--plain`/`--key`
   flags), `get` (auto-decrypts), `set` (auto-encrypts, `--plain` to skip encryption; `value` arg is optional — when
   omitted, reads from stdin until EOF and strips a single trailing `\n`/`\r\n`, so secrets stay out of shell history

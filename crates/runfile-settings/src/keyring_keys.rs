@@ -7,8 +7,17 @@
 //! construction.
 
 use crate::keyring_store;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
+
+/// Newline-separated list of 64-char hex private keys, merged into
+/// [`all_private_keys`] ahead of the keyring blob. Designed for ephemeral
+/// environments (CI runners, containers) where bootstrapping an OS credential
+/// store just to round-trip secrets that already live in process env is wasted
+/// work. Whitespace-only lines are skipped. A non-empty pool also silences the
+/// "credential store unavailable" warning, since the caller has explicitly
+/// opted out of relying on the keyring.
+pub const ENV_PRIVATE_KEYS_VAR: &str = "RUNFILE_PRIVATE_KEYS";
 
 #[derive(Debug, Error)]
 pub enum KeyringKeysError {
@@ -124,20 +133,56 @@ pub fn list_fingerprints() -> Result<Vec<String>, KeyringKeysError> {
 	Ok(blob.into_keys().collect())
 }
 
-/// Return every stored private key (raw hex). Used as the available-keys
-/// pool for decryption / prefix matching.
+/// Parse the [`ENV_PRIVATE_KEYS_VAR`] env-var value into a key list:
+/// newline-separated, whitespace trimmed, blank lines skipped. No validation
+/// of hex / length is performed here — invalid keys simply fail to match
+/// downstream (`find_matching_private_key` runs `derive_public_key` and
+/// silently ignores anything that can't be parsed as hex).
+fn parse_env_pool(raw: &str) -> Vec<String> {
+	raw.lines()
+		.map(str::trim)
+		.filter(|line| !line.is_empty())
+		.map(str::to_string)
+		.collect()
+}
+
+/// Merge the env-supplied key pool with the keyring blob result.
 ///
-/// On keyring read failure prints a warning and returns whatever was
-/// recoverable (empty if nothing). The executor's env-build path treats
-/// "no keys" as "no decryption possible" rather than aborting the run.
-pub fn all_private_keys() -> Vec<String> {
-	match read_blob() {
-		Ok(blob) => blob.into_values().collect(),
+/// Env keys come first so they take precedence in any first-match scan
+/// (e.g. [`runfile_crypto::find_matching_private_key`]'s linear walk).
+/// Duplicates are stripped to keep `find_private_key_by_public_prefix` —
+/// which counts matches and errors on >1 — from spuriously reporting
+/// ambiguity when a key is registered in both places.
+///
+/// On keyring failure: if the env pool already supplied keys, the warning is
+/// suppressed (the caller has clearly opted into env-only key supply, no need
+/// to nag about a missing credential store).
+fn merge_key_sources(env_pool: Vec<String>, keyring: Result<Blob, KeyringKeysError>) -> Vec<String> {
+	let mut keys = env_pool;
+	match keyring {
+		Ok(blob) => keys.extend(blob.into_values()),
 		Err(e) => {
-			eprintln!("Warning: failed to load private keys from credential store: {e}");
-			Vec::new()
+			if keys.is_empty() {
+				eprintln!("Warning: failed to load private keys from credential store: {e}");
+			}
 		}
 	}
+	let mut seen: HashSet<String> = HashSet::new();
+	keys.retain(|k| seen.insert(k.clone()));
+	keys
+}
+
+/// Return every available private key (raw hex). Sourced from
+/// [`ENV_PRIVATE_KEYS_VAR`] plus the OS credential store blob.
+///
+/// Used as the available-keys pool for decryption / prefix matching. The
+/// executor's env-build path treats "no keys" as "no decryption possible"
+/// rather than aborting the run.
+pub fn all_private_keys() -> Vec<String> {
+	let env_pool = std::env::var(ENV_PRIVATE_KEYS_VAR)
+		.map(|raw| parse_env_pool(&raw))
+		.unwrap_or_default();
+	merge_key_sources(env_pool, read_blob())
 }
 
 #[cfg(test)]
@@ -182,6 +227,54 @@ mod blob_tests {
 		let aa = raw.find("aabb").unwrap();
 		let cc = raw.find("ccdd").unwrap();
 		assert!(aa < cc, "expected sorted serialization, got {raw}");
+	}
+
+	#[test]
+	fn parse_env_pool_handles_blank_and_whitespace() {
+		let raw = "  aa  \n\n bb\n\n  \ncc";
+		assert_eq!(parse_env_pool(raw), vec!["aa", "bb", "cc"]);
+	}
+
+	#[test]
+	fn parse_env_pool_empty_input_yields_empty() {
+		assert!(parse_env_pool("").is_empty());
+		assert!(parse_env_pool("   \n\t\n").is_empty());
+	}
+
+	#[test]
+	fn merge_env_first_then_keyring() {
+		let env = vec!["env_key".to_string()];
+		let mut blob = Blob::new();
+		blob.insert("fp1".to_string(), "ring_key".to_string());
+		assert_eq!(merge_key_sources(env, Ok(blob)), vec!["env_key", "ring_key"]);
+	}
+
+	#[test]
+	fn merge_dedups_overlap() {
+		// Same key registered in both pools — must appear only once so
+		// `find_private_key_by_public_prefix` doesn't see spurious ambiguity.
+		let env = vec!["shared".to_string(), "env_only".to_string()];
+		let mut blob = Blob::new();
+		blob.insert("fp1".to_string(), "shared".to_string());
+		blob.insert("fp2".to_string(), "ring_only".to_string());
+		let result = merge_key_sources(env, Ok(blob));
+		assert_eq!(result.iter().filter(|k| *k == "shared").count(), 1);
+		assert!(result.contains(&"env_only".to_string()));
+		assert!(result.contains(&"ring_only".to_string()));
+	}
+
+	#[test]
+	fn merge_keyring_error_with_env_pool_returns_env() {
+		// Keyring unavailable + env pool present → return env keys, no panic.
+		let env = vec!["env_key".to_string()];
+		let result = merge_key_sources(env, Err(KeyringKeysError::StoreUnavailable));
+		assert_eq!(result, vec!["env_key"]);
+	}
+
+	#[test]
+	fn merge_keyring_error_no_env_returns_empty() {
+		let result = merge_key_sources(Vec::new(), Err(KeyringKeysError::StoreUnavailable));
+		assert!(result.is_empty());
 	}
 
 	#[test]

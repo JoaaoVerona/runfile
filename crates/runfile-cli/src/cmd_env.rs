@@ -713,19 +713,16 @@ pub fn cmd_inject(files: &[String], command_args: &[String]) {
 	}
 
 	if runfile_crypto::has_encrypted_values(&env_map) {
-		let key_hex = match std::env::var("RUNFILE_ENCRYPTION_KEY") {
-			Ok(k) if !k.is_empty() => k,
-			_ => match env_map.get(runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR) {
-				Some(public_key) => resolve_private_key_by_public(public_key),
-				None => {
-					eprintln!(
-						"Error: encrypted values found but no encryption key available. \
-						 Set RUNFILE_ENCRYPTION_KEY or ensure the env file contains {}.",
-						runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR
-					);
-					process::exit(1);
-				}
-			},
+		let key_hex = match env_map.get(runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR) {
+			Some(public_key) => resolve_private_key_by_public(public_key),
+			None => {
+				eprintln!(
+					"Error: encrypted values found but {0} is missing. \
+					 Re-create the file via `run :env init` / `run :env encrypt`, or add a {0} line above the encrypted values.",
+					runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR
+				);
+				process::exit(1);
+			}
 		};
 		if let Err(e) = runfile_crypto::decrypt_env_values(&mut env_map, &key_hex) {
 			eprintln!("Error decrypting env values: {e}");
@@ -979,21 +976,18 @@ fn resolve_private_key_for_file(env_map: &HashMap<String, String>) -> String {
 }
 
 /// Find a private key that matches the given public key.
+///
+/// Pulls from `keyring_keys::all_private_keys()` — which already merges
+/// `RUNFILE_PRIVATE_KEYS` (env-supplied pool) with the OS credential store —
+/// so no extra CI-specific branching is needed here.
 fn resolve_private_key_by_public(public_key: &str) -> String {
-	// Check RUNFILE_ENCRYPTION_KEY env var first (for CI)
-	if let Ok(key) = std::env::var("RUNFILE_ENCRYPTION_KEY") {
-		if !key.is_empty() {
-			return key;
-		}
-	}
-
 	let all_keys = keyring_keys::all_private_keys();
 	match runfile_crypto::find_matching_private_key(public_key, &all_keys) {
 		Some(key) => key,
 		None => {
 			eprintln!(
 				"Error: no private key matches public key {public_key}.\n\
-				 Run `run :env secret-keys add` to add the correct key."
+				 Set RUNFILE_PRIVATE_KEYS or run `run :env secret-keys add` to add the correct key."
 			);
 			process::exit(1);
 		}

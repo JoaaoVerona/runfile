@@ -33,8 +33,8 @@ pub fn load_env_files(
 /// Build the complete environment variable map for a command execution.
 /// Merge order (low → high): envFiles → env → current shell env (always wins) →
 /// addToPath chain (prepended to PATH) → decryption.
-/// If encrypted values are found, automatically resolves the decryption key via
-/// `RUNFILE_ENCRYPTION_KEY` env var or public key matching against `available_private_keys`.
+/// If encrypted values are found, the `RUNFILE_ENCRYPTION_PUBLIC_KEY` header is
+/// matched against `available_private_keys` to pick the decryption key.
 ///
 /// `working_dir` is the resolved `workingDirectory` (used for relative
 /// `addToPath` entries and as the spawn dir). `env_files_base_dir` is the

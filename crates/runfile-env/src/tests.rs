@@ -647,7 +647,7 @@ fn build_env_encrypted_no_public_key_no_keys_errors() {
 
 	let mut cmd_env = HashMap::new();
 	cmd_env.insert("SECRET".to_string(), encrypted);
-	// No RUNFILE_ENCRYPTION_PUBLIC_KEY, no RUNFILE_ENCRYPTION_KEY
+	// No RUNFILE_ENCRYPTION_PUBLIC_KEY, no key pool
 
 	let params = EnvBuildParams {
 		env_files: None,
@@ -726,23 +726,24 @@ fn build_env_decrypts_env_file_with_public_key() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// RUNFILE_ENCRYPTION_KEY validation tests
+// Encrypted-without-public-key error
 // ══════════════════════════════════════════════════════════════════════
 
-/// These tests exercise `resolve_decryption_key` indirectly via `build_env`.
-/// Since `build_env` collects system env vars first, we inject `RUNFILE_ENCRYPTION_KEY`
-/// via the command env to avoid race conditions with parallel tests mutating `std::env`.
-
 #[test]
-fn encryption_key_env_var_must_be_valid_hex() {
+fn encrypted_value_without_public_key_header_errors() {
+	// An encrypted value with no RUNFILE_ENCRYPTION_PUBLIC_KEY header used to
+	// be decryptable via the now-removed RUNFILE_ENCRYPTION_KEY env var.
+	// After collapsing to a single env-var path, the only supported way to
+	// decrypt is via a public-key fingerprint matched against the key pool.
+	// Files without the header are produced by no Runfile tooling, so this
+	// path is an error.
 	let dir = TempDir::new().unwrap();
 	let key = runfile_crypto::generate_key();
 	let encrypted = runfile_crypto::encrypt("secret", &key).unwrap();
 
 	let mut cmd_env = HashMap::new();
 	cmd_env.insert("SECRET".to_string(), encrypted);
-	// Inject an invalid RUNFILE_ENCRYPTION_KEY via command env
-	cmd_env.insert("RUNFILE_ENCRYPTION_KEY".to_string(), "not-valid-hex-at-all".to_string());
+	let private_keys = vec![key];
 
 	let params = EnvBuildParams {
 		env_files: None,
@@ -750,7 +751,7 @@ fn encryption_key_env_var_must_be_valid_hex() {
 		add_to_path: None,
 		working_dir: dir.path(),
 		env_files_base_dir: dir.path(),
-		available_private_keys: None,
+		available_private_keys: Some(&private_keys),
 		base_env: None,
 		parent_add_to_path_chain: None,
 	};
@@ -759,129 +760,9 @@ fn encryption_key_env_var_must_be_valid_hex() {
 	assert!(result.is_err());
 	let err = result.unwrap_err().to_string();
 	assert!(
-		err.contains("64-character hex"),
-		"should mention format requirement: {err}"
+		err.contains("RUNFILE_ENCRYPTION_PUBLIC_KEY"),
+		"error should point at missing public key header: {err}"
 	);
-}
-
-#[test]
-fn encryption_key_env_var_validated_against_public_key() {
-	let dir = TempDir::new().unwrap();
-	let correct_key = runfile_crypto::generate_key();
-	let wrong_key = runfile_crypto::generate_key();
-	let public_key = runfile_crypto::derive_public_key(&correct_key).unwrap();
-	let encrypted = runfile_crypto::encrypt("secret", &correct_key).unwrap();
-
-	let mut cmd_env = HashMap::new();
-	cmd_env.insert("SECRET".to_string(), encrypted);
-	cmd_env.insert(runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR.to_string(), public_key);
-	// Inject a valid but WRONG key via command env
-	cmd_env.insert("RUNFILE_ENCRYPTION_KEY".to_string(), wrong_key);
-
-	let params = EnvBuildParams {
-		env_files: None,
-		env: Some(&cmd_env),
-		add_to_path: None,
-		working_dir: dir.path(),
-		env_files_base_dir: dir.path(),
-		available_private_keys: None,
-		base_env: None,
-		parent_add_to_path_chain: None,
-	};
-	let result = build_env(&params, &no_substitute);
-
-	assert!(result.is_err());
-	let err = result.unwrap_err().to_string();
-	assert!(err.contains("does not match"), "should report key mismatch: {err}");
-}
-
-#[test]
-fn encryption_key_env_var_matching_public_key_succeeds() {
-	let dir = TempDir::new().unwrap();
-	let key = runfile_crypto::generate_key();
-	let public_key = runfile_crypto::derive_public_key(&key).unwrap();
-	let encrypted = runfile_crypto::encrypt("my-secret", &key).unwrap();
-
-	let mut cmd_env = HashMap::new();
-	cmd_env.insert("SECRET".to_string(), encrypted);
-	cmd_env.insert(runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR.to_string(), public_key);
-	// Inject the correct key via command env
-	cmd_env.insert("RUNFILE_ENCRYPTION_KEY".to_string(), key);
-
-	let params = EnvBuildParams {
-		env_files: None,
-		env: Some(&cmd_env),
-		add_to_path: None,
-		working_dir: dir.path(),
-		env_files_base_dir: dir.path(),
-		available_private_keys: None,
-		base_env: None,
-		parent_add_to_path_chain: None,
-	};
-	let result = build_env(&params, &no_substitute);
-
-	assert!(result.is_ok());
-	let env = result.unwrap();
-	assert_eq!(env.get("SECRET").unwrap(), "my-secret");
-}
-
-#[test]
-fn encryption_key_env_var_too_short_rejected() {
-	let dir = TempDir::new().unwrap();
-	let key = runfile_crypto::generate_key();
-	let encrypted = runfile_crypto::encrypt("secret", &key).unwrap();
-
-	let mut cmd_env = HashMap::new();
-	cmd_env.insert("VAR".to_string(), encrypted);
-	// 32 hex chars (only 128-bit, not 256-bit)
-	cmd_env.insert(
-		"RUNFILE_ENCRYPTION_KEY".to_string(),
-		"aabbccddaabbccddaabbccddaabbccdd".to_string(),
-	);
-
-	let params = EnvBuildParams {
-		env_files: None,
-		env: Some(&cmd_env),
-		add_to_path: None,
-		working_dir: dir.path(),
-		env_files_base_dir: dir.path(),
-		available_private_keys: None,
-		base_env: None,
-		parent_add_to_path_chain: None,
-	};
-	let result = build_env(&params, &no_substitute);
-
-	assert!(result.is_err());
-	let err = result.unwrap_err().to_string();
-	assert!(err.contains("64-character hex"), "should reject short key: {err}");
-}
-
-#[test]
-fn encryption_key_without_public_key_still_works() {
-	// When RUNFILE_ENCRYPTION_KEY is set but no RUNFILE_ENCRYPTION_PUBLIC_KEY,
-	// the key should be used directly (no fingerprint verification).
-	let dir = TempDir::new().unwrap();
-	let key = runfile_crypto::generate_key();
-	let encrypted = runfile_crypto::encrypt("value", &key).unwrap();
-
-	let mut cmd_env = HashMap::new();
-	cmd_env.insert("SECRET".to_string(), encrypted);
-	cmd_env.insert("RUNFILE_ENCRYPTION_KEY".to_string(), key);
-
-	let params = EnvBuildParams {
-		env_files: None,
-		env: Some(&cmd_env),
-		add_to_path: None,
-		working_dir: dir.path(),
-		env_files_base_dir: dir.path(),
-		available_private_keys: None,
-		base_env: None,
-		parent_add_to_path_chain: None,
-	};
-	let result = build_env(&params, &no_substitute);
-
-	assert!(result.is_ok());
-	assert_eq!(result.unwrap().get("SECRET").unwrap(), "value");
 }
 
 // ══════════════════════════════════════════════════════════════════════

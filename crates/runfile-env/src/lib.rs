@@ -110,9 +110,8 @@ pub struct EnvBuildParams<'a> {
 	/// when they tweak `workingDirectory` for command execution.
 	pub env_files_base_dir: &'a Path,
 	/// Available private keys for decrypting `encrypted:` prefixed values.
-	/// After merging, if encrypted values are detected, the key is resolved by:
-	/// 1. `RUNFILE_ENCRYPTION_KEY` env var (for CI/CD)
-	/// 2. Auto-matching `RUNFILE_ENCRYPTION_PUBLIC_KEY` against this provider's keys
+	/// After merging, if encrypted values are detected, `RUNFILE_ENCRYPTION_PUBLIC_KEY`
+	/// from the env is matched against this provider's keys to pick the right one.
 	///
 	/// The provider's `keys()` is invoked at most once per `build_env` call —
 	/// and only when an encrypted value is actually present in the merged env.
@@ -350,66 +349,42 @@ fn apply_add_to_path_chain(
 
 /// Resolve the private key for decrypting encrypted env values.
 ///
-/// Resolution order:
-/// 1. `RUNFILE_ENCRYPTION_KEY` env var in the env map (for CI/CD)
-/// 2. `RUNFILE_ENCRYPTION_PUBLIC_KEY` in the env map → match against available private keys
-/// 3. Error if no key can be resolved
+/// Looks up the value of `RUNFILE_ENCRYPTION_PUBLIC_KEY` in the merged env
+/// and matches it against the pool returned by `available_private_keys`
+/// (which itself merges `RUNFILE_PRIVATE_KEYS` with the OS credential store
+/// — see `runfile_settings::keyring_keys::all_private_keys`). Errors if the
+/// public key is missing, the pool is empty, or no key in the pool matches.
 fn resolve_decryption_key(
 	env_map: &HashMap<String, String>,
 	available_private_keys: Option<&dyn PrivateKeyProvider>,
 ) -> Result<String, EnvError> {
-	// 1. Check RUNFILE_ENCRYPTION_KEY in the merged env (includes system env)
-	if let Some(key) = env_map.get("RUNFILE_ENCRYPTION_KEY") {
-		if !key.is_empty() {
-			// Validate format: must be 64 hex chars
-			if key.len() != 64 || hex::decode(key).is_err() {
-				return Err(EnvError::Encryption(
-					"RUNFILE_ENCRYPTION_KEY must be a 64-character hex string (256-bit AES key).".to_string(),
-				));
-			}
-			// If RUNFILE_ENCRYPTION_PUBLIC_KEY is also present, verify the key matches
-			if let Some(public_key) = env_map.get(runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR) {
-				if let Ok(derived) = runfile_crypto::derive_public_key(key) {
-					if derived != *public_key {
-						return Err(EnvError::Encryption(format!(
-							"RUNFILE_ENCRYPTION_KEY does not match {}. \
-							 The provided key's fingerprint ({}) differs from the expected fingerprint ({}).",
-							runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR,
-							&derived[..16],
-							&public_key[..public_key.len().min(16)],
-						)));
-					}
-				}
-			}
-			return Ok(key.clone());
-		}
-	}
+	let public_key = env_map.get(runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR).ok_or_else(|| {
+		EnvError::Encryption(format!(
+			"Encrypted env values found but {} is not set in the env. \
+			 Encrypted files must declare their public key — re-create the file via `run :env init` \
+			 or `run :env encrypt`, or set {} on a line above the encrypted values.",
+			runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR,
+			runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR,
+		))
+	})?;
 
-	// 2. Check RUNFILE_ENCRYPTION_PUBLIC_KEY and match against available private keys
-	if let Some(public_key) = env_map.get(runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR) {
-		if let Some(provider) = available_private_keys {
-			let private_keys = provider.keys();
-			if let Some(matched) = runfile_crypto::find_matching_private_key(public_key, private_keys) {
-				return Ok(matched);
-			}
-			return Err(EnvError::Encryption(format!(
-				"Found {} in env but no matching private key is configured. \
-				 Run `run :env secret-keys add` to add a key.",
-				runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR
-			)));
-		}
-		return Err(EnvError::Encryption(format!(
+	let provider = available_private_keys.ok_or_else(|| {
+		EnvError::Encryption(format!(
 			"Found {} in env but no private keys are available. \
-			 Set RUNFILE_ENCRYPTION_KEY env var or configure keys via `run :env secret-keys add`.",
+			 Set RUNFILE_PRIVATE_KEYS (newline-separated 64-char hex keys) or configure keys via \
+			 `run :env secret-keys add`.",
 			runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR
-		)));
-	}
+		))
+	})?;
 
-	Err(EnvError::Encryption(
-		"Encrypted env values found but no encryption key available. \
-		 Set RUNFILE_ENCRYPTION_KEY env var or ensure env files contain RUNFILE_ENCRYPTION_PUBLIC_KEY."
-			.to_string(),
-	))
+	let private_keys = provider.keys();
+	runfile_crypto::find_matching_private_key(public_key, private_keys).ok_or_else(|| {
+		EnvError::Encryption(format!(
+			"Found {} in env but no matching private key is configured. \
+			 Set RUNFILE_PRIVATE_KEYS or add a key via `run :env secret-keys add`.",
+			runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR
+		))
+	})
 }
 
 /// Check for duplicate env var keys with different casing.

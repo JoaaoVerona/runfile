@@ -1302,11 +1302,11 @@ be safely committed to version control — they're decrypted in-memory at runtim
 ### How it works
 
 Each encrypted `.env` file contains a `RUNFILE_ENCRYPTION_PUBLIC_KEY` — a SHA-256 fingerprint of the private key used to
-encrypt the values. Private keys are stored in your platform's OS credential store (Windows Credential Manager, macOS
-Keychain, or Linux Secret Service); the local settings file only records the public-key fingerprints. When Runfile loads
-the file, it automatically matches the file's public key against your stored private keys (or the
-`RUNFILE_ENCRYPTION_KEY` env var) to find the correct decryption key. No key names or manual configuration needed in
-`Runfile.json`.
+encrypt the values. Private keys live in two places, merged automatically: your platform's OS credential store (Windows
+Credential Manager, macOS Keychain, Linux Secret Service) for persistent local use, and an optional
+`RUNFILE_PRIVATE_KEYS` environment variable (newline-separated 64-char hex keys) for ephemeral environments like CI
+runners. When Runfile loads the file, it matches the file's public key against the merged key pool to find the correct
+decryption key. No key names or manual configuration needed in `Runfile.json`.
 
 ### Setup
 
@@ -1480,17 +1480,20 @@ $ run :env inject .env.production -- bash -c 'echo $DATABASE_URL'
 
 ### CI/CD
 
-In CI/CD, set the `RUNFILE_ENCRYPTION_KEY` environment variable instead of using local settings:
+In CI/CD, set the `RUNFILE_PRIVATE_KEYS` environment variable instead of relying on a local OS credential store:
 
 ```yaml
 env:
-	RUNFILE_ENCRYPTION_KEY: ${{ secrets.RUNFILE_KEY }}
+	RUNFILE_PRIVATE_KEYS: ${{ secrets.RUNFILE_KEY }}
 steps:
 	-   run: run deploy
 ```
 
-The env var takes priority over the local settings lookup. The value should be the full 64-character hex-encoded private
-key.
+The value is a newline-separated list of 64-character hex-encoded private keys — pass one key, or several if multiple
+encrypted files use different keys. The env-supplied pool is merged ahead of any credential-store entries, so a key
+present in both sources is deduplicated. On GitHub Actions, the bundled `Skiley/runfile/.github/actions/setup` action
+accepts a `secret-keys` input that wires this up for you (and supersedes the legacy `RUNFILE_ENCRYPTION_KEY` env var,
+which has been removed).
 
 ---
 
