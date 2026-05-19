@@ -706,11 +706,18 @@ crates/
   trick can't be applied, so a mid-reify failure could corrupt the global package. `npm_package_spec(version)`
   (pure, unit-tested) strips a leading `v` from the tag so `--version v0.19.0` and `0.19.0` both yield
   `@runfile/cli@0.19.0`; `None` → `@runfile/cli@latest`. For standalone installs, it sets `RUNFILE_INSTALL_DIR`
-  to the running binary's parent dir and shells out to the
-  README one-liner — `sh -c "curl -fsSL <install.sh> | sh -s -- <version>"` on Unix, `powershell -NoProfile
-  -Command "& ([scriptblock]::Create((iwr <install.ps1>).Content)) <version>"` on Windows (the scriptblock form
-  is what lets the version arg reach the script's `$args[0]`, which a bare `iex` can't). `--version <tag>` pins a
-  release; absent → latest. The install-script URLs are `cfg`-gated per platform so each compile only references
+  to the running binary's parent dir and shells out to the install script: `sh -c "curl -fsSL <install.sh> | sh
+  -s -- <version>"` on Unix; on Windows `powershell -NoProfile -Command "$c=(iwr <install.ps1>
+  -UseBasicParsing).Content; if($c -is [byte[]]){$c=[Text.Encoding]::UTF8.GetString($c)}; iex $c"`. **Three
+  Windows-specific gotchas, all the hard way:** (1) `-UseBasicParsing` is mandatory — without it Windows
+  PowerShell 5.1 pipes the response through the legacy IE DOM engine, which can HANG indefinitely. (2) GitHub
+  serves release assets as `application/octet-stream`, so `(iwr ...).Content` is a `byte[]`, not a string —
+  decode UTF-8 before `iex` or the bytes stringify to `"36 69 114 ..."` and fail to parse (this was a real
+  shipped bug). (3) the version can't ride a positional arg through `iex`, so it's passed via the
+  `RUNFILE_VERSION` env var, which `install.ps1` reads as a fallback after `$args[0]`. `install.ps1` also sets
+  `$ProgressPreference = 'SilentlyContinue'` so its internal `Invoke-WebRequest -OutFile` of the archive doesn't
+  crawl when stdout is redirected (another non-interactive 5.1 slowdown). `--version <tag>` pins a release;
+  absent → latest. The install-script URLs are `cfg`-gated per platform so each compile only references
   the one it uses. **Windows self-replacement**: you can't overwrite a running `.exe`, but you can rename it —
   `install.ps1` renames any existing `run.exe` to `run.exe.old` (deleting a stale prior `.old` first) before
   moving the new binary in, so `:update` works while `run.exe` is executing. `install.ps1` then tries to delete

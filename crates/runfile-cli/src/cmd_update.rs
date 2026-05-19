@@ -188,25 +188,37 @@ fn update_via_npm(version: Option<&str>) {
 /// `v0.19.0`; `None` installs the latest release). Mirrors the README
 /// one-liners: `curl … | sh` on Unix, `iwr … | iex` on Windows.
 fn run_install_script(install_dir: &Path, version: Option<&str>) -> std::io::Result<process::ExitStatus> {
-	let ver = version.unwrap_or("");
-
 	#[cfg(windows)]
 	{
-		// Download the script and invoke it as a scriptblock so we can forward
-		// the version as a positional arg ($args[0] in install.ps1) — `iex`
-		// alone can't pass arguments. `RUNFILE_INSTALL_DIR` is set via the env
-		// to avoid in-string quoting.
-		let ps_cmd = format!("& ([scriptblock]::Create((iwr '{INSTALL_PS1_URL}' -UseBasicParsing).Content)) {ver}");
-		Command::new("powershell")
-			.args(["-NoProfile", "-Command", &ps_cmd])
-			.env("RUNFILE_INSTALL_DIR", install_dir)
-			.status()
+		// Fetch the install script and run it in-process via `iex` (bypasses
+		// execution policy, like the documented installer). Two PS 5.1 gotchas
+		// are handled explicitly:
+		//   1. `-UseBasicParsing` — without it, Windows PowerShell pipes the
+		//      response through the legacy IE DOM engine, which can HANG.
+		//   2. `.Content` is a `byte[]` here — GitHub serves release assets as
+		//      application/octet-stream — so we decode UTF-8 before `iex`,
+		//      otherwise the bytes stringify to "36 69 114 ..." and won't parse.
+		// The version is pinned via the RUNFILE_VERSION env var (install.ps1
+		// reads it) since this form can't pass positional args; the dir is
+		// scoped via RUNFILE_INSTALL_DIR.
+		let ps_cmd = format!(
+			"$c=(iwr '{INSTALL_PS1_URL}' -UseBasicParsing).Content; \
+			 if($c -is [byte[]]){{$c=[Text.Encoding]::UTF8.GetString($c)}}; iex $c"
+		);
+		let mut cmd = Command::new("powershell");
+		cmd.args(["-NoProfile", "-Command", &ps_cmd])
+			.env("RUNFILE_INSTALL_DIR", install_dir);
+		if let Some(v) = version {
+			cmd.env("RUNFILE_VERSION", v);
+		}
+		cmd.status()
 	}
 
 	#[cfg(not(windows))]
 	{
 		// `sh -s -- <version>` feeds the piped script its positional args;
 		// an empty <version> leaves $1 unset so install.sh defaults to latest.
+		let ver = version.unwrap_or("");
 		let sh_cmd = format!("curl -fsSL {INSTALL_SH_URL} | sh -s -- {ver}");
 		Command::new("sh")
 			.arg("-c")

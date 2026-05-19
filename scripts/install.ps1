@@ -1,8 +1,15 @@
 $ErrorActionPreference = 'Stop'
+# Invoke-WebRequest renders a progress bar that is extremely slow when stdout is
+# redirected (i.e. run non-interactively, as `run :update` does) on Windows
+# PowerShell 5.1 — suppress it so the download doesn't appear to hang.
+$ProgressPreference = 'SilentlyContinue'
 
 $repo = 'Skiley/runfile'
 $installDir = if ($env:RUNFILE_INSTALL_DIR) { $env:RUNFILE_INSTALL_DIR } else { "$env:LOCALAPPDATA\runfile\bin" }
-$version = if ($args[0]) { $args[0] } else { 'latest' }
+# Version precedence: positional arg, then $env:RUNFILE_VERSION (how `run
+# :update` pins a release — the `iwr ... | iex` invocation form can't pass
+# positional args), then latest.
+$version = if ($args[0]) { $args[0] } elseif ($env:RUNFILE_VERSION) { $env:RUNFILE_VERSION } else { 'latest' }
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   'AMD64' { 'x86_64' }
