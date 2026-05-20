@@ -75,6 +75,22 @@
 				}
 			]
 		},
+		"miri": {
+			"description": "Run Miri (UB checker) on the pure-logic crates (no FFI / no process spawning)",
+			"commands": [
+				"cargo +nightly miri test -p runfile-crypto",
+				"cargo +nightly miri test -p runfile-parser",
+				"cargo +nightly miri test -p runfile-env",
+				"cargo +nightly miri test -p runfile-shell"
+			]
+		},
+		"miri:setup": {
+			"description": "One-time: install the nightly Miri component and build its sysroot",
+			"commands": [
+				"rustup toolchain install nightly --component miri",
+				"cargo +nightly miri setup"
+			]
+		},
 		"test": {
 			"description": "Run all workspace tests",
 			"commands": [
