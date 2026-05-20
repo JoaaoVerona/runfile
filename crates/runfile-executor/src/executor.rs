@@ -1979,10 +1979,22 @@ pub fn execute_parallel_with_counter(
 
 	walk?;
 
+	// Mirror the sequential walker's invariant (see `run_target_inner_body`):
+	// when a failure occurred but the last leaf we observed exited 0 (e.g. a
+	// later-iterated parallel `@target` succeeded while an earlier one failed),
+	// synthesize a non-zero status. The CLI derives the process exit code from
+	// `final_status.code()` alone, so without this a failing parallel batch
+	// would report success.
+	let final_status = if state.failed {
+		state.last_status.filter(|s| !s.success()).unwrap_or_else(failed_status)
+	} else {
+		state.last_status.unwrap_or_else(dummy_success_status)
+	};
+
 	Ok(ExecutionResult {
 		commands_run: state.commands_run,
 		failures: state.failures,
-		final_status: state.last_status.unwrap_or_else(dummy_success_status),
+		final_status,
 	})
 }
 

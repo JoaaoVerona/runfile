@@ -6353,6 +6353,115 @@ fn sequential_target_call_forwards_output_prefix() {
 	assert_eq!(calls[0].output_prefix.as_deref(), Some("[3] "));
 }
 
+/// Resolver that reports a non-zero `ExecutionResult` (failures = 1) for one
+/// named target and success for every other. Used to reproduce a failing
+/// parallel `@target` whose failure must reach the returned `final_status`.
+struct FailingTargetResolver {
+	failing_target: String,
+}
+
+impl crate::executor::DependencyResolver for FailingTargetResolver {
+	fn run_dependency(
+		&self,
+		target_name: &str,
+		_args: Vec<String>,
+		_parent_env: &HashMap<String, String>,
+		_parent_add_to_path_chain: &[Vec<String>],
+		_optional: bool,
+		_output_prefix: Option<&str>,
+	) -> Result<crate::executor::ExecutionResult, crate::executor::ExecuteError> {
+		if target_name == self.failing_target {
+			#[cfg(unix)]
+			let status = {
+				use std::os::unix::process::ExitStatusExt;
+				std::process::ExitStatus::from_raw(2 << 8)
+			};
+			#[cfg(windows)]
+			let status = {
+				use std::os::windows::process::ExitStatusExt;
+				std::process::ExitStatus::from_raw(2)
+			};
+			Ok(crate::executor::ExecutionResult {
+				commands_run: 1,
+				failures: 1,
+				final_status: status,
+			})
+		} else {
+			Ok(crate::executor::ExecutionResult {
+				commands_run: 1,
+				failures: 0,
+				final_status: dummy_success_status(),
+			})
+		}
+	}
+}
+
+#[test]
+fn parallel_failing_target_call_yields_nonzero_final_status() {
+	// Regression: a `parallel: true` target whose body fans out into `@target`
+	// calls (e.g. skiley-web's `check`) must report a non-zero `final_status`
+	// when ANY dispatched dep fails — even when the failing dep is not the
+	// last one observed. The CLI derives the process exit code from
+	// `final_status.code()` alone, so a success-looking status here means
+	// `run check` exits 0 despite a sub-target failing.
+	use crate::executor::execute_parallel_with_counter;
+	use crate::logging::StepCounter;
+
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+
+	// "one" fails; "two" and "three" succeed. Leaves are processed in order,
+	// so the last observed status is "three" (success) — the buggy code used
+	// that as the final status and reported success.
+	let mut spec = CommandSpec::new(vec![
+		CommandStep::TargetCall(runfile_parser::TargetCallStep {
+			target: "one".into(),
+			args_template: String::new(),
+			optional: false,
+		}),
+		CommandStep::TargetCall(runfile_parser::TargetCallStep {
+			target: "two".into(),
+			args_template: String::new(),
+			optional: false,
+		}),
+		CommandStep::TargetCall(runfile_parser::TargetCallStep {
+			target: "three".into(),
+			args_template: String::new(),
+			optional: false,
+		}),
+	]);
+	spec.parallel = Some(true);
+
+	let args = RunArgs::default();
+	let counter = StepCounter::new(3);
+	let resolver = FailingTargetResolver {
+		failing_target: "one".into(),
+	};
+
+	let result = execute_parallel_with_counter(
+		&spec,
+		&shell,
+		&args,
+		dir.path(),
+		dir.path(),
+		None,
+		false,
+		&counter,
+		&resolver,
+		None,
+		&[],
+		None,
+	)
+	.unwrap();
+
+	assert_eq!(result.failures, 1, "the failed dep must be counted");
+	assert!(
+		!result.final_status.success(),
+		"final_status must be non-zero when a parallel @target dep failed, got {:?}",
+		result.final_status
+	);
+}
+
 #[test]
 fn top_level_no_prefix_means_no_propagation_through_sequential() {
 	// Top-level (no parallel ancestor) → output_prefix is None and stays

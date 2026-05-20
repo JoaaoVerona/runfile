@@ -938,7 +938,16 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   last command exited 0 (e.g. an `always` cleanup succeeded after a prior failure).
 - Parallel parents partition leaves by `when`: `when: success` leaves run as the parallel batch; if any failed,
   `when: failure` leaves run sequentially after; `when: always` leaves always run sequentially after.
-  See `run_parallel_leaves` in `executor.rs`.
+  See `run_parallel_leaves` in `executor.rs`. `execute_parallel_with_counter` computes its returned `final_status`
+  with the SAME invariant as the sequential walker (`run_target_inner_body`): when `state.failed` is set, it uses
+  `state.last_status` only if non-success, else synthesizes `failed_status()`. This matters because parallel
+  `@target` leaves overwrite `state.last_status` in completion order — a later-iterated dep that succeeds would
+  otherwise leave a success status even though an earlier dep failed, and the CLI derives the process exit code
+  from `final_status.code()` alone (it does NOT consult `failures`). Note `run_parallel_batch` only sets
+  `first_error` (→ returns `Err`) for shell-leaf non-zero exits and for `@target` calls that return `Err`; a
+  `@target` returning `Ok(dep_res)` with `dep_res.failures > 0` is recorded into `state.failures` /
+  `state.failed` and the failure summary but does NOT become a `first_error` — so the non-zero exit code flows
+  through `final_status`, not through a propagated error + generic "Error:" line.
 - `match` blocks (`{ "match", "cases", "default"?, "ignoreErrors"?, "when"? }`) provide multi-way dispatch on a
   substituted value with built-in case validation. The `match` template goes through the normal substitution
   pipeline (chained fallbacks supported, e.g. `{{ ARGS.tier ? ENV.TIER ? '1' }}`). `cases` keys are compared by exact
