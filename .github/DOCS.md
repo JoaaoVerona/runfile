@@ -668,7 +668,7 @@ one space — strict whitespace).
   //   trim      : trim, trim_start, trim_end
   //   inspect   : length, starts_with, ends_with, contains
   //   transform : escape, repeat, replace_all, remove_all
-  //   regex     : regex_replace, regex_remove, regex_matches, regex_capture
+  //   regex     : regex_replace, regex_remove, regex_matches, regex_capture, regex_capture_all
   //   build     : concat, join
   //   split     : nth, first, last, count_parts
   //   math      : add, subtract, multiply, divide
@@ -707,7 +707,7 @@ one space — strict whitespace).
 | **trim**      | `trim(s)`, `trim_start(s)`, `trim_end(s)` — strip whitespace per Rust's `str::trim*`.                                                                                                                                      |
 | **inspect**   | `length(s)` (Unicode scalar count), `starts_with(h, n)`, `ends_with(h, n)`, `contains(h, n)` — boolean returns are `"true"` / `"false"`.                                                                                   |
 | **transform** | `escape(s)` (backslash-escape control chars + `"`), `repeat(s, n)`, `replace_all(h, n, r)`, `remove_all(h, n)` (sugar for `replace_all(h, n, '')`).                                                                        |
-| **regex**     | `regex_replace(h, p, r)`, `regex_remove(h, p)`, `regex_matches(h, p)` (boolean), `regex_capture(h, p, i)` — `regex_capture` returns the `i`-th group of the first match (`0` = whole match); no match or out-of-range group → `""`. Replacement honours `$1`/`${name}` backrefs. Patterns are unanchored — use `^...$` for full-string match. |
+| **regex**     | `regex_replace(h, p, r)`, `regex_remove(h, p)`, `regex_matches(h, p)` (boolean), `regex_capture(h, p, i)`, `regex_capture_all(h, p, i, sep)` — `regex_capture` returns the `i`-th group of the first match (`0` = whole match); no match or out-of-range group → `""`. `regex_capture_all` is the "all matches" variant: group `i` of EVERY match, joined by `sep` (non-participating group → `""` entry; no matches → `""`). Replacement honours `$1`/`${name}` backrefs. Patterns are unanchored — use `^...$` for full-string match. |
 | **build**     | `concat(s1, s2, …)` (variadic ≥1), `join(sep, s1, s2, …)` (variadic ≥1; `join(sep)` returns `""`).                                                                                                                         |
 | **split**     | `nth(s, sep, i)`, `first(s, sep)`, `last(s, sep)` (canonical "basename" idiom), `count_parts(s, sep)` (decimal string).                                                                                                    |
 | **math**      | `add(a, b, …)`, `subtract(a, b, …)`, `multiply(a, b, …)`, `divide(a, b, …)` — variadic (≥2 args). Coerce strings to numbers (decimal integer, float, or scientific); non-numeric, `inf`, and `nan` error as `InvalidNumeric`. Result formats as an integer when the value has no fractional part and as a decimal otherwise (`add('5', '3')` → `"8"`, `add('5.5', '2.3', '1.2')` → `"9"`, `add('5', '1.1')` → `"6.1"`). `divide` errors as `DivideByZero` if any divisor in the fold is `0`.                                                                                                                              |

@@ -9088,6 +9088,81 @@ mod functions {
 		));
 	}
 
+	// ── regex_capture_all ──
+
+	#[test]
+	fn regex_capture_all_joins_every_match_group() {
+		// `regex_capture_all(haystack, pattern, group, separator)` — the all
+		// variant of `regex_capture`: group N of every match, joined by sep.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(
+				"{{ regex_capture_all('a=1 b=2 c=3', '([a-z])=(\\d)', '2', ',') }}",
+				&HashMap::new(),
+			)
+			.unwrap();
+		assert_eq!(result, "1,2,3");
+	}
+
+	#[test]
+	fn regex_capture_all_group_zero_is_whole_match() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute(
+				"{{ regex_capture_all('a=1 b=2', '[a-z]=\\d', '0', ' ') }}",
+				&HashMap::new(),
+			)
+			.unwrap();
+		assert_eq!(result, "a=1 b=2");
+	}
+
+	#[test]
+	fn regex_capture_all_returns_empty_on_no_match() {
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ regex_capture_all('hello', 'world', '0', ',') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, "");
+	}
+
+	#[test]
+	fn regex_capture_all_out_of_range_group_yields_empty_entries() {
+		// A group index that never participates contributes "" per match, so
+		// two matches joined by "," yield a single separator between empties.
+		let args = RunArgs::parse(&[]);
+		let result = args
+			.substitute("{{ regex_capture_all('ab ab', 'a(b)', '5', ',') }}", &HashMap::new())
+			.unwrap();
+		assert_eq!(result, ",");
+	}
+
+	#[test]
+	fn regex_capture_all_bad_pattern_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute(
+				"{{ regex_capture_all('hello', '(unclosed', '1', ',') }}",
+				&HashMap::new(),
+			)
+			.unwrap_err();
+		assert!(matches!(
+			err,
+			SubstitutionError::InvalidRegex { ref name, .. } if name == "regex_capture_all"
+		));
+	}
+
+	#[test]
+	fn regex_capture_all_non_numeric_group_errors() {
+		let args = RunArgs::parse(&[]);
+		let err = args
+			.substitute("{{ regex_capture_all('abc', 'a(b)c', 'oops', ',') }}", &HashMap::new())
+			.unwrap_err();
+		assert!(matches!(
+			err,
+			SubstitutionError::InvalidNumber { ref name, .. } if name == "regex_capture_all"
+		));
+	}
+
 	// ── one_of ──
 
 	#[test]

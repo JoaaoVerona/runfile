@@ -367,6 +367,11 @@ crates/
   return `""`, mirroring `nth`'s out-of-bounds convention; non-numeric `group_idx` errors as
   `InvalidNumber`; bad pattern errors as `InvalidRegex`; this is the idiom for "pull a substring
   out of a file" without the `(?s)^.*X(...)X.*$` greedy-replace trick),
+  `regex_capture_all(haystack, pattern, group_idx, separator)` (the "all matches" variant of
+  `regex_capture` — pulls group `group_idx` from EVERY match via `captures_iter` and joins the
+  results with `separator`; a match where the requested group didn't participate contributes `""`
+  so entry count stays aligned with match count; no matches → `""`; pattern unanchored; same
+  `InvalidRegex` / `InvalidNumber` error contract as `regex_capture`),
   `base64_encode(s)`,
   `base64_decode(s)` (errors on `InvalidBase64` / `NonUtf8Decoded`),
   `sha256(s)` / `md5(s)` (hex-encoded digest of `s`'s UTF-8 bytes; `md5` is non-cryptographic — for cache-key /

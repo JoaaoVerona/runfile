@@ -259,7 +259,7 @@ and work as full substitution bodies *or* as chain segments:
   //   trim      : trim, trim_start, trim_end
   //   inspect   : length, starts_with, ends_with, contains
   //   transform : escape, repeat, replace_all, remove_all
-  //   regex     : regex_replace, regex_remove, regex_matches, regex_capture
+  //   regex     : regex_replace, regex_remove, regex_matches, regex_capture, regex_capture_all
   //   build     : concat, join
   //   split     : nth, first, last, count_parts
   //   math      : add, subtract, multiply, divide
@@ -284,6 +284,9 @@ and work as full substitution bodies *or* as chain segments:
   // greedy-replace trick needed. Group 0 is the whole match; group N is the
   // N-th `(...)`. Out-of-bounds returns "" (same convention as `nth`).
   "echo version={{ regex_capture(read_file('app/build.gradle.kts'), 'versionName = \"([^\"]+)\"', '1') }}",
+  // Pull group N out of EVERY match and join with a separator (the "all" variant
+  // of regex_capture). Here: every quoted dependency name, comma-separated.
+  "echo deps={{ regex_capture_all(read_file('deps.txt'), 'name = \"([^\"]+)\"', '1', ',') }}",
   // Split-by-separator scalar accessors — string in, string out, no list type:
   // basename idiom (last segment after `/`); empty string when input ends in `/`.
   "echo basename={{ last(ARGS.path, '/') }}",
