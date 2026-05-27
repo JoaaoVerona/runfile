@@ -22,7 +22,7 @@
 //!   including `"false"` and `"0"` — is truthy. This matches what raw
 //!   shell commands see when they receive a `{{ ... }}` substitution.
 //! - Substitutions inside conditions use the same `{{ ... }}` syntax as
-//!   anywhere else (e.g. `{{ ARGS.env }} == prod`). The full original
+//!   anywhere else (e.g. `{{ ARG.env }} == prod`). The full original
 //!   substring (including the leading `{{ ` and trailing ` }}`) is captured
 //!   so the runtime substitutor can resolve it unchanged.
 //!
@@ -249,7 +249,7 @@ fn tokenize(source: &str) -> Result<Vec<Token>, DslParseError> {
 		}
 
 		// Read a Value token. Values are opaque chunks of substitution-body
-		// text — quoted strings, source refs (`ARGS.x`), or function calls
+		// text — quoted strings, source refs (`ARG.x`), or function calls
 		// (`to_upper(...)`). The DSL evaluator will hand the raw text back
 		// to the substitution machinery (see `runfile-executor::args::evaluate_arg`)
 		// so the same rules apply as inside a chain or function arg:
@@ -270,7 +270,7 @@ fn tokenize(source: &str) -> Result<Vec<Token>, DslParseError> {
 /// Read a single Value token (an opaque substitution-body fragment) starting
 /// at byte `start`. Handles:
 /// - `'...'` and `"..."` quoted strings (consumed verbatim, including quotes)
-/// - bareword identifiers (`ARGS.x`, `RUN.os`, `prod`, etc.)
+/// - bareword identifiers (`ARG.x`, `RUN.os`, `prod`, etc.)
 /// - function calls (`<ident>(...)` — the entire call including balanced
 ///   parens is part of the value)
 ///
@@ -563,17 +563,17 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn parses_truthy_substitution() {
-		let ast = parse_condition("{{ ARGS.x }}").unwrap();
-		assert_eq!(ast, DslExpr::Truthy(DslValue::Substitution("{{ ARGS.x }}".into())));
+		let ast = parse_condition("{{ ARG.x }}").unwrap();
+		assert_eq!(ast, DslExpr::Truthy(DslValue::Substitution("{{ ARG.x }}".into())));
 	}
 
 	#[test]
 	fn parses_equality() {
-		let ast = parse_condition("{{ ARGS.env }} == production").unwrap();
+		let ast = parse_condition("{{ ARG.env }} == production").unwrap();
 		assert_eq!(
 			ast,
 			DslExpr::Equality(
-				DslValue::Substitution("{{ ARGS.env }}".into()),
+				DslValue::Substitution("{{ ARG.env }}".into()),
 				DslValue::Literal("production".into()),
 			)
 		);
@@ -581,11 +581,11 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn parses_inequality() {
-		let ast = parse_condition("{{ ARGS.env }} != \"staging\"").unwrap();
+		let ast = parse_condition("{{ ARG.env }} != \"staging\"").unwrap();
 		assert_eq!(
 			ast,
 			DslExpr::Inequality(
-				DslValue::Substitution("{{ ARGS.env }}".into()),
+				DslValue::Substitution("{{ ARG.env }}".into()),
 				DslValue::Literal("\"staging\"".into()),
 			)
 		);
@@ -675,7 +675,7 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn rejects_unterminated_substitution() {
-		match parse_condition("{{ ARGS.x").unwrap_err() {
+		match parse_condition("{{ ARG.x").unwrap_err() {
 			DslParseError::UnterminatedSubstitution(_) => {}
 			e => panic!("got {e:?}"),
 		}
@@ -696,18 +696,17 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn parses_flag_ternary_substitution() {
-		// `{{ FLAGS.x ? on : off }}` — colon inside but the inner content is
+		// `{{ FLAG.x ? on : off }}` — colon inside but the inner content is
 		// captured as a single substitution token by the DSL tokenizer.
-		let ast = parse_condition("{{ FLAGS.x ? on : off }} == on").unwrap();
+		let ast = parse_condition("{{ FLAG.x ? on : off }} == on").unwrap();
 		assert!(matches!(ast, DslExpr::Equality(..)));
 	}
 
 	#[test]
 	fn parses_complex_expression() {
-		let ast = parse_condition(
-			"{{ ARGS.env }} == production && ({{ FLAGS.confirm }} == true || {{ ENV.CI }} == \"true\")",
-		)
-		.unwrap();
+		let ast =
+			parse_condition("{{ ARG.env }} == production && ({{ FLAG.confirm }} == true || {{ ENV.CI }} == \"true\")")
+				.unwrap();
 		match ast {
 			DslExpr::And(parts) => assert_eq!(parts.len(), 2),
 			_ => panic!(),
@@ -716,7 +715,7 @@ mod dsl_unit_tests {
 
 	#[test]
 	fn parses_negated_truthy() {
-		let ast = parse_condition("!{{ ARGS.skip }}").unwrap();
+		let ast = parse_condition("!{{ ARG.skip }}").unwrap();
 		match ast {
 			DslExpr::Not(inner) => assert!(matches!(*inner, DslExpr::Truthy(_))),
 			_ => panic!(),

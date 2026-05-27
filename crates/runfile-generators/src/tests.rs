@@ -60,7 +60,7 @@ fn zed_target_with_args_gets_custom_args() {
 
 #[test]
 fn zed_target_with_named_args_gets_custom_args() {
-	let runfile = make_runfile(vec![("deploy", vec!["deploy --env={{ ARGS.env }}"])]);
+	let runfile = make_runfile(vec![("deploy", vec!["deploy --env={{ ARG.env }}"])]);
 	let tasks = generate_zed_tasks(&runfile);
 	assert_eq!(tasks[0].args, vec!["--stdin-args", "deploy", "$ZED_CUSTOM_ARGS"]);
 	assert_eq!(tasks[0].allow_concurrent_runs, Some(true));
@@ -411,8 +411,8 @@ fn jetbrains_check_completely_different_file() {
 
 #[test]
 fn zed_task_with_named_args_pattern() {
-	// {{ ARGS.name }} should also trigger custom args
-	let runfile = make_runfile(vec![("deploy", vec!["echo {{ ARGS.env ? prod }}"])]);
+	// {{ ARG.name }} should also trigger custom args
+	let runfile = make_runfile(vec![("deploy", vec!["echo {{ ARG.env ? prod }}"])]);
 	let tasks = generate_zed_tasks(&runfile);
 	assert!(tasks[0].args.contains(&"$ZED_CUSTOM_ARGS".to_string()));
 	assert_eq!(tasks[0].allow_concurrent_runs, Some(true));

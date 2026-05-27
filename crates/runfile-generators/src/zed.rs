@@ -80,13 +80,13 @@ pub fn merge_zed_tasks(existing: &mut Vec<ZedTask>, generated: Vec<ZedTask>) -> 
 fn build_zed_task(label: &str, target_name: &str, spec: &CommandSpec) -> ZedTask {
 	let mut uses_args = false;
 	runfile_parser::walk_step_templates(&spec.commands, &mut |t| {
-		if t.contains("{{ ARGS }}") || t.contains("{{ ARGS.") {
+		if t.contains("{{ ARGS }}") || t.contains("{{ ARG.") {
 			uses_args = true;
 		}
 	});
 
-	// `--stdin-args` lets the user fill in any unsupplied {{ ARGS.x }} /
-	// {{ ENV.X }} / {{ FLAGS.x }} value at the Zed terminal prompt. It composes
+	// `--stdin-args` lets the user fill in any unsupplied {{ ARG.x }} /
+	// {{ ENV.X }} / {{ FLAG.x }} value at the Zed terminal prompt. It composes
 	// with `$ZED_CUSTOM_ARGS` (still respected for callers who know what to
 	// pass): provided values skip the prompt, missing ones fire it. No-op
 	// when nothing's missing.

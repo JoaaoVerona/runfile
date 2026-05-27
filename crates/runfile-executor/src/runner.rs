@@ -250,7 +250,7 @@ pub fn run_target_with_cwd(
 
 	// Collect all template strings from the target and its dependencies for
 	// arg-usage validation. This includes condition strings, args templates,
-	// for-iterator sources, etc. — every place a `{{ ARGS.x }}` reference could
+	// for-iterator sources, etc. — every place a `{{ ARG.x }}` reference could
 	// hide. It is NOT used to size the step counter (which would over-count).
 	let all_commands = collect_all_commands(target_name, runfile)?;
 	validate_args(args, &all_commands)?;
@@ -395,6 +395,11 @@ fn run_target_inner_body(
 			parent_env,
 			Some(parent_add_to_path_chain),
 		)?;
+
+		// Apply the target's declared `vars` so `{{ VAR.* }}` resolves while we
+		// substitute the detach leaves below. The guard restores prior values
+		// when it drops at the end of this branch.
+		let _vars_guard = crate::executor::DeclaredVarsGuard::apply(spec, target_args, &env)?;
 
 		// Evaluate `if` / `for` / `when` blocks to a flat list of concrete
 		// shell commands. `@target` invocations are rejected (they don't
@@ -562,7 +567,7 @@ fn run_target_inner_body(
 ///   iterations actually expand).
 ///
 /// Differences from `collect_all_commands`: condition strings and args
-/// templates do NOT count as steps (they're scannable for `{{ ARGS.x }}` but
+/// templates do NOT count as steps (they're scannable for `{{ ARG.x }}` but
 /// don't contribute to the (N/total) display).
 fn count_target_leaves(target_name: &str, runfile: &Runfile) -> Result<usize, RunError> {
 	let mut cache: HashMap<String, usize> = HashMap::new();
@@ -615,7 +620,7 @@ fn count_step_leaves_recursive(
 		total += match step {
 			CommandStep::Shell(_) => 1,
 			CommandStep::TargetCall(call) => {
-				// Dynamic target names (containing `{{ ... }}`, e.g. `@{{ VARS.ns }}:build`)
+				// Dynamic target names (containing `{{ ... }}`, e.g. `@{{ VAR.ns }}:build`)
 				// resolve at runtime; we can't recurse into them statically. Count
 				// the call as 1 leaf and let `StepCounter::add_to_total` bump the
 				// total at runtime if the dispatched target exposes more leaves.
@@ -667,7 +672,7 @@ fn count_step_leaves_recursive(
 
 /// Collect all command templates from a target and its dependency tree —
 /// across `@target` invocations inside `commands` arrays. Used for
-/// arg-usage validation (so `{{ ARGS.x }}` in a transitively called target's
+/// arg-usage validation (so `{{ ARG.x }}` in a transitively called target's
 /// condition / args template / shell command counts as a referenced arg).
 /// NOT used for sizing the step counter — see `count_target_leaves` for that.
 fn collect_all_commands(target_name: &str, runfile: &Runfile) -> Result<Vec<String>, RunError> {
@@ -709,7 +714,7 @@ fn collect_commands_recursive(
 /// Walk a `commands` array, pushing leaf templates to `commands` and
 /// recursing into `@target` invocations (with cycle detection). For
 /// arg-usage scanning we also include the `@target` arg-template itself
-/// (so `@build {{ ARGS.x }}` registers `x` as a referenced arg).
+/// (so `@build {{ ARG.x }}` registers `x` as a referenced arg).
 fn collect_step_commands(
 	steps: &[CommandStep],
 	runfile: &Runfile,
@@ -722,8 +727,8 @@ fn collect_step_commands(
 			CommandStep::Shell(s) => commands.push(s.clone()),
 			CommandStep::TargetCall(call) => {
 				// `call.target` itself participates in arg-usage scanning so
-				// `{{ ARGS.x }}` references inside dynamic target names like
-				// `@{{ VARS.ns }}:build` still register.
+				// `{{ ARG.x }}` references inside dynamic target names like
+				// `@{{ VAR.ns }}:build` still register.
 				commands.push(call.target.clone());
 				if !call.args_template.is_empty() {
 					commands.push(call.args_template.clone());
@@ -786,7 +791,7 @@ fn collect_step_commands(
 				..
 			}) => {
 				// The `match` template participates in arg-usage scanning so
-				// `{{ ARGS.x }}` references inside it register. The case keys are
+				// `{{ ARG.x }}` references inside it register. The case keys are
 				// literal strings (no substitution), so we don't push them.
 				commands.push(r#match.clone());
 				for branch in cases.values() {

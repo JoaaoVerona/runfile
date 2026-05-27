@@ -133,7 +133,7 @@
 			"properties": {
 				"if": {
 					"type": "string",
-					"description": "Substitution template that selects the branch. Resolved through the regular {{ ... }} pipeline at runtime; the resolved value MUST be exactly \"true\" (run `then`), \"false\" or \"\" (run `else`, or skip if no `else`). Anything else is a hard error. The boolean DSL — comparisons (==, !=), logical operators (&&, ||, !), parens — lives INSIDE the {{ ... }} block (e.g. `{{ ARGS.env == 'production' && FLAGS.confirm }}`); operators outside {{ }} are NOT supported. Inside the DSL, FLAGS.x works as a bare boolean (resolves to \"true\"/\"false\"); ARGS.x / ENV.x / VARS.x must equal \"true\" / \"false\" / \"\" to be used as bare booleans, otherwise use a comparison. Mixing && and || requires parens. Errors surface at runtime, not at parse time."
+					"description": "Substitution template that selects the branch. Resolved through the regular {{ ... }} pipeline at runtime; the resolved value MUST be exactly \"true\" (run `then`), \"false\" or \"\" (run `else`, or skip if no `else`). Anything else is a hard error. The boolean DSL — comparisons (==, !=), logical operators (&&, ||, !), parens — lives INSIDE the {{ ... }} block (e.g. `{{ ARG.env == 'production' && FLAG.confirm }}`); operators outside {{ }} are NOT supported. Inside the DSL, FLAG.x works as a bare boolean (resolves to \"true\"/\"false\"); ARG.x / ENV.x / VAR.x must equal \"true\" / \"false\" / \"\" to be used as bare booleans, otherwise use a comparison. Mixing && and || requires parens. Errors surface at runtime, not at parse time."
 				},
 				"then": {
 					"description": "Steps executed when the condition is truthy. May be a single shell-command string (sugar for a one-element array) or an array of command steps.",
@@ -175,7 +175,7 @@
 		},
 		"ForStep": {
 			"type": "object",
-			"description": "Iterate over a list, glob, or shell command output. Loop variables are referenced as {{ VARS.<var> }} inside the body.",
+			"description": "Iterate over a list, glob, or shell command output. Loop variables are referenced as {{ VAR.<var> }} inside the body.",
 			"required": [
 				"for",
 				"do"
@@ -257,7 +257,7 @@
 		},
 		"MatchStep": {
 			"type": "object",
-			"description": "Multi-way dispatch on a substituted value. Resolves the `match` template through the normal substitution pipeline ({{ ARGS.x }}, {{ ENV.X }}, {{ VARS.x }}, {{ RUN.* }}, chained fallbacks like {{ ARGS.x ? ENV.X ? 'default' }}, etc.), then runs the matching branch by string equality against the `cases` keys. Case keys wrapped in `/.../` are treated as regex patterns and tried after exact-equality lookup fails (literal cases always win over a regex that would also match). The regex isn't anchored — wrap with `/^...$/` for a full-string match. When no case matches and no `default` is set, execution errors out and lists the valid cases.",
+			"description": "Multi-way dispatch on a substituted value. Resolves the `match` template through the normal substitution pipeline ({{ ARG.x }}, {{ ENV.X }}, {{ VAR.x }}, {{ RUN.* }}, chained fallbacks like {{ ARG.x ? ENV.X ? 'default' }}, etc.), then runs the matching branch by string equality against the `cases` keys. Case keys wrapped in `/.../` are treated as regex patterns and tried after exact-equality lookup fails (literal cases always win over a regex that would also match). The regex isn't anchored — wrap with `/^...$/` for a full-string match. When no case matches and no `default` is set, execution errors out and lists the valid cases.",
 			"required": [
 				"match",
 				"cases"
@@ -345,7 +345,7 @@
 				},
 				"envFiles": {
 					"type": "array",
-					"description": "File paths to load environment variables from. Supports {{ ARGS.* }} and {{ ENV.* }} substitution. Loaded before the inline `env` object, so `env` values override these. Missing files are silently ignored.",
+					"description": "File paths to load environment variables from. Supports {{ ARG.* }} and {{ ENV.* }} substitution. Loaded before the inline `env` object, so `env` values override these. Missing files are silently ignored.",
 					"items": {
 						"type": "string"
 					}
@@ -353,6 +353,13 @@
 				"env": {
 					"type": "object",
 					"description": "Environment variables specific to this target. These override global env vars and envFiles.",
+					"additionalProperties": {
+						"$ref": "#/$defs/EnvValue"
+					}
+				},
+				"vars": {
+					"type": "object",
+					"description": "Substitution variables specific to this target, exposed as {{ VAR.<key> }}. Each value is resolved (via {{ ... }} substitution against env, ARGS, FLAGS, RUN, and already-set vars) before the target's commands run. Override global vars; scoped per-target like env (visible in @target dependencies, but a dependency's own vars don't leak back).",
 					"additionalProperties": {
 						"$ref": "#/$defs/EnvValue"
 					}
@@ -439,7 +446,7 @@
 				},
 				"envFiles": {
 					"type": "array",
-					"description": "File paths to load environment variables from for all targets. Supports {{ ARGS.* }} and {{ ENV.* }} substitution. Loaded before the inline `env` object. Missing files are silently ignored.",
+					"description": "File paths to load environment variables from for all targets. Supports {{ ARG.* }} and {{ ENV.* }} substitution. Loaded before the inline `env` object. Missing files are silently ignored.",
 					"items": {
 						"type": "string"
 					}
@@ -447,6 +454,13 @@
 				"env": {
 					"type": "object",
 					"description": "Environment variables set for all targets. Target-level env vars override these.",
+					"additionalProperties": {
+						"$ref": "#/$defs/EnvValue"
+					}
+				},
+				"vars": {
+					"type": "object",
+					"description": "Substitution variables set for all targets, exposed as {{ VAR.<key> }}. Target-level vars override these. See the target-level `vars` for resolution and scoping details.",
 					"additionalProperties": {
 						"$ref": "#/$defs/EnvValue"
 					}

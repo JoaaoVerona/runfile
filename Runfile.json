@@ -45,7 +45,7 @@
 						"-mac",
 						"-windows"
 					],
-					"do": "cargo clean --target-dir target{{ VARS.dir }}"
+					"do": "cargo clean --target-dir target{{ VAR.dir }}"
 				}
 			]
 		},
@@ -63,7 +63,7 @@
 						"{{ define(installed, 'rund') }}"
 					]
 				},
-				"cp {{ ENV.CARGO_TARGET_DIR }}/debug/{{ VARS.executable }} ~/.local/bin/{{ VARS.installed }}"
+				"cp {{ ENV.CARGO_TARGET_DIR }}/debug/{{ VAR.executable }} ~/.local/bin/{{ VAR.installed }}"
 			],
 			"detach": true,
 			"forceShell": "sh",
@@ -102,23 +102,23 @@
 			"commands": [
 				"{{ define(part, one_of(ARGS, 'major', 'minor', 'patch')) }}",
 				"{{ define(cargo, read_file('Cargo.toml')) }}",
-				"{{ define(cur, regex_capture(VARS.cargo, '(?m)^version = \"([^\"]+)\"', '1')) }}",
+				"{{ define(cur, regex_capture(VAR.cargo, '(?m)^version = \"([^\"]+)\"', '1')) }}",
 				{
-					"match": "{{ VARS.part }}",
+					"match": "{{ VAR.part }}",
 					"cases": {
-						"major": "{{ define(new, concat(add(nth(VARS.cur, '.', '0'), '1'), '.0.0')) }}",
-						"minor": "{{ define(new, concat(nth(VARS.cur, '.', '0'), '.', add(nth(VARS.cur, '.', '1'), '1'), '.0')) }}",
-						"patch": "{{ define(new, concat(nth(VARS.cur, '.', '0'), '.', nth(VARS.cur, '.', '1'), '.', add(nth(VARS.cur, '.', '2'), '1'))) }}"
+						"major": "{{ define(new, concat(add(nth(VAR.cur, '.', '0'), '1'), '.0.0')) }}",
+						"minor": "{{ define(new, concat(nth(VAR.cur, '.', '0'), '.', add(nth(VAR.cur, '.', '1'), '1'), '.0')) }}",
+						"patch": "{{ define(new, concat(nth(VAR.cur, '.', '0'), '.', nth(VAR.cur, '.', '1'), '.', add(nth(VAR.cur, '.', '2'), '1'))) }}"
 					}
 				},
-				"{{ define(updated, regex_replace(VARS.cargo, '(?m)^version = \"[^\"]+\"', concat('version = \"', VARS.new, '\"'))) }}",
-				"{{ write_file('Cargo.toml', VARS.updated) }}",
+				"{{ define(updated, regex_replace(VAR.cargo, '(?m)^version = \"[^\"]+\"', concat('version = \"', VAR.new, '\"'))) }}",
+				"{{ write_file('Cargo.toml', VAR.updated) }}",
 				"cargo update --workspace",
-				"echo 'Bumped: version {{ VARS.cur }} -> {{ VARS.new }}'",
-				"git commit Cargo.toml Cargo.lock -m {{ shell_quote(concat('bump to ', VARS.new)) }}",
-				"{{ define(tag, concat('v', VARS.new)) }}",
-				"echo Tagging {{ VARS.tag }}",
-				"git tag {{ shell_quote(VARS.tag) }}",
+				"echo 'Bumped: version {{ VAR.cur }} -> {{ VAR.new }}'",
+				"git commit Cargo.toml Cargo.lock -m {{ shell_quote(concat('bump to ', VAR.new)) }}",
+				"{{ define(tag, concat('v', VAR.new)) }}",
+				"echo Tagging {{ VAR.tag }}",
+				"git tag {{ shell_quote(VAR.tag) }}",
 				"git push",
 				"git push --tags"
 			],

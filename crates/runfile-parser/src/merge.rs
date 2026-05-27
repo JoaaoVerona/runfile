@@ -352,6 +352,15 @@ fn bake_globals_into_target(
 		spec.env = Some(merged);
 	}
 
+	// vars: global as base, target overrides (same semantics as env)
+	if let Some(global_vars) = &globals.vars {
+		let mut merged = global_vars.clone();
+		if let Some(target_vars) = spec.vars.take() {
+			merged.extend(target_vars);
+		}
+		spec.vars = Some(merged);
+	}
+
 	// envFiles: prepend global (made absolute) before target
 	if let Some(global_env_files) = &globals.env_files {
 		let absolute_globals: Vec<String> = global_env_files

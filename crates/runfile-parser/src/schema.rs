@@ -247,7 +247,7 @@ impl CommandStep {
 	/// target-invocation arg templates, `if` condition expressions, `for in`
 	/// array elements, and `for glob`/`for shell` iterator sources.
 	///
-	/// Used for static analysis (arg-usage detection, scanning for `{{ ARGS.x }}`
+	/// Used for static analysis (arg-usage detection, scanning for `{{ ARG.x }}`
 	/// references in IDE generators and MCP tooling) without needing to
 	/// resolve values.
 	pub fn walk_templates<'a, F: FnMut(&'a str)>(&'a self, visit: &mut F) {
@@ -341,7 +341,7 @@ impl CommandStep {
 
 /// Find the first whitespace that splits `target` from `args` in a target-call
 /// string, but skip whitespace inside a `{{ ... }}` substitution block. Lets
-/// `@{{ VARS.ns }}:dev` keep its whole substituted name as the target.
+/// `@{{ VAR.ns }}:dev` keep its whole substituted name as the target.
 fn find_target_args_split(s: &str) -> Option<usize> {
 	let bytes = s.as_bytes();
 	let mut i = 0;
@@ -443,12 +443,19 @@ pub fn walk_step_templates<'a, F: FnMut(&'a str)>(steps: &'a [CommandStep], visi
 /// `workingDirectory`, `confirm`, and `extendStdio.fromFile` paths.
 ///
 /// Used by static analysis (arg-usage scanning) so references like
-/// `{{ ARGS.x }}` / `{{ FLAGS.x }}` placed in `env` values, env-file paths, or
+/// `{{ ARG.x }}` / `{{ FLAG.x }}` placed in `env` values, env-file paths, or
 /// other auxiliary fields are recognised — without it the validator would
 /// only see the `commands` array and reject otherwise-valid CLI args.
 pub fn walk_spec_aux_templates<'a, F: FnMut(&'a str)>(spec: &'a CommandSpec, visit: &mut F) {
 	if let Some(env) = &spec.env {
 		for value in env.values() {
+			if let EnvValue::String(s) = value {
+				visit(s.as_str());
+			}
+		}
+	}
+	if let Some(vars) = &spec.vars {
+		for value in vars.values() {
 			if let EnvValue::String(s) = value {
 				visit(s.as_str());
 			}
@@ -488,9 +495,9 @@ pub fn walk_spec_aux_templates<'a, F: FnMut(&'a str)>(spec: &'a CommandSpec, vis
 /// value (including `"false"`, `"True"`, `"1"`, the empty string, etc.)
 /// counts as falsy.
 ///
-/// The OLD form `"{{ ARGS.env }} == prod"` (with operators outside the
+/// The OLD form `"{{ ARG.env }} == prod"` (with operators outside the
 /// `{{ ... }}` substitution) is no longer parsed at the if-level — that
-/// DSL is reachable inside a substitution: `"{{ ARGS.env == 'prod' }}"`
+/// DSL is reachable inside a substitution: `"{{ ARG.env == 'prod' }}"`
 /// resolves to `"true"` or `"false"` and is what the if then compares.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -644,7 +651,7 @@ impl<'de> Deserialize<'de> for ForInValue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ForStep {
-	/// The loop variable name (referenced inside the body as `{{ VARS.<var> }}`).
+	/// The loop variable name (referenced inside the body as `{{ VAR.<var> }}`).
 	#[serde(rename = "for")]
 	pub var: String,
 
@@ -685,7 +692,7 @@ pub struct ForStep {
 /// A `match`-block within a `commands` array.
 ///
 /// Resolves the `match` template through the normal substitution pipeline
-/// (so `{{ ARGS.x }}`, `{{ ENV.X }}`, `{{ VARS.x }}`, chained fallbacks, etc. work),
+/// (so `{{ ARG.x }}`, `{{ ENV.X }}`, `{{ VAR.x }}`, chained fallbacks, etc. work),
 /// then dispatches on string equality against `cases`. When no case matches
 /// and no `default` is set, execution errors out — listing the valid cases
 /// in the message — so users learn about valid values rather than silently
@@ -698,7 +705,7 @@ pub struct ForStep {
 pub struct MatchStep {
 	/// The substitution template to evaluate. Goes through the same
 	/// substitution pipeline as any other `{{ ... }}` reference, so chained
-	/// fallbacks (`{{ ARGS.tier ? ENV.TIER ? 1 }}`) and all source kinds are
+	/// fallbacks (`{{ ARG.tier ? ENV.TIER ? 1 }}`) and all source kinds are
 	/// supported.
 	#[serde(rename = "match")]
 	pub r#match: String,
@@ -888,6 +895,15 @@ pub struct CommandSpec {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub env: Option<HashMap<String, EnvValue>>,
 
+	/// Optional substitution variables specific to this command. Each value is
+	/// resolved (via `{{ ... }}` substitution against the built env, `ARGS`,
+	/// `FLAGS`, `RUN`, and already-set vars) before the target's commands run,
+	/// and exposed as `{{ VAR.<key> }}`. Globals' `vars` are merged in at parse
+	/// time (target keys win). Scoped per-target like `env`: visible inside
+	/// `@target` dependencies, but a dependency's own `vars` don't leak back.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub vars: Option<HashMap<String, EnvValue>>,
+
 	/// Force using a specific shell for this command (overrides globals.forceShell).
 	#[serde(default, rename = "forceShell", skip_serializing_if = "Option::is_none")]
 	pub force_shell: Option<String>,
@@ -979,6 +995,7 @@ impl CommandSpec {
 			commands,
 			env_files: None,
 			env: None,
+			vars: None,
 			force_shell: None,
 			add_to_path: None,
 			logging: None,
@@ -1184,6 +1201,12 @@ pub struct Globals {
 	/// Environment variables to set for all commands.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub env: Option<HashMap<String, EnvValue>>,
+
+	/// Substitution variables to set for all commands. Merged into each
+	/// target's own `vars` at parse time — target keys win. Exposed as
+	/// `{{ VAR.<key> }}`. See [`CommandSpec::vars`].
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub vars: Option<HashMap<String, EnvValue>>,
 
 	/// Force using a specific shell.
 	#[serde(default, rename = "forceShell", skip_serializing_if = "Option::is_none")]

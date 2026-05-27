@@ -21,6 +21,7 @@ use runfile_shell::{ResolvedShell, ShellKind};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use thiserror::Error;
@@ -140,6 +141,13 @@ struct ExecSetup {
 	/// down the entire dependency tree. `None` at top-level / when no parallel
 	/// ancestor has set one.
 	output_prefix: Option<String>,
+	/// Keeps the target's Runfile-declared `vars` live in the run-wide VARS map
+	/// for the duration of this setup (i.e. the whole target execution), and
+	/// restores any shadowed prior values when dropped. `None` when the target
+	/// declared no vars. Held as a field so it drops at the end of the executor
+	/// entry point, after the command walk completes.
+	#[allow(dead_code)]
+	vars_guard: Option<DeclaredVarsGuard>,
 }
 
 impl ExecSetup {
@@ -165,6 +173,12 @@ impl ExecSetup {
 		)?;
 		check_env_case_duplicates(&env)?;
 
+		// Apply the target's Runfile-declared `vars` (globals already merged in)
+		// into the run-wide VARS map now that `env` is built — values may
+		// reference `{{ ENV.* }}`. The returned guard restores shadowed values
+		// when this setup drops.
+		let vars_guard = DeclaredVarsGuard::apply(spec, args, &env)?;
+
 		// Build the chain we'll hand off to any @dep called from this target:
 		// parent's chain with this target's own addToPath appended.
 		let mut add_to_path_chain: Vec<Vec<String>> = parent_add_to_path_chain.to_vec();
@@ -181,6 +195,7 @@ impl ExecSetup {
 			env,
 			add_to_path_chain,
 			output_prefix: output_prefix.map(String::from),
+			vars_guard,
 		};
 
 		let tailer = if let Some(entries) = spec.extend_stdio.as_ref().filter(|e| !e.is_empty()) {
@@ -200,7 +215,82 @@ impl ExecSetup {
 	}
 }
 
-/// Substitute `{{ ARGS.* }}` and `{{ ENV.* }}` references in extendStdio fromFile paths.
+/// RAII scope for a target's Runfile-declared `vars`. On [`apply`](Self::apply)
+/// it substitutes each declared value (against the built env + `ARGS` / `FLAGS`
+/// / `RUN` / already-set `VARS`) and writes it into the run-wide VARS map; on
+/// drop it restores every key it overwrote to its prior value (removing keys
+/// that didn't previously exist).
+///
+/// This gives declared vars the same per-target scoping `env` has: a parent's
+/// declared vars are visible inside an `@target` dependency (the VARS map is
+/// shared by `Arc`), but a dependency's own declared vars do NOT leak back into
+/// the parent once the dependency returns. `define(...)` calls made *during*
+/// command execution still follow their existing propagation semantics — the
+/// guard only manages the keys it set at setup time.
+pub(crate) struct DeclaredVarsGuard {
+	vars: Arc<Mutex<HashMap<String, String>>>,
+	/// `(key, prior)` for each key this guard wrote. `prior == None` means the
+	/// key was absent before and should be removed on restore.
+	prior: Vec<(String, Option<String>)>,
+}
+
+impl DeclaredVarsGuard {
+	/// Evaluate `spec.vars` (globals already merged in at parse time) against
+	/// `env` and insert each resolved value into the VARS map. Returns `None`
+	/// when the target declared no vars (so callers pay nothing).
+	///
+	/// Keys are processed in sorted order, inserting each before evaluating the
+	/// next, so a later var can deterministically reference an earlier one via
+	/// `{{ VAR.<earlier> }}`. A value whose substitution has no default and no
+	/// resolvable source errors out — same contract as everywhere else.
+	pub(crate) fn apply(
+		spec: &CommandSpec,
+		args: &RunArgs,
+		env: &HashMap<String, String>,
+	) -> Result<Option<Self>, SubstitutionError> {
+		let declared = match &spec.vars {
+			Some(v) if !v.is_empty() => v,
+			_ => return Ok(None),
+		};
+		let mut keys: Vec<&String> = declared.keys().collect();
+		keys.sort();
+		let mut prior: Vec<(String, Option<String>)> = Vec::with_capacity(keys.len());
+		for key in keys {
+			let raw = declared[key].to_env_string();
+			// Substitute BEFORE locking the VARS map: `substitute` itself locks
+			// the map for `{{ VAR.* }}` reads, so holding the lock here would
+			// deadlock. Earlier keys are already inserted and thus visible.
+			let resolved = args.substitute(&raw, env)?;
+			let previous = args.vars.lock().unwrap().insert(key.clone(), resolved);
+			prior.push((key.clone(), previous));
+		}
+		Ok(Some(Self {
+			vars: args.vars.clone(),
+			prior,
+		}))
+	}
+}
+
+impl Drop for DeclaredVarsGuard {
+	fn drop(&mut self) {
+		let mut map = self.vars.lock().unwrap();
+		// Unwind in reverse insertion order so a key written more than once
+		// (shouldn't happen for distinct map keys, but cheap insurance) lands
+		// back on its true prior value.
+		for (key, previous) in self.prior.drain(..).rev() {
+			match previous {
+				Some(v) => {
+					map.insert(key, v);
+				}
+				None => {
+					map.remove(&key);
+				}
+			}
+		}
+	}
+}
+
+/// Substitute `{{ ARG.* }}` and `{{ ENV.* }}` references in extendStdio fromFile paths.
 fn substitute_extend_stdio(
 	entries: &[ExtendStdio],
 	args: &RunArgs,
@@ -721,7 +811,7 @@ fn execute_one_target_call(
 	deps: &dyn DependencyResolver,
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
-	// Substitute the target name so dynamic patterns like `@{{ VARS.ns }}:build`
+	// Substitute the target name so dynamic patterns like `@{{ VAR.ns }}:build`
 	// dispatch to the correct namespaced target. No-op for static names.
 	let target = args.substitute(&call.target, &setup.env)?;
 	let argv = resolve_target_call_argv(call, args, &setup.env)?;
@@ -1066,7 +1156,7 @@ fn execute_for_block(
 		let mut iter_error: Option<ExecuteError> = None;
 
 		// Scope the iteration variable into VARS for the duration of the loop;
-		// the guard restores any prior `VARS.<var>` value (or removes the entry
+		// the guard restores any prior `VAR.<var>` value (or removes the entry
 		// if none) when it drops at end-of-loop.
 		let var_guard = LoopVarGuard::enter(&args.vars, for_step.var.as_str());
 		for value in &iterations {
@@ -1152,7 +1242,7 @@ fn execute_for_parallel(
 
 	// Collection is sequential, so the `LoopVarGuard` save/restore semantics
 	// work the same as in `execute_for_block`: substitute each iteration's
-	// body with `VARS.<var>` set to the current iteration value, then restore
+	// body with `VAR.<var>` set to the current iteration value, then restore
 	// at end of collection. Substituted leaves carry the iteration value
 	// baked in, so when the parallel batch dispatches later, no race on the
 	// shared VARS map matters for shell leaves. (TargetCall leaves dispatch
@@ -1298,7 +1388,7 @@ fn collect_leaves_parallel_with_when(
 				});
 			}
 			CommandStep::TargetCall(call) => {
-				// Substitute the target name so `@{{ VARS.ns }}:build`-style
+				// Substitute the target name so `@{{ VAR.ns }}:build`-style
 				// dynamic targets dispatch to the right namespaced target.
 				let target = args.substitute(&call.target, &setup.env)?;
 				let argv = resolve_target_call_argv(call, args, &setup.env)?;

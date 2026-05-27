@@ -99,11 +99,11 @@ fn substitute_args_passes_everything_through() {
 
 #[test]
 fn substitute_named_consumed_removed_from_args() {
-	// "run build --env dev --help" with "cargo build env:{{ ARGS.env ? 'test' }} {{ ARGS }}"
+	// "run build --env dev --help" with "cargo build env:{{ ARG.env ? 'test' }} {{ ARGS }}"
 	// → "cargo build env:dev --help"
 	let args = RunArgs::parse(&["--env".into(), "dev".into(), "--help".into()]);
 	let result = args
-		.substitute_no_env("cargo build env:{{ ARGS.env ? 'test' }} {{ ARGS }}")
+		.substitute_no_env("cargo build env:{{ ARG.env ? 'test' }} {{ ARGS }}")
 		.unwrap();
 	assert_eq!(result, "cargo build env:dev --help");
 }
@@ -113,18 +113,18 @@ fn substitute_named_consumed_equals_form() {
 	// "run build --env=dev --help" → consumed --env=dev, {{ ARGS }} = "--help"
 	let args = RunArgs::parse(&["--env=dev".into(), "--help".into()]);
 	let result = args
-		.substitute_no_env("cargo build env:{{ ARGS.env ? 'test' }} {{ ARGS }}")
+		.substitute_no_env("cargo build env:{{ ARG.env ? 'test' }} {{ ARGS }}")
 		.unwrap();
 	assert_eq!(result, "cargo build env:dev --help");
 }
 
 #[test]
 fn substitute_named_default_not_consumed_from_args() {
-	// "run build --help" with "cargo build env:{{ ARGS.env ? 'test' }} {{ ARGS }}"
+	// "run build --help" with "cargo build env:{{ ARG.env ? 'test' }} {{ ARGS }}"
 	// --env was NOT provided, so default "test" is used, and --help stays in {{ ARGS }}
 	let args = RunArgs::parse(&["--help".into()]);
 	let result = args
-		.substitute_no_env("cargo build env:{{ ARGS.env ? 'test' }} {{ ARGS }}")
+		.substitute_no_env("cargo build env:{{ ARG.env ? 'test' }} {{ ARGS }}")
 		.unwrap();
 	assert_eq!(result, "cargo build env:test --help");
 }
@@ -132,21 +132,21 @@ fn substitute_named_default_not_consumed_from_args() {
 #[test]
 fn substitute_named_arg() {
 	let args = RunArgs::parse(&["--env=staging".into()]);
-	let result = args.substitute_no_env("echo {{ ARGS.env }}").unwrap();
+	let result = args.substitute_no_env("echo {{ ARG.env }}").unwrap();
 	assert_eq!(result, "echo staging");
 }
 
 #[test]
 fn substitute_named_arg_with_default() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo {{ ARGS.env ? 'development' }}").unwrap();
+	let result = args.substitute_no_env("echo {{ ARG.env ? 'development' }}").unwrap();
 	assert_eq!(result, "echo development");
 }
 
 #[test]
 fn substitute_named_arg_overrides_default() {
 	let args = RunArgs::parse(&["--env=production".into()]);
-	let result = args.substitute_no_env("echo {{ ARGS.env ? 'development' }}").unwrap();
+	let result = args.substitute_no_env("echo {{ ARG.env ? 'development' }}").unwrap();
 	assert_eq!(result, "echo production");
 }
 
@@ -161,10 +161,10 @@ fn substitute_preserves_shell_dollar_var() {
 
 #[test]
 fn substitute_multiple_named_consumed() {
-	// Both --port and --host are consumed by {{ ARGS.key }}, so {{ ARGS }} should be empty
+	// Both --port and --host are consumed by {{ ARG.key }}, so {{ ARGS }} should be empty
 	let args = RunArgs::parse(&["--port=3000".into(), "--host=localhost".into()]);
 	let result = args
-		.substitute_no_env("server --port={{ ARGS.port ? '8080' }} --host={{ ARGS.host ? '0.0.0.0' }}")
+		.substitute_no_env("server --port={{ ARG.port ? '8080' }} --host={{ ARG.host ? '0.0.0.0' }}")
 		.unwrap();
 	assert_eq!(result, "server --port=3000 --host=localhost");
 }
@@ -174,7 +174,7 @@ fn substitute_order_independent() {
 	// "run build --help --env dev" → same as "--env dev --help"
 	let args = RunArgs::parse(&["--help".into(), "--env".into(), "dev".into()]);
 	let result = args
-		.substitute_no_env("cargo build env:{{ ARGS.env ? 'test' }} {{ ARGS }}")
+		.substitute_no_env("cargo build env:{{ ARG.env ? 'test' }} {{ ARGS }}")
 		.unwrap();
 	assert_eq!(result, "cargo build env:dev --help");
 }
@@ -205,7 +205,7 @@ fn substitute_redacted_hides_env_values() {
 fn substitute_redacted_shows_args_values() {
 	let args = RunArgs::parse(&["--env=production".into()]);
 	let env = HashMap::new();
-	let result = args.substitute_redacted("deploy {{ ARGS.env }}", &env).unwrap();
+	let result = args.substitute_redacted("deploy {{ ARG.env }}", &env).unwrap();
 	assert_eq!(result, "deploy production");
 }
 
@@ -224,7 +224,7 @@ fn substitute_redacted_mixed_args_and_env() {
 	env.insert("SECRET_TOKEN".to_string(), "tok_abc123".to_string());
 	let result = args
 		.substitute_redacted(
-			"curl -H 'Authorization: {{ ENV.SECRET_TOKEN }}' https://{{ ARGS.host }}/api",
+			"curl -H 'Authorization: {{ ENV.SECRET_TOKEN }}' https://{{ ARG.host }}/api",
 			&env,
 		)
 		.unwrap();
@@ -257,9 +257,9 @@ fn substitute_redacted_chained_args_then_env() {
 	let args = RunArgs::parse(&[]);
 	let mut env = HashMap::new();
 	env.insert("DB_HOST".to_string(), "db.internal".to_string());
-	// ARGS.host not provided, falls through to ENV.DB_HOST → redacted
+	// ARG.host not provided, falls through to ENV.DB_HOST → redacted
 	let result = args
-		.substitute_redacted("connect {{ ARGS.host ? ENV.DB_HOST }}", &env)
+		.substitute_redacted("connect {{ ARG.host ? ENV.DB_HOST }}", &env)
 		.unwrap();
 	assert_eq!(result, "connect ***");
 }
@@ -269,9 +269,9 @@ fn substitute_redacted_chained_args_provided() {
 	let args = RunArgs::parse(&["--host=localhost".into()]);
 	let mut env = HashMap::new();
 	env.insert("DB_HOST".to_string(), "db.internal".to_string());
-	// ARGS.host IS provided → shown as-is (not redacted)
+	// ARG.host IS provided → shown as-is (not redacted)
 	let result = args
-		.substitute_redacted("connect {{ ARGS.host ? ENV.DB_HOST }}", &env)
+		.substitute_redacted("connect {{ ARG.host ? ENV.DB_HOST }}", &env)
 		.unwrap();
 	assert_eq!(result, "connect localhost");
 }
@@ -281,7 +281,7 @@ fn substitute_redacted_flags_shown() {
 	let args = RunArgs::parse(&["--verbose".into()]);
 	let env = HashMap::new();
 	let result = args
-		.substitute_redacted("cmd {{ FLAGS.verbose ? '--verbose' : }}", &env)
+		.substitute_redacted("cmd {{ FLAG.verbose ? '--verbose' : }}", &env)
 		.unwrap();
 	assert_eq!(result, "cmd --verbose");
 }
@@ -391,7 +391,7 @@ fn build_env_add_to_path_absolute() {
 #[test]
 fn build_env_substitutes_args_in_target_env() {
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("PORT".into(), EnvValue::String("{{ ARGS.port ? '3000' }}".into()));
+	cmd_env.insert("PORT".into(), EnvValue::String("{{ ARG.port ? '3000' }}".into()));
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(cmd_env);
 	let args = RunArgs::parse(&["--port=4000".into()]);
@@ -402,7 +402,7 @@ fn build_env_substitutes_args_in_target_env() {
 #[test]
 fn build_env_substitutes_args_default_in_target_env() {
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("PORT".into(), EnvValue::String("{{ ARGS.port ? '3000' }}".into()));
+	cmd_env.insert("PORT".into(), EnvValue::String("{{ ARG.port ? '3000' }}".into()));
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(cmd_env);
 	let args = RunArgs::default();
@@ -415,7 +415,7 @@ fn build_env_substitutes_flags_in_target_env() {
 	let mut cmd_env = HashMap::new();
 	cmd_env.insert(
 		"NODE_OPTIONS".into(),
-		EnvValue::String("{{ FLAGS.debug ? '--inspect' : }}".into()),
+		EnvValue::String("{{ FLAG.debug ? '--inspect' : }}".into()),
 	);
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(cmd_env);
@@ -427,7 +427,7 @@ fn build_env_substitutes_flags_in_target_env() {
 #[test]
 fn build_env_substitutes_flags_false_in_target_env() {
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("DEBUG".into(), EnvValue::String("{{ FLAGS.debug }}".into()));
+	cmd_env.insert("DEBUG".into(), EnvValue::String("{{ FLAG.debug }}".into()));
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(cmd_env);
 	let args = RunArgs::default();
@@ -440,7 +440,7 @@ fn build_env_substitutes_args_in_global_env() {
 	let mut global_env = HashMap::new();
 	global_env.insert(
 		"ENV_NAME".into(),
-		EnvValue::String("{{ ARGS.env ? 'development' }}".into()),
+		EnvValue::String("{{ ARG.env ? 'development' }}".into()),
 	);
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(global_env);
@@ -452,7 +452,7 @@ fn build_env_substitutes_args_in_global_env() {
 #[test]
 fn build_env_substitutes_flags_in_global_env() {
 	let mut global_env = HashMap::new();
-	global_env.insert("VERBOSE".into(), EnvValue::String("{{ FLAGS.verbose }}".into()));
+	global_env.insert("VERBOSE".into(), EnvValue::String("{{ FLAG.verbose }}".into()));
 	let mut spec = CommandSpec::new(vec!["echo".into()]);
 	spec.env = Some(global_env);
 	let args = RunArgs::parse(&["--verbose".into()]);
@@ -578,14 +578,14 @@ fn execute_with_env_vars() {
 #[test]
 fn substitute_empty_default_returns_empty_string() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo {{ ARGS.env ? }}").unwrap();
+	let result = args.substitute_no_env("echo {{ ARG.env ? }}").unwrap();
 	assert_eq!(result, "echo ");
 }
 
 #[test]
 fn substitute_missing_arg_without_default_errors() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo {{ ARGS.env }}");
+	let result = args.substitute_no_env("echo {{ ARG.env }}");
 	assert!(result.is_err());
 	let err = result.unwrap_err();
 	assert!(err.to_string().contains("env"));
@@ -594,7 +594,7 @@ fn substitute_missing_arg_without_default_errors() {
 #[test]
 fn substitute_present_arg_without_default_works() {
 	let args = RunArgs::parse(&["--env=prod".into()]);
-	let result = args.substitute_no_env("echo {{ ARGS.env }}").unwrap();
+	let result = args.substitute_no_env("echo {{ ARG.env }}").unwrap();
 	assert_eq!(result, "echo prod");
 }
 
@@ -662,7 +662,7 @@ fn substitute_chain_args_then_env() {
 	let mut env = HashMap::new();
 	env.insert("MY_ENV".into(), "from_env".into());
 	let result = args
-		.substitute("echo {{ ARGS.key ? ENV.MY_ENV ? 'fallback' }}", &env)
+		.substitute("echo {{ ARG.key ? ENV.MY_ENV ? 'fallback' }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo from_env");
 }
@@ -673,7 +673,7 @@ fn substitute_chain_args_wins_over_env() {
 	let mut env = HashMap::new();
 	env.insert("MY_ENV".into(), "from_env".into());
 	let result = args
-		.substitute("echo {{ ARGS.key ? ENV.MY_ENV ? 'fallback' }}", &env)
+		.substitute("echo {{ ARG.key ? ENV.MY_ENV ? 'fallback' }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo from_args");
 }
@@ -683,7 +683,7 @@ fn substitute_chain_falls_through_to_literal() {
 	let args = RunArgs::parse(&[]);
 	let env = HashMap::new();
 	let result = args
-		.substitute("echo {{ ARGS.key ? ENV.MY_ENV ? 'fallback' }}", &env)
+		.substitute("echo {{ ARG.key ? ENV.MY_ENV ? 'fallback' }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo fallback");
 }
@@ -703,7 +703,7 @@ fn substitute_chain_env_then_env() {
 fn substitute_chain_with_empty_default() {
 	let args = RunArgs::parse(&[]);
 	let env = HashMap::new();
-	let result = args.substitute("echo {{ ARGS.key ? ENV.MISSING ? }}", &env).unwrap();
+	let result = args.substitute("echo {{ ARG.key ? ENV.MISSING ? }}", &env).unwrap();
 	assert_eq!(result, "echo ");
 }
 
@@ -713,7 +713,7 @@ fn substitute_env_and_args_in_same_command() {
 	let mut env = HashMap::new();
 	env.insert("HOST".into(), "localhost".into());
 	let result = args
-		.substitute("server --host={{ ENV.HOST }} --port={{ ARGS.port ? '8080' }}", &env)
+		.substitute("server --host={{ ENV.HOST }} --port={{ ARG.port ? '8080' }}", &env)
 		.unwrap();
 	assert_eq!(result, "server --host=localhost --port=9090");
 }
@@ -1637,7 +1637,7 @@ fn target_call_in_parallel_parent_runs_each_dep() {
 	let counter = dir.path().join("count.txt");
 	let counter_escaped = json_escape_path(&counter);
 	let _ = shell.kind;
-	let bump = format!("echo {{{{ ARGS.tag }}}} >> \\\"{counter_escaped}\\\"");
+	let bump = format!("echo {{{{ ARG.tag }}}} >> \\\"{counter_escaped}\\\"");
 
 	let json = format!(
 		r#"{{
@@ -1697,7 +1697,7 @@ fn target_call_inside_if_branch() {
             "dev": {{ "commands": ["{touch_dev}"] }},
             "deploy": {{
                 "commands": [
-                    {{ "if": "{{{{ ARGS.env == 'prod' }}}}", "then": "@prod", "else": "@dev" }}
+                    {{ "if": "{{{{ ARG.env == 'prod' }}}}", "then": "@prod", "else": "@dev" }}
                 ]
             }}
         }}
@@ -1924,14 +1924,14 @@ fn working_directory_accepts_substitution() {
 		format!("touch \\\"{marker_escaped}\\\"")
 	};
 
-	// `{{ ARGS.dir ? RUN.cwd }}` → falls back to RUN.cwd when --dir is missing.
+	// `{{ ARG.dir ? RUN.cwd }}` → falls back to RUN.cwd when --dir is missing.
 	let json = format!(
 		r#"{{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": ["{touch}"],
-                "workingDirectory": "{{{{ ARGS.dir ? RUN.cwd }}}}"
+                "workingDirectory": "{{{{ ARG.dir ? RUN.cwd }}}}"
             }}
         }}
     }}"#
@@ -2350,11 +2350,11 @@ fn extract_target_call_with_args_forwards_to_dep() {
 	use runfile_parser::parse_runfile;
 
 	// `@deploy --env=prod` should pass `--env=prod` into the dep so the
-	// dep's `{{ ARGS.env }}` substitution resolves.
+	// dep's `{{ ARG.env }}` substitution resolves.
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "deploy": { "commands": ["echo deploying to {{ ARGS.env }}"] },
+            "deploy": { "commands": ["echo deploying to {{ ARG.env }}"] },
             "release": { "commands": ["@deploy --env=prod"] }
         }
     }"#;
@@ -2376,7 +2376,7 @@ fn extract_target_call_with_args_forwards_to_dep() {
 #[test]
 fn extract_for_namespaces_aggregator() {
 	// Regression: aggregator targets whose only body is a `for in: namespaces`
-	// loop dispatching `@{{ VARS.ns }}:something` used to print nothing in
+	// loop dispatching `@{{ VAR.ns }}:something` used to print nothing in
 	// dry-run for two compounding reasons: (1) `@target` calls weren't
 	// recursively expanded, and (2) the CLI dry-run path didn't sync
 	// `run_context.namespaces` from the merged Runfile. Both are fixed —
@@ -2391,7 +2391,7 @@ fn extract_for_namespaces_aggregator() {
         "targets": {
             "dev": {
                 "commands": [
-                    { "for": "ns", "in": "namespaces", "do": "@{{ VARS.ns }}:dev" }
+                    { "for": "ns", "in": "namespaces", "do": "@{{ VAR.ns }}:dev" }
                 ]
             },
             "web-admin:dev": { "commands": ["next dev --port 3000"] },
@@ -2435,7 +2435,7 @@ fn extract_for_in_literal_array_expands_per_iteration() {
         "targets": {
             "build-all": {
                 "commands": [
-                    { "for": "tier", "in": ["api", "web"], "do": "echo build {{ VARS.tier }}" }
+                    { "for": "tier", "in": ["api", "web"], "do": "echo build {{ VAR.tier }}" }
                 ]
             }
         }
@@ -2474,7 +2474,7 @@ fn extract_for_glob_walks_filesystem() {
         "targets": {
             "lint": {
                 "commands": [
-                    { "for": "f", "glob": "*.txt", "do": "lint {{ VARS.f }}" }
+                    { "for": "f", "glob": "*.txt", "do": "lint {{ VAR.f }}" }
                 ]
             }
         }
@@ -2504,7 +2504,7 @@ fn extract_for_glob_with_no_matches_emits_no_commands() {
         "targets": {
             "lint": {
                 "commands": [
-                    { "for": "f", "glob": "*.nonesuch", "do": "lint {{ VARS.f }}" }
+                    { "for": "f", "glob": "*.nonesuch", "do": "lint {{ VAR.f }}" }
                 ]
             }
         }
@@ -2537,7 +2537,7 @@ fn extract_for_shell_emits_placeholder_without_running_iterator() {
         "targets": {
             "process-files": {
                 "commands": [
-                    { "for": "line", "shell": "exit 1", "do": "echo {{ VARS.line }}" }
+                    { "for": "line", "shell": "exit 1", "do": "echo {{ VAR.line }}" }
                 ]
             }
         }
@@ -2647,7 +2647,7 @@ fn extract_with_args_substitution() {
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "deploy": { "commands": ["echo deploying to {{ ARGS.env }}"] }
+            "deploy": { "commands": ["echo deploying to {{ ARG.env }}"] }
         }
     }"#;
 
@@ -2672,7 +2672,7 @@ fn extract_substitutes_env_values_with_args_flags_and_env() {
 	use runfile_parser::Runfile;
 
 	// Regression: dry-run / extract output used to print env values raw,
-	// e.g. `RUN_TESTS_WITH_SIDE_EFFECTS='{{ FLAGS.side-effects }}'`. Values
+	// e.g. `RUN_TESTS_WITH_SIDE_EFFECTS='{{ FLAG.side-effects }}'`. Values
 	// must be substituted just like commands are.
 	//
 	// `CARGO_PKG_NAME` is always present during `cargo test`, so we lean on
@@ -2684,8 +2684,8 @@ fn extract_substitutes_env_values_with_args_flags_and_env() {
             "test": {
                 "commands": ["./gradlew test"],
                 "env": {
-                    "RUN_TESTS_WITH_SIDE_EFFECTS": "{{ FLAGS.side-effects }}",
-                    "TARGET_ENV": "{{ ARGS.env }}",
+                    "RUN_TESTS_WITH_SIDE_EFFECTS": "{{ FLAG.side-effects }}",
+                    "TARGET_ENV": "{{ ARG.env }}",
                     "PKG": "{{ ENV.CARGO_PKG_NAME }}"
                 }
             }
@@ -2723,7 +2723,7 @@ fn extract_missing_required_arg_errors() {
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "deploy": { "commands": ["echo deploying to {{ ARGS.env }}"] }
+            "deploy": { "commands": ["echo deploying to {{ ARG.env }}"] }
         }
     }"#;
 
@@ -2821,7 +2821,7 @@ fn scan_args_detects_positional() {
 
 #[test]
 fn scan_args_detects_named() {
-	let cmds = vec!["echo {{ ARGS.env }}".into(), "echo {{ ARGS.port ? '8080' }}".into()];
+	let cmds = vec!["echo {{ ARG.env }}".into(), "echo {{ ARG.port ? '8080' }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("env"));
@@ -2830,7 +2830,7 @@ fn scan_args_detects_named() {
 
 #[test]
 fn scan_args_detects_both() {
-	let cmds = vec!["echo {{ ARGS.env }} {{ ARGS }}".into()];
+	let cmds = vec!["echo {{ ARG.env }} {{ ARGS }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(positional);
 	assert!(named.contains("env"));
@@ -2866,9 +2866,9 @@ fn scan_args_detects_positional_inside_define() {
 
 #[test]
 fn scan_args_distinguishes_bare_args_from_named_form() {
-	// `ARGS.env` is a named-key reference, NOT a bare-ARGS consumer.
+	// `ARG.env` is a named-key reference, NOT a bare-ARGS consumer.
 	// Confirms the scanner doesn't double-count the same `ARGS` token.
-	let cmds = vec!["{{ one_of(ARGS.env, 'dev', 'prod') }}".into()];
+	let cmds = vec!["{{ one_of(ARG.env, 'dev', 'prod') }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("env"));
@@ -2917,7 +2917,7 @@ fn validate_args_unexpected_named_args_error() {
 #[test]
 fn validate_args_unknown_named_arg_error() {
 	let args = RunArgs::parse(&["--env=prod".into(), "--port=8080".into()]);
-	let cmds = vec!["echo {{ ARGS.env }}".into()]; // only {{ ARGS.env }}, not {{ ARGS.port }}
+	let cmds = vec!["echo {{ ARG.env }}".into()]; // only {{ ARG.env }}, not {{ ARG.port }}
 	let err = validate_args(&args, &cmds).unwrap_err();
 	assert!(
 		err.to_string().contains("Unknown named argument \"--port\""),
@@ -2928,7 +2928,7 @@ fn validate_args_unknown_named_arg_error() {
 #[test]
 fn validate_args_known_named_arg_ok() {
 	let args = RunArgs::parse(&["--env=prod".into()]);
-	let cmds = vec!["echo {{ ARGS.env }}".into()];
+	let cmds = vec!["echo {{ ARG.env }}".into()];
 	assert!(validate_args(&args, &cmds).is_ok());
 }
 
@@ -2942,9 +2942,9 @@ fn validate_args_positional_accepts_all() {
 
 #[test]
 fn validate_args_named_only_rejects_positional() {
-	// Commands only use {{ ARGS.env }}, but user passes positional args
+	// Commands only use {{ ARG.env }}, but user passes positional args
 	let args = RunArgs::parse(&["--env=prod".into(), "extra_arg".into()]);
-	let cmds = vec!["echo {{ ARGS.env }}".into()];
+	let cmds = vec!["echo {{ ARG.env }}".into()];
 	let err = validate_args(&args, &cmds).unwrap_err();
 	assert!(
 		err.to_string().contains("No command in this target accepts arguments")
@@ -2992,7 +2992,7 @@ fn run_target_rejects_unknown_named_arg() {
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
         "targets": {
-            "deploy": { "commands": ["echo deploying to {{ ARGS.env }}"] }
+            "deploy": { "commands": ["echo deploying to {{ ARG.env }}"] }
         }
     }"#;
 
@@ -3094,7 +3094,7 @@ fn run_target_dependency_args_accepted() {
 
 // ── Arg validation also scans non-`commands` template fields ──────────
 //
-// Regression: {{ ARGS.x }}/{{ FLAGS.x }} references in env values, envFiles,
+// Regression: {{ ARG.x }}/{{ FLAG.x }} references in env values, envFiles,
 // forceShell, addToPath, workingDirectory, confirm, and extendStdio paths
 // must be recognised by `validate_args` so users can pass --x without
 // also referencing the arg from a command string.
@@ -3110,7 +3110,7 @@ fn run_target_accepts_flag_referenced_only_in_env() {
         "targets": {
             "test": {
                 "commands": "echo running",
-                "env": { "RUN_TESTS_WITH_SIDE_EFFECTS": "{{ FLAGS.side-effects }}" }
+                "env": { "RUN_TESTS_WITH_SIDE_EFFECTS": "{{ FLAG.side-effects }}" }
             }
         }
     }"#;
@@ -3134,7 +3134,7 @@ fn run_target_accepts_arg_referenced_only_in_env() {
         "targets": {
             "deploy": {
                 "commands": "echo deploying",
-                "env": { "TARGET_ENV": "{{ ARGS.env }}" }
+                "env": { "TARGET_ENV": "{{ ARG.env }}" }
             }
         }
     }"#;
@@ -3160,7 +3160,7 @@ fn run_target_accepts_arg_referenced_only_in_env_files() {
         "targets": {
             "deploy": {
                 "commands": "echo deploying",
-                "envFiles": [".env.{{ ARGS.env }}"]
+                "envFiles": [".env.{{ ARG.env }}"]
             }
         }
     }"#;
@@ -3178,7 +3178,7 @@ fn run_target_accepts_arg_referenced_only_in_force_shell() {
 	use crate::runner::run_target;
 	use runfile_parser::parse_runfile;
 
-	// Pass --shellname=bash but reference it only via forceShell: {{ ARGS.shellname }}.
+	// Pass --shellname=bash but reference it only via forceShell: {{ ARG.shellname }}.
 	// We don't care which shell ends up resolved — only that validate_args
 	// doesn't reject the unknown-arg.
 	let shell = detect_default_shell().unwrap();
@@ -3189,7 +3189,7 @@ fn run_target_accepts_arg_referenced_only_in_force_shell() {
         "targets": {{
             "x": {{
                 "commands": "echo go",
-                "forceShell": "{{{{ ARGS.shellname ? {shell_name} }}}}"
+                "forceShell": "{{{{ ARG.shellname ? {shell_name} }}}}"
             }}
         }}
     }}"#
@@ -3215,7 +3215,7 @@ fn validate_args_rejects_truly_unknown_named_arg_with_aux_fields() {
         "targets": {
             "test": {
                 "commands": "echo running",
-                "env": { "X": "{{ FLAGS.side-effects }}" }
+                "env": { "X": "{{ FLAG.side-effects }}" }
             }
         }
     }"#;
@@ -3374,7 +3374,7 @@ fn load_env_files_with_args_substitution() {
 	std::fs::write(dir.path().join(".env.production"), "DB=prod-db\n").unwrap();
 	let args = RunArgs::parse(&["--env".into(), "production".into()]);
 	let env = HashMap::new();
-	let result = load_env_files(&[".env.{{ ARGS.env }}".to_string()], dir.path(), &args, &env).unwrap();
+	let result = load_env_files(&[".env.{{ ARG.env }}".to_string()], dir.path(), &args, &env).unwrap();
 	assert_eq!(result.get("DB").unwrap(), "prod-db");
 }
 
@@ -3651,10 +3651,10 @@ fn substitute_resolves_braces_inside_shell_command_substitution() {
 	// A shell `$(...)` command substitution is opaque to Runfile — it stays
 	// literal in the output. But any `{{ ... }}` reference *inside* the shell
 	// substitution body is still resolved so users can do
-	// `$(echo "{{ ARGS.env }}")` and have the env get substituted.
+	// `$(echo "{{ ARG.env }}")` and have the env get substituted.
 	let args = RunArgs::parse(&["--env=development".into()]);
 	let result = args
-		.substitute_no_env(r#"base=$(echo "$f" | sed 's/\.{{ ARGS.env }}$//')"#)
+		.substitute_no_env(r#"base=$(echo "$f" | sed 's/\.{{ ARG.env }}$//')"#)
 		.unwrap();
 	assert_eq!(result, r#"base=$(echo "$f" | sed 's/\.development$//')"#);
 }
@@ -3665,17 +3665,17 @@ fn substitute_resolves_braces_in_deeply_nested_shell_substitution() {
 	let mut env = HashMap::new();
 	env.insert("GREETING".to_string(), "hello".to_string());
 	let result = args
-		.substitute(r#"x=$(printf '%s' $(echo "{{ ENV.GREETING }} {{ ARGS.name }}"))"#, &env)
+		.substitute(r#"x=$(printf '%s' $(echo "{{ ENV.GREETING }} {{ ARG.name }}"))"#, &env)
 		.unwrap();
 	assert_eq!(result, r#"x=$(printf '%s' $(echo "hello world"))"#);
 }
 
 #[test]
 fn substitute_propagates_missing_arg_inside_shell_substitution() {
-	// A missing `{{ ARGS.x }}` inside a shell `$(...)` should still error
+	// A missing `{{ ARG.x }}` inside a shell `$(...)` should still error
 	// rather than silently leaking through unsubstituted.
 	let args = RunArgs::parse(&[]);
-	let err = args.substitute_no_env(r#"x=$(echo "{{ ARGS.missing }}")"#).unwrap_err();
+	let err = args.substitute_no_env(r#"x=$(echo "{{ ARG.missing }}")"#).unwrap_err();
 	matches!(err, SubstitutionError::MissingArg(_));
 }
 
@@ -3693,8 +3693,8 @@ fn substitute_redacts_env_inside_shell_substitution() {
 #[test]
 fn scan_args_usage_finds_args_inside_shell_substitution() {
 	// validate_args needs to see `--env` referenced even when its only use
-	// is nested inside a shell `$(echo {{ ARGS.env }})`-style command sub.
-	let cmds = vec![r#"base=$(echo "$f" | sed 's/\.{{ ARGS.env }}$//')"#.into()];
+	// is nested inside a shell `$(echo {{ ARG.env }})`-style command sub.
+	let cmds = vec![r#"base=$(echo "$f" | sed 's/\.{{ ARG.env }}$//')"#.into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("env"));
@@ -3754,10 +3754,10 @@ fn substitute_escaped_pair_emits_literal_braces() {
 
 #[test]
 fn substitute_escape_does_not_interfere_with_real_substitution() {
-	// An escaped `\{{` followed by a real `{{ ARGS.x }}` should leave the
+	// An escaped `\{{` followed by a real `{{ ARG.x }}` should leave the
 	// escape literal and still resolve the substitution.
 	let args = RunArgs::parse(&["--name=alice".into()]);
-	let result = args.substitute_no_env(r"prefix \{{ then {{ ARGS.name }}").unwrap();
+	let result = args.substitute_no_env(r"prefix \{{ then {{ ARG.name }}").unwrap();
 	assert_eq!(result, "prefix {{ then alice");
 }
 
@@ -3783,20 +3783,20 @@ fn substitute_double_backslash_before_brace_keeps_first_backslash() {
 fn substitute_escape_inside_shell_command_substitution() {
 	// Mixing escapes with shell `$(...)` substitution: the bash `$(...)`
 	// passes through verbatim, the escape produces a literal `{{`, and any
-	// real `{{ ARGS.x }}` inside still resolves.
+	// real `{{ ARG.x }}` inside still resolves.
 	let args = RunArgs::parse(&["--env=prod".into()]);
 	let result = args
-		.substitute_no_env(r#"sh -c $(echo "got \{{ {{ ARGS.env }} \}}")"#)
+		.substitute_no_env(r#"sh -c $(echo "got \{{ {{ ARG.env }} \}}")"#)
 		.unwrap();
 	assert_eq!(result, r#"sh -c $(echo "got {{ prod }}")"#);
 }
 
 #[test]
 fn scan_args_usage_ignores_escaped_substitution() {
-	// An escaped `\{{ ARGS.x \}}` is a literal — it should NOT register `x`
+	// An escaped `\{{ ARG.x \}}` is a literal — it should NOT register `x`
 	// as a referenced argument (the validator would otherwise accept --x and
 	// the runtime would never resolve it).
-	let cmds = vec![r"echo \{{ ARGS.x \}}".into()];
+	let cmds = vec![r"echo \{{ ARG.x \}}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(
@@ -3809,7 +3809,7 @@ fn scan_args_usage_ignores_escaped_substitution() {
 fn scan_args_usage_default_with_parens() {
 	// Literal default values can contain parens — `{{ ... }}` matching is
 	// brace-based, so `()` in the default doesn't break the scanner.
-	let cmds = vec!["echo {{ ARGS.key ? default(value) }}".into()];
+	let cmds = vec!["echo {{ ARG.key ? default(value) }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("key"));
@@ -3817,7 +3817,7 @@ fn scan_args_usage_default_with_parens() {
 
 #[test]
 fn scan_args_detects_named_with_chained_fallback() {
-	let cmds = vec!["echo {{ ARGS.env ? ENV.NODE_ENV ? 'production' }}".into()];
+	let cmds = vec!["echo {{ ARG.env ? ENV.NODE_ENV ? 'production' }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("env"));
@@ -4438,28 +4438,28 @@ fn dep_result_failure_detail_uses_final_exit_code() {
 #[test]
 fn flags_basic_true() {
 	let args = RunArgs::parse(&["--verbose".into()]);
-	let result = args.substitute_no_env("echo {{ FLAGS.verbose }}").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAG.verbose }}").unwrap();
 	assert_eq!(result, "echo true");
 }
 
 #[test]
 fn flags_basic_false() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("echo {{ FLAGS.verbose }}").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAG.verbose }}").unwrap();
 	assert_eq!(result, "echo false");
 }
 
 #[test]
 fn flags_ternary_true() {
 	let args = RunArgs::parse(&["--debug".into()]);
-	let result = args.substitute_no_env("gcc {{ FLAGS.debug ? '-g' : '-O2' }}").unwrap();
+	let result = args.substitute_no_env("gcc {{ FLAG.debug ? '-g' : '-O2' }}").unwrap();
 	assert_eq!(result, "gcc -g");
 }
 
 #[test]
 fn flags_ternary_false() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("gcc {{ FLAGS.debug ? '-g' : '-O2' }}").unwrap();
+	let result = args.substitute_no_env("gcc {{ FLAG.debug ? '-g' : '-O2' }}").unwrap();
 	assert_eq!(result, "gcc -O2");
 }
 
@@ -4467,7 +4467,7 @@ fn flags_ternary_false() {
 fn flags_ternary_with_spaces_in_values() {
 	let args = RunArgs::parse(&["--color".into()]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.color ? '--color always' : '--color never' }}")
+		.substitute_no_env("cmd {{ FLAG.color ? '--color always' : '--color never' }}")
 		.unwrap();
 	assert_eq!(result, "cmd --color always");
 }
@@ -4476,7 +4476,7 @@ fn flags_ternary_with_spaces_in_values() {
 fn flags_ternary_with_spaces_false_branch() {
 	let args = RunArgs::parse(&[]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.color ? '--color always' : '--color never' }}")
+		.substitute_no_env("cmd {{ FLAG.color ? '--color always' : '--color never' }}")
 		.unwrap();
 	assert_eq!(result, "cmd --color never");
 }
@@ -4484,49 +4484,49 @@ fn flags_ternary_with_spaces_false_branch() {
 #[test]
 fn flags_no_colon_present() {
 	let args = RunArgs::parse(&["--v".into()]);
-	let result = args.substitute_no_env("cmd {{ FLAGS.v ? '-v' }}").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAG.v ? '-v' }}").unwrap();
 	assert_eq!(result, "cmd -v");
 }
 
 #[test]
 fn flags_no_colon_absent() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("cmd {{ FLAGS.v ? '-v' }}").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAG.v ? '-v' }}").unwrap();
 	assert_eq!(result, "cmd ");
 }
 
 #[test]
 fn flags_empty_true_branch() {
 	let args = RunArgs::parse(&["--quiet".into()]);
-	let result = args.substitute_no_env("cmd {{ FLAGS.quiet ? : '--verbose' }}").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAG.quiet ? : '--verbose' }}").unwrap();
 	assert_eq!(result, "cmd ");
 }
 
 #[test]
 fn flags_empty_false_branch() {
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute_no_env("cmd {{ FLAGS.v ? '--verbose' : }}").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAG.v ? '--verbose' : }}").unwrap();
 	assert_eq!(result, "cmd ");
 }
 
 #[test]
 fn flags_empty_false_branch_present() {
 	let args = RunArgs::parse(&["--v".into()]);
-	let result = args.substitute_no_env("cmd {{ FLAGS.v ? '--verbose' : }}").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAG.v ? '--verbose' : }}").unwrap();
 	assert_eq!(result, "cmd --verbose");
 }
 
 #[test]
 fn flags_consumed_from_args() {
 	let args = RunArgs::parse(&["--verbose".into(), "foo".into(), "bar".into()]);
-	let result = args.substitute_no_env("cmd {{ FLAGS.verbose }} {{ ARGS }}").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAG.verbose }} {{ ARGS }}").unwrap();
 	assert_eq!(result, "cmd true foo bar");
 }
 
 #[test]
 fn flags_absent_not_consumed_from_args() {
 	let args = RunArgs::parse(&["foo".into(), "bar".into()]);
-	let result = args.substitute_no_env("cmd {{ FLAGS.verbose }} {{ ARGS }}").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAG.verbose }} {{ ARGS }}").unwrap();
 	assert_eq!(result, "cmd false foo bar");
 }
 
@@ -4534,7 +4534,7 @@ fn flags_absent_not_consumed_from_args() {
 fn flags_with_value_still_true() {
 	// --verbose=yes should still be "true" for FLAGS (presence only)
 	let args = RunArgs::parse(&["--verbose=yes".into()]);
-	let result = args.substitute_no_env("echo {{ FLAGS.verbose }}").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAG.verbose }}").unwrap();
 	assert_eq!(result, "echo true");
 }
 
@@ -4542,7 +4542,7 @@ fn flags_with_value_still_true() {
 fn flags_with_space_value_still_true() {
 	// --verbose something should still be "true" for FLAGS
 	let args = RunArgs::parse(&["--verbose".into(), "something".into()]);
-	let result = args.substitute_no_env("echo {{ FLAGS.verbose }}").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAG.verbose }}").unwrap();
 	assert_eq!(result, "echo true");
 }
 
@@ -4550,7 +4550,7 @@ fn flags_with_space_value_still_true() {
 fn flags_multiple() {
 	let args = RunArgs::parse(&["--verbose".into(), "--debug".into()]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.verbose }} {{ FLAGS.debug }}")
+		.substitute_no_env("cmd {{ FLAG.verbose }} {{ FLAG.debug }}")
 		.unwrap();
 	assert_eq!(result, "cmd true true");
 }
@@ -4559,7 +4559,7 @@ fn flags_multiple() {
 fn flags_multiple_mixed_presence() {
 	let args = RunArgs::parse(&["--verbose".into()]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.verbose }} {{ FLAGS.debug }}")
+		.substitute_no_env("cmd {{ FLAG.verbose }} {{ FLAG.debug }}")
 		.unwrap();
 	assert_eq!(result, "cmd true false");
 }
@@ -4568,7 +4568,7 @@ fn flags_multiple_mixed_presence() {
 fn flags_mixed_with_args_named() {
 	let args = RunArgs::parse(&["--verbose".into(), "--env=prod".into()]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.verbose }} env={{ ARGS.env }}")
+		.substitute_no_env("cmd {{ FLAG.verbose }} env={{ ARG.env }}")
 		.unwrap();
 	assert_eq!(result, "cmd true env=prod");
 }
@@ -4576,7 +4576,7 @@ fn flags_mixed_with_args_named() {
 #[test]
 fn flags_mixed_with_args_positional() {
 	let args = RunArgs::parse(&["--verbose".into(), "file.txt".into()]);
-	let result = args.substitute_no_env("cmd {{ FLAGS.verbose }} {{ ARGS }}").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAG.verbose }} {{ ARGS }}").unwrap();
 	assert_eq!(result, "cmd true file.txt");
 }
 
@@ -4584,7 +4584,7 @@ fn flags_mixed_with_args_positional() {
 fn flags_ternary_complex_values() {
 	let args = RunArgs::parse(&["--side-effects".into()]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.side-effects ? '-run -startup 3' : '-donotrun' }}")
+		.substitute_no_env("cmd {{ FLAG.side-effects ? '-run -startup 3' : '-donotrun' }}")
 		.unwrap();
 	assert_eq!(result, "cmd -run -startup 3");
 }
@@ -4593,7 +4593,7 @@ fn flags_ternary_complex_values() {
 fn flags_ternary_complex_values_false() {
 	let args = RunArgs::parse(&[]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.side-effects ? '-run -startup 3' : '-donotrun' }}")
+		.substitute_no_env("cmd {{ FLAG.side-effects ? '-run -startup 3' : '-donotrun' }}")
 		.unwrap();
 	assert_eq!(result, "cmd -donotrun");
 }
@@ -4603,7 +4603,7 @@ fn flags_ternary_url_colons_preserved() {
 	// Colons in URLs should not be treated as ternary separator (only " : " is)
 	let args = RunArgs::parse(&["--ssl".into()]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.ssl ? 'https://secure.example.com' : 'http://example.com' }}")
+		.substitute_no_env("cmd {{ FLAG.ssl ? 'https://secure.example.com' : 'http://example.com' }}")
 		.unwrap();
 	assert_eq!(result, "cmd https://secure.example.com");
 }
@@ -4612,14 +4612,14 @@ fn flags_ternary_url_colons_preserved() {
 fn flags_ternary_url_colons_false_branch() {
 	let args = RunArgs::parse(&[]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.ssl ? 'https://secure.example.com' : 'http://example.com' }}")
+		.substitute_no_env("cmd {{ FLAG.ssl ? 'https://secure.example.com' : 'http://example.com' }}")
 		.unwrap();
 	assert_eq!(result, "cmd http://example.com");
 }
 
 #[test]
 fn flags_scan_detects_flags() {
-	let cmds = vec!["echo {{ FLAGS.verbose }}".into()];
+	let cmds = vec!["echo {{ FLAG.verbose }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("verbose"));
@@ -4627,7 +4627,7 @@ fn flags_scan_detects_flags() {
 
 #[test]
 fn flags_scan_detects_flags_with_ternary() {
-	let cmds = vec!["echo {{ FLAGS.debug ? '-g' : '-O2' }}".into()];
+	let cmds = vec!["echo {{ FLAG.debug ? '-g' : '-O2' }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("debug"));
@@ -4635,7 +4635,7 @@ fn flags_scan_detects_flags_with_ternary() {
 
 #[test]
 fn flags_scan_mixed_with_args() {
-	let cmds = vec!["echo {{ FLAGS.verbose }} {{ ARGS.env }}".into()];
+	let cmds = vec!["echo {{ FLAG.verbose }} {{ ARG.env }}".into()];
 	let (positional, named) = scan_args_usage(&cmds);
 	assert!(!positional);
 	assert!(named.contains("verbose"));
@@ -4645,14 +4645,14 @@ fn flags_scan_mixed_with_args() {
 #[test]
 fn flags_validate_accepts_flag_args() {
 	let args = RunArgs::parse(&["--verbose".into()]);
-	let cmds = vec!["echo {{ FLAGS.verbose }}".into()];
+	let cmds = vec!["echo {{ FLAG.verbose }}".into()];
 	assert!(validate_args(&args, &cmds).is_ok());
 }
 
 #[test]
 fn flags_validate_rejects_unknown_flag() {
 	let args = RunArgs::parse(&["--verbose".into(), "--unknown".into()]);
-	let cmds = vec!["echo {{ FLAGS.verbose }}".into()];
+	let cmds = vec!["echo {{ FLAG.verbose }}".into()];
 	let err = validate_args(&args, &cmds).unwrap_err();
 	assert!(
 		err.to_string().contains("unknown"),
@@ -4663,7 +4663,7 @@ fn flags_validate_rejects_unknown_flag() {
 #[test]
 fn flags_validate_mixed_flags_and_args() {
 	let args = RunArgs::parse(&["--verbose".into(), "--env=prod".into()]);
-	let cmds = vec!["echo {{ FLAGS.verbose }} {{ ARGS.env }}".into()];
+	let cmds = vec!["echo {{ FLAG.verbose }} {{ ARG.env }}".into()];
 	assert!(validate_args(&args, &cmds).is_ok());
 }
 
@@ -4672,7 +4672,7 @@ fn flags_in_env_substitution() {
 	let args = RunArgs::parse(&["--debug".into()]);
 	let env = HashMap::new();
 	let result = args
-		.substitute("echo {{ FLAGS.debug ? '--inspect' : '--no-inspect' }}", &env)
+		.substitute("echo {{ FLAG.debug ? '--inspect' : '--no-inspect' }}", &env)
 		.unwrap();
 	assert_eq!(result, "echo --inspect");
 }
@@ -4681,7 +4681,7 @@ fn flags_in_env_substitution() {
 fn flags_multiple_in_same_command() {
 	let args = RunArgs::parse(&["--verbose".into(), "--release".into()]);
 	let result = args
-		.substitute_no_env("cargo build {{ FLAGS.verbose ? '-v' : }} {{ FLAGS.release ? '--release' : }}")
+		.substitute_no_env("cargo build {{ FLAG.verbose ? '-v' : }} {{ FLAG.release ? '--release' : }}")
 		.unwrap();
 	assert_eq!(result, "cargo build -v --release");
 }
@@ -4690,7 +4690,7 @@ fn flags_multiple_in_same_command() {
 fn flags_multiple_in_same_command_none_set() {
 	let args = RunArgs::parse(&[]);
 	let result = args
-		.substitute_no_env("cargo build {{ FLAGS.verbose ? '-v' : }} {{ FLAGS.release ? '--release' : }}")
+		.substitute_no_env("cargo build {{ FLAG.verbose ? '-v' : }} {{ FLAG.release ? '--release' : }}")
 		.unwrap();
 	assert_eq!(result, "cargo build  ");
 }
@@ -4699,14 +4699,14 @@ fn flags_multiple_in_same_command_none_set() {
 fn flags_consumed_with_value_from_args() {
 	// --verbose=yes used as FLAGS should consume the --verbose=yes token from {{ ARGS }}
 	let args = RunArgs::parse(&["--verbose=yes".into(), "file.txt".into()]);
-	let result = args.substitute_no_env("cmd {{ FLAGS.verbose }} {{ ARGS }}").unwrap();
+	let result = args.substitute_no_env("cmd {{ FLAG.verbose }} {{ ARGS }}").unwrap();
 	assert_eq!(result, "cmd true file.txt");
 }
 
 #[test]
 fn flags_hyphenated_key() {
 	let args = RunArgs::parse(&["--dry-run".into()]);
-	let result = args.substitute_no_env("echo {{ FLAGS.dry-run }}").unwrap();
+	let result = args.substitute_no_env("echo {{ FLAG.dry-run }}").unwrap();
 	assert_eq!(result, "echo true");
 }
 
@@ -4714,7 +4714,7 @@ fn flags_hyphenated_key() {
 fn flags_hyphenated_key_ternary() {
 	let args = RunArgs::parse(&["--dry-run".into()]);
 	let result = args
-		.substitute_no_env("cmd {{ FLAGS.dry-run ? '--dry-run' : '--execute' }}")
+		.substitute_no_env("cmd {{ FLAG.dry-run ? '--dry-run' : '--execute' }}")
 		.unwrap();
 	assert_eq!(result, "cmd --dry-run");
 }
@@ -4782,9 +4782,9 @@ fn run_unknown_key_errors() {
 
 #[test]
 fn run_in_chained_fallback() {
-	// {{ ARGS.shell ? RUN.shell }} — falls back when ARGS not provided.
+	// {{ ARG.shell ? RUN.shell }} — falls back when ARGS not provided.
 	let args = args_with_run("zsh");
-	let result = args.substitute_no_env("echo {{ ARGS.shell ? RUN.shell }}").unwrap();
+	let result = args.substitute_no_env("echo {{ ARG.shell ? RUN.shell }}").unwrap();
 	assert_eq!(result, "echo zsh");
 }
 
@@ -5076,9 +5076,9 @@ fn error_message_contains_template_not_substituted_value() {
 	} else {
 		"exit 1".to_string()
 	};
-	// Template contains {{ ARGS.secret }} — the error should show the template,
+	// Template contains {{ ARG.secret }} — the error should show the template,
 	// not the substituted value.
-	let template = format!("{fail_cmd} {{{{ ARGS.secret ? 'default_val' }}}}");
+	let template = format!("{fail_cmd} {{{{ ARG.secret ? 'default_val' }}}}");
 
 	let spec = CommandSpec::new_shell(vec![template.clone()]);
 	let args = RunArgs::parse(&["--secret=super_secret_password".into()]);
@@ -5285,7 +5285,7 @@ fn if_then_branch_executes_on_truthy() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"{{ ARGS.go == 'yes' }}","then":["echo then-branch"],"else":["echo else-branch"]}
+			{"if":"{{ ARG.go == 'yes' }}","then":["echo then-branch"],"else":["echo else-branch"]}
 		]}}}"#,
 		"t",
 	);
@@ -5301,7 +5301,7 @@ fn if_else_branch_executes_on_falsy() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"{{ ARGS.go == 'yes' }}","then":["exit 1"],"else":["echo else-branch"]}
+			{"if":"{{ ARG.go == 'yes' }}","then":["exit 1"],"else":["echo else-branch"]}
 		]}}}"#,
 		"t",
 	);
@@ -5317,7 +5317,7 @@ fn if_no_else_branch_skipped_when_falsy() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"{{ ARGS.go == 'yes' }}","then":["exit 1"]},
+			{"if":"{{ ARG.go == 'yes' }}","then":["exit 1"]},
 			"echo done"
 		]}}}"#,
 		"t",
@@ -5337,12 +5337,12 @@ fn if_only_literal_true_is_truthy() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"{{ ARGS.flag ? 'false' }}","then":["exit 1"],"else":["echo not-truthy"]}
+			{"if":"{{ ARG.flag ? 'false' }}","then":["exit 1"],"else":["echo not-truthy"]}
 		]}}}"#,
 		"t",
 	);
 	let args = RunArgs::default();
-	// `{{ ARGS.flag ? 'false' }}` resolves to the string "false". Under the
+	// `{{ ARG.flag ? 'false' }}` resolves to the string "false". Under the
 	// new rule, "false" != "true" → falsy → else branch runs.
 	let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
 	assert!(result.final_status.success());
@@ -5357,7 +5357,7 @@ fn if_chained_logical_operators() {
 	// only checks for the literal string "true".
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"{{ ARGS.a == '1' && ARGS.b == '2' }}","then":["echo both"],"else":["exit 1"]}
+			{"if":"{{ ARG.a == '1' && ARG.b == '2' }}","then":["echo both"],"else":["exit 1"]}
 		]}}}"#,
 		"t",
 	);
@@ -5371,10 +5371,10 @@ fn if_negation_works() {
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	// Negation inside the substitution-DSL form: `!(comparison)`. Branch is
-	// taken when ARGS.skip is anything other than "yes".
+	// taken when ARG.skip is anything other than "yes".
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"if":"{{ !(ARGS.skip == 'yes') }}","then":["echo go"],"else":["exit 1"]}
+			{"if":"{{ !(ARG.skip == 'yes') }}","then":["echo go"],"else":["exit 1"]}
 		]}}}"#,
 		"t",
 	);
@@ -5394,7 +5394,7 @@ fn if_failure_propagates_without_ignore_errors() {
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
-			{{"if":"{{{{ ARGS.go == 'yes' }}}}","then":["{fail_cmd}"]}}
+			{{"if":"{{{{ ARG.go == 'yes' }}}}","then":["{fail_cmd}"]}}
 		]}}}}}}"#
 	);
 	let spec = parse_target(&spec_json, "t");
@@ -5417,7 +5417,7 @@ fn if_ignore_errors_swallows_body_failure() {
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
-			{{"if":"{{{{ ARGS.go == 'yes' }}}}","then":["{fail_cmd}"],"ignoreErrors":true}},
+			{{"if":"{{{{ ARG.go == 'yes' }}}}","then":["{fail_cmd}"],"ignoreErrors":true}},
 			"echo after"
 		]}}}}}}"#
 	);
@@ -5474,7 +5474,7 @@ fn for_in_iterates_each_value() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"for":"x","in":["1","2","3"],"do":["echo {{ VARS.x }}"]}
+			{"for":"x","in":["1","2","3"],"do":["echo {{ VAR.x }}"]}
 		]}}}"#,
 		"t",
 	);
@@ -5486,13 +5486,13 @@ fn for_in_iterates_each_value() {
 #[test]
 fn for_in_namespaces_iterates_runfile_namespaces() {
 	// Populate args.run_context.namespaces and verify the for-block runs the
-	// body once per namespace, with {{ VARS.ns }} bound to each.
+	// body once per namespace, with {{ VAR.ns }} bound to each.
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let touch = match shell.kind {
-		ShellKind::Cmd => "type nul > {{ VARS.ns }}.ns",
-		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"{{ VARS.ns }}.ns\\\" -Force | Out-Null",
-		_ => "touch {{ VARS.ns }}.ns",
+		ShellKind::Cmd => "type nul > {{ VAR.ns }}.ns",
+		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"{{ VAR.ns }}.ns\\\" -Force | Out-Null",
+		_ => "touch {{ VAR.ns }}.ns",
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
@@ -5515,9 +5515,9 @@ fn for_in_namespaces_iterates_runfile_namespaces() {
 #[test]
 fn for_in_namespaces_with_dynamic_target_call_runs_each_namespaced_target() {
 	// End-to-end exercise of the user's example pattern:
-	//   "for": "ns", "in": "namespaces", "do": "@{{ VARS.ns }}:build"
+	//   "for": "ns", "in": "namespaces", "do": "@{{ VAR.ns }}:build"
 	// The for-block iterates the runfile's namespaces; for each value, the
-	// `@{{ VARS.ns }}:build` target call is substituted and dispatched to the
+	// `@{{ VAR.ns }}:build` target call is substituted and dispatched to the
 	// real namespaced target. Each project's `build` writes a marker file.
 	use crate::runner::run_target;
 	use runfile_parser::parse_runfile;
@@ -5544,7 +5544,7 @@ fn for_in_namespaces_with_dynamic_target_call_runs_each_namespaced_target() {
 			"project_two:build": {{ "commands": ["{touch_two}"] }},
 			"build_all": {{
 				"commands": [
-					{{ "for": "ns", "in": "namespaces", "do": "@{{{{ VARS.ns }}}}:build" }}
+					{{ "for": "ns", "in": "namespaces", "do": "@{{{{ VAR.ns }}}}:build" }}
 				]
 			}}
 		}}
@@ -5595,7 +5595,7 @@ fn optional_target_call_skips_when_missing() {
 			"without_it:other": {{ "commands": ["echo never"] }},
 			"adb-forward": {{
 				"commands": [
-					{{ "for": "ns", "in": "namespaces", "do": "@?{{{{ VARS.ns }}}}:adb-forward" }}
+					{{ "for": "ns", "in": "namespaces", "do": "@?{{{{ VAR.ns }}}}:adb-forward" }}
 				]
 			}}
 		}}
@@ -5706,9 +5706,9 @@ fn for_in_loop_var_substitutes() {
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let touch = match shell.kind {
-		ShellKind::Cmd => "type nul > {{ VARS.f }}.out",
-		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"{{ VARS.f }}.out\\\" -Force | Out-Null",
-		_ => "touch {{ VARS.f }}.out",
+		ShellKind::Cmd => "type nul > {{ VAR.f }}.out",
+		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"{{ VAR.f }}.out\\\" -Force | Out-Null",
+		_ => "touch {{ VAR.f }}.out",
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
@@ -5729,7 +5729,7 @@ fn for_in_nested_inner_var_shadows_outer() {
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
 			{"for":"x","in":["1","2"],"do":[
-				{"for":"y","in":["a","b"],"do":["echo {{ VARS.x }}{{ VARS.y }}"]}
+				{"for":"y","in":["a","b"],"do":["echo {{ VAR.x }}{{ VAR.y }}"]}
 			]}
 		]}}}"#,
 		"t",
@@ -5748,7 +5748,7 @@ fn for_glob_expands_files() {
 	std::fs::write(dir.path().join("c.dat"), "").unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"for":"f","glob":"*.txt","do":["echo {{ VARS.f }}"]}
+			{"for":"f","glob":"*.txt","do":["echo {{ VAR.f }}"]}
 		]}}}"#,
 		"t",
 	);
@@ -5783,7 +5783,7 @@ fn for_shell_iterates_lines() {
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
-			{{"for":"line","shell":"{cmd}","do":["echo {{{{ VARS.line }}}}"]}}
+			{{"for":"line","shell":"{cmd}","do":["echo {{{{ VAR.line }}}}"]}}
 		]}}}}}}"#
 	);
 	let spec = parse_target(&spec_json, "t");
@@ -5818,11 +5818,11 @@ fn for_in_with_ignore_errors_continues_after_failure() {
 	// We can't easily branch in pure shell without quotes; use exit-on-name
 	// matching via a marker file: when x=fail, exit 1; otherwise touch a file.
 	let body = match shell.kind {
-		ShellKind::Cmd => "if {{ VARS.x }}==fail (exit /b 1) else (type nul > {{ VARS.x }}.done)",
+		ShellKind::Cmd => "if {{ VAR.x }}==fail (exit /b 1) else (type nul > {{ VAR.x }}.done)",
 		ShellKind::PowerShell => {
-			"if ($env:RFLOOP_X -eq 'fail') { exit 1 } else { New-Item -ItemType File -Path \\\"{{ VARS.x }}.done\\\" -Force | Out-Null }"
+			"if ($env:RFLOOP_X -eq 'fail') { exit 1 } else { New-Item -ItemType File -Path \\\"{{ VAR.x }}.done\\\" -Force | Out-Null }"
 		}
-		_ => "test {{ VARS.x }} = fail && exit 1 || touch {{ VARS.x }}.done",
+		_ => "test {{ VAR.x }} = fail && exit 1 || touch {{ VAR.x }}.done",
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
@@ -5902,9 +5902,9 @@ fn for_in_parallel_runs_concurrently() {
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let touch = match shell.kind {
-		ShellKind::Cmd => "type nul > {{ VARS.f }}.out",
-		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"{{ VARS.f }}.out\\\" -Force | Out-Null",
-		_ => "touch {{ VARS.f }}.out",
+		ShellKind::Cmd => "type nul > {{ VAR.f }}.out",
+		ShellKind::PowerShell => "New-Item -ItemType File -Path \\\"{{ VAR.f }}.out\\\" -Force | Out-Null",
+		_ => "touch {{ VAR.f }}.out",
 	};
 	let spec_json = format!(
 		r#"{{"$schema":"x","targets":{{"t":{{"commands":[
@@ -5930,7 +5930,7 @@ fn nested_for_outer_parallel_inner_forced_sequential() {
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
 			{"for":"x","in":["1","2"],"parallel":true,"do":[
-				{"for":"y","in":["a","b"],"parallel":true,"do":["echo {{ VARS.x }}{{ VARS.y }}"]}
+				{"for":"y","in":["a","b"],"parallel":true,"do":["echo {{ VAR.x }}{{ VAR.y }}"]}
 			]}
 		]}}}"#,
 		"t",
@@ -5942,12 +5942,12 @@ fn nested_for_outer_parallel_inner_forced_sequential() {
 
 #[test]
 fn missing_var_errors_at_runtime() {
-	// `{{ VARS.x }}` reference without a prior `define(x, ...)` (and not
+	// `{{ VAR.x }}` reference without a prior `define(x, ...)` (and not
 	// being a `for`-loop variable) errors at substitution time.
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
-		r#"{"$schema":"x","targets":{"t":{"commands":["echo {{ VARS.undefined }}"]}}}"#,
+		r#"{"$schema":"x","targets":{"t":{"commands":["echo {{ VAR.undefined }}"]}}}"#,
 		"t",
 	);
 	let args = RunArgs::default();
@@ -6053,54 +6053,54 @@ fn dsl_in_substitution_short_circuit() {
 	let env = HashMap::new();
 
 	// `||` short-circuits: first arm true means the second isn't evaluated.
-	// VARS.missing would error if it were resolved, so the test passing
+	// VAR.missing would error if it were resolved, so the test passing
 	// proves short-circuiting.
-	let result = args.substitute("{{ 'true' || VARS.missing }}", &env).unwrap();
+	let result = args.substitute("{{ 'true' || VAR.missing }}", &env).unwrap();
 	assert_eq!(result, "true");
 
 	// `&&` short-circuits on first false arm.
-	let result = args.substitute("{{ 'false' && VARS.missing }}", &env).unwrap();
+	let result = args.substitute("{{ 'false' && VAR.missing }}", &env).unwrap();
 	assert_eq!(result, "false");
 
 	// Empty arm also short-circuits AND.
-	let result = args.substitute("{{ '' && VARS.missing }}", &env).unwrap();
+	let result = args.substitute("{{ '' && VAR.missing }}", &env).unwrap();
 	assert_eq!(result, "false");
 }
 
 #[test]
 fn dsl_flags_works_as_bare_boolean() {
-	// The killer feature: `FLAGS.x` resolves to `"true"`/`"false"` —
+	// The killer feature: `FLAG.x` resolves to `"true"`/`"false"` —
 	// both valid under the strict rule — so it can be used as a bare
 	// boolean inside the DSL without the explicit `== 'true'` check.
 	let env = HashMap::new();
 
 	// Flag present → "true".
 	let args = RunArgs::parse(&["--wsl".into()]);
-	let result = args.substitute("{{ RUN.os == 'windows' && FLAGS.wsl }}", &env).unwrap();
+	let result = args.substitute("{{ RUN.os == 'windows' && FLAG.wsl }}", &env).unwrap();
 	// RUN.os depends on host — just confirm it returns a boolean string.
 	assert!(matches!(result.as_str(), "true" | "false"));
 
 	// Flag absent → "false". Force a known truthy left-arm via 'true'.
 	let args_off = RunArgs::parse(&[]);
-	let result = args_off.substitute("{{ 'true' && FLAGS.wsl }}", &env).unwrap();
+	let result = args_off.substitute("{{ 'true' && FLAG.wsl }}", &env).unwrap();
 	assert_eq!(result, "false");
 
 	// Flag present + truthy left-arm → "true".
 	let args_on = RunArgs::parse(&["--wsl".into()]);
-	let result = args_on.substitute("{{ 'true' && FLAGS.wsl }}", &env).unwrap();
+	let result = args_on.substitute("{{ 'true' && FLAG.wsl }}", &env).unwrap();
 	assert_eq!(result, "true");
 }
 
 #[test]
 fn dsl_negated_flag_works_as_bare_boolean() {
-	// `!FLAGS.x` works because the inner Truthy resolves to a boolean.
+	// `!FLAG.x` works because the inner Truthy resolves to a boolean.
 	let env = HashMap::new();
 	let args = RunArgs::parse(&[]);
-	let result = args.substitute("{{ !FLAGS.wsl }}", &env).unwrap();
+	let result = args.substitute("{{ !FLAG.wsl }}", &env).unwrap();
 	assert_eq!(result, "true");
 
 	let args = RunArgs::parse(&["--wsl".into()]);
-	let result = args.substitute("{{ !FLAGS.wsl }}", &env).unwrap();
+	let result = args.substitute("{{ !FLAG.wsl }}", &env).unwrap();
 	assert_eq!(result, "false");
 }
 
@@ -6109,9 +6109,9 @@ fn dsl_in_substitution_uses_vars() {
 	let args = RunArgs::default();
 	args.vars.lock().unwrap().insert("color".to_string(), "red".to_string());
 	let env = HashMap::new();
-	let result = args.substitute("{{ VARS.color == 'red' }}", &env).unwrap();
+	let result = args.substitute("{{ VAR.color == 'red' }}", &env).unwrap();
 	assert_eq!(result, "true");
-	let result = args.substitute("{{ VARS.color == 'blue' }}", &env).unwrap();
+	let result = args.substitute("{{ VAR.color == 'blue' }}", &env).unwrap();
 	assert_eq!(result, "false");
 }
 
@@ -6563,7 +6563,7 @@ fn match_runs_matching_case() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tier }}","cases":{"1":"echo one","2":"echo two","3":"echo three"}}
+			{"match":"{{ ARG.tier }}","cases":{"1":"echo one","2":"echo two","3":"echo three"}}
 		]}}}"#,
 		"t",
 	);
@@ -6579,7 +6579,7 @@ fn match_no_case_no_default_errors_with_valid_cases_listed() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tier }}","cases":{"1":"echo one","2":"echo two"}}
+			{"match":"{{ ARG.tier }}","cases":{"1":"echo one","2":"echo two"}}
 		]}}}"#,
 		"t",
 	);
@@ -6597,7 +6597,7 @@ fn match_default_runs_when_no_case_matches() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tier }}","cases":{"1":"exit 1"},"default":"echo fallback"}
+			{"match":"{{ ARG.tier }}","cases":{"1":"exit 1"},"default":"echo fallback"}
 		]}}}"#,
 		"t",
 	);
@@ -6615,7 +6615,7 @@ fn match_missing_arg_uses_default_when_set() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tier }}","cases":{"1":"exit 1"},"default":"echo defaulted"}
+			{"match":"{{ ARG.tier }}","cases":{"1":"exit 1"},"default":"echo defaulted"}
 		]}}}"#,
 		"t",
 	);
@@ -6633,7 +6633,7 @@ fn match_missing_arg_no_default_errors_with_valid_cases() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tier }}","cases":{"1":"echo one","2":"echo two"}}
+			{"match":"{{ ARG.tier }}","cases":{"1":"echo one","2":"echo two"}}
 		]}}}"#,
 		"t",
 	);
@@ -6650,12 +6650,12 @@ fn match_missing_arg_no_default_errors_with_valid_cases() {
 
 #[test]
 fn match_chained_substitution_resolves_to_default_value() {
-	// `{{ ARGS.tier ? '1' }}` resolves to "1" when --tier missing → case "1" runs.
+	// `{{ ARG.tier ? '1' }}` resolves to "1" when --tier missing → case "1" runs.
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tier ? '1' }}","cases":{"1":"echo one","2":"exit 1"}}
+			{"match":"{{ ARG.tier ? '1' }}","cases":{"1":"echo one","2":"exit 1"}}
 		]}}}"#,
 		"t",
 	);
@@ -6677,7 +6677,7 @@ fn match_target_call_dispatch() {
 			"dev": { "commands": ["echo dev"] },
 			"deploy": {
 				"commands": [
-					{ "match": "{{ ARGS.env }}", "cases": { "prod": "@prod", "dev": "@dev" } }
+					{ "match": "{{ ARG.env }}", "cases": { "prod": "@prod", "dev": "@dev" } }
 				]
 			}
 		}
@@ -6696,7 +6696,7 @@ fn match_ignore_errors_isolates_failure() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.x }}","cases":{"a":"exit 1"},"ignoreErrors":true},
+			{"match":"{{ ARG.x }}","cases":{"a":"exit 1"},"ignoreErrors":true},
 			"echo after"
 		]}}}"#,
 		"t",
@@ -6719,7 +6719,7 @@ fn match_used_with_for_loop() {
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
 			{"for":"x","in":["a","b"],"do":[
-				{"match":"{{ VARS.x }}","cases":{"a":"echo got-a","b":"echo got-b"}}
+				{"match":"{{ VAR.x }}","cases":{"a":"echo got-a","b":"echo got-b"}}
 			]}
 		]}}}"#,
 		"t",
@@ -6734,7 +6734,7 @@ fn match_count_leaves_sums_all_branches() {
 	use crate::control_flow::count_leaves;
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.x }}","cases":{"a":"echo 1","b":["echo 2","echo 3"]},"default":"echo 4"}
+			{"match":"{{ ARG.x }}","cases":{"a":"echo 1","b":["echo 2","echo 3"]},"default":"echo 4"}
 		]}}}"#,
 		"t",
 	);
@@ -6750,7 +6750,7 @@ fn match_regex_case_matches() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tag }}","cases":{
+			{"match":"{{ ARG.tag }}","cases":{
 				"/^v\\d+$/":"echo version-tag",
 				"latest":"echo latest-tag"
 			},"default":"echo other"}
@@ -6771,7 +6771,7 @@ fn match_literal_case_wins_over_regex() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tag }}","cases":{
+			{"match":"{{ ARG.tag }}","cases":{
 				"/^l.+$/":"exit 1",
 				"latest":"echo got-literal"
 			}}
@@ -6791,7 +6791,7 @@ fn match_regex_falls_through_to_default() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tag }}","cases":{
+			{"match":"{{ ARG.tag }}","cases":{
 				"/^v\\d+$/":"exit 1"
 			},"default":"echo defaulted"}
 		]}}}"#,
@@ -6809,7 +6809,7 @@ fn match_bad_regex_surfaces_clear_error() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"match":"{{ ARGS.tag }}","cases":{
+			{"match":"{{ ARG.tag }}","cases":{
 				"/[/":"echo bad"
 			},"default":"echo defaulted"}
 		]}}}"#,
@@ -6830,7 +6830,7 @@ fn for_loop_exposes_index_var() {
 	let dir = TempDir::new().unwrap();
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
-			{"for":"x","in":["a","b","c"],"do":"echo {{ VARS.x_index }}={{ VARS.x }}"}
+			{"for":"x","in":["a","b","c"],"do":"echo {{ VAR.x_index }}={{ VAR.x }}"}
 		]}}}"#,
 		"t",
 	);
@@ -6890,7 +6890,7 @@ fn for_loop_index_with_namespaces_iter() {
 	let spec = parse_target(
 		r#"{"$schema":"x","targets":{"t":{"commands":[
 			{"for":"item","in":["alpha","beta"],"do":[
-				"echo idx-{{ VARS.item_index }} val-{{ VARS.item }}"
+				"echo idx-{{ VAR.item_index }} val-{{ VAR.item }}"
 			]}
 		]}}}"#,
 		"t",
@@ -6950,34 +6950,34 @@ mod stdin_args {
 
 	#[test]
 	fn missing_args_prompts_and_uses_answer() {
-		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.name", Some("alice")));
+		let prompter = Arc::new(MockPrompter::default().with_value("ARG.name", Some("alice")));
 		let args = args_with(prompter.clone());
-		let result = args.substitute("hello {{ ARGS.name }}", &HashMap::new()).unwrap();
+		let result = args.substitute("hello {{ ARG.name }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "hello alice");
 		let calls = prompter.value_calls.lock().unwrap();
 		assert_eq!(calls.len(), 1);
-		assert_eq!(calls[0], ("ARGS.name".to_string(), None));
+		assert_eq!(calls[0], ("ARG.name".to_string(), None));
 	}
 
 	#[test]
 	fn missing_args_with_default_prompts_and_falls_through_when_empty() {
 		// Empty answer (None) should fall through to the literal default.
-		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.env", None));
+		let prompter = Arc::new(MockPrompter::default().with_value("ARG.env", None));
 		let args = args_with(prompter.clone());
 		let result = args
-			.substitute("env={{ ARGS.env ? 'production' }}", &HashMap::new())
+			.substitute("env={{ ARG.env ? 'production' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "env=production");
 		let calls = prompter.value_calls.lock().unwrap();
-		assert_eq!(calls[0], ("ARGS.env".to_string(), Some("production".to_string())));
+		assert_eq!(calls[0], ("ARG.env".to_string(), Some("production".to_string())));
 	}
 
 	#[test]
 	fn missing_args_with_default_prompts_and_overrides_when_provided() {
-		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.env", Some("staging")));
+		let prompter = Arc::new(MockPrompter::default().with_value("ARG.env", Some("staging")));
 		let args = args_with(prompter);
 		let result = args
-			.substitute("env={{ ARGS.env ? 'production' }}", &HashMap::new())
+			.substitute("env={{ ARG.env ? 'production' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "env=staging");
 	}
@@ -6986,9 +6986,9 @@ mod stdin_args {
 	fn missing_args_no_default_no_answer_errors() {
 		// Required substitution; user pressed Enter; nothing else in the chain
 		// → fall through to MissingArg as if --stdin-args wasn't set.
-		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.name", None));
+		let prompter = Arc::new(MockPrompter::default().with_value("ARG.name", None));
 		let args = args_with(prompter);
-		let err = args.substitute("hi {{ ARGS.name }}", &HashMap::new()).unwrap_err();
+		let err = args.substitute("hi {{ ARG.name }}", &HashMap::new()).unwrap_err();
 		assert!(matches!(err, SubstitutionError::MissingArg(ref k) if k == "name"));
 	}
 
@@ -6996,7 +6996,7 @@ mod stdin_args {
 	fn provided_args_skip_prompt() {
 		let prompter = Arc::new(MockPrompter::default());
 		let args = RunArgs::parse(&["--name=bob".into()]).with_stdin_prompter(Some(prompter.clone()));
-		let result = args.substitute("hi {{ ARGS.name }}", &HashMap::new()).unwrap();
+		let result = args.substitute("hi {{ ARG.name }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "hi bob");
 		assert!(prompter.value_calls.lock().unwrap().is_empty());
 	}
@@ -7054,17 +7054,17 @@ mod stdin_args {
 
 	#[test]
 	fn chain_args_to_env_to_default_prompts_once_with_first_source_key() {
-		// `{{ ARGS.x ? ENV.X ? 'fallback' }}` — neither set, prompt key is
-		// the first source (ARGS.x), default is "fallback".
-		let prompter = Arc::new(MockPrompter::default().with_value("ARGS.x", Some("entered")));
+		// `{{ ARG.x ? ENV.X ? 'fallback' }}` — neither set, prompt key is
+		// the first source (ARG.x), default is "fallback".
+		let prompter = Arc::new(MockPrompter::default().with_value("ARG.x", Some("entered")));
 		let args = args_with(prompter.clone());
 		let result = args
-			.substitute("v={{ ARGS.x ? ENV.X ? 'fallback' }}", &HashMap::new())
+			.substitute("v={{ ARG.x ? ENV.X ? 'fallback' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "v=entered");
 		let calls = prompter.value_calls.lock().unwrap();
 		assert_eq!(calls.len(), 1);
-		assert_eq!(calls[0], ("ARGS.x".to_string(), Some("fallback".to_string())));
+		assert_eq!(calls[0], ("ARG.x".to_string(), Some("fallback".to_string())));
 	}
 
 	#[test]
@@ -7072,7 +7072,7 @@ mod stdin_args {
 		let prompter = Arc::new(MockPrompter::default().with_flag("--verbose", true));
 		let args = args_with(prompter.clone());
 		let result = args
-			.substitute("cmd {{ FLAGS.verbose ? '-v' : }}", &HashMap::new())
+			.substitute("cmd {{ FLAG.verbose ? '-v' : }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "cmd -v");
 		let calls = prompter.flag_calls.lock().unwrap();
@@ -7085,7 +7085,7 @@ mod stdin_args {
 		let prompter = Arc::new(MockPrompter::default());
 		let args = RunArgs::parse(&["--verbose".into()]).with_stdin_prompter(Some(prompter.clone()));
 		let result = args
-			.substitute("cmd {{ FLAGS.verbose ? '-v' : }}", &HashMap::new())
+			.substitute("cmd {{ FLAG.verbose ? '-v' : }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "cmd -v");
 		assert!(prompter.flag_calls.lock().unwrap().is_empty());
@@ -7097,7 +7097,7 @@ mod stdin_args {
 		let args = args_with(prompter);
 		let result = args
 			.substitute(
-				"cargo build {{ FLAGS.release ? '--release' : '--debug' }}",
+				"cargo build {{ FLAG.release ? '--release' : '--debug' }}",
 				&HashMap::new(),
 			)
 			.unwrap();
@@ -7108,7 +7108,7 @@ mod stdin_args {
 	fn no_prompter_preserves_existing_error() {
 		// Sanity check: with no prompter, missing args still error.
 		let args = RunArgs::parse(&[]);
-		let err = args.substitute("hi {{ ARGS.name }}", &HashMap::new()).unwrap_err();
+		let err = args.substitute("hi {{ ARG.name }}", &HashMap::new()).unwrap_err();
 		assert!(matches!(err, SubstitutionError::MissingArg(_)));
 	}
 }
@@ -7122,7 +7122,7 @@ mod functions {
 	fn to_upper_with_named_arg() {
 		let args = RunArgs::parse(&["--env=prod".into()]);
 		let result = args
-			.substitute("deploy-{{ to_upper(ARGS.env) }}", &HashMap::new())
+			.substitute("deploy-{{ to_upper(ARG.env) }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "deploy-PROD");
 	}
@@ -7154,7 +7154,7 @@ mod functions {
 	fn nested_calls_evaluate_inside_out() {
 		let args = RunArgs::parse(&["--name=Foo".into()]);
 		let result = args
-			.substitute("{{ to_upper(to_lower(ARGS.name)) }}", &HashMap::new())
+			.substitute("{{ to_upper(to_lower(ARG.name)) }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "FOO");
 	}
@@ -7163,7 +7163,7 @@ mod functions {
 	fn base64_round_trip() {
 		let args = RunArgs::parse(&["--payload=hello".into()]);
 		let result = args
-			.substitute("{{ base64_decode(base64_encode(ARGS.payload)) }}", &HashMap::new())
+			.substitute("{{ base64_decode(base64_encode(ARG.payload)) }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "hello");
 	}
@@ -7198,7 +7198,7 @@ mod functions {
 	fn concat_joins_multiple_args() {
 		let args = RunArgs::parse(&["--name=alice".into()]);
 		let result = args
-			.substitute("{{ concat('hello-', ARGS.name, '-2026') }}", &HashMap::new())
+			.substitute("{{ concat('hello-', ARG.name, '-2026') }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "hello-alice-2026");
 	}
@@ -7223,7 +7223,7 @@ mod functions {
 	fn join_with_args_and_functions() {
 		let args = RunArgs::parse(&["--first=alice".into(), "--last=BOB".into()]);
 		let result = args
-			.substitute("{{ join(', ', ARGS.first, to_lower(ARGS.last)) }}", &HashMap::new())
+			.substitute("{{ join(', ', ARG.first, to_lower(ARG.last)) }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "alice, bob");
 	}
@@ -7256,7 +7256,7 @@ mod functions {
 	fn replace_all_basic() {
 		let args = RunArgs::parse(&["--flags=flag-1 flag-2 flag-3".into()]);
 		let result = args
-			.substitute("{{ replace_all(ARGS.flags, ' ', ' AND ') }}", &HashMap::new())
+			.substitute("{{ replace_all(ARG.flags, ' ', ' AND ') }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "flag-1 AND flag-2 AND flag-3");
 	}
@@ -7305,7 +7305,7 @@ mod functions {
 	fn replace_all_composes_with_other_functions() {
 		let args = RunArgs::parse(&["--csv=a,b,c".into()]);
 		let result = args
-			.substitute("{{ to_upper(replace_all(ARGS.csv, ',', ' | ')) }}", &HashMap::new())
+			.substitute("{{ to_upper(replace_all(ARG.csv, ',', ' | ')) }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "A | B | C");
 	}
@@ -7393,7 +7393,7 @@ mod functions {
 		let args = RunArgs::parse(&["--path=/usr/local/bin".into()]);
 		let result = args
 			.substitute(
-				"{{ starts_with(ARGS.path, '/usr') && ends_with(ARGS.path, 'bin') }}",
+				"{{ starts_with(ARG.path, '/usr') && ends_with(ARG.path, 'bin') }}",
 				&HashMap::new(),
 			)
 			.unwrap();
@@ -7551,7 +7551,7 @@ mod functions {
 		// Counts naturally come from runtime sources (ARGS / ENV / VARS) — the
 		// quoted-literal form is just for static numbers in the Runfile.
 		let args = RunArgs::parse(&["--n=4".into()]);
-		let result = args.substitute("{{ repeat('ab', ARGS.n) }}", &HashMap::new()).unwrap();
+		let result = args.substitute("{{ repeat('ab', ARG.n) }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "abababab");
 	}
 
@@ -7638,7 +7638,7 @@ mod functions {
 		// regex_matches returns "true"/"false" → valid DSL Truthy.
 		let args = RunArgs::parse(&["--tag=v1.0".into()]);
 		let result = args
-			.substitute("{{ regex_matches(ARGS.tag, '^v[0-9]+\\.[0-9]+$') }}", &HashMap::new())
+			.substitute("{{ regex_matches(ARG.tag, '^v[0-9]+\\.[0-9]+$') }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 	}
@@ -7649,17 +7649,17 @@ mod functions {
 	fn nth_indexes_into_split_result() {
 		let args = RunArgs::parse(&["--csv=a,b,c".into()]);
 		assert_eq!(
-			args.substitute("{{ nth(ARGS.csv, ',', '0') }}", &HashMap::new())
+			args.substitute("{{ nth(ARG.csv, ',', '0') }}", &HashMap::new())
 				.unwrap(),
 			"a"
 		);
 		assert_eq!(
-			args.substitute("{{ nth(ARGS.csv, ',', '1') }}", &HashMap::new())
+			args.substitute("{{ nth(ARG.csv, ',', '1') }}", &HashMap::new())
 				.unwrap(),
 			"b"
 		);
 		assert_eq!(
-			args.substitute("{{ nth(ARGS.csv, ',', '2') }}", &HashMap::new())
+			args.substitute("{{ nth(ARG.csv, ',', '2') }}", &HashMap::new())
 				.unwrap(),
 			"c"
 		);
@@ -7743,7 +7743,7 @@ mod functions {
 		// the resolved value, so `--i=2` Just Works.
 		let args = RunArgs::parse(&["--csv=a,b,c".into(), "--i=2".into()]);
 		let result = args
-			.substitute("{{ nth(ARGS.csv, ',', ARGS.i) }}", &HashMap::new())
+			.substitute("{{ nth(ARG.csv, ',', ARG.i) }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "c");
 	}
@@ -7787,7 +7787,7 @@ mod functions {
 	fn last_basename_idiom() {
 		// `last(path, '/')` is the canonical "basename" use case.
 		let args = RunArgs::parse(&["--path=/usr/local/bin/run".into()]);
-		let result = args.substitute("{{ last(ARGS.path, '/') }}", &HashMap::new()).unwrap();
+		let result = args.substitute("{{ last(ARG.path, '/') }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "run");
 	}
 
@@ -7840,7 +7840,7 @@ mod functions {
 		// inside the substitution DSL.
 		let args = RunArgs::parse(&["--csv=a,b,c".into()]);
 		let result = args
-			.substitute("{{ count_parts(ARGS.csv, ',') == '3' }}", &HashMap::new())
+			.substitute("{{ count_parts(ARG.csv, ',') == '3' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 	}
@@ -7850,7 +7850,7 @@ mod functions {
 		// nth + to_upper composition: pull a field out, transform it.
 		let args = RunArgs::parse(&["--csv=alice,bob,carol".into()]);
 		let result = args
-			.substitute("{{ to_upper(nth(ARGS.csv, ',', '1')) }}", &HashMap::new())
+			.substitute("{{ to_upper(nth(ARG.csv, ',', '1')) }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "BOB");
 	}
@@ -7862,7 +7862,7 @@ mod functions {
 		let args = RunArgs::parse(&[]);
 		let result = args
 			.substitute(
-				"host={{ ARGS.host ? nth('default,fallback', ',', '0') }}",
+				"host={{ ARG.host ? nth('default,fallback', ',', '0') }}",
 				&HashMap::new(),
 			)
 			.unwrap();
@@ -8015,11 +8015,11 @@ mod functions {
 	#[test]
 	fn function_chain_segment_with_fallback() {
 		// Function call as a chain segment — used as the fallback when
-		// the primary `ARGS.host` is missing.
+		// the primary `ARG.host` is missing.
 		let mut env = HashMap::new();
 		env.insert("HOST".to_string(), "Example.COM".to_string());
 		let args = RunArgs::parse(&[]);
-		let result = args.substitute("{{ ARGS.host ? to_lower(ENV.HOST) }}", &env).unwrap();
+		let result = args.substitute("{{ ARG.host ? to_lower(ENV.HOST) }}", &env).unwrap();
 		assert_eq!(result, "example.com");
 	}
 
@@ -8027,7 +8027,7 @@ mod functions {
 	fn function_arg_chain_default() {
 		let args = RunArgs::parse(&[]);
 		let result = args
-			.substitute("{{ to_upper(ARGS.host ? 'localhost') }}", &HashMap::new())
+			.substitute("{{ to_upper(ARG.host ? 'localhost') }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "LOCALHOST");
 	}
@@ -8044,17 +8044,17 @@ mod functions {
 
 	#[test]
 	fn function_inside_for_loop_var() {
-		// For-loops write the iteration variable into VARS — `to_lower(VARS.x)`
+		// For-loops write the iteration variable into VARS — `to_lower(VAR.x)`
 		// inside a `for` body resolves to the current iteration value.
 		let args = RunArgs::parse(&[]);
 		args.vars.lock().unwrap().insert("name".to_string(), "Foo".to_string());
-		let result = args.substitute("{{ to_lower(VARS.name) }}", &HashMap::new()).unwrap();
+		let result = args.substitute("{{ to_lower(VAR.name) }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "foo");
 	}
 
 	#[test]
 	fn for_loop_writes_vars_and_restores_on_exit() {
-		// `for x in [...]` writes VARS.x per iteration; on loop exit, VARS.x
+		// `for x in [...]` writes VAR.x per iteration; on loop exit, VAR.x
 		// reverts to whatever it was before the loop (or stays unset if
 		// nothing had defined it).
 		let shell = get_test_shell();
@@ -8064,34 +8064,34 @@ mod functions {
 				{{"for":"x","in":["a","b","c"],"do":["{cmd}"]}}
 			]}}}}}}"#,
 			cmd = match shell.kind {
-				ShellKind::Cmd | ShellKind::PowerShell => "echo {{ VARS.x }}",
-				_ => "echo {{ VARS.x }}",
+				ShellKind::Cmd | ShellKind::PowerShell => "echo {{ VAR.x }}",
+				_ => "echo {{ VAR.x }}",
 			}
 		);
 		let spec = parse_target(&json, "t");
 		let args = RunArgs::default();
 		execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
-		// After loop exit, VARS.x is restored (was never set → removed).
+		// After loop exit, VAR.x is restored (was never set → removed).
 		assert!(args.vars.lock().unwrap().get("x").is_none());
 	}
 
 	#[test]
 	fn for_loop_restores_prior_define() {
 		// If `define(x, prior)` ran before a `for x in [...]` block, the loop
-		// overwrites VARS.x per iteration but the prior value comes back
+		// overwrites VAR.x per iteration but the prior value comes back
 		// when the loop ends.
 		let shell = get_test_shell();
 		let dir = TempDir::new().unwrap();
 		let spec = parse_target(
 			r#"{"$schema":"x","targets":{"t":{"commands":[
 				"{{ define(x, 'prior') }}",
-				{"for":"x","in":["a","b"],"do":["echo loop {{ VARS.x }}"]}
+				{"for":"x","in":["a","b"],"do":["echo loop {{ VAR.x }}"]}
 			]}}}"#,
 			"t",
 		);
 		let args = RunArgs::default();
 		execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
-		// Loop ended → VARS.x is back to "prior".
+		// Loop ended → VAR.x is back to "prior".
 		assert_eq!(args.vars.lock().unwrap().get("x").map(|s| s.as_str()), Some("prior"));
 	}
 
@@ -8105,7 +8105,7 @@ mod functions {
 		let spec = parse_target(
 			r#"{"$schema":"x","targets":{"t":{"commands":[
 				{"for":"x","in":["outer1","outer2"],"do":[
-					{"for":"x","in":["inner1","inner2"],"do":["echo {{ VARS.x }}"]}
+					{"for":"x","in":["inner1","inner2"],"do":["echo {{ VAR.x }}"]}
 				]}
 			]}}}"#,
 			"t",
@@ -8114,7 +8114,7 @@ mod functions {
 		let result = execute_command(&spec, &shell, &args, dir.path(), None, false).unwrap();
 		// 2 outer * 2 inner = 4 leaves
 		assert_eq!(result.commands_run, 4);
-		// After all loops exit, VARS.x is restored to nothing.
+		// After all loops exit, VAR.x is restored to nothing.
 		assert!(args.vars.lock().unwrap().get("x").is_none());
 	}
 
@@ -8124,7 +8124,7 @@ mod functions {
 		// (chain-segment FLAGS only supports the boolean form).
 		let args = RunArgs::parse(&["--debug".into()]);
 		let result = args
-			.substitute("{{ to_upper(FLAGS.debug ? 'on' : 'off') }}", &HashMap::new())
+			.substitute("{{ to_upper(FLAG.debug ? 'on' : 'off') }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "ON");
 	}
@@ -8133,7 +8133,7 @@ mod functions {
 	fn flags_in_chain_returns_boolean() {
 		let args = RunArgs::parse(&["--release".into()]);
 		let result = args
-			.substitute("{{ ARGS.x ? FLAGS.release ? 'default' }}", &HashMap::new())
+			.substitute("{{ ARG.x ? FLAG.release ? 'default' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 	}
@@ -8148,7 +8148,7 @@ mod functions {
 			.unwrap();
 		assert_eq!(result, "");
 		// Subsequent read sees the value.
-		let v = args.substitute("[{{ VARS.sdkpath }}]", &HashMap::new()).unwrap();
+		let v = args.substitute("[{{ VAR.sdkpath }}]", &HashMap::new()).unwrap();
 		assert_eq!(v, "[/opt/sdk]");
 	}
 
@@ -8158,7 +8158,7 @@ mod functions {
 		let _ = args
 			.substitute("{{ define(sdkpath, ENV.SDK ? '/default/sdk') }}", &HashMap::new())
 			.unwrap();
-		let v = args.substitute("{{ VARS.sdkpath }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.sdkpath }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "/default/sdk");
 	}
 
@@ -8168,7 +8168,7 @@ mod functions {
 		let _ = args
 			.substitute("{{ define(env, to_upper('prod')) }}", &HashMap::new())
 			.unwrap();
-		let v = args.substitute("{{ VARS.env }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.env }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "PROD");
 	}
 
@@ -8199,7 +8199,7 @@ mod functions {
 	#[test]
 	fn missing_var_errors() {
 		let args = RunArgs::parse(&[]);
-		let err = args.substitute("{{ VARS.undefined }}", &HashMap::new()).unwrap_err();
+		let err = args.substitute("{{ VAR.undefined }}", &HashMap::new()).unwrap_err();
 		assert!(matches!(err, SubstitutionError::MissingVar(_)));
 	}
 
@@ -8207,7 +8207,7 @@ mod functions {
 	fn missing_var_with_default_falls_through() {
 		let args = RunArgs::parse(&[]);
 		let result = args
-			.substitute("{{ VARS.undefined ? 'fallback' }}", &HashMap::new())
+			.substitute("{{ VAR.undefined ? 'fallback' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "fallback");
 	}
@@ -8217,16 +8217,16 @@ mod functions {
 		let args = RunArgs::parse(&[]);
 		let _ = args.substitute("{{ define(x, 'first') }}", &HashMap::new()).unwrap();
 		let _ = args.substitute("{{ define(x, 'second') }}", &HashMap::new()).unwrap();
-		let v = args.substitute("{{ VARS.x }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.x }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "second");
 	}
 
 	#[test]
 	fn define_invalid_dynamic_name_errors() {
-		// `ARGS.name` would resolve at runtime — `define` requires a static label.
+		// `ARG.name` would resolve at runtime — `define` requires a static label.
 		let args = RunArgs::parse(&[]);
 		let err = args
-			.substitute("{{ define(ARGS.name, 'value') }}", &HashMap::new())
+			.substitute("{{ define(ARG.name, 'value') }}", &HashMap::new())
 			.unwrap_err();
 		assert!(matches!(err, SubstitutionError::InvalidVarName(_)));
 	}
@@ -8252,7 +8252,7 @@ mod functions {
 		// Redacted pass: would resolve ENV.SECRET to "***" if it ran the
 		// define mutation. We require it NOT to.
 		let _ = args.substitute_redacted("{{ define(x, ENV.SECRET) }}", &env).unwrap();
-		let v = args.substitute("{{ VARS.x }}", &env).unwrap();
+		let v = args.substitute("{{ VAR.x }}", &env).unwrap();
 		assert_eq!(v, "real-secret", "redacted pass must not overwrite VARS");
 	}
 
@@ -8329,7 +8329,7 @@ mod functions {
 	fn set_cwd_with_substituted_arg() {
 		let args = RunArgs::parse(&["--target=build".into()]);
 		let _ = args
-			.substitute("{{ set_cwd(ARGS.target ? 'default') }}", &HashMap::new())
+			.substitute("{{ set_cwd(ARG.target ? 'default') }}", &HashMap::new())
 			.unwrap();
 		let working_dir = PathBuf::from("/base");
 		let resolved = args.spawn_cwd(&working_dir);
@@ -8406,7 +8406,7 @@ mod functions {
 	fn wrong_arity_errors() {
 		let args = RunArgs::parse(&["--x=a".into(), "--y=b".into()]);
 		let err = args
-			.substitute("{{ to_upper(ARGS.x, ARGS.y) }}", &HashMap::new())
+			.substitute("{{ to_upper(ARG.x, ARG.y) }}", &HashMap::new())
 			.unwrap_err();
 		assert!(matches!(
 			err,
@@ -8500,12 +8500,12 @@ mod functions {
 	#[test]
 	fn define_value_with_double_quotes_preserves_them() {
 		// Direct from the user spec: `define(images, "test")` must store
-		// `"test"` (with quotes) as the value of VARS.images.
+		// `"test"` (with quotes) as the value of VAR.images.
 		let args = RunArgs::parse(&[]);
 		let _ = args
 			.substitute("{{ define(images, '\"test\"') }}", &HashMap::new())
 			.unwrap();
-		let v = args.substitute("{{ VARS.images }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.images }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "\"test\"");
 	}
 
@@ -8516,7 +8516,7 @@ mod functions {
 		let _ = args
 			.substitute("{{ define(images, 'raw image, image2') }}", &HashMap::new())
 			.unwrap();
-		let v = args.substitute("{{ VARS.images }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.images }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "raw image, image2");
 	}
 
@@ -8547,7 +8547,7 @@ mod functions {
 		let _ = parent
 			.substitute("{{ define(shared, 'hello') }}", &HashMap::new())
 			.unwrap();
-		let v = child.substitute("{{ VARS.shared }}", &HashMap::new()).unwrap();
+		let v = child.substitute("{{ VAR.shared }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "hello");
 	}
 
@@ -8573,7 +8573,7 @@ mod functions {
 		env.insert("PASSWORD".to_string(), "hunter2".to_string());
 		let args = RunArgs::parse(&[]);
 		let _ = args.substitute("{{ define(pw, ENV.PASSWORD) }}", &env).unwrap();
-		let log = args.substitute_redacted("auth={{ VARS.pw }}", &env).unwrap();
+		let log = args.substitute_redacted("auth={{ VAR.pw }}", &env).unwrap();
 		assert_eq!(log, "auth=hunter2");
 	}
 
@@ -8589,7 +8589,7 @@ mod functions {
 	#[test]
 	fn try_returns_value_when_inner_succeeds() {
 		let args = RunArgs::parse(&["--env=prod".into()]);
-		let result = args.substitute("{{ try(ARGS.env) }}", &HashMap::new()).unwrap();
+		let result = args.substitute("{{ try(ARG.env) }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "prod");
 	}
 
@@ -8625,10 +8625,10 @@ mod functions {
 		// If the inner expression errors, neither --foo nor any other ARGS
 		// reference should be marked consumed (so they remain in {{ ARGS }}).
 		let args = RunArgs::parse(&["--foo=bar".into(), "--missing".into(), "x".into()]);
-		// `try(ARGS.missing)` resolves OK ("x"), so --missing IS consumed.
-		// `try(ARGS.never)` errors and `--foo` stays untouched.
+		// `try(ARG.missing)` resolves OK ("x"), so --missing IS consumed.
+		// `try(ARG.never)` errors and `--foo` stays untouched.
 		let result = args
-			.substitute("{{ try(ARGS.never) ? 'gone' }} {{ ARGS }}", &HashMap::new())
+			.substitute("{{ try(ARG.never) ? 'gone' }} {{ ARGS }}", &HashMap::new())
 			.unwrap();
 		// --foo and --missing/x both still present.
 		assert!(result.starts_with("gone "));
@@ -8668,7 +8668,7 @@ mod functions {
 	#[test]
 	fn md5_with_arg() {
 		let args = RunArgs::parse(&["--data=abc".into()]);
-		let result = args.substitute("{{ md5(ARGS.data) }}", &HashMap::new()).unwrap();
+		let result = args.substitute("{{ md5(ARG.data) }}", &HashMap::new()).unwrap();
 		assert_eq!(result, "900150983cd24fb0d6963f7d28e17f72");
 	}
 
@@ -9221,7 +9221,7 @@ mod functions {
 		// The whole point: collapse a 4-case `match { ... define(part, ...) ... }`
 		// block down to a single `define(part, one_of(ARGS, ...))` line.
 		let args = RunArgs::parse(&["minor".into()]);
-		let template = "{{ define(part, one_of(ARGS, 'major', 'minor', 'patch')) }}target={{ VARS.part }}";
+		let template = "{{ define(part, one_of(ARGS, 'major', 'minor', 'patch')) }}target={{ VAR.part }}";
 		let result = args.substitute(template, &HashMap::new()).unwrap();
 		assert_eq!(result, "target=minor");
 	}
@@ -9386,11 +9386,11 @@ mod functions {
 
 	#[test]
 	fn arithmetic_consumes_vars_and_args() {
-		// Real-world bump pattern: `add(VARS.current_code, '1')`. Confirms
+		// Real-world bump pattern: `add(VAR.current_code, '1')`. Confirms
 		// the arithmetic family routes through the normal arg-resolution
 		// chain (so ARGS / VARS / chain fallbacks all just work).
 		let args = RunArgs::parse(&["--n=10".into()]);
-		let template = "{{ define(x, '5') }}sum={{ add(VARS.x, ARGS.n) }}";
+		let template = "{{ define(x, '5') }}sum={{ add(VAR.x, ARG.n) }}";
 		let result = args.substitute(template, &HashMap::new()).unwrap();
 		assert_eq!(result, "sum=15");
 	}
@@ -9512,7 +9512,7 @@ mod functions {
 	#[test]
 	fn comparison_works_with_vars() {
 		let args = RunArgs::parse(&[]);
-		let template = "{{ define(x, '30') }}{{ less_than(VARS.x, '50') }}";
+		let template = "{{ define(x, '30') }}{{ less_than(VAR.x, '50') }}";
 		assert_eq!(args.substitute(template, &HashMap::new()).unwrap(), "true");
 	}
 
@@ -9705,21 +9705,18 @@ mod quote_rework {
 
 	#[test]
 	fn single_quoted_with_nested_substitution() {
-		// `{{ define(cmd, 'docker -f {{ VARS.compose }} pull') }}` —
-		// the inner `{{ VARS.compose }}` resolves before the value is
-		// stored in VARS.cmd.
+		// `{{ define(cmd, 'docker -f {{ VAR.compose }} pull') }}` —
+		// the inner `{{ VAR.compose }}` resolves before the value is
+		// stored in VAR.cmd.
 		let args = RunArgs::default();
 		args.vars
 			.lock()
 			.unwrap()
 			.insert("compose".to_string(), "services/web.yml".to_string());
 		let _ = args
-			.substitute(
-				"{{ define(cmd, 'docker -f {{ VARS.compose }} pull') }}",
-				&HashMap::new(),
-			)
+			.substitute("{{ define(cmd, 'docker -f {{ VAR.compose }} pull') }}", &HashMap::new())
 			.unwrap();
-		let v = args.substitute("{{ VARS.cmd }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.cmd }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "docker -f services/web.yml pull");
 	}
 
@@ -9727,7 +9724,7 @@ mod quote_rework {
 	fn single_quoted_with_multiple_nested_substitutions() {
 		let args = RunArgs::parse(&["--first=alice".into(), "--last=brown".into()]);
 		let result = args
-			.substitute("echo {{ 'Hello {{ ARGS.first }} {{ ARGS.last }}!' }}", &HashMap::new())
+			.substitute("echo {{ 'Hello {{ ARG.first }} {{ ARG.last }}!' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "echo Hello alice brown!");
 	}
@@ -9735,7 +9732,7 @@ mod quote_rework {
 	#[test]
 	fn single_quoted_empty_interpolates_to_empty() {
 		let args = RunArgs::parse(&[]);
-		let result = args.substitute("[{{ ARGS.x ? '' }}]", &HashMap::new()).unwrap();
+		let result = args.substitute("[{{ ARG.x ? '' }}]", &HashMap::new()).unwrap();
 		assert_eq!(result, "[]");
 	}
 
@@ -9747,7 +9744,7 @@ mod quote_rework {
 		let _ = args
 			.substitute("{{ define(images, 'raw image, image2') }}", &HashMap::new())
 			.unwrap();
-		let v = args.substitute("{{ VARS.images }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.images }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "raw image, image2");
 	}
 
@@ -9761,7 +9758,7 @@ mod quote_rework {
 		let _ = args
 			.substitute("{{ define(images, \"test\") }}", &HashMap::new())
 			.unwrap();
-		let v = args.substitute("{{ VARS.images }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.images }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "\"test\"");
 	}
 
@@ -9771,9 +9768,9 @@ mod quote_rework {
 		let args = RunArgs::parse(&[]);
 		args.vars.lock().unwrap().insert("x".to_string(), "value".to_string());
 		let result = args
-			.substitute("{{ ARGS.y ? \"{{ VARS.x }}\" }}", &HashMap::new())
+			.substitute("{{ ARG.y ? \"{{ VAR.x }}\" }}", &HashMap::new())
 			.unwrap();
-		assert_eq!(result, "\"{{ VARS.x }}\"");
+		assert_eq!(result, "\"{{ VAR.x }}\"");
 	}
 
 	// ── Bareword literals are rejected ──
@@ -9782,7 +9779,7 @@ mod quote_rework {
 	fn bareword_chain_default_errors() {
 		let args = RunArgs::parse(&[]);
 		let err = args
-			.substitute("{{ ARGS.env ? development }}", &HashMap::new())
+			.substitute("{{ ARG.env ? development }}", &HashMap::new())
 			.unwrap_err();
 		assert!(matches!(err, SubstitutionError::BarewordLiteralNotAllowed(_)));
 	}
@@ -9798,7 +9795,7 @@ mod quote_rework {
 	fn bareword_flags_branch_errors() {
 		let args = RunArgs::parse(&["--debug".into()]);
 		let err = args
-			.substitute("{{ FLAGS.debug ? on : off }}", &HashMap::new())
+			.substitute("{{ FLAG.debug ? on : off }}", &HashMap::new())
 			.unwrap_err();
 		assert!(matches!(err, SubstitutionError::BarewordLiteralNotAllowed(_)));
 	}
@@ -9807,7 +9804,7 @@ mod quote_rework {
 	fn quoted_chain_default_works() {
 		let args = RunArgs::parse(&[]);
 		let result = args
-			.substitute("{{ ARGS.env ? 'development' }}", &HashMap::new())
+			.substitute("{{ ARG.env ? 'development' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "development");
 	}
@@ -9816,7 +9813,7 @@ mod quote_rework {
 	fn quoted_flags_ternary_works() {
 		let args = RunArgs::parse(&["--ci".into()]);
 		let result = args
-			.substitute("{{ FLAGS.ci ? '--ci' : '--stdin' }}", &HashMap::new())
+			.substitute("{{ FLAG.ci ? '--ci' : '--stdin' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "--ci");
 	}
@@ -9825,16 +9822,16 @@ mod quote_rework {
 	fn quoted_flags_ternary_false() {
 		let args = RunArgs::parse(&[]);
 		let result = args
-			.substitute("{{ FLAGS.ci ? '--ci' : '--stdin' }}", &HashMap::new())
+			.substitute("{{ FLAG.ci ? '--ci' : '--stdin' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "--stdin");
 	}
 
 	#[test]
 	fn empty_trailing_question_still_works() {
-		// `{{ ARGS.x ? }}` stays valid as the empty-default form.
+		// `{{ ARG.x ? }}` stays valid as the empty-default form.
 		let args = RunArgs::parse(&[]);
-		let result = args.substitute("[{{ ARGS.x ? }}]", &HashMap::new()).unwrap();
+		let result = args.substitute("[{{ ARG.x ? }}]", &HashMap::new()).unwrap();
 		assert_eq!(result, "[]");
 	}
 
@@ -9856,12 +9853,12 @@ mod quote_rework {
 			.insert("arch".to_string(), "x86_64".to_string());
 		let result = args
 			.substitute(
-				"{{ define(image, 'system-images;{{ nth(VARS.part, ' ', '0') }};{{ nth(VARS.part, ' ', '1') }};{{ VARS.arch }}') }}",
+				"{{ define(image, 'system-images;{{ nth(VAR.part, ' ', '0') }};{{ nth(VAR.part, ' ', '1') }};{{ VAR.arch }}') }}",
 				&HashMap::new(),
 			)
 			.unwrap();
 		assert_eq!(result, "");
-		let v = args.substitute("{{ VARS.image }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.image }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "system-images;android-30;google_apis_playstore;x86_64");
 	}
 
@@ -9871,7 +9868,7 @@ mod quote_rework {
 		let args = RunArgs::parse(&[]);
 		args.vars.lock().unwrap().insert("v".to_string(), "1.2.3".to_string());
 		let result = args
-			.substitute("{{ ARGS.tag ? 'v{{ VARS.v }}-stable' }}", &HashMap::new())
+			.substitute("{{ ARG.tag ? 'v{{ VAR.v }}-stable' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "v1.2.3-stable");
 	}
@@ -9886,7 +9883,7 @@ mod quote_rework {
 		args.vars.lock().unwrap().insert("p".to_string(), "a:b:c".to_string());
 		let result = args
 			.substitute(
-				"{{ concat('[', nth(VARS.p, ':', '0'), '|', nth(VARS.p, ':', '2'), ']') }}",
+				"{{ concat('[', nth(VAR.p, ':', '0'), '|', nth(VAR.p, ':', '2'), ']') }}",
 				&HashMap::new(),
 			)
 			.unwrap();
@@ -9900,7 +9897,7 @@ mod quote_rework {
 		let args = RunArgs::parse(&[]);
 		args.vars.lock().unwrap().insert("p".to_string(), "a:b:c".to_string());
 		let result = args
-			.substitute("{{ nth(VARS.p, ':', '1') == 'b' }}", &HashMap::new())
+			.substitute("{{ nth(VAR.p, ':', '1') == 'b' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 	}
@@ -9911,13 +9908,13 @@ mod quote_rework {
 	fn dsl_equality_returns_true_or_false() {
 		let args = RunArgs::parse(&["--env=production".into()]);
 		let result = args
-			.substitute("{{ ARGS.env == 'production' }}", &HashMap::new())
+			.substitute("{{ ARG.env == 'production' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 
 		let args = RunArgs::parse(&["--env=staging".into()]);
 		let result = args
-			.substitute("{{ ARGS.env == 'production' }}", &HashMap::new())
+			.substitute("{{ ARG.env == 'production' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "false");
 	}
@@ -9926,7 +9923,7 @@ mod quote_rework {
 	fn dsl_inequality_works() {
 		let args = RunArgs::parse(&["--env=staging".into()]);
 		let result = args
-			.substitute("{{ ARGS.env != 'production' }}", &HashMap::new())
+			.substitute("{{ ARG.env != 'production' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 	}
@@ -9935,7 +9932,7 @@ mod quote_rework {
 	fn dsl_logical_and_works() {
 		let args = RunArgs::parse(&["--env=prod".into(), "--ci=true".into()]);
 		let result = args
-			.substitute("{{ ARGS.env == 'prod' && ARGS.ci == 'true' }}", &HashMap::new())
+			.substitute("{{ ARG.env == 'prod' && ARG.ci == 'true' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 	}
@@ -9944,18 +9941,18 @@ mod quote_rework {
 	fn dsl_logical_or_works() {
 		let args = RunArgs::parse(&["--env=prod".into()]);
 		let result = args
-			.substitute("{{ ARGS.env == 'prod' || ARGS.env == 'staging' }}", &HashMap::new())
+			.substitute("{{ ARG.env == 'prod' || ARG.env == 'staging' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 	}
 
 	#[test]
 	fn dsl_chained_negations_with_and() {
-		// User's example pattern: `ARGS.env != 'development' && ARGS.env != 'production'`.
+		// User's example pattern: `ARG.env != 'development' && ARG.env != 'production'`.
 		let args = RunArgs::parse(&["--env=staging".into()]);
 		let result = args
 			.substitute(
-				"{{ ARGS.env != 'development' && ARGS.env != 'production' }}",
+				"{{ ARG.env != 'development' && ARG.env != 'production' }}",
 				&HashMap::new(),
 			)
 			.unwrap();
@@ -9964,7 +9961,7 @@ mod quote_rework {
 		let args = RunArgs::parse(&["--env=development".into()]);
 		let result = args
 			.substitute(
-				"{{ ARGS.env != 'development' && ARGS.env != 'production' }}",
+				"{{ ARG.env != 'development' && ARG.env != 'production' }}",
 				&HashMap::new(),
 			)
 			.unwrap();
@@ -9976,7 +9973,7 @@ mod quote_rework {
 		let args = RunArgs::parse(&["--env=prod".into(), "--deploy=yes".into()]);
 		let result = args
 			.substitute(
-				"{{ (ARGS.env == 'prod' || ARGS.env == 'staging') && ARGS.deploy != 'no' }}",
+				"{{ (ARG.env == 'prod' || ARG.env == 'staging') && ARG.deploy != 'no' }}",
 				&HashMap::new(),
 			)
 			.unwrap();
@@ -9987,23 +9984,23 @@ mod quote_rework {
 	fn dsl_with_function_call_value() {
 		let args = RunArgs::parse(&["--env=PROD".into()]);
 		let result = args
-			.substitute("{{ to_lower(ARGS.env) == 'prod' }}", &HashMap::new())
+			.substitute("{{ to_lower(ARG.env) == 'prod' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 	}
 
 	#[test]
 	fn dsl_inline_in_command_returns_true_string() {
-		// User's "my-command --resolve {{ ARGS.env == 'production' }}" example.
+		// User's "my-command --resolve {{ ARG.env == 'production' }}" example.
 		let args = RunArgs::parse(&["--env=production".into()]);
 		let result = args
-			.substitute("my-command --resolve {{ ARGS.env == 'production' }}", &HashMap::new())
+			.substitute("my-command --resolve {{ ARG.env == 'production' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "my-command --resolve true");
 
 		let args = RunArgs::parse(&["--env=staging".into()]);
 		let result = args
-			.substitute("my-command --resolve {{ ARGS.env == 'production' }}", &HashMap::new())
+			.substitute("my-command --resolve {{ ARG.env == 'production' }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "my-command --resolve false");
 	}
@@ -10012,7 +10009,7 @@ mod quote_rework {
 	fn dsl_unary_negation_works() {
 		let args = RunArgs::parse(&["--env=prod".into()]);
 		let result = args
-			.substitute("{{ !(ARGS.env == 'staging') }}", &HashMap::new())
+			.substitute("{{ !(ARG.env == 'staging') }}", &HashMap::new())
 			.unwrap();
 		assert_eq!(result, "true");
 	}
@@ -10034,7 +10031,7 @@ mod quote_rework {
 		let dir = TempDir::new().unwrap();
 		let spec = parse_target_inline(
 			r#"{"$schema":"x","targets":{"t":{"commands":[
-				{"if":"{{ ARGS.env == 'prod' }}","then":["echo prod-branch"],"else":["exit 1"]}
+				{"if":"{{ ARG.env == 'prod' }}","then":["echo prod-branch"],"else":["exit 1"]}
 			]}}}"#,
 			"t",
 		);
@@ -10049,7 +10046,7 @@ mod quote_rework {
 		let dir = TempDir::new().unwrap();
 		let spec = parse_target_inline(
 			r#"{"$schema":"x","targets":{"t":{"commands":[
-				{"if":"{{ ARGS.env == 'prod' }}","then":["exit 1"],"else":["echo other-branch"]}
+				{"if":"{{ ARG.env == 'prod' }}","then":["exit 1"],"else":["echo other-branch"]}
 			]}}}"#,
 			"t",
 		);
@@ -10067,7 +10064,7 @@ mod quote_rework {
 		for false_value in ["false", ""] {
 			let spec_json = format!(
 				r#"{{"$schema":"x","targets":{{"t":{{"commands":[
-					{{"if":"{{{{ ARGS.x ? '{false_value}' }}}}","then":["exit 1"],"else":["echo went-else"]}}
+					{{"if":"{{{{ ARG.x ? '{false_value}' }}}}","then":["exit 1"],"else":["echo went-else"]}}
 				]}}}}}}"#
 			);
 			let spec = parse_target_inline(&spec_json, "t");
@@ -10090,7 +10087,7 @@ mod quote_rework {
 		for bad_value in ["True", "1", "yes", "hello", "FALSE", "0", " true"] {
 			let spec_json = format!(
 				r#"{{"$schema":"x","targets":{{"t":{{"commands":[
-					{{"if":"{{{{ ARGS.x ? '{bad_value}' }}}}","then":["echo went-then"]}}
+					{{"if":"{{{{ ARG.x ? '{bad_value}' }}}}","then":["echo went-then"]}}
 				]}}}}}}"#
 			);
 			let spec = parse_target_inline(&spec_json, "t");
@@ -10123,7 +10120,7 @@ mod quote_rework {
 
 	#[test]
 	fn user_example_with_nested_substitution_in_define() {
-		// From the user's example: `{{ define(cmd, 'docker compose -f {{ VARS.compose }} pull') }}`.
+		// From the user's example: `{{ define(cmd, 'docker compose -f {{ VAR.compose }} pull') }}`.
 		let args = RunArgs::default();
 		args.vars
 			.lock()
@@ -10131,11 +10128,11 @@ mod quote_rework {
 			.insert("compose".to_string(), "infra/web/docker-compose.yml".to_string());
 		let _ = args
 			.substitute(
-				"{{ define(cmd, 'docker compose -f {{ VARS.compose }} pull') }}",
+				"{{ define(cmd, 'docker compose -f {{ VAR.compose }} pull') }}",
 				&HashMap::new(),
 			)
 			.unwrap();
-		let v = args.substitute("{{ VARS.cmd }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.cmd }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "docker compose -f infra/web/docker-compose.yml pull");
 	}
 
@@ -10156,7 +10153,7 @@ mod quote_rework {
 		assert!(matches!(err, SubstitutionError::InvalidVarName(_)));
 		// Bareword name → ok.
 		let _ = args.substitute("{{ define(name, 'value') }}", &HashMap::new()).unwrap();
-		let v = args.substitute("{{ VARS.name }}", &HashMap::new()).unwrap();
+		let v = args.substitute("{{ VAR.name }}", &HashMap::new()).unwrap();
 		assert_eq!(v, "value");
 	}
 }
@@ -10191,7 +10188,7 @@ mod empty_command_skip {
 		let spec = parse_target(
 			r#"{"$schema":"x","targets":{"t":{"commands":[
 				"{{ define(greeting, 'hello') }}",
-				"echo {{ VARS.greeting }}"
+				"echo {{ VAR.greeting }}"
 			]}}}"#,
 			"t",
 		);
@@ -10337,7 +10334,7 @@ mod empty_command_skip {
                 "t": {
                     "commands": [
                         "{{ define(x, 'foo') }}",
-                        "echo {{ VARS.x }}",
+                        "echo {{ VAR.x }}",
                         "{{ define(y, 'bar') }}"
                     ]
                 }
@@ -10721,5 +10718,353 @@ mod same_shell {
             }
         }"#;
 		assert!(parse_runfile(json).is_ok());
+	}
+}
+
+// ── Runfile-declared `vars` tests ─────────────────────────────────────
+mod declared_vars {
+	use super::*;
+	use crate::runner::{run_target, RunError};
+	use runfile_parser::parse_runfile;
+
+	/// Read a log file written by the spawned shells and return its trimmed,
+	/// non-empty lines.
+	fn read_lines(path: &std::path::Path) -> Vec<String> {
+		std::fs::read_to_string(path)
+			.unwrap_or_default()
+			.lines()
+			.map(|l| l.trim().to_string())
+			.filter(|l| !l.is_empty())
+			.collect()
+	}
+
+	#[test]
+	fn vars_resolve_in_commands_and_see_env() {
+		// A declared var that references the target's own `env` block value
+		// (vars are evaluated after env is built) plus a literal var.
+		let shell = get_test_shell();
+		let dir = TempDir::new().unwrap();
+		let log = dir.path().join("out.txt");
+		let log_escaped = json_escape_path(&log);
+
+		let json = format!(
+			r#"{{
+            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": {{
+                "t": {{
+                    "env": {{ "FOO": "envval" }},
+                    "vars": {{ "lit": "hello", "fromenv": "{{{{ ENV.FOO }}}}" }},
+                    "commands": [
+                        "echo {{{{ VAR.lit }}}} >> \"{log_escaped}\"",
+                        "echo {{{{ VAR.fromenv }}}} >> \"{log_escaped}\""
+                    ]
+                }}
+            }}
+        }}"#
+		);
+
+		let runfile = parse_runfile(&json).unwrap();
+		let result = run_target("t", &runfile, &shell, &RunArgs::default(), dir.path()).unwrap();
+		assert!(result.final_status.success());
+		assert_eq!(read_lines(&log), vec!["hello", "envval"]);
+	}
+
+	#[test]
+	fn vars_resolve_from_args() {
+		let shell = get_test_shell();
+		let dir = TempDir::new().unwrap();
+		let log = dir.path().join("out.txt");
+		let log_escaped = json_escape_path(&log);
+
+		let json = format!(
+			r#"{{
+            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": {{
+                "t": {{
+                    "vars": {{ "x": "{{{{ ARG.abc }}}}" }},
+                    "commands": ["echo {{{{ VAR.x }}}} >> \"{log_escaped}\""]
+                }}
+            }}
+        }}"#
+		);
+
+		let runfile = parse_runfile(&json).unwrap();
+		let args = RunArgs::parse(&["--abc".into(), "supplied".into()]);
+		let result = run_target("t", &runfile, &shell, &args, dir.path()).unwrap();
+		assert!(result.final_status.success());
+		assert_eq!(read_lines(&log), vec!["supplied"]);
+	}
+
+	#[test]
+	fn vars_missing_no_default_errors() {
+		// A var value referencing an unsupplied arg with no default must error,
+		// just like the same reference anywhere else.
+		let shell = get_test_shell();
+		let dir = TempDir::new().unwrap();
+
+		let json = r#"{
+            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": {
+                "t": {
+                    "vars": { "x": "{{ ARG.missing }}" },
+                    "commands": ["echo {{ VAR.x }}"]
+                }
+            }
+        }"#;
+
+		let runfile = parse_runfile(json).unwrap();
+		let result = run_target("t", &runfile, &shell, &RunArgs::default(), dir.path());
+		assert!(result.is_err(), "missing arg with no default should error");
+	}
+
+	#[test]
+	fn vars_with_default_falls_back() {
+		let shell = get_test_shell();
+		let dir = TempDir::new().unwrap();
+		let log = dir.path().join("out.txt");
+		let log_escaped = json_escape_path(&log);
+
+		let json = format!(
+			r#"{{
+            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": {{
+                "t": {{
+                    "vars": {{ "x": "{{{{ ARG.missing ? 'fallback' }}}}" }},
+                    "commands": ["echo {{{{ VAR.x }}}} >> \"{log_escaped}\""]
+                }}
+            }}
+        }}"#
+		);
+
+		let runfile = parse_runfile(&json).unwrap();
+		let result = run_target("t", &runfile, &shell, &RunArgs::default(), dir.path()).unwrap();
+		assert!(result.final_status.success());
+		assert_eq!(read_lines(&log), vec!["fallback"]);
+	}
+
+	#[test]
+	fn vars_scoped_per_target_no_leak() {
+		// Parent declares X=P, calls @child (X=C), then reads X again.
+		// Child sees its own X; parent's X is intact after the child returns.
+		let shell = get_test_shell();
+		let dir = TempDir::new().unwrap();
+		let log = dir.path().join("out.txt");
+		let log_escaped = json_escape_path(&log);
+
+		let json = format!(
+			r#"{{
+            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": {{
+                "parent": {{
+                    "vars": {{ "X": "P" }},
+                    "commands": [
+                        "echo parent-before-{{{{ VAR.X }}}} >> \"{log_escaped}\"",
+                        "@child",
+                        "echo parent-after-{{{{ VAR.X }}}} >> \"{log_escaped}\""
+                    ]
+                }},
+                "child": {{
+                    "vars": {{ "X": "C" }},
+                    "commands": ["echo child-{{{{ VAR.X }}}} >> \"{log_escaped}\""]
+                }}
+            }}
+        }}"#
+		);
+
+		let runfile = parse_runfile(&json).unwrap();
+		let result = run_target("parent", &runfile, &shell, &RunArgs::default(), dir.path()).unwrap();
+		assert!(result.final_status.success());
+		assert_eq!(read_lines(&log), vec!["parent-before-P", "child-C", "parent-after-P"]);
+	}
+
+	#[test]
+	fn parent_vars_inherited_by_child_without_own() {
+		// A child that declares no X still sees the parent's declared X via the
+		// shared VARS map — mirroring how `env` parent values reach a dep.
+		let shell = get_test_shell();
+		let dir = TempDir::new().unwrap();
+		let log = dir.path().join("out.txt");
+		let log_escaped = json_escape_path(&log);
+
+		let json = format!(
+			r#"{{
+            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": {{
+                "parent": {{
+                    "vars": {{ "X": "fromparent" }},
+                    "commands": ["@child"]
+                }},
+                "child": {{
+                    "commands": ["echo {{{{ VAR.X }}}} >> \"{log_escaped}\""]
+                }}
+            }}
+        }}"#
+		);
+
+		let runfile = parse_runfile(&json).unwrap();
+		let result = run_target("parent", &runfile, &shell, &RunArgs::default(), dir.path()).unwrap();
+		assert!(result.final_status.success());
+		assert_eq!(read_lines(&log), vec!["fromparent"]);
+	}
+
+	#[test]
+	fn declared_var_overridden_by_runtime_define() {
+		// A `define(...)` during command execution shadows the declared var for
+		// the rest of the target — last writer wins within the target.
+		let shell = get_test_shell();
+		let dir = TempDir::new().unwrap();
+		let log = dir.path().join("out.txt");
+		let log_escaped = json_escape_path(&log);
+
+		let json = format!(
+			r#"{{
+            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": {{
+                "t": {{
+                    "vars": {{ "X": "declared" }},
+                    "commands": [
+                        "echo {{{{ VAR.X }}}} >> \"{log_escaped}\"",
+                        "{{{{ define(X, 'redefined') }}}}",
+                        "echo {{{{ VAR.X }}}} >> \"{log_escaped}\""
+                    ]
+                }}
+            }}
+        }}"#
+		);
+
+		let runfile = parse_runfile(&json).unwrap();
+		let result = run_target("t", &runfile, &shell, &RunArgs::default(), dir.path()).unwrap();
+		assert!(result.final_status.success());
+		assert_eq!(read_lines(&log), vec!["declared", "redefined"]);
+	}
+
+	#[test]
+	fn invalid_var_key_rejected_at_parse() {
+		let json = r#"{
+            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": {
+                "t": {
+                    "vars": { "bad key": "x" },
+                    "commands": ["echo hi"]
+                }
+            }
+        }"#;
+		let err = parse_runfile(json).unwrap_err();
+		assert!(err.to_string().to_lowercase().contains("variable name"));
+	}
+
+	#[test]
+	fn missing_var_error_unaffected_by_feature() {
+		// Sanity: a target with no declared vars referencing an undefined VARS
+		// still errors with the usual missing-var message.
+		let shell = get_test_shell();
+		let dir = TempDir::new().unwrap();
+		let json = r#"{
+            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": { "t": { "commands": ["echo {{ VAR.nope }}"] } }
+        }"#;
+		let runfile = parse_runfile(json).unwrap();
+		let result = run_target("t", &runfile, &shell, &RunArgs::default(), dir.path());
+		assert!(matches!(result, Err(RunError::Execute(_)) | Err(RunError::Substitution(_))) || result.is_err());
+	}
+}
+
+// ── Substitution source prefixes: ARG. / ENV. / FLAG. / VAR. / RUN. plus
+//    bare `{{ ARGS }}` for all positional args.
+mod prefix_rename {
+	use super::*;
+
+	/// `substitute` against an empty env map.
+	fn sub(args: &RunArgs, template: &str) -> Result<String, SubstitutionError> {
+		args.substitute(template, &HashMap::new())
+	}
+
+	/// Build a `RunArgs` whose run-wide VAR map is pre-seeded.
+	fn args_with_vars(pairs: &[(&str, &str)]) -> RunArgs {
+		let args = RunArgs::default();
+		{
+			let mut m = args.vars.lock().unwrap();
+			for (k, v) in pairs {
+				m.insert((*k).to_string(), (*v).to_string());
+			}
+		}
+		args
+	}
+
+	// ── Source prefixes resolve ─────────────────────────────────────────
+
+	#[test]
+	fn arg_dot_resolves_named() {
+		let args = RunArgs::parse(&["--env=prod".into()]);
+		assert_eq!(sub(&args, "{{ ARG.env }}").unwrap(), "prod");
+	}
+
+	#[test]
+	fn arg_dot_with_default_and_missing_errors() {
+		let args = RunArgs::parse(&[]);
+		assert_eq!(sub(&args, "{{ ARG.env ? 'dev' }}").unwrap(), "dev");
+		// No default → hard error (MissingArg).
+		assert!(matches!(
+			sub(&args, "{{ ARG.env }}").unwrap_err(),
+			SubstitutionError::MissingArg(_)
+		));
+	}
+
+	#[test]
+	fn flag_dot_boolean_and_ternary() {
+		let present = RunArgs::parse(&["--prod".into()]);
+		assert_eq!(sub(&present, "{{ FLAG.prod }}").unwrap(), "true");
+		assert_eq!(sub(&present, "{{ FLAG.prod ? 'yes' : 'no' }}").unwrap(), "yes");
+		let absent = RunArgs::parse(&[]);
+		assert_eq!(sub(&absent, "{{ FLAG.prod }}").unwrap(), "false");
+		assert_eq!(sub(&absent, "{{ FLAG.prod ? 'yes' : 'no' }}").unwrap(), "no");
+	}
+
+	#[test]
+	fn flag_dot_with_hyphen() {
+		let args = RunArgs::parse(&["--dry-run".into()]);
+		assert_eq!(sub(&args, "{{ FLAG.dry-run }}").unwrap(), "true");
+	}
+
+	#[test]
+	fn var_dot_resolves() {
+		let args = args_with_vars(&[("greeting", "hello")]);
+		assert_eq!(sub(&args, "{{ VAR.greeting }}").unwrap(), "hello");
+	}
+
+	#[test]
+	fn var_dot_in_function_and_chain() {
+		let args = args_with_vars(&[("name", "world")]);
+		assert_eq!(sub(&args, "{{ to_upper(VAR.name) }}").unwrap(), "WORLD");
+		assert_eq!(sub(&args, "{{ ARG.x ? VAR.name }}").unwrap(), "world");
+	}
+
+	#[test]
+	fn bare_args_still_passes_all_positional() {
+		let args = RunArgs::parse(&["a".into(), "b".into(), "c".into()]);
+		assert_eq!(sub(&args, "run {{ ARGS }}").unwrap(), "run a b c");
+	}
+
+	#[test]
+	fn bare_args_as_function_arg_still_works() {
+		// `one_of(ARGS, ...)` consumes the positional value — bare ARGS, not ARG.
+		let args = RunArgs::parse(&["minor".into()]);
+		assert_eq!(
+			sub(&args, "{{ one_of(ARGS, 'major', 'minor', 'patch') }}").unwrap(),
+			"minor"
+		);
+	}
+
+	// ── New forms inside DSL conditions ─────────────────────────────────
+
+	#[test]
+	fn new_forms_work_in_dsl() {
+		let args = RunArgs::parse(&["--env=prod".into(), "--wsl".into()]);
+		assert_eq!(sub(&args, "{{ ARG.env == 'prod' }}").unwrap(), "true");
+		// Bare FLAG is truthy inside DSL; comparison form needs a quoted literal.
+		assert_eq!(sub(&args, "{{ FLAG.wsl == 'true' }}").unwrap(), "true");
+		assert_eq!(sub(&args, "{{ RUN.os == 'nope' || FLAG.wsl }}").unwrap(), "true");
+		let v = args_with_vars(&[("mode", "fast")]);
+		assert_eq!(sub(&v, "{{ VAR.mode == 'fast' }}").unwrap(), "true");
 	}
 }

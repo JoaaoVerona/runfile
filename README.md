@@ -17,7 +17,7 @@ $ run dev --port=4000
     "dev": {
       "description": "Starts the dev server",
       "commands": "vite",
-      "env": { "PORT": "{{ ARGS.port ? '3000' }}" }
+      "env": { "PORT": "{{ ARG.port ? '3000' }}" }
     },
     "build": {
       "description": "Type-checks and builds in parallel",
@@ -25,11 +25,11 @@ $ run dev --port=4000
         "@type-check",
         "vite build",
         {
-          "if": "{{ RUN.os == 'windows' && FLAGS.wsl }}",
+          "if": "{{ RUN.os == 'windows' && FLAG.wsl }}",
           "then": "wsl --shell-type login -- vite build"
         }
       ],
-      "envFiles": [".env", ".env.{{ ARGS.env ? 'development' }}"],
+      "envFiles": [".env", ".env.{{ ARG.env ? 'development' }}"],
       "parallel": true
     },
     "type-check": {
@@ -190,21 +190,24 @@ Positional, named, flags, env vars, and runtime context (`{{ RUN.os }}` / `{{ RU
 `{{ RUN.cwd }}` / `{{ RUN.file }}` / `{{ RUN.parent }}`) — with chained fallbacks and required values. The
 `{{ ... }}` syntax avoids collisions with shell `$(...)` command substitution.
 
+The source prefixes are `{{ ARG.<name> }}` (named arg), `{{ ENV.<name> }}`, `{{ FLAG.<name> }}`,
+`{{ VAR.<name> }}`, and `{{ RUN.<key> }}`. Bare `{{ ARGS }}` expands to **all** positional arguments.
+
 ```jsonc
-"PORT": "{{ ARGS.port ? ENV.PORT ? '3000' }}",
-"OPTS": "{{ FLAGS.release ? '--release' : }} {{ FLAGS.verbose ? '-v' : }}",
+"PORT": "{{ ARG.port ? ENV.PORT ? '3000' }}",
+"OPTS": "{{ FLAG.release ? '--release' : }} {{ FLAG.verbose ? '-v' : }}",
 "CARGO_TARGET_DIR": "target-{{ RUN.os }}",
 // Inline OS/shell branches — the boolean DSL goes inside a single `{{ ... }}` block:
 { "if": "{{ RUN.os == 'windows' }}", "then": ["del /S /Q build"], "else": ["rm -rf build"] },
-// User-supplied flags branch through `{{ FLAGS.x }}` (resolves to "true" / "false"):
-{ "if": "{{ FLAGS.debug }}", "then": ["./tool --verbose"], "else": ["./tool"] },
+// User-supplied flags branch through `{{ FLAG.x }}` (resolves to "true" / "false"):
+{ "if": "{{ FLAG.debug }}", "then": ["./tool --verbose"], "else": ["./tool"] },
 // workingDirectory is a free-form path (defaults to {{ RUN.parent }}):
-"workingDirectory": "{{ ARGS.workdir ? RUN.cwd }}"
+"workingDirectory": "{{ ARG.workdir ? RUN.cwd }}"
 ```
 
 Strict format: exactly one space after `{{` and before `}}`, exactly one space around `?` and `:` operators.
 **String literals must be wrapped in single quotes** — `'production'`, not `production`. Source references
-(`ARGS.x`, `VARS.x`, etc.) and function calls remain bare. Use `\{{` / `\}}` to emit a literal `{{` / `}}` in
+(`ARG.x`, `VAR.x`, etc.) and function calls remain bare. Use `\{{` / `\}}` to emit a literal `{{` / `}}` in
 your output.
 
 #### Boolean conditions inside substitutions
@@ -216,41 +219,41 @@ but you can use it anywhere:
 ```jsonc
 "commands": [
   // Branch on a CLI flag — `if` checks if the substitution resolves to the literal "true":
-  { "if": "{{ ARGS.env == 'production' }}",
+  { "if": "{{ ARG.env == 'production' }}",
     "then": ["./deploy-prod.sh"],
     "else": ["./deploy-staging.sh"] },
 
   // Compose AND/OR/NOT freely:
-  { "if": "{{ ARGS.env != 'development' && ARGS.env != 'production' }}",
+  { "if": "{{ ARG.env != 'development' && ARG.env != 'production' }}",
     "then": ["./deploy-staging.sh"] },
 
   // Invert any boolean-returning value with unary `!` — including the
   // comparison helpers (`less_than`, `is_number`, …) and `contains` etc.:
-  { "if": "{{ !is_number(ARGS.port) }}",
+  { "if": "{{ !is_number(ARG.port) }}",
     "then": ["echo 'port must be a number' && exit 1"] },
 
-  // FLAGS.x works as a bare boolean inside DSL — no `== 'true'` needed:
-  { "if": "{{ RUN.os == 'windows' && FLAGS.wsl }}",
+  // FLAG.x works as a bare boolean inside DSL — no `== 'true'` needed:
+  { "if": "{{ RUN.os == 'windows' && FLAG.wsl }}",
     "then": "wsl --shell-type login -- vite build" },
 
   // Inline in a command — useful for passing booleans to other tools:
-  "my-command --resolve {{ ARGS.env == 'production' }}"
+  "my-command --resolve {{ ARG.env == 'production' }}"
 ]
 ```
 
-**Strict boolean rule.** Any value used as a bare boolean — both inside the DSL Truthy check (e.g. `&& FLAGS.x`,
-`!ARGS.y`) and as the entire `if` condition — must resolve to exactly one of:
+**Strict boolean rule.** Any value used as a bare boolean — both inside the DSL Truthy check (e.g. `&& FLAG.x`,
+`!ARG.y`) and as the entire `if` condition — must resolve to exactly one of:
 
 - `"true"` → truthy (the `then` branch runs / left arm of `&&` continues)
 - `"false"` → falsy
 - `""` (empty) → falsy
 
 Anything else (`"True"`, `"1"`, `"yes"`, `"hello"`, etc.) errors out with a clear message pointing you toward
-the explicit comparison form. So `if: "{{ ARGS.x }}"` and `{{ ARGS.x && ... }}` only work when `ARGS.x` is
-exactly `"true"` / `"false"` / empty — for any other check, use a comparison: `{{ ARGS.x == 'yes' }}`.
+the explicit comparison form. So `if: "{{ ARG.x }}"` and `{{ ARG.x && ... }}` only work when `ARG.x` is
+exactly `"true"` / `"false"` / empty — for any other check, use a comparison: `{{ ARG.x == 'yes' }}`.
 
 Comparisons (`==` / `!=`) operate on raw strings — *those* don't have the boolean restriction, so
-`{{ ARGS.env == 'staging' }}` works for any value of `ARGS.env`.
+`{{ ARG.env == 'staging' }}` works for any value of `ARG.env`.
 
 #### Functions: transform values inline
 
@@ -278,14 +281,14 @@ and work as full substitution bodies *or* as chain segments:
   //   shell     : shell_quote, capture
   //   variables : define
   //   cwd       : set_cwd
-  "echo deploying-{{ to_upper(ARGS.env) }}",
+  "echo deploying-{{ to_upper(ARG.env) }}",
   "curl -H \"X-Auth: {{ base64_encode(ENV.TOKEN) }}\" ...",
-  "echo {{ concat('hello-', ARGS.name, '-2026') }}",
-  "echo {{ join(' AND ', 'flag-1', 'flag-2', ARGS.extra) }}",
+  "echo {{ concat('hello-', ARG.name, '-2026') }}",
+  "echo {{ join(' AND ', 'flag-1', 'flag-2', ARG.extra) }}",
   // Tokenise-and-rejoin-style transforms via replace_all:
-  "go test {{ replace_all(ARGS.flags, ' ', ' -tag=') }}",
+  "go test {{ replace_all(ARG.flags, ' ', ' -tag=') }}",
   // Strip every match of a regex (here: collapse whitespace runs to a single space):
-  "echo {{ regex_replace(ARGS.text, '\\s+', ' ') }}",
+  "echo {{ regex_replace(ARG.text, '\\s+', ' ') }}",
   // Pull a capture group out of the first regex match — no `(?s)^.*X(...)X.*$`
   // greedy-replace trick needed. Group 0 is the whole match; group N is the
   // N-th `(...)`. Out-of-bounds returns "" (same convention as `nth`).
@@ -295,14 +298,14 @@ and work as full substitution bodies *or* as chain segments:
   "echo deps={{ regex_capture_all(read_file('deps.txt'), 'name = \"([^\"]+)\"', '1', ',') }}",
   // Split-by-separator scalar accessors — string in, string out, no list type:
   // basename idiom (last segment after `/`); empty string when input ends in `/`.
-  "echo basename={{ last(ARGS.path, '/') }}",
+  "echo basename={{ last(ARG.path, '/') }}",
   // Pull out the N-th comma-separated field; out-of-bounds returns "".
-  "echo target={{ nth(ARGS.csv, ',', '1') }}",
+  "echo target={{ nth(ARG.csv, ',', '1') }}",
   // Pair `count_parts` with `nth` to bound-check before indexing:
-  // "if": "{{ count_parts(ARGS.csv, ',') == '3' }}"
+  // "if": "{{ count_parts(ARG.csv, ',') == '3' }}"
   // Boolean-returning helpers are valid DSL `Truthy` values — use them in `if`:
-  // "if": "{{ starts_with(ARGS.path, '/usr') }}"
-  // "if": "{{ regex_matches(ARGS.tag, '^v[0-9]+\\.[0-9]+$') }}"
+  // "if": "{{ starts_with(ARG.path, '/usr') }}"
+  // "if": "{{ regex_matches(ARG.tag, '^v[0-9]+\\.[0-9]+$') }}"
 
   // Safely inline arbitrary content (newlines, quotes, JSON) as a CLI arg —
   // `shell_quote` picks the right quoting for the active shell:
@@ -320,17 +323,17 @@ and work as full substitution bodies *or* as chain segments:
   // non-numeric input. The result is formatted as an integer when whole and
   // as a decimal otherwise (so `add('5', '3')` → "8", `add('5', '1.1')` →
   // "6.1"). Divide-by-zero errors out.
-  "echo next-build={{ add(VARS.versionCode, '1') }}",
-  "echo half={{ divide(VARS.total, '2') }}",
+  "echo next-build={{ add(VAR.versionCode, '1') }}",
+  "echo half={{ divide(VAR.total, '2') }}",
 
   // Numeric comparisons — coerce both args to numbers (same rules as the
   // arithmetic family, so non-numeric input errors) and return "true"/"false",
   // so they work as DSL `Truthy` values in `if` conditions:
-  // "if": "{{ greater_than(VARS.count, '50') }}"
-  // "if": "{{ less_than_or_equal(ARGS.retries, '3') }}"
+  // "if": "{{ greater_than(VAR.count, '50') }}"
+  // "if": "{{ less_than_or_equal(ARG.retries, '3') }}"
   // `is_number` tests whether a value parses as a (finite) number — it returns
   // "false" instead of erroring on non-numeric input:
-  // "if": "{{ is_number(ARGS.port) }}"
+  // "if": "{{ is_number(ARG.port) }}"
 
   // Validate a value against a fixed allow-list. Returns the value on
   // match; lists every valid option in the error on mismatch. Collapses
@@ -366,29 +369,29 @@ and work as full substitution bodies *or* as chain segments:
 
   // `try(expr)` swallows inner errors. Standalone returns "" on failure;
   // chained, the next segment runs as a fallback.
-  "echo {{ try(base64_decode(ARGS.maybe_b64)) ? ARGS.maybe_b64 }}",
+  "echo {{ try(base64_decode(ARG.maybe_b64)) ? ARG.maybe_b64 }}",
 
   // Nested:
-  "echo {{ to_upper(to_lower(ARGS.x)) }}",
+  "echo {{ to_upper(to_lower(ARG.x)) }}",
 
   // As a chain fallback:
-  "echo host={{ ARGS.host ? to_lower(ENV.HOST) }}",
+  "echo host={{ ARG.host ? to_lower(ENV.HOST) }}",
 
-  // Capture a value with `define(...)` and read it later via `VARS.<name>`:
+  // Capture a value with `define(...)` and read it later via `VAR.<name>`:
   "{{ define(sdk, ENV.SDK ? '/opt/sdk') }}",
-  "{{ VARS.sdk }}/bin/build",
-  "echo using sdk at {{ VARS.sdk }}",
+  "{{ VAR.sdk }}/bin/build",
+  "echo using sdk at {{ VAR.sdk }}",
 
   // `set_cwd(path)` switches the cwd subsequent commands spawn in — like
   // shell `cd`, but works on every shell / OS without forking. Relative
   // paths chain (matching `cd a; cd b` → `a/b`); absolute paths replace.
-  "{{ set_cwd(ARGS.subproject ? 'packages/api') }}",
+  "{{ set_cwd(ARG.subproject ? 'packages/api') }}",
   "npm install",
   "npm run build",
 
   // Single-quoted strings interpolate nested {{ }} substitutions:
-  "{{ define(cmd, 'docker compose -f {{ VARS.compose }} pull') }}",
-  "{{ VARS.cmd }}"
+  "{{ define(cmd, 'docker compose -f {{ VAR.compose }} pull') }}",
+  "{{ VAR.cmd }}"
 ]
 ```
 
@@ -396,6 +399,38 @@ and work as full substitution bodies *or* as chain segments:
 to only whitespace (i.e. one consisting solely of a `{{ define(...) }}` call) is silently skipped instead of
 being dispatched to the shell. `define`s in a parent target are visible to `@target` children. The `name` MUST
 be a bareword identifier matching `[A-Za-z_][A-Za-z0-9_-]*` — quotes are NOT allowed on the name.
+
+#### Declaring variables up front (`vars`)
+
+Instead of (or alongside) `define(...)`, you can declare variables directly on a target — or on `globals` to
+apply them to every target — and read them as `{{ VAR.<key> }}`. This mirrors `env`: each value is a `{{ ... }}`
+template resolved **after** the env is built (so it can reference `{{ ENV.* }}`), plus `{{ ARG.* }}`,
+`{{ FLAG.* }}`, `{{ RUN.* }}`, and earlier vars. If a reference has no default and isn't supplied, it errors —
+exactly like everywhere else.
+
+```jsonc
+{
+  "globals": {
+    "vars": { "appName": "skiley" }      // available to every target
+  },
+  "targets": {
+    "deploy": {
+      "env": { "REGION": "us-east-1" },
+      "vars": {
+        "region": "{{ ENV.REGION }}",     // vars resolve after env
+        "retries": "3",                    // numbers/bools are stringified
+        "tag": "{{ ARG.tag ? 'latest' }}" // chain fallbacks work
+      },
+      "commands": ["echo deploying {{ VAR.appName }} to {{ VAR.region }} as {{ VAR.tag }}"]
+    }
+  }
+}
+```
+
+Global `vars` are merged into each target's `vars` at parse time (target keys win on conflict). Declared vars are
+**scoped per-target like `env`**: a parent's vars are visible inside an `@target` dependency, but a dependency's
+own declared vars don't leak back to the parent. A runtime `define(...)` of the same name overrides the declared
+value for the rest of the target. Var keys must match `[A-Za-z_][A-Za-z0-9_-]*`.
 
 `set_cwd(path)` is the cwd analog of `define`: returns an empty string and changes the cwd that subsequent shell
 commands in the *current target* spawn in. Behaves like shell `cd`, but works uniformly across every shell / OS
@@ -419,12 +454,12 @@ Function args are separated by `, ` (comma + exactly one space).
 
 - **Single quotes (`'...'`) — interpolated string**: surrounding quotes stripped, with any nested `{{ ... }}`
   resolved through the regular substitution machinery. Use these for almost every literal — they handle the
-  full range of values including embedded substitutions: `concat('a, b', ARGS.x)`,
-  `'/var/log/{{ RUN.os }}.log'`, `define(cmd, 'docker -f {{ VARS.compose }} pull')`.
+  full range of values including embedded substitutions: `concat('a, b', ARG.x)`,
+  `'/var/log/{{ RUN.os }}.log'`, `define(cmd, 'docker -f {{ VAR.compose }} pull')`.
 - **Double quotes (`"..."`) — fully literal value**: the quote characters are part of the value (so `"test"` is
   the 6-character string `"test"`). No interpolation. Useful when the literal you want to emit really should
   contain `"` chars.
-- **Plain barewords are rejected** — `{{ ARGS.env ? development }}` is a parse-time error. Wrap in quotes.
+- **Plain barewords are rejected** — `{{ ARG.env ? development }}` is a parse-time error. Wrap in quotes.
 
 #### Conditionals and loops, no shell required
 
@@ -433,11 +468,11 @@ evaluated by Runfile itself, so the logic works the same on every shell and plat
 
 ```jsonc
 "commands": [
-  { "if": "{{ ARGS.env == 'production' }}",
+  { "if": "{{ ARG.env == 'production' }}",
     "then": ["./deploy-prod.sh"],
     "else": ["./deploy-staging.sh"] },
 
-  { "match": "{{ ARGS.tier ? '1' }}",  // chain default; case "1" runs when --tier missing
+  { "match": "{{ ARG.tier ? '1' }}",  // chain default; case "1" runs when --tier missing
     "cases": {
       "1": "flutter emulators --launch Tier_1_Android_9",
       "2": "flutter emulators --launch Tier_2_Android_11",
@@ -451,12 +486,12 @@ evaluated by Runfile itself, so the logic works the same on every shell and plat
   { "for": "service",
     "in": ["api", "web", "worker"],
     "parallel": true,
-    // VARS.<name>_index exposes the 0-based iteration counter.
-    "do": ["echo [{{ VARS.service_index }}] docker build -t {{ VARS.service }} services/{{ VARS.service }}"] },
+    // VAR.<name>_index exposes the 0-based iteration counter.
+    "do": ["echo [{{ VAR.service_index }}] docker build -t {{ VAR.service }} services/{{ VAR.service }}"] },
 
   { "for": "file",
     "shell": "git diff --name-only HEAD~1",
-    "do": ["clang-format -i {{ VARS.file }}"] }
+    "do": ["clang-format -i {{ VAR.file }}"] }
 ]
 ```
 
@@ -476,7 +511,7 @@ namespace.
   "@test --coverage",
   "@build {{ ARGS }}",
   { "if": "{{ RUN.os == 'windows' }}", "then": "@deploy-win", "else": "@deploy-unix" },
-  { "for": "ns", "in": "namespaces", "do": "@?{{ VARS.ns }}:adb-forward" } // skip namespaces without the target
+  { "for": "ns", "in": "namespaces", "do": "@?{{ VAR.ns }}:adb-forward" } // skip namespaces without the target
 ]
 ```
 
@@ -489,7 +524,7 @@ lines instead of corrupting each other's output. The label shows the full resolv
 (`[@dev --port 5000]`) for target-call branches, or the raw command truncated to 12 characters (`[docker compo]`)
 for shell branches; each label gets one of six cycling colors so adjacent branches stay distinct.
 SGR colors flow through unchanged. The prefix propagates through `@target` invocations too,
-so monorepo fan-outs like `{ "for": "ns", "in": "namespaces", "do": "@{{ VARS.ns }}:dev" }` tag every nested shell
+so monorepo fan-outs like `{ "for": "ns", "in": "namespaces", "do": "@{{ VAR.ns }}:dev" }` tag every nested shell
 with its branch identity. Set `RUNFILE_NO_LINE_PREFIX=1` to opt out and inherit raw stdio.
 
 ```text

@@ -18,7 +18,7 @@ fn make_substitute(args: &RunArgs) -> impl Fn(&str, &HashMap<String, String>) ->
 	|input: &str, env: &HashMap<String, String>| args.substitute(input, env).map_err(|e| e.to_string())
 }
 
-/// Load environment variables from env files, applying `{{ ARGS.* }}` and `{{ ENV.* }}`
+/// Load environment variables from env files, applying `{{ ARG.* }}` and `{{ ENV.* }}`
 /// substitution to file paths. Missing files are silently skipped. Parse errors are returned.
 pub fn load_env_files(
 	env_files: &[String],

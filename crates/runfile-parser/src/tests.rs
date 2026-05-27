@@ -79,7 +79,7 @@ fn parse_runfile_with_env_files() {
         "targets": {
             "dev": {
                 "commands": ["npm start"],
-                "envFiles": [".env", ".env.{{ ARGS.env ? 'development' }}"]
+                "envFiles": [".env", ".env.{{ ARG.env ? 'development' }}"]
             }
         },
         "globals": {
@@ -91,7 +91,7 @@ fn parse_runfile_with_env_files() {
 	let env_files = target.env_files.as_ref().unwrap();
 	assert_eq!(env_files.len(), 2);
 	assert_eq!(env_files[0], ".env");
-	assert_eq!(env_files[1], ".env.{{ ARGS.env ? 'development' }}");
+	assert_eq!(env_files[1], ".env.{{ ARG.env ? 'development' }}");
 
 	let globals = rf.globals.as_ref().unwrap();
 	let global_env_files = globals.env_files.as_ref().unwrap();
@@ -296,6 +296,7 @@ fn roundtrip_serialization() {
 			add_to_path: Some(vec!["bin".into()]),
 			env_files: None,
 			env: None,
+			vars: None,
 			force_shell: None,
 			logging: None,
 			ignore_errors: None,
@@ -360,6 +361,36 @@ fn parse_globals_only_env() {
 }
 
 #[test]
+fn parse_target_and_global_vars() {
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "x": {
+                "commands": ["echo {{ VAR.xxx }}"],
+                "vars": { "xxx": "{{ ENV.some ? 'default' }}", "yyy": 35, "ok-hyphen": "v" }
+            }
+        },
+        "globals": { "vars": { "gg": "g" } }
+    }"#;
+	let rf = parse_runfile(json).unwrap();
+	let vars = rf.targets["x"].vars.as_ref().unwrap();
+	assert_eq!(vars["xxx"], EnvValue::String("{{ ENV.some ? 'default' }}".into()));
+	assert_eq!(vars["yyy"], EnvValue::Number(35.0));
+	assert_eq!(vars["ok-hyphen"], EnvValue::String("v".into()));
+	let gvars = rf.globals.unwrap().vars.unwrap();
+	assert_eq!(gvars["gg"], EnvValue::String("g".into()));
+}
+
+#[test]
+fn parse_rejects_invalid_var_key() {
+	let json = r#"{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": { "x": { "commands": ["echo"], "vars": { "1bad": "v" } } }
+    }"#;
+	assert!(parse_runfile(json).is_err());
+}
+
+#[test]
 fn parse_command_with_args_placeholder() {
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
@@ -378,7 +409,7 @@ fn parse_command_with_conditional_args() {
         "targets": {
             "dev": {
                 "commands": ["npm run dev"],
-                "env": { "NODE_ENV": "{{ ARGS.env ? 'development' }}" }
+                "env": { "NODE_ENV": "{{ ARG.env ? 'development' }}" }
             }
         }
     }"#;
@@ -386,7 +417,7 @@ fn parse_command_with_conditional_args() {
 	let env = rf.targets["dev"].env.as_ref().unwrap();
 	assert_eq!(
 		env["NODE_ENV"],
-		EnvValue::String("{{ ARGS.env ? 'development' }}".into())
+		EnvValue::String("{{ ARG.env ? 'development' }}".into())
 	);
 }
 
@@ -1074,6 +1105,27 @@ fn merge_globals_baked_into_targets() {
 	let spec = &result.runfile.targets["build"];
 	assert_eq!(spec.logging, Some(true));
 	assert!(spec.env.is_some());
+	assert!(result.runfile.globals.is_none());
+}
+
+#[test]
+fn merge_globals_vars_baked_and_overridden() {
+	let dir = TempDir::new().unwrap();
+	let path = dir.path().join("global.json");
+	std::fs::write(
+		&path,
+		r#"{ "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "targets": { "build": { "commands": ["build"], "vars": { "shared": "target", "own": "o" } } },
+            "globals": { "vars": { "g": "global-g", "shared": "global-shared" } } }"#,
+	)
+	.unwrap();
+
+	let result = merge_runfiles(None, &[path], dir.path()).unwrap();
+	let vars = result.runfile.targets["build"].vars.as_ref().unwrap();
+	// Global-only key carries through; target key wins on conflict; target-only key kept.
+	assert_eq!(vars["g"], EnvValue::String("global-g".into()));
+	assert_eq!(vars["shared"], EnvValue::String("target".into()));
+	assert_eq!(vars["own"], EnvValue::String("o".into()));
 	assert!(result.runfile.globals.is_none());
 }
 
@@ -2324,7 +2376,7 @@ fn parse_if_block_with_string_then() {
 		"targets": {
 			"deploy": {
 				"commands": [
-					{ "if": "{{ ARGS.env }} == production", "then": ["./deploy-prod.sh"] }
+					{ "if": "{{ ARG.env }} == production", "then": ["./deploy-prod.sh"] }
 				]
 			}
 		}
@@ -2333,7 +2385,7 @@ fn parse_if_block_with_string_then() {
 	let cmd0 = &rf.targets["deploy"].commands[0];
 	match cmd0 {
 		CommandStep::If(if_step) => {
-			assert_eq!(if_step.condition, "{{ ARGS.env }} == production");
+			assert_eq!(if_step.condition, "{{ ARG.env }} == production");
 			assert_eq!(if_step.then.len(), 1);
 			assert!(if_step.r#else.is_none());
 		}
@@ -2348,7 +2400,7 @@ fn parse_if_block_with_else() {
 		"targets": {
 			"deploy": {
 				"commands": [
-					{ "if": "{{ ARGS.dry-run }}", "then": ["echo would deploy"], "else": ["./deploy.sh"] }
+					{ "if": "{{ ARG.dry-run }}", "then": ["echo would deploy"], "else": ["./deploy.sh"] }
 				]
 			}
 		}
@@ -2372,7 +2424,7 @@ fn parse_if_block_with_ignore_errors() {
 		"targets": {
 			"clean": {
 				"commands": [
-					{ "if": "{{ FLAGS.force }} == true", "then": ["rm -rf target"], "ignoreErrors": true }
+					{ "if": "{{ FLAG.force }} == true", "then": ["rm -rf target"], "ignoreErrors": true }
 				]
 			}
 		}
@@ -2392,7 +2444,7 @@ fn parse_if_block_then_as_string_shorthand() {
 		"targets": {
 			"deploy": {
 				"commands": [
-					{ "if": "{{ ARGS.env }} == production", "then": "./deploy-prod.sh" }
+					{ "if": "{{ ARG.env }} == production", "then": "./deploy-prod.sh" }
 				]
 			}
 		}
@@ -2414,7 +2466,7 @@ fn parse_if_block_else_as_string_shorthand() {
 		"targets": {
 			"deploy": {
 				"commands": [
-					{ "if": "{{ ARGS.dry-run }}", "then": "echo would deploy", "else": "./deploy.sh" }
+					{ "if": "{{ ARG.dry-run }}", "then": "echo would deploy", "else": "./deploy.sh" }
 				]
 			}
 		}
@@ -2439,8 +2491,8 @@ fn parse_if_block_mixed_string_then_array_else() {
 		"targets": {
 			"t": {
 				"commands": [
-					{ "if": "{{ ARGS.x }}", "then": "echo a", "else": ["echo b", "echo c"] },
-					{ "if": "{{ ARGS.y }}", "then": ["echo d", "echo e"], "else": "echo f" }
+					{ "if": "{{ ARG.x }}", "then": "echo a", "else": ["echo b", "echo c"] },
+					{ "if": "{{ ARG.y }}", "then": ["echo d", "echo e"], "else": "echo f" }
 				]
 			}
 		}
@@ -2617,7 +2669,7 @@ fn parse_when_on_for_block() {
 		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"t": { "commands": [
-				{ "when": "failure", "for": "f", "glob": "logs/*", "do": ["cat {{ VARS.f }}"] }
+				{ "when": "failure", "for": "f", "glob": "logs/*", "do": ["cat {{ VAR.f }}"] }
 			] }
 		}
 	}"#;
@@ -2734,7 +2786,7 @@ fn parse_target_call_inside_if_branches() {
 			"dev-deploy": { "commands": ["echo dev"] },
 			"deploy": {
 				"commands": [
-					{ "if": "{{ ARGS.env }} == production", "then": "@prod-deploy", "else": "@dev-deploy" }
+					{ "if": "{{ ARG.env }} == production", "then": "@prod-deploy", "else": "@dev-deploy" }
 				]
 			}
 		}
@@ -2757,7 +2809,7 @@ fn parse_target_call_inside_for_body() {
 			"build": { "commands": ["echo build"] },
 			"matrix": {
 				"commands": [
-					{ "for": "v", "in": ["1", "2"], "do": ["@build --version {{ VARS.v }}"] }
+					{ "for": "v", "in": ["1", "2"], "do": ["@build --version {{ VAR.v }}"] }
 				]
 			}
 		}
@@ -2765,7 +2817,7 @@ fn parse_target_call_inside_for_body() {
 	let rf = parse_runfile(json).unwrap();
 	if let CommandStep::For(for_step) = &rf.targets["matrix"].commands[0] {
 		assert!(
-			matches!(&for_step.body[0], CommandStep::TargetCall(c) if c.target == "build" && c.args_template == "--version {{ VARS.v }}")
+			matches!(&for_step.body[0], CommandStep::TargetCall(c) if c.target == "build" && c.args_template == "--version {{ VAR.v }}")
 		);
 	} else {
 		panic!("expected For");
@@ -2843,7 +2895,7 @@ fn parse_if_block_string_then_rejects_object() {
 		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
-				{ "if": "{{ ARGS.x }}", "then": { "if": "true", "then": [] } }
+				{ "if": "{{ ARG.x }}", "then": { "if": "true", "then": [] } }
 			] }
 		}
 	}"#;
@@ -2856,7 +2908,7 @@ fn parse_if_block_empty_then_allowed() {
 		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"noop": { "commands": [
-				{ "if": "{{ ARGS.x }}", "then": [] }
+				{ "if": "{{ ARG.x }}", "then": [] }
 			] }
 		}
 	}"#;
@@ -2909,7 +2961,7 @@ fn parse_for_in_block() {
 		"targets": {
 			"build_each": {
 				"commands": [
-					{ "for": "service", "in": ["api", "web"], "do": ["echo {{ VARS.service }}"] }
+					{ "for": "service", "in": ["api", "web"], "do": ["echo {{ VAR.service }}"] }
 				]
 			}
 		}
@@ -2934,7 +2986,7 @@ fn parse_for_do_accepts_single_string() {
 		"targets": {
 			"each": {
 				"commands": [
-					{ "for": "x", "in": ["a", "b"], "do": "echo {{ VARS.x }}" }
+					{ "for": "x", "in": ["a", "b"], "do": "echo {{ VAR.x }}" }
 				]
 			}
 		}
@@ -2942,7 +2994,7 @@ fn parse_for_do_accepts_single_string() {
 	let rf = parse_runfile(json).unwrap();
 	if let CommandStep::For(for_step) = &rf.targets["each"].commands[0] {
 		assert_eq!(for_step.body.len(), 1);
-		assert_eq!(for_step.body[0], "echo {{ VARS.x }}");
+		assert_eq!(for_step.body[0], "echo {{ VAR.x }}");
 	} else {
 		panic!("expected For block");
 	}
@@ -2957,7 +3009,7 @@ fn parse_for_in_namespaces_magic_string() {
 		"targets": {
 			"build_all": {
 				"commands": [
-					{ "for": "ns", "in": "namespaces", "do": "@{{ VARS.ns }}:build" }
+					{ "for": "ns", "in": "namespaces", "do": "@{{ VAR.ns }}:build" }
 				]
 			}
 		}
@@ -2966,7 +3018,7 @@ fn parse_for_in_namespaces_magic_string() {
 	if let CommandStep::For(for_step) = &rf.targets["build_all"].commands[0] {
 		assert_eq!(for_step.var, "ns");
 		assert_eq!(for_step.r#in.as_ref().unwrap(), &crate::ForInValue::Namespaces);
-		// Body's "@{{ VARS.ns }}:build" string starts with @, so it parses as a target call
+		// Body's "@{{ VAR.ns }}:build" string starts with @, so it parses as a target call
 		// with an empty target (the namespace is filled in at runtime).
 		assert_eq!(for_step.body.len(), 1);
 	} else {
@@ -2983,7 +3035,7 @@ fn parse_for_in_array_still_works_alongside_magic_string() {
 		"targets": {
 			"each": {
 				"commands": [
-					{ "for": "x", "in": ["a", "b", "c"], "do": "echo {{ VARS.x }}" }
+					{ "for": "x", "in": ["a", "b", "c"], "do": "echo {{ VAR.x }}" }
 				]
 			}
 		}
@@ -3063,7 +3115,7 @@ fn parse_for_glob_block() {
 		"targets": {
 			"fmt": {
 				"commands": [
-					{ "for": "f", "glob": "src/**/*.rs", "do": ["rustfmt {{ VARS.f }}"] }
+					{ "for": "f", "glob": "src/**/*.rs", "do": ["rustfmt {{ VAR.f }}"] }
 				]
 			}
 		}
@@ -3083,7 +3135,7 @@ fn parse_for_shell_block() {
 		"targets": {
 			"check": {
 				"commands": [
-					{ "for": "f", "shell": "git diff --name-only", "do": ["echo {{ VARS.f }}"] }
+					{ "for": "f", "shell": "git diff --name-only", "do": ["echo {{ VAR.f }}"] }
 				]
 			}
 		}
@@ -3102,7 +3154,7 @@ fn parse_for_rejects_no_iterator() {
 		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
-				{ "for": "x", "do": ["echo {{ VARS.x }}"] }
+				{ "for": "x", "do": ["echo {{ VAR.x }}"] }
 			] }
 		}
 	}"#;
@@ -3147,7 +3199,7 @@ fn parse_for_with_parallel_flag() {
 		"targets": {
 			"par": {
 				"commands": [
-					{ "for": "x", "in": ["1","2","3"], "parallel": true, "do": ["sleep {{ VARS.x }}"] }
+					{ "for": "x", "in": ["1","2","3"], "parallel": true, "do": ["sleep {{ VAR.x }}"] }
 				]
 			}
 		}
@@ -3168,11 +3220,11 @@ fn parse_nested_control_flow() {
 			"complex": {
 				"commands": [
 					{ "for": "svc", "in": ["api","web"], "do": [
-						{ "if": "{{ VARS.svc }} == api", "then": [
+						{ "if": "{{ VAR.svc }} == api", "then": [
 							"echo building api",
-							{ "for": "stage", "in": ["lint","test","build"], "do": ["echo api {{ VARS.stage }}"] }
+							{ "for": "stage", "in": ["lint","test","build"], "do": ["echo api {{ VAR.stage }}"] }
 						], "else": [
-							"echo building {{ VARS.svc }}"
+							"echo building {{ VAR.svc }}"
 						] }
 					] }
 				]
@@ -3188,7 +3240,7 @@ fn parse_unknown_control_flow_field_rejected() {
 		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
-				{ "if": "{{ ARGS.x }}", "then": [], "extraField": 1 }
+				{ "if": "{{ ARG.x }}", "then": [], "extraField": 1 }
 			] }
 		}
 	}"#;
@@ -3218,7 +3270,7 @@ fn parse_control_flow_inside_when_block() {
 		"targets": {
 			"deploy": {
 				"commands": [
-					{ "if": "{{ ARGS.skip-tests }}", "then": ["echo skipping"], "else": ["./test.sh"] },
+					{ "if": "{{ ARG.skip-tests }}", "then": ["echo skipping"], "else": ["./test.sh"] },
 					"echo deploying"
 				]
 			}
@@ -3250,9 +3302,9 @@ fn walk_step_templates_visits_all_string_payloads() {
 			"x": {
 				"commands": [
 					"echo top",
-					{ "if": "{{ ARGS.flag }}", "then": ["echo then1", "echo then2"], "else": ["echo else1"] },
-					{ "for": "x", "in": ["a","b"], "do": ["echo {{ VARS.x }}"] },
-					{ "for": "f", "glob": "*.rs", "do": ["rustfmt {{ VARS.f }}"] }
+					{ "if": "{{ ARG.flag }}", "then": ["echo then1", "echo then2"], "else": ["echo else1"] },
+					{ "for": "x", "in": ["a","b"], "do": ["echo {{ VAR.x }}"] },
+					{ "for": "f", "glob": "*.rs", "do": ["rustfmt {{ VAR.f }}"] }
 				]
 			}
 		}
@@ -3262,15 +3314,15 @@ fn walk_step_templates_visits_all_string_payloads() {
 	walk_step_templates(&rf.targets["x"].commands, &mut |t| seen.push(t.to_string()));
 
 	assert!(seen.contains(&"echo top".to_string()));
-	assert!(seen.contains(&"{{ ARGS.flag }}".to_string()));
+	assert!(seen.contains(&"{{ ARG.flag }}".to_string()));
 	assert!(seen.contains(&"echo then1".to_string()));
 	assert!(seen.contains(&"echo then2".to_string()));
 	assert!(seen.contains(&"echo else1".to_string()));
 	assert!(seen.contains(&"a".to_string()));
 	assert!(seen.contains(&"b".to_string()));
-	assert!(seen.contains(&"echo {{ VARS.x }}".to_string()));
+	assert!(seen.contains(&"echo {{ VAR.x }}".to_string()));
 	assert!(seen.contains(&"*.rs".to_string()));
-	assert!(seen.contains(&"rustfmt {{ VARS.f }}".to_string()));
+	assert!(seen.contains(&"rustfmt {{ VAR.f }}".to_string()));
 }
 
 #[test]
@@ -3281,16 +3333,19 @@ fn walk_spec_aux_templates_visits_all_substitutable_fields() {
 			"x": {
 				"commands": ["echo go"],
 				"env": {
-					"A": "{{ ARGS.a }}",
-					"B": "{{ FLAGS.b }}",
+					"A": "{{ ARG.a }}",
+					"B": "{{ FLAG.b }}",
 					"N": 42,
 					"BL": true
 				},
+				"vars": {
+					"V": "{{ ARG.vararg }}"
+				},
 				"envFiles": [".env.{{ RUN.os }}", ".env"],
-				"forceShell": "{{ ARGS.shell ? 'bash' }}",
-				"addToPath": ["bin/{{ ARGS.profile }}"],
-				"workingDirectory": "{{ ARGS.dir ? RUN.parent }}",
-				"confirm": "Run with {{ ARGS.env }}?",
+				"forceShell": "{{ ARG.shell ? 'bash' }}",
+				"addToPath": ["bin/{{ ARG.profile }}"],
+				"workingDirectory": "{{ ARG.dir ? RUN.parent }}",
+				"confirm": "Run with {{ ARG.env }}?",
 				"extendStdio": [{ "fromFile": "logs/{{ RUN.os }}.log", "stream": "stdout" }]
 			}
 		}
@@ -3303,26 +3358,29 @@ fn walk_spec_aux_templates_visits_all_substitutable_fields() {
 	assert!(!seen.iter().any(|s| s == "echo go"));
 
 	// env values: only string variants are visited (numbers/bools have no templates).
-	assert!(seen.iter().any(|s| s == "{{ ARGS.a }}"));
-	assert!(seen.iter().any(|s| s == "{{ FLAGS.b }}"));
+	assert!(seen.iter().any(|s| s == "{{ ARG.a }}"));
+	assert!(seen.iter().any(|s| s == "{{ FLAG.b }}"));
 	assert!(!seen.iter().any(|s| s == "42"));
 	assert!(!seen.iter().any(|s| s == "true"));
 
+	// vars values are visited too, so arg-usage scanning sees their references.
+	assert!(seen.iter().any(|s| s == "{{ ARG.vararg }}"));
+
 	assert!(seen.iter().any(|s| s == ".env.{{ RUN.os }}"));
 	assert!(seen.iter().any(|s| s == ".env"));
-	assert!(seen.iter().any(|s| s == "{{ ARGS.shell ? 'bash' }}"));
-	assert!(seen.iter().any(|s| s == "bin/{{ ARGS.profile }}"));
-	assert!(seen.iter().any(|s| s == "{{ ARGS.dir ? RUN.parent }}"));
-	assert!(seen.iter().any(|s| s == "Run with {{ ARGS.env }}?"));
+	assert!(seen.iter().any(|s| s == "{{ ARG.shell ? 'bash' }}"));
+	assert!(seen.iter().any(|s| s == "bin/{{ ARG.profile }}"));
+	assert!(seen.iter().any(|s| s == "{{ ARG.dir ? RUN.parent }}"));
+	assert!(seen.iter().any(|s| s == "Run with {{ ARG.env }}?"));
 	assert!(seen.iter().any(|s| s == "logs/{{ RUN.os }}.log"));
 }
 
 #[test]
 fn parse_dsl_features_all_supported() {
 	let conditions = [
-		"{{ ARGS.x }}",
-		"{{ ARGS.x }} == y",
-		"{{ ARGS.x }} != y",
+		"{{ ARG.x }}",
+		"{{ ARG.x }} == y",
+		"{{ ARG.x }} != y",
 		"a == b && c == d",
 		"a == b || c == d",
 		"!a",
@@ -3330,7 +3388,7 @@ fn parse_dsl_features_all_supported() {
 		"!(a == b)",
 		"(a && b) || c",
 		"a || (b && c)",
-		"{{ ARGS.x ? 'default' }} == foo",
+		"{{ ARG.x ? 'default' }} == foo",
 		"{{ ENV.HOME }} != \"\"",
 	];
 	for c in conditions {
@@ -3367,14 +3425,14 @@ fn parse_optional_target_call_marker() {
 
 #[test]
 fn parse_optional_target_call_with_dynamic_name() {
-	// `@?{{ VARS.ns }}:build` is the canonical use case — combine optional with
+	// `@?{{ VAR.ns }}:build` is the canonical use case — combine optional with
 	// runtime substitution. The `?` is stripped, leaving the substitutable name.
 	let json = r#"{
 		"$schema": "x",
 		"targets": {
 			"a": {
 				"commands": [
-					{ "for": "ns", "in": "namespaces", "do": "@?{{ VARS.ns }}:build" }
+					{ "for": "ns", "in": "namespaces", "do": "@?{{ VAR.ns }}:build" }
 				]
 			}
 		}
@@ -3382,7 +3440,7 @@ fn parse_optional_target_call_with_dynamic_name() {
 	let rf = parse_runfile(json).unwrap();
 	if let CommandStep::For(for_step) = &rf.targets["a"].commands[0] {
 		if let CommandStep::TargetCall(call) = &for_step.body[0] {
-			assert_eq!(call.target, "{{ VARS.ns }}:build");
+			assert_eq!(call.target, "{{ VAR.ns }}:build");
 			assert!(call.optional);
 		} else {
 			panic!("expected TargetCall in for body");
@@ -3515,7 +3573,7 @@ fn parse_match_block() {
 			"emulate": {
 				"commands": [
 					{
-						"match": "{{ ARGS.tier }}",
+						"match": "{{ ARG.tier }}",
 						"cases": {
 							"1": "echo tier 1",
 							"2": ["echo tier 2", "echo two"]
@@ -3527,7 +3585,7 @@ fn parse_match_block() {
 	}"#;
 	let rf = parse_runfile(json).unwrap();
 	if let CommandStep::Match(m) = &rf.targets["emulate"].commands[0] {
-		assert_eq!(m.r#match, "{{ ARGS.tier }}");
+		assert_eq!(m.r#match, "{{ ARG.tier }}");
 		assert_eq!(m.cases.len(), 2);
 		assert_eq!(m.cases["1"], vec![CommandStep::shell("echo tier 1")]);
 		assert_eq!(
@@ -3549,7 +3607,7 @@ fn parse_match_with_default_and_target_call() {
 			"dispatch": {
 				"commands": [
 					{
-						"match": "{{ ARGS.mode ? 'prod' }}",
+						"match": "{{ ARG.mode ? 'prod' }}",
 						"cases": {
 							"prod": "@a",
 							"dev": ["echo dev"]
@@ -3562,7 +3620,7 @@ fn parse_match_with_default_and_target_call() {
 	}"#;
 	let rf = parse_runfile(json).unwrap();
 	if let CommandStep::Match(m) = &rf.targets["dispatch"].commands[0] {
-		assert_eq!(m.r#match, "{{ ARGS.mode ? 'prod' }}");
+		assert_eq!(m.r#match, "{{ ARG.mode ? 'prod' }}");
 		// String case "prod" parsed as `@a` → TargetCall.
 		assert!(matches!(&m.cases["prod"][0], CommandStep::TargetCall(c) if c.target == "a"));
 		let default = m.default.as_ref().expect("default should be set");
@@ -3580,7 +3638,7 @@ fn parse_match_when_and_ignore_errors() {
 			"t": {
 				"commands": [
 					{
-						"match": "{{ ARGS.x }}",
+						"match": "{{ ARG.x }}",
 						"cases": { "a": "echo a" },
 						"when": "always",
 						"ignoreErrors": true
@@ -3621,7 +3679,7 @@ fn parse_match_no_cases_no_default_rejected() {
 		"targets": {
 			"t": {
 				"commands": [
-					{ "match": "{{ ARGS.x }}", "cases": {} }
+					{ "match": "{{ ARG.x }}", "cases": {} }
 				]
 			}
 		}
@@ -3639,7 +3697,7 @@ fn parse_match_default_only_is_allowed() {
 		"targets": {
 			"t": {
 				"commands": [
-					{ "match": "{{ ARGS.x ? 'y' }}", "cases": {}, "default": "echo y" }
+					{ "match": "{{ ARG.x ? 'y' }}", "cases": {}, "default": "echo y" }
 				]
 			}
 		}
@@ -3661,7 +3719,7 @@ fn parse_match_unknown_field_rejected() {
 		"targets": {
 			"t": {
 				"commands": [
-					{ "match": "{{ ARGS.x }}", "cases": { "a": "echo a" }, "extra": true }
+					{ "match": "{{ ARG.x }}", "cases": { "a": "echo a" }, "extra": true }
 				]
 			}
 		}
@@ -3678,7 +3736,7 @@ fn parse_match_round_trips_through_serde() {
 			"t": {
 				"commands": [
 					{
-						"match": "{{ ARGS.x }}",
+						"match": "{{ ARG.x }}",
 						"cases": { "a": "echo a", "b": ["echo b1", "echo b2"] },
 						"default": "echo other"
 					}
@@ -3689,7 +3747,7 @@ fn parse_match_round_trips_through_serde() {
 	let rf = parse_runfile(json).unwrap();
 	let serialized = serde_json::to_string(&rf).unwrap();
 	assert!(
-		serialized.contains("\"match\":\"{{ ARGS.x }}\""),
+		serialized.contains("\"match\":\"{{ ARG.x }}\""),
 		"serialized: {serialized}"
 	);
 	let rf2 = parse_runfile(&serialized).unwrap();
@@ -3700,16 +3758,16 @@ fn parse_match_round_trips_through_serde() {
 fn match_walks_templates_inside_cases_and_default() {
 	// `walk_step_templates` should visit the match template, every case body,
 	// and the default body so static analysis (arg-usage scanning) sees
-	// `{{ ARGS.* }}` references inside them.
+	// `{{ ARG.* }}` references inside them.
 	let json = r#"{
 		"$schema": "x",
 		"targets": {
 			"t": {
 				"commands": [
 					{
-						"match": "{{ ARGS.tier }}",
-						"cases": { "1": "echo {{ ARGS.foo }}" },
-						"default": "echo {{ ARGS.bar }}"
+						"match": "{{ ARG.tier }}",
+						"cases": { "1": "echo {{ ARG.foo }}" },
+						"default": "echo {{ ARG.bar }}"
 					}
 				]
 			}
@@ -3718,9 +3776,9 @@ fn match_walks_templates_inside_cases_and_default() {
 	let rf = parse_runfile(json).unwrap();
 	let mut seen: Vec<String> = Vec::new();
 	walk_step_templates(&rf.targets["t"].commands, &mut |t| seen.push(t.to_string()));
-	assert!(seen.iter().any(|s| s == "{{ ARGS.tier }}"), "saw: {seen:?}");
-	assert!(seen.iter().any(|s| s == "echo {{ ARGS.foo }}"), "saw: {seen:?}");
-	assert!(seen.iter().any(|s| s == "echo {{ ARGS.bar }}"), "saw: {seen:?}");
+	assert!(seen.iter().any(|s| s == "{{ ARG.tier }}"), "saw: {seen:?}");
+	assert!(seen.iter().any(|s| s == "echo {{ ARG.foo }}"), "saw: {seen:?}");
+	assert!(seen.iter().any(|s| s == "echo {{ ARG.bar }}"), "saw: {seen:?}");
 }
 
 // ── Metadata field tests ──────────────────────────────────────────

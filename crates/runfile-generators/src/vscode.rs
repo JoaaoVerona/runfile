@@ -97,13 +97,13 @@ pub fn merge_vscode_tasks(existing: &mut VsCodeTasksFile, generated: Vec<VsCodeT
 fn build_vscode_task(label: &str, target_name: &str, spec: &CommandSpec) -> VsCodeTask {
 	let mut uses_args = false;
 	runfile_parser::walk_step_templates(&spec.commands, &mut |t| {
-		if t.contains("{{ ARGS }}") || t.contains("{{ ARGS.") {
+		if t.contains("{{ ARGS }}") || t.contains("{{ ARG.") {
 			uses_args = true;
 		}
 	});
 
-	// `--stdin-args` lets the user fill in any unsupplied {{ ARGS.x }} /
-	// {{ ENV.X }} / {{ FLAGS.x }} value at the integrated terminal prompt. It
+	// `--stdin-args` lets the user fill in any unsupplied {{ ARG.x }} /
+	// {{ ENV.X }} / {{ FLAG.x }} value at the integrated terminal prompt. It
 	// composes with `${input:args}` (which still works for callers who
 	// already know what to pass): provided values skip the prompt, missing
 	// ones fire it. No-op when nothing's missing.

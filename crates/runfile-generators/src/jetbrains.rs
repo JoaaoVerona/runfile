@@ -102,8 +102,8 @@ fn sanitize_file_name(name: &str) -> String {
 }
 
 fn build_jetbrains_run_config(config_name: &str, target_name: &str) -> String {
-	// `--stdin-args` makes Runfile prompt for any unsupplied {{ ARGS.x }} /
-	// {{ ENV.X }} / {{ FLAGS.x }} value via stdin. Run configurations are static
+	// `--stdin-args` makes Runfile prompt for any unsupplied {{ ARG.x }} /
+	// {{ ENV.X }} / {{ FLAG.x }} value via stdin. Run configurations are static
 	// (no per-invocation parameter UI), so without the flag a target with a
 	// required arg would just fail. The flag is a no-op when nothing's
 	// missing, so it's safe to always include.

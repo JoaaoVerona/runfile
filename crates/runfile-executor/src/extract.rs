@@ -174,7 +174,7 @@ impl ExtractContext<'_> {
 /// - `if` blocks evaluate the condition against the same context the runner
 ///   would see (args + resolved env + loop scope) and emit only the matching
 ///   branch.
-/// - `for in` blocks expand each literal iteration with `{{ VARS.var }}` resolved
+/// - `for in` blocks expand each literal iteration with `{{ VAR.var }}` resolved
 ///   (and `for in: "namespaces"` snapshots the merged Runfile's namespace list).
 /// - `for glob` blocks expand against the filesystem at extract time — the
 ///   walker is read-only, so previewing iteration values is safe and lets
@@ -255,9 +255,16 @@ fn extract_recursive_inner(
 	)?;
 	check_env_case_duplicates(&env)?;
 
+	// Apply the target's declared `vars` so `{{ VAR.* }}` references resolve in
+	// the dry-run output exactly as they would at runtime. The guard restores
+	// prior values when it drops at the end of this function — matching the
+	// per-target scoping the real executor applies, so a parent's vars don't
+	// bleed into a sibling extract and a child's don't leak back up.
+	let _vars_guard = crate::executor::DeclaredVarsGuard::apply(spec, args, &env)?;
+
 	// Show only the spec-defined env keys (not envFiles or system env), but
-	// pull the resolved values from the fully-built env so `{{ FLAGS.x }}`,
-	// `{{ ARGS.x }}`, `{{ ENV.x }}`, etc. references are substituted instead of
+	// pull the resolved values from the fully-built env so `{{ FLAG.x }}`,
+	// `{{ ARG.x }}`, `{{ ENV.x }}`, etc. references are substituted instead of
 	// printed literally.
 	let extra_env: Vec<(String, String)> = if let Some(spec_env) = &spec.env {
 		let mut pairs: Vec<(String, String)> = spec_env
@@ -362,7 +369,7 @@ fn walk_extract_steps(
 			}
 			CommandStep::TargetCall(call) => {
 				// Substitute the target name first so dynamic patterns like
-				// `@{{ VARS.ns }}:dev` resolve to the namespace's concrete target.
+				// `@{{ VAR.ns }}:dev` resolve to the namespace's concrete target.
 				let resolved = args.substitute(&call.target, env)?;
 
 				let canonical = match ctx.runfile.resolve_target(&resolved) {
@@ -458,7 +465,7 @@ fn walk_extract_steps(
 							// `--dry-run` is a read-only preview and shell
 							// iterators can have side effects (process spawn,
 							// mutated state, slow I/O). Bind a placeholder so
-							// `{{ VARS.<var> }}` references inside the body still
+							// `{{ VAR.<var> }}` references inside the body still
 							// resolve, and emit the body once.
 							guard.set(format!("<{var}>"));
 							walk_extract_steps(ctx, body, args, env, extra_env, working_dir, out)?;

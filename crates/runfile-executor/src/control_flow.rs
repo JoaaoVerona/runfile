@@ -13,8 +13,8 @@
 //!
 //! `for`-loops write their iteration variable into the run-wide `VARS` map
 //! via [`LoopVarGuard`] (in `args`), so the body of a `for x in [...]` block
-//! reads the current iteration value as `{{ VARS.x }}`. The guard restores
-//! the prior value of `VARS.x` (if any) when the loop ends.
+//! reads the current iteration value as `{{ VAR.x }}`. The guard restores
+//! the prior value of `VAR.x` (if any) when the loop ends.
 
 use crate::args::{LoopVarGuard, RunArgs, SubstitutionError};
 use globset::{Glob, GlobSetBuilder};
@@ -80,7 +80,7 @@ fn resolve_value(value: &DslValue, args: &RunArgs, env: &HashMap<String, String>
 
 /// Truthiness rule: only the empty string is falsy. Every other string is
 /// truthy. This matches the values that raw shell commands see when they
-/// receive a `{{ ... }}` substitution. In particular, `{{ FLAGS.x }}` resolves
+/// receive a `{{ ... }}` substitution. In particular, `{{ FLAG.x }}` resolves
 /// to either `"true"` or `"false"` — both non-empty — so users must compare
 /// flags explicitly with `== true` / `== false`.
 fn is_truthy(s: &str) -> bool {
@@ -139,21 +139,21 @@ pub fn evaluate(expr: &DslExpr, args: &RunArgs, env: &HashMap<String, String>) -
 /// The strict rule keeps `if` blocks honest: a condition that produces
 /// e.g. `"True"`, `"yes"`, or `"hello"` is almost always a bug — usually
 /// a missing comparison or quoted literal. Wrap the whole condition in
-/// a DSL block (`{{ ARGS.x == 'value' }}`) so the result is guaranteed to
+/// a DSL block (`{{ ARG.x == 'value' }}`) so the result is guaranteed to
 /// be `"true"` / `"false"`, or compare explicitly.
 ///
 /// Examples that evaluate to `true`:
-/// - `if: "{{ ARGS.env == 'prod' }}"` (when ARGS.env is "prod")
+/// - `if: "{{ ARG.env == 'prod' }}"` (when ARG.env is "prod")
 /// - `if: "true"` (literal)
-/// - `if: "{{ ARGS.x }}"` ONLY if ARGS.x is exactly the string `"true"`
+/// - `if: "{{ ARG.x }}"` ONLY if ARG.x is exactly the string `"true"`
 ///
 /// Examples that evaluate to `false` (no error):
 /// - `if: "false"` (literal)
-/// - `if: "{{ ARGS.x ? '' }}"` when ARGS.x is missing (resolves to empty)
+/// - `if: "{{ ARG.x ? '' }}"` when ARG.x is missing (resolves to empty)
 ///
 /// Examples that ERROR:
 /// - `if: "TRUE"` (only `"true"` is recognised — case-sensitive)
-/// - `if: "1"`, `if: "yes"`, `if: "{{ ARGS.x }}"` when ARGS.x is "hello"
+/// - `if: "1"`, `if: "yes"`, `if: "{{ ARG.x }}"` when ARG.x is "hello"
 pub fn evaluate_if_condition(
 	if_step: &IfStep,
 	args: &RunArgs,
@@ -184,7 +184,7 @@ pub fn expand_for_iterations(
 		Some(ForInValue::Literal(items)) => {
 			// Substitute every element. Outer-loop variables ARE visible (this
 			// resolves at the time the `for` block is entered) — outer loops
-			// have already written their var into VARS.
+			// have already written their var into VAR.
 			let mut result = Vec::with_capacity(items.len());
 			for item in items {
 				result.push(args.substitute(item, env)?);

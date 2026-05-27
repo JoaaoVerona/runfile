@@ -27,7 +27,7 @@ pub struct Cli {
 	#[arg(long = "dry-run")]
 	dry_run: bool,
 
-	/// Prompt for any missing {{ ARGS.x }} / {{ ENV.X }} / {{ FLAGS.x }} values via stdin
+	/// Prompt for any missing {{ ARG.x }} / {{ ENV.X }} / {{ FLAG.x }} values via stdin
 	/// instead of failing
 	#[arg(long = "stdin-args")]
 	stdin_args: bool,

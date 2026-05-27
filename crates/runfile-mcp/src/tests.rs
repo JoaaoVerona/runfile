@@ -71,7 +71,7 @@ fn build_tools_target_with_named_args_has_explicit_properties() {
 	let runfile = make_runfile(vec![(
 		"deploy",
 		simple_spec(
-			vec!["deploy --env={{ ARGS.env }} --region={{ ARGS.region ? us-east-1 }}"],
+			vec!["deploy --env={{ ARG.env }} --region={{ ARG.region ? us-east-1 }}"],
 			None,
 		),
 	)]);
@@ -93,7 +93,7 @@ fn build_tools_target_with_named_args_has_explicit_properties() {
 fn build_tools_target_with_flags_has_boolean_properties() {
 	let runfile = make_runfile(vec![(
 		"build",
-		simple_spec(vec!["cargo build {{ FLAGS.release ? --release : }}"], None),
+		simple_spec(vec!["cargo build {{ FLAG.release ? --release : }}"], None),
 	)]);
 	let tools = build_tool_defs(&runfile);
 	let schema = &tools[0].input_schema;
@@ -105,7 +105,7 @@ fn build_tools_target_with_flags_has_boolean_properties() {
 fn build_tools_target_with_positional_and_named_args() {
 	let runfile = make_runfile(vec![(
 		"run",
-		simple_spec(vec!["app --env={{ ARGS.env }} {{ ARGS }}"], None),
+		simple_spec(vec!["app --env={{ ARG.env }} {{ ARGS }}"], None),
 	)]);
 	let tools = build_tool_defs(&runfile);
 	let schema = &tools[0].input_schema;
@@ -128,7 +128,7 @@ fn build_tools_target_without_args_has_empty_properties() {
 fn build_tools_args_from_env_values_are_included() {
 	let mut spec = simple_spec(vec!["echo $MY_VAR"], None);
 	let mut env = HashMap::new();
-	env.insert("MY_VAR".to_string(), EnvValue::String("{{ ARGS.config }}".into()));
+	env.insert("MY_VAR".to_string(), EnvValue::String("{{ ARG.config }}".into()));
 	spec.env = Some(env);
 	let runfile = make_runfile(vec![("test", spec)]);
 	let tools = build_tool_defs(&runfile);

@@ -47,6 +47,9 @@ pub enum ParseError {
 	#[error("Invalid environment variable name \"{0}\" in {1}. Names must match [A-Za-z_][A-Za-z0-9_]*.")]
 	InvalidEnvKey(String, String),
 
+	#[error("Invalid variable name \"{0}\" in {1}. Names must match [A-Za-z_][A-Za-z0-9_-]*.")]
+	InvalidVarKey(String, String),
+
 	#[error("Runfile is too large ({0} bytes, maximum is {1} bytes)")]
 	FileTooLarge(u64, u64),
 
@@ -173,6 +176,37 @@ fn validate_env_keys(
 	Ok(())
 }
 
+/// Check whether a string is a valid `vars` key.
+///
+/// Valid names match `[A-Za-z_][A-Za-z0-9_-]*` — the same rule the substitution
+/// layer enforces for `{{ VAR.<name> }}` lookups (hyphens allowed in the tail),
+/// so any declared var key is guaranteed to be referenceable.
+pub fn is_valid_var_key(key: &str) -> bool {
+	let mut chars = key.chars();
+	let Some(first) = chars.next() else {
+		return false;
+	};
+	if !first.is_ascii_alphabetic() && first != '_' {
+		return false;
+	}
+	chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Validate all var keys in an optional vars map.
+fn validate_var_keys(
+	vars: &Option<std::collections::HashMap<String, crate::schema::EnvValue>>,
+	context: &str,
+) -> Result<(), ParseError> {
+	if let Some(map) = vars {
+		for key in map.keys() {
+			if !is_valid_var_key(key) {
+				return Err(ParseError::InvalidVarKey(key.clone(), context.to_string()));
+			}
+		}
+	}
+	Ok(())
+}
+
 /// Recursively validate a slice of [`CommandStep`]s. For [`IfStep`]s, the
 /// condition is parsed and the resulting AST is cached. For [`ForStep`]s,
 /// the iterator-source XOR and variable-name regex are checked. For
@@ -212,7 +246,7 @@ fn validate_when_step(step: &mut WhenStep, context: &str) -> Result<(), ParseErr
 
 /// Walk `s` and check whether any whitespace character appears outside a
 /// `{{ ... }}` substitution block. Used by [`validate_target_call`] so that
-/// `@{{ VARS.ns }}:dev` (which legitimately contains spaces inside `{{ ... }}`)
+/// `@{{ VAR.ns }}:dev` (which legitimately contains spaces inside `{{ ... }}`)
 /// passes validation.
 fn has_unbraced_whitespace(s: &str) -> bool {
 	let bytes = s.as_bytes();
@@ -264,7 +298,7 @@ fn validate_target_call(call: &TargetCallStep, context: &str) -> Result<(), Pars
 		});
 	}
 	// Whitespace inside a `{{ ... }}` substitution is fine (e.g.
-	// `@{{ VARS.ns }}:dev`); we only reject whitespace OUTSIDE substitutions.
+	// `@{{ VAR.ns }}:dev`); we only reject whitespace OUTSIDE substitutions.
 	if has_unbraced_whitespace(&call.target) {
 		return Err(ParseError::InvalidTargetCall {
 			context: context.to_string(),
@@ -419,6 +453,8 @@ fn validate_runfile(runfile: &mut Runfile, require_targets: bool) -> Result<(), 
 
 		// Validate env key names to prevent shell injection
 		validate_env_keys(&spec.env, &format!("target \"{name}\""))?;
+		// Validate var key names so they're guaranteed referenceable as VAR.<key>
+		validate_var_keys(&spec.vars, &format!("target \"{name}\""))?;
 	}
 
 	// Validate aliases
@@ -456,6 +492,8 @@ fn validate_runfile(runfile: &mut Runfile, require_targets: bool) -> Result<(), 
 	if let Some(globals) = runfile.globals.as_mut() {
 		// Validate global env key names
 		validate_env_keys(&globals.env, "(globals)")?;
+		// Validate global var key names
+		validate_var_keys(&globals.vars, "(globals)")?;
 	}
 
 	Ok(())
