@@ -1,0 +1,191 @@
+use super::*;
+
+/// CI-only path for `:env secret-keys add --key <hex>`.
+///
+/// Refuses to run outside a CI environment so dev-machine users don't accidentally bake
+/// their private key into shell history.
+fn add_secret_key_non_interactive(key_hex: &str) {
+	if !ci_detect::is_ci() {
+		eprintln!(
+			"Error: --key is only allowed inside a CI environment.\n\
+			 Run `run :env secret-keys add` interactively on dev machines so the key\n\
+			 doesn't end up in your shell history."
+		);
+		process::exit(1);
+	}
+
+	let key_hex = key_hex.trim().to_string();
+	if key_hex.len() != 64 || hex::decode(&key_hex).is_err() {
+		eprintln!("Error: --key must be a 64-character hex string (256-bit AES key).");
+		process::exit(1);
+	}
+
+	let public_key = runfile_crypto::derive_public_key(&key_hex).unwrap_or_else(|e| {
+		eprintln!("Error deriving public key: {e}");
+		process::exit(1);
+	});
+
+	match keyring_keys::add(&key_hex) {
+		Ok(false) => {
+			println!("Key already registered (public {public_key}).");
+			return;
+		}
+		Err(e) => {
+			eprintln!("Error storing key: {e}");
+			process::exit(1);
+		}
+		Ok(true) => {}
+	}
+
+	println!("Private key added (public {public_key}).");
+}
+
+/// Add a new private key.
+///
+/// If `key_arg` is `Some`, the key is added non-interactively. This path is gated to
+/// CI environments only — running it on a dev machine would risk leaking the private
+/// key into shell history.
+///
+/// If `key_arg` is `None`, prompts the user to either generate a new key or paste an
+/// existing one.
+pub fn cmd_secret_keys_add(key_arg: Option<&str>) {
+	use std::io::{self, BufRead, Write};
+
+	if let Some(key_hex) = key_arg {
+		add_secret_key_non_interactive(key_hex);
+		return;
+	}
+
+	// Prompt user for choice
+	eprintln!("How would you like to add a secret key?");
+	eprintln!();
+	eprintln!("  1) Generate a new private key");
+	eprintln!("  2) Import an existing private key");
+	eprintln!();
+	eprint!("Enter choice (1 or 2): ");
+	io::stderr().flush().unwrap_or(());
+
+	let stdin = io::stdin();
+	let mut choice = String::new();
+	if stdin.lock().read_line(&mut choice).is_err() {
+		eprintln!("Error reading input.");
+		process::exit(1);
+	}
+
+	let key_hex = match choice.trim() {
+		"1" => runfile_crypto::generate_key(),
+		"2" => {
+			eprint!("Paste your private key (64-character hex string): ");
+			io::stderr().flush().unwrap_or(());
+
+			let mut key_input = String::new();
+			if stdin.lock().read_line(&mut key_input).is_err() {
+				eprintln!("Error reading input.");
+				process::exit(1);
+			}
+			let k = key_input.trim().to_string();
+			if k.len() != 64 || hex::decode(&k).is_err() {
+				eprintln!("Error: key must be a 64-character hex string (256-bit AES key).");
+				process::exit(1);
+			}
+			k
+		}
+		_ => {
+			eprintln!("Invalid choice. Please enter 1 or 2.");
+			process::exit(1);
+		}
+	};
+
+	let public_key = runfile_crypto::derive_public_key(&key_hex).unwrap_or_else(|e| {
+		eprintln!("Error deriving public key: {e}");
+		process::exit(1);
+	});
+
+	match keyring_keys::add(&key_hex) {
+		Ok(false) => {
+			eprintln!("Key already exists.");
+			process::exit(1);
+		}
+		Err(e) => {
+			eprintln!("Error storing key: {e}");
+			process::exit(1);
+		}
+		Ok(true) => {}
+	}
+
+	println!();
+	println!("Private key added.");
+	println!("  Stored in: OS credential store");
+	println!("  Public:    {public_key}");
+	println!();
+	println!("Add this to your encrypted .env files:");
+	println!("  {}={public_key}", runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR);
+}
+
+/// List all stored keys showing public key fingerprints.
+pub fn cmd_secret_keys_list() {
+	let fingerprints = match keyring_keys::list_fingerprints() {
+		Ok(fps) => fps,
+		Err(e) => {
+			eprintln!("Error reading keyring: {e}");
+			process::exit(1);
+		}
+	};
+
+	if fingerprints.is_empty() {
+		println!("No secret keys configured.");
+		return;
+	}
+
+	for fingerprint in &fingerprints {
+		println!("  {fingerprint}  (secure: OS credential store)");
+	}
+}
+
+/// Remove a private key by matching public key prefix.
+pub fn cmd_secret_keys_remove(public_prefix: &str) {
+	let fingerprint = match keyring_keys::resolve_prefix(public_prefix) {
+		Ok(fp) => fp,
+		Err(e) => {
+			eprintln!("Error: {e}");
+			process::exit(1);
+		}
+	};
+
+	match keyring_keys::remove(&fingerprint) {
+		Ok(true) => {}
+		Ok(false) => {
+			eprintln!("Error: key not found.");
+			process::exit(1);
+		}
+		Err(e) => {
+			eprintln!("Error removing key: {e}");
+			process::exit(1);
+		}
+	}
+
+	println!("Key removed (public: {fingerprint}).");
+}
+
+/// Print the full private key for sharing with teammates.
+/// Takes a public key prefix to identify which key to print.
+pub fn cmd_get_private_key(public_prefix: &str) {
+	let all_keys = keyring_keys::all_private_keys();
+	let matched = match runfile_crypto::find_private_key_by_public_prefix(public_prefix, &all_keys) {
+		Ok(k) => k,
+		Err(e) => {
+			eprintln!("Error: {e}");
+			process::exit(1);
+		}
+	};
+
+	let public_key = runfile_crypto::derive_public_key(&matched).unwrap_or_else(|_| "???".to_string());
+
+	println!("{matched}");
+	eprintln!();
+	eprintln!("  Public key: {public_key}");
+	eprintln!();
+	eprintln!("To import this key on another machine:");
+	eprintln!("  run :env secret-keys add");
+	eprintln!("  (then paste the private key when prompted)");
+}

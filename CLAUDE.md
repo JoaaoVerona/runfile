@@ -279,8 +279,22 @@ crates/
 
 ### runfile-executor
 
-**Files:** `args.rs`, `control_flow.rs`, `env.rs`, `executor.rs`, `force_kill.rs`, `logging.rs`,
-`parallel_output.rs`, `runner.rs`, `stdio_tailer.rs`, `tests.rs`
+**Files:** `args.rs`, `functions.rs`, `dsl_eval.rs`, `control_flow.rs`, `env.rs`, `executor.rs`, `parallel.rs`,
+`force_kill.rs`, `logging.rs`, `parallel_output.rs`, `runner.rs`, `stdio_tailer.rs`, `tests/`
+
+- `functions.rs`: the built-in `{{ funcname(...) }}` registry — `evaluate_function` (the dispatch entry point, called
+  from the chain resolver in `args.rs`) plus its numeric / json / regex / string / shell-quoting helpers. Extracted
+  from `args.rs`; calls back into `crate::args::{evaluate_arg, parse_static_name}` to resolve arguments.
+- `dsl_eval.rs`: boolean-DSL evaluation for `{{ ... }}` bodies containing `==`/`!=`/`&&`/`||`/`!` — `looks_like_dsl`
+  (detection) + `evaluate_dsl_expression` (evaluation to `"true"`/`"false"`). Leaf values resolve through
+  `crate::args::{evaluate_arg, walk_template}`. Extracted from `args.rs`.
+- `parallel.rs`: parallel execution — `ParallelLeaf` collection (`collect_leaves_parallel`) and the concurrent batch
+  runner (`run_parallel_leaves` → `run_parallel_batch` / `run_sequential_leaves`). Extracted from `executor.rs`;
+  borrows `pub(crate)` executor internals (`ExecSetup`, `WalkState`, `ProcessTreeTracker`, `dummy_success_status`,
+  etc.). `execute_parallel*` orchestration entry points stay in `executor.rs`.
+- Test modules live under `tests/` (one file per topic: `functions`, `control_flow_match_parallel`,
+  `extract_tests`, `flags_run_tests`, `parallel`-related, etc.), with shared helpers (`get_test_shell`,
+  `json_escape_path`, `parse_target`) in `tests/mod.rs`.
 
 - `RunArgs`: parses CLI args into positional (`{{ ARGS }}`) and named (`--key=value`). Carries a `run_context: RunContext`
   field used to resolve `{{ RUN.* }}` substitutions; populated by the CLI via `RunArgs::parse(...).with_run_context(...)`.
@@ -783,7 +797,10 @@ crates/
   private `effective_file()`) and applied by `resolve_runfile_path`, `resolve_and_merge`, `cmd_list_targets` (in
   `completions.rs`), and `cmd_mcp_server`. Empty string is treated as unset. When set, the path is required to exist
   (or be a registered path alias) — no fallback to discovery — so misconfigured CI fails fast. `-f` always wins.
-- `RUNFILE_ENV_FILE_TARGET` env var: complement of `RUNFILE_TARGET` for `:env` commands. Defined in `cmd_env.rs`
+- The `:env` command lives in the `cmd_env/` module: `mod.rs` (shared helpers, `:env init`/`get`/`set`/`inject`,
+  and the inline tests), `crypt.rs` (`:env decrypt`/`encrypt`/`rotate`), and `secret_keys.rs` (the `secret-keys`
+  subgroup). `mod.rs` re-exports the submodules' `cmd_*` fns so callers keep using `cmd_env::cmd_*`.
+- `RUNFILE_ENV_FILE_TARGET` env var: complement of `RUNFILE_TARGET` for `:env` commands. Defined in `cmd_env/mod.rs`
   (`RUNFILE_ENV_FILE_TARGET_ENV_VAR`, `env_file_target()`). Consumed by **`:env inject`** (when no positional file
   paths are given) and **`:env decrypt`** (when no positional source is given). Empty string is treated as unset.
   There is **no implicit `.env` fallback** anymore — `:env inject` without a positional file and without the env var

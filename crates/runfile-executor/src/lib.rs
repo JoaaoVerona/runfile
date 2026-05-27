@@ -1,10 +1,13 @@
 mod args;
 mod control_flow;
+mod dsl_eval;
 mod env;
 mod executor;
 mod extract;
 mod force_kill;
+mod functions;
 mod logging;
+mod parallel;
 mod parallel_output;
 mod runner;
 mod stdio_tailer;
