@@ -265,19 +265,21 @@ and work as full substitution bodies *or* as chain segments:
   // Built-ins:
   //   case      : to_upper, to_lower, capitalize
   //   trim      : trim, trim_start, trim_end
-  //   inspect   : length, starts_with, ends_with, contains
+  //   inspect   : length, starts_with, ends_with, contains, substring
   //   transform : escape, repeat, replace_all, remove_all
   //   regex     : regex_replace, regex_remove, regex_matches, regex_capture, regex_capture_all
   //   build     : concat, join
   //   split     : nth, first, last, count_parts
-  //   math      : add, subtract, multiply, divide
+  //   path      : basename, dirname, extname, stem, join_path
+  //   math      : add, subtract, multiply, divide, modulo, power, min, max, abs, round, floor, ceil
   //   compare   : less_than, less_than_or_equal, greater_than, greater_than_or_equal, is_number
   //   validate  : one_of
-  //   encoding  : base64_encode, base64_decode
+  //   encoding  : base64_encode, base64_decode, url_encode, url_decode
   //   hashing   : sha256, md5
+  //   ids/time  : uuid, now
   //   files     : read_file, write_file, file_exists
   //   json      : json_get, json_set
-  //   error     : try
+  //   control   : try, error
   //   shell     : shell_quote, capture
   //   variables : define
   //   cwd       : set_cwd
@@ -325,6 +327,25 @@ and work as full substitution bodies *or* as chain segments:
   // "6.1"). Divide-by-zero errors out.
   "echo next-build={{ add(VAR.versionCode, '1') }}",
   "echo half={{ divide(VAR.total, '2') }}",
+  // …plus modulo, power, min, max, abs, round, floor, ceil:
+  "echo shard={{ modulo(ARG.id, '8') }} clamped={{ max('0', min('100', ARG.pct)) }}",
+
+  // Path helpers (std::path semantics). basename/dirname/extname/stem/join_path:
+  "echo name={{ basename(ARG.file) }} ext={{ extname(ARG.file) }}",
+  "cp {{ ARG.file }} {{ join_path(ARG.outdir, basename(ARG.file)) }}",
+
+  // Substring (char-indexed; 3rd arg = length, optional → to end). Short SHA:
+  "echo short={{ substring(capture('git rev-parse HEAD'), '0', '7') }}",
+
+  // Current UTC time. Formats: unix-timestamp, unix-millis, iso, iso-date,
+  // iso-time, rfc3339, year/month/day/hour/minute/second.
+  "echo built-at={{ now('iso') }} tag=build-{{ now('unix-timestamp') }}",
+
+  // UUID (v4-shaped) for unique temp / cache names. `--dry-run` → `<uuid>`.
+  "echo tmp=/tmp/job-{{ uuid() }}",
+
+  // URL percent-encode / decode (space → %20; symmetric round-trip):
+  "curl 'https://api/search?q={{ url_encode(ARG.query) }}'",
 
   // Numeric comparisons — coerce both args to numbers (same rules as the
   // arithmetic family, so non-numeric input errors) and return "true"/"false",
@@ -370,6 +391,12 @@ and work as full substitution bodies *or* as chain segments:
   // `try(expr)` swallows inner errors. Standalone returns "" on failure;
   // chained, the next segment runs as a fallback.
   "echo {{ try(base64_decode(ARG.maybe_b64)) ? ARG.maybe_b64 }}",
+
+  // `error('message')` fails the current command on purpose: prints the
+  // message to stderr and marks the step failed — but the failure flows
+  // through the normal walker, so `when: failure` / `when: always` steps
+  // still run and `ignoreErrors` still suppresses it. Great for guard clauses:
+  // { "if": "{{ ARG.env == 'prod' }}", "then": ["{{ error('refusing to deploy to prod from a laptop') }}"] }
 
   // Nested:
   "echo {{ to_upper(to_lower(ARG.x)) }}",

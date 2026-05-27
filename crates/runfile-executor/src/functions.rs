@@ -625,6 +625,162 @@ pub(crate) fn evaluate_function(
 				.unwrap_or(false);
 			Ok(is_num.to_string())
 		}
+		// ── path helpers (std::path semantics: `/` everywhere, plus `\` on Windows) ──
+		"basename" => {
+			// Final path component (filename). `basename('a/b/c.txt')` → `c.txt`.
+			// Trailing-slash / root paths with no filename → `""`.
+			expect_arity(&call.name, &resolved, 1)?;
+			Ok(std::path::Path::new(&resolved[0])
+				.file_name()
+				.map(|s| s.to_string_lossy().into_owned())
+				.unwrap_or_default())
+		}
+		"dirname" => {
+			// Everything before the final component. `dirname('a/b/c.txt')` → `a/b`.
+			// A bare filename → `""` (no parent).
+			expect_arity(&call.name, &resolved, 1)?;
+			Ok(std::path::Path::new(&resolved[0])
+				.parent()
+				.map(|s| s.to_string_lossy().into_owned())
+				.unwrap_or_default())
+		}
+		"extname" => {
+			// File extension WITHOUT the leading dot (matches Rust's
+			// `Path::extension`). `extname('a/b.tar.gz')` → `gz`; no extension → `""`.
+			expect_arity(&call.name, &resolved, 1)?;
+			Ok(std::path::Path::new(&resolved[0])
+				.extension()
+				.map(|s| s.to_string_lossy().into_owned())
+				.unwrap_or_default())
+		}
+		"stem" => {
+			// Filename without its final extension. `stem('a/b.tar.gz')` → `b.tar`.
+			expect_arity(&call.name, &resolved, 1)?;
+			Ok(std::path::Path::new(&resolved[0])
+				.file_stem()
+				.map(|s| s.to_string_lossy().into_owned())
+				.unwrap_or_default())
+		}
+		"join_path" => {
+			// Join path components using the platform separator. Absolute later
+			// components replace earlier ones (Rust `PathBuf::push` semantics).
+			if resolved.is_empty() {
+				return Err(SubstitutionError::FunctionArity {
+					name: "join_path".into(),
+					expected: "1 or more".into(),
+					got: 0,
+				});
+			}
+			let mut p = std::path::PathBuf::from(&resolved[0]);
+			for seg in &resolved[1..] {
+				p.push(seg);
+			}
+			Ok(p.to_string_lossy().into_owned())
+		}
+		// ── date / time ──
+		"now" => {
+			// `now(format)` — current UTC time in a named format. See
+			// `now_formatted` for the full list of valid format strings.
+			expect_arity(&call.name, &resolved, 1)?;
+			now_formatted(&resolved[0])
+		}
+		// ── numeric (extends add/subtract/multiply/divide + comparisons) ──
+		"modulo" => {
+			expect_arity(&call.name, &resolved, 2)?;
+			let a = parse_numeric(&call.name, &resolved[0])?;
+			let b = parse_numeric(&call.name, &resolved[1])?;
+			if b == 0.0 {
+				return Err(SubstitutionError::DivideByZero);
+			}
+			Ok(format_number(a % b))
+		}
+		"power" => {
+			expect_arity(&call.name, &resolved, 2)?;
+			let a = parse_numeric(&call.name, &resolved[0])?;
+			let b = parse_numeric(&call.name, &resolved[1])?;
+			let r = a.powf(b);
+			if !r.is_finite() {
+				return Err(SubstitutionError::InvalidNumeric {
+					name: "power".into(),
+					message: "result is not a finite number".into(),
+				});
+			}
+			Ok(format_number(r))
+		}
+		"min" => numeric_reduce(&call.name, &resolved, f64::min),
+		"max" => numeric_reduce(&call.name, &resolved, f64::max),
+		"abs" => {
+			expect_arity(&call.name, &resolved, 1)?;
+			Ok(format_number(parse_numeric(&call.name, &resolved[0])?.abs()))
+		}
+		"round" => {
+			expect_arity(&call.name, &resolved, 1)?;
+			Ok(format_number(parse_numeric(&call.name, &resolved[0])?.round()))
+		}
+		"floor" => {
+			expect_arity(&call.name, &resolved, 1)?;
+			Ok(format_number(parse_numeric(&call.name, &resolved[0])?.floor()))
+		}
+		"ceil" => {
+			expect_arity(&call.name, &resolved, 1)?;
+			Ok(format_number(parse_numeric(&call.name, &resolved[0])?.ceil()))
+		}
+		// ── substring (char-indexed, optional length) ──
+		"substring" => {
+			// `substring(s, start)` → from `start` to end; `substring(s, start, len)`
+			// → at most `len` chars from `start`. Indices are Unicode scalar
+			// positions (like `length`); out-of-range start → `""`, len past the
+			// end clamps. Negative/non-numeric → InvalidNumber.
+			if resolved.len() != 2 && resolved.len() != 3 {
+				return Err(SubstitutionError::FunctionArity {
+					name: "substring".into(),
+					expected: "2 or 3".into(),
+					got: resolved.len(),
+				});
+			}
+			let start = parse_count(&call.name, "start", &resolved[1])?;
+			let chars = resolved[0].chars();
+			let out: String = if resolved.len() == 3 {
+				let len = parse_count(&call.name, "length", &resolved[2])?;
+				chars.skip(start).take(len).collect()
+			} else {
+				chars.skip(start).collect()
+			};
+			Ok(out)
+		}
+		// ── uuid (v4-shaped; non-deterministic → dry-run placeholder) ──
+		"uuid" => {
+			expect_arity(&call.name, &resolved, 0)?;
+			if args.dry_run {
+				return Ok("<uuid>".to_string());
+			}
+			Ok(generate_uuid())
+		}
+		// ── url percent-encoding (RFC 3986; space → %20, symmetric) ──
+		"url_encode" => {
+			expect_arity(&call.name, &resolved, 1)?;
+			Ok(url_encode_str(&resolved[0]))
+		}
+		"url_decode" => {
+			expect_arity(&call.name, &resolved, 1)?;
+			url_decode_str(&resolved[0])
+		}
+		// ── error: fail the current command with a message (see executor) ──
+		"error" => {
+			// Prints `message` to stderr and fails the current command, but the
+			// failure flows through the normal walker so `when: failure` /
+			// `when: always` steps still run (subject to `ignoreErrors`). On
+			// dry-run it's a no-op placeholder; on the redacted log pass it does
+			// not re-print (the real pass already did).
+			expect_arity(&call.name, &resolved, 1)?;
+			if args.dry_run {
+				return Ok(format!("<error: '{}'>", resolved[0]));
+			}
+			if !redact_env {
+				eprintln!("{}", resolved[0]);
+			}
+			Err(SubstitutionError::UserError(resolved[0].clone()))
+		}
 		_ => Err(SubstitutionError::UnknownFunction(call.name.clone())),
 	}
 }
@@ -711,6 +867,176 @@ fn format_number(value: f64) -> String {
 		(value as i64).to_string()
 	} else {
 		format!("{}", value)
+	}
+}
+
+/// Shared body for the variadic reducers `min` / `max`. Coerces every argument
+/// through [`parse_numeric`] and folds with `op`. Requires at least one arg.
+fn numeric_reduce<F: Fn(f64, f64) -> f64>(name: &str, resolved: &[String], op: F) -> Result<String, SubstitutionError> {
+	if resolved.is_empty() {
+		return Err(SubstitutionError::FunctionArity {
+			name: name.to_string(),
+			expected: "1 or more".into(),
+			got: 0,
+		});
+	}
+	let mut iter = resolved.iter();
+	let mut acc = parse_numeric(name, iter.next().unwrap())?;
+	for next in iter {
+		acc = op(acc, parse_numeric(name, next)?);
+	}
+	Ok(format_number(acc))
+}
+
+/// Resolve `now(format)` to the current UTC time in the requested format.
+///
+/// Supported formats: `unix` / `unix-timestamp` (seconds), `unix-ms` /
+/// `unix-millis` (milliseconds), `iso` / `iso-8601` / `rfc3339`
+/// (`YYYY-MM-DDTHH:MM:SSZ`), `iso-date` / `date` (`YYYY-MM-DD`), `iso-time` /
+/// `time` (`HH:MM:SS`), and the individual components `year` / `month` / `day`
+/// / `hour` / `minute` / `second`. Unknown formats error.
+fn now_formatted(format: &str) -> Result<String, SubstitutionError> {
+	use std::time::{SystemTime, UNIX_EPOCH};
+	let dur = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.map_err(|_| SubstitutionError::InvalidTimeFormat("system clock is before the Unix epoch".into()))?;
+	match format {
+		"unix" | "unix-timestamp" => return Ok(dur.as_secs().to_string()),
+		"unix-ms" | "unix-millis" => return Ok(dur.as_millis().to_string()),
+		_ => {}
+	}
+	let (y, mo, d, h, mi, s) = civil_parts(dur.as_secs() as i64);
+	match format {
+		"iso" | "iso-8601" | "rfc3339" => Ok(format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")),
+		"iso-date" | "date" => Ok(format!("{y:04}-{mo:02}-{d:02}")),
+		"iso-time" | "time" => Ok(format!("{h:02}:{mi:02}:{s:02}")),
+		"year" => Ok(format!("{y:04}")),
+		"month" => Ok(format!("{mo:02}")),
+		"day" => Ok(format!("{d:02}")),
+		"hour" => Ok(format!("{h:02}")),
+		"minute" => Ok(format!("{mi:02}")),
+		"second" => Ok(format!("{s:02}")),
+		other => Err(SubstitutionError::InvalidTimeFormat(other.to_string())),
+	}
+}
+
+/// Split a Unix timestamp (seconds, UTC) into `(year, month, day, hour, minute,
+/// second)`. Date conversion uses Howard Hinnant's `civil_from_days` algorithm
+/// so we stay dependency-free (no `chrono` / `time`).
+fn civil_parts(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+	let days = secs.div_euclid(86_400);
+	let tod = secs.rem_euclid(86_400);
+	let z = days + 719_468;
+	let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+	let doe = z - era * 146_097; // [0, 146096]
+	let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+	let year = yoe + era * 400;
+	let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+	let mp = (5 * doy + 2) / 153; // [0, 11]
+	let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+	let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+	let year = year + if month <= 2 { 1 } else { 0 };
+	let h = (tod / 3600) as u32;
+	let mi = ((tod % 3600) / 60) as u32;
+	let s = (tod % 60) as u32;
+	(year, month, day, h, mi, s)
+}
+
+/// Generate a version-4-shaped UUID string. Randomness comes from a SplitMix64
+/// PRNG seeded from the wall clock, process id, and a per-process counter — not
+/// cryptographically strong, but unique enough for temp names / cache keys
+/// (which is the intended use). Dependency-free (no `uuid` / `rand` crate).
+fn generate_uuid() -> String {
+	use std::sync::atomic::{AtomicU64, Ordering};
+	use std::time::{SystemTime, UNIX_EPOCH};
+	static COUNTER: AtomicU64 = AtomicU64::new(0);
+	let nanos = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.map(|d| d.as_nanos() as u64)
+		.unwrap_or(0);
+	let pid = std::process::id() as u64;
+	let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+	let mut state = nanos ^ pid.wrapping_shl(32) ^ count.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+	let mut next = || {
+		state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+		let mut z = state;
+		z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+		z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+		z ^ (z >> 31)
+	};
+	let mut bytes = [0u8; 16];
+	bytes[..8].copy_from_slice(&next().to_le_bytes());
+	bytes[8..].copy_from_slice(&next().to_le_bytes());
+	bytes[6] = (bytes[6] & 0x0F) | 0x40; // version 4
+	bytes[8] = (bytes[8] & 0x3F) | 0x80; // variant 1
+	let h = |b: u8| format!("{b:02x}");
+	format!(
+		"{}{}{}{}-{}{}-{}{}-{}{}-{}{}{}{}{}{}",
+		h(bytes[0]),
+		h(bytes[1]),
+		h(bytes[2]),
+		h(bytes[3]),
+		h(bytes[4]),
+		h(bytes[5]),
+		h(bytes[6]),
+		h(bytes[7]),
+		h(bytes[8]),
+		h(bytes[9]),
+		h(bytes[10]),
+		h(bytes[11]),
+		h(bytes[12]),
+		h(bytes[13]),
+		h(bytes[14]),
+		h(bytes[15]),
+	)
+}
+
+/// Percent-encode `s` per RFC 3986: unreserved characters (`A-Za-z0-9-_.~`)
+/// pass through; every other byte becomes `%XX` (uppercase hex). Spaces become
+/// `%20` (not `+`), so `url_decode(url_encode(s)) == s`.
+fn url_encode_str(s: &str) -> String {
+	let mut out = String::with_capacity(s.len());
+	for &b in s.as_bytes() {
+		match b {
+			b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+			_ => out.push_str(&format!("%{b:02X}")),
+		}
+	}
+	out
+}
+
+/// Decode percent-escapes (`%XX`) in `s`. `+` is left literal (symmetric with
+/// [`url_encode_str`], which emits `%20` for spaces). Malformed escapes error
+/// as `InvalidUrlEncoding`; non-UTF-8 results as `NonUtf8Decoded`.
+fn url_decode_str(s: &str) -> Result<String, SubstitutionError> {
+	let bytes = s.as_bytes();
+	let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+	let mut i = 0;
+	while i < bytes.len() {
+		if bytes[i] == b'%' {
+			let hi = bytes.get(i + 1).copied().and_then(hex_val);
+			let lo = bytes.get(i + 2).copied().and_then(hex_val);
+			match (hi, lo) {
+				(Some(hi), Some(lo)) => {
+					out.push(hi * 16 + lo);
+					i += 3;
+				}
+				_ => return Err(SubstitutionError::InvalidUrlEncoding(s.to_string())),
+			}
+		} else {
+			out.push(bytes[i]);
+			i += 1;
+		}
+	}
+	String::from_utf8(out).map_err(|_| SubstitutionError::NonUtf8Decoded)
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+	match b {
+		b'0'..=b'9' => Some(b - b'0'),
+		b'a'..=b'f' => Some(b - b'a' + 10),
+		b'A'..=b'F' => Some(b - b'A' + 10),
+		_ => None,
 	}
 }
 

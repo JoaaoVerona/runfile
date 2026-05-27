@@ -455,6 +455,22 @@ crates/
   `is_number(s)` (1 arg; returns `"true"` if `s.trim()` parses as a finite `f64`, else `"false"` — unlike
   the arithmetic family it does NOT error on non-numeric input, since detection is the whole point; `inf` /
   `nan` are not numbers, matching `parse_numeric`),
+  `modulo(a, b)` / `power(a, b)` (2 args; `modulo` errors `DivideByZero` on `b==0`; `power` errors
+  `InvalidNumeric` on non-finite result), `min(a, …)` / `max(a, …)` (variadic ≥1, via `numeric_reduce`),
+  `abs(a)` / `round(a)` / `floor(a)` / `ceil(a)` (1 arg) — all share `parse_numeric` + `format_number`,
+  `substring(s, start[, len])` (char-indexed slice; `parse_count` on `start`/`len`; out-of-range `start` →
+  `""`, `len` clamps; omit `len` for to-end),
+  `basename(p)` / `dirname(p)` / `extname(p)` / `stem(p)` / `join_path(a, …)` (path helpers via
+  `std::path::Path` — `extname` returns the extension WITHOUT the dot; `join_path` uses `PathBuf::push`),
+  `url_encode(s)` / `url_decode(s)` (RFC 3986 percent-encoding; unreserved `A-Za-z0-9-_.~` pass through,
+  space → `%20`, symmetric; decode errors `InvalidUrlEncoding` / `NonUtf8Decoded`),
+  `uuid()` (0 args; v4-shaped via a dependency-free SplitMix64 PRNG seeded from clock/pid/counter — NOT
+  cryptographic; `args.dry_run` → `<uuid>` placeholder),
+  `now(format)` (1 arg; current UTC time via `now_formatted` — formats `unix-timestamp`/`unix-millis`/`iso`/
+  `iso-date`/`iso-time`/`rfc3339`/`year`/`month`/`day`/`hour`/`minute`/`second`; civil-date conversion is
+  dependency-free via Howard Hinnant's algorithm in `civil_parts`; unknown format → `InvalidTimeFormat`),
+  `error(msg)` (prints `msg` to stderr on the real pass, returns the [`SubstitutionError::UserError`] sentinel;
+  `args.dry_run` → `<error: '…'>` placeholder, no print/fail; see "**`error(msg)` semantics**" below),
   `try(expr)` (special-cased before the bulk arg-eval
   pass so inner errors are catchable; see "**`try(expr)` semantics**" below), `define(name, value)`
   (returns `""`, side effect: sets `VAR.name`), and `set_cwd(path)` (returns `""`, side effect: mutates
@@ -474,6 +490,8 @@ crates/
   produced non-UTF-8 stdout),
   `ReadFileError(path, msg)`, `WriteFileError(path, msg)` (`write_file` could not write — bad
   directory, permissions, etc.), `InvalidJson(name, msg)`, `InvalidJsonPath(path, msg)`,
+  `InvalidTimeFormat(format)` (`now` got an unknown format), `InvalidUrlEncoding(input)` (`url_decode` bad
+  `%XX`), `UserError(msg)` (`error(...)` — soft command failure, see below),
   `UnbalancedParens`, `BarewordLiteralNotAllowed`, plus `MalformedSubstitution` for arg-list whitespace violations.
   Bare `ARGS` (no `.key`) is special-cased in [`evaluate_arg`] so it works as a function
   argument too — `one_of(ARGS, 'major', ...)` resolves to the positional-args string at
@@ -569,6 +587,20 @@ crates/
   when `redact_env` is true (same pattern as `define`) so the log-substitute pass doesn't double-apply.
   Returns `""` so a line whose only content is `{{ set_cwd(...) }}` resolves to whitespace and is dropped by
   the empty-command-skip path without consuming a step number.
+- **`error(msg)` semantics**: a control-flow function that fails the *current command* without aborting the run.
+  In `evaluate_function`, the `error` arm prints `msg` to stderr (only on the real, non-`redact_env` pass — so
+  the redacted log pass doesn't double-print) and returns `Err(SubstitutionError::UserError(msg))`. The sequential
+  executor's `execute_one_shell` matches that variant specially: it consumes a step, sets `state.last_status =
+  failed_status()`, increments `state.failures`, and returns `Ok(())` — so the walker keeps going. Because the
+  walker derives `state.failed` from `state.failures` (subject to `ignoreErrors`), this means subsequent
+  default-`when: success` steps are skipped, `when: failure` / `when: always` steps still run, and target-level
+  `ignoreErrors` swallows it — exactly like a non-zero shell exit. On `args.dry_run` it short-circuits to the
+  placeholder `<error: '<msg>'>` (no print, no failure), matching `capture` / `uuid`. **Caveat:** the soft-failure
+  handling lives only in `execute_one_shell` (the sequential path). In a `parallel: true` parent or a
+  `sameShell: true` target, `error()` fires during *leaf collection* and surfaces as a hard `ExecuteError`
+  (the target still fails, but parallel siblings' `when:` partitioning isn't engaged). `error()` is intended for
+  sequential command flow — including inside `if` / `match` / `for` / `when` blocks, which all dispatch through
+  `execute_one_shell`. Note `try(error('x'))` swallows the failure (try catches the `UserError` sentinel too).
 - **Empty-command skip**: when a command line resolves to a whitespace-only string (the typical cause is a line
   consisting only of `{{ define(...) }}`), it is NOT dispatched to the shell — and crucially, NOT counted as a
   step in any way. `execute_one_shell` short-circuits *before* calling `counter.next_step()`, prints no log line,

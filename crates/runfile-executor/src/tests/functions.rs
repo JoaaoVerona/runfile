@@ -2575,3 +2575,178 @@ fn capture_works_with_try_fallback() {
 		.unwrap();
 	assert_eq!(result, "fallback");
 }
+
+// ── path helpers ──────────────────────────────────────────────────
+
+#[test]
+fn path_helpers_basename_dirname_extname_stem() {
+	let args = RunArgs::parse(&[]);
+	let sub = |t: &str| args.substitute(t, &HashMap::new()).unwrap();
+	assert_eq!(sub("{{ basename('a/b/c.txt') }}"), "c.txt");
+	assert_eq!(sub("{{ dirname('a/b/c.txt') }}").replace('\\', "/"), "a/b");
+	assert_eq!(sub("{{ extname('a/b.tar.gz') }}"), "gz");
+	assert_eq!(sub("{{ stem('a/b.tar.gz') }}"), "b.tar");
+	assert_eq!(sub("{{ extname('noext') }}"), "");
+}
+
+#[test]
+fn path_join_path_builds_path() {
+	let args = RunArgs::parse(&["--dir=src".into()]);
+	let result = args
+		.substitute("{{ join_path(ARG.dir, 'main.rs') }}", &HashMap::new())
+		.unwrap();
+	assert_eq!(result.replace('\\', "/"), "src/main.rs");
+}
+
+// ── now() ─────────────────────────────────────────────────────────
+
+#[test]
+fn now_unix_timestamp_is_numeric() {
+	let args = RunArgs::parse(&[]);
+	let ts = args.substitute("{{ now('unix-timestamp') }}", &HashMap::new()).unwrap();
+	let n: u64 = ts.parse().expect("unix timestamp must be an integer");
+	assert!(n > 1_600_000_000, "timestamp should be a plausible recent value: {n}");
+}
+
+#[test]
+fn now_iso_formats_shape() {
+	let args = RunArgs::parse(&[]);
+	let date = args.substitute("{{ now('iso-date') }}", &HashMap::new()).unwrap();
+	assert!(
+		date.len() == 10 && date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-',
+		"iso-date should be YYYY-MM-DD, got {date}"
+	);
+	let iso = args.substitute("{{ now('iso') }}", &HashMap::new()).unwrap();
+	assert!(
+		iso.ends_with('Z') && iso.contains('T'),
+		"iso should be ...T...Z, got {iso}"
+	);
+}
+
+#[test]
+fn now_unknown_format_errors() {
+	let args = RunArgs::parse(&[]);
+	assert!(matches!(
+		args.substitute("{{ now('bogus') }}", &HashMap::new()).unwrap_err(),
+		SubstitutionError::InvalidTimeFormat(_)
+	));
+}
+
+// ── numeric extensions ────────────────────────────────────────────
+
+#[test]
+fn numeric_modulo_power() {
+	let args = RunArgs::parse(&[]);
+	let sub = |t: &str| args.substitute(t, &HashMap::new()).unwrap();
+	assert_eq!(sub("{{ modulo('17', '5') }}"), "2");
+	assert_eq!(sub("{{ power('2', '10') }}"), "1024");
+}
+
+#[test]
+fn numeric_modulo_by_zero_errors() {
+	let args = RunArgs::parse(&[]);
+	assert!(matches!(
+		args.substitute("{{ modulo('5', '0') }}", &HashMap::new()).unwrap_err(),
+		SubstitutionError::DivideByZero
+	));
+}
+
+#[test]
+fn numeric_min_max_abs_rounding() {
+	let args = RunArgs::parse(&[]);
+	let sub = |t: &str| args.substitute(t, &HashMap::new()).unwrap();
+	assert_eq!(sub("{{ min('3', '1', '2') }}"), "1");
+	assert_eq!(sub("{{ max('3', '1', '2') }}"), "3");
+	assert_eq!(sub("{{ abs('-7') }}"), "7");
+	assert_eq!(sub("{{ round('2.6') }}"), "3");
+	assert_eq!(sub("{{ floor('2.9') }}"), "2");
+	assert_eq!(sub("{{ ceil('2.1') }}"), "3");
+}
+
+// ── substring ─────────────────────────────────────────────────────
+
+#[test]
+fn substring_with_and_without_length() {
+	let args = RunArgs::parse(&[]);
+	let sub = |t: &str| args.substitute(t, &HashMap::new()).unwrap();
+	assert_eq!(sub("{{ substring('abcdef', '2') }}"), "cdef");
+	assert_eq!(sub("{{ substring('abcdef', '1', '3') }}"), "bcd");
+	// Out-of-range start → empty; length past end clamps.
+	assert_eq!(sub("{{ substring('abc', '10') }}"), "");
+	assert_eq!(sub("{{ substring('abc', '1', '99') }}"), "bc");
+}
+
+#[test]
+fn substring_unicode_is_char_indexed() {
+	let args = RunArgs::parse(&[]);
+	// "héllo": chars h é l l o — substring(1,2) → "él"
+	let result = args
+		.substitute("{{ substring('héllo', '1', '2') }}", &HashMap::new())
+		.unwrap();
+	assert_eq!(result, "él");
+}
+
+// ── uuid ──────────────────────────────────────────────────────────
+
+#[test]
+fn uuid_has_v4_shape_and_is_unique() {
+	let args = RunArgs::parse(&[]);
+	let a = args.substitute("{{ uuid() }}", &HashMap::new()).unwrap();
+	let b = args.substitute("{{ uuid() }}", &HashMap::new()).unwrap();
+	assert_eq!(a.len(), 36, "uuid len: {a}");
+	let bytes = a.as_bytes();
+	assert!(bytes[8] == b'-' && bytes[13] == b'-' && bytes[18] == b'-' && bytes[23] == b'-');
+	assert_eq!(bytes[14], b'4', "version nibble should be 4: {a}");
+	assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'), "variant nibble: {a}");
+	assert_ne!(a, b, "two uuids should differ");
+}
+
+#[test]
+fn uuid_dry_run_is_placeholder() {
+	let mut args = RunArgs::parse(&[]);
+	args.dry_run = true;
+	assert_eq!(args.substitute("{{ uuid() }}", &HashMap::new()).unwrap(), "<uuid>");
+}
+
+// ── url encode / decode ───────────────────────────────────────────
+
+#[test]
+fn url_encode_decode_roundtrip() {
+	let args = RunArgs::parse(&[]);
+	let sub = |t: &str| args.substitute(t, &HashMap::new()).unwrap();
+	assert_eq!(sub("{{ url_encode('a b&c=d') }}"), "a%20b%26c%3Dd");
+	assert_eq!(sub("{{ url_decode('a%20b%26c%3Dd') }}"), "a b&c=d");
+	// Unreserved chars pass through.
+	assert_eq!(sub("{{ url_encode('A-Z_a.z~9') }}"), "A-Z_a.z~9");
+}
+
+#[test]
+fn url_decode_malformed_errors() {
+	let args = RunArgs::parse(&[]);
+	assert!(matches!(
+		args.substitute("{{ url_decode('bad%2') }}", &HashMap::new())
+			.unwrap_err(),
+		SubstitutionError::InvalidUrlEncoding(_)
+	));
+}
+
+// ── error() (substitution side) ───────────────────────────────────
+
+#[test]
+fn error_returns_user_error() {
+	let args = RunArgs::parse(&[]);
+	match args.substitute("{{ error('boom') }}", &HashMap::new()) {
+		Err(SubstitutionError::UserError(msg)) => assert_eq!(msg, "boom"),
+		other => panic!("expected UserError, got {other:?}"),
+	}
+}
+
+#[test]
+fn error_dry_run_is_placeholder() {
+	let mut args = RunArgs::parse(&[]);
+	args.dry_run = true;
+	assert_eq!(
+		args.substitute("{{ error('nope') }}", &HashMap::new()).unwrap(),
+		"<error: 'nope'>"
+	);
+}

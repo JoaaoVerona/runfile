@@ -1058,3 +1058,93 @@ fn env_files_resolve_relative_to_runfile_parent_not_working_directory() {
 		written
 	);
 }
+
+// ── error() control-flow function ─────────────────────────────────
+
+#[test]
+fn error_fails_command_and_runs_when_failure_and_always() {
+	use crate::runner::run_target;
+	use runfile_parser::parse_runfile;
+
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let log = dir.path().join("log.txt");
+	let log_escaped = json_escape_path(&log);
+
+	let json = format!(
+		r#"{{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {{
+            "t": {{
+                "commands": [
+                    "echo step1 >> \"{log_escaped}\"",
+                    "{{{{ error('boom') }}}}",
+                    "echo step2 >> \"{log_escaped}\"",
+                    {{ "when": "failure", "commands": ["echo onfail >> \"{log_escaped}\""] }},
+                    {{ "when": "always", "commands": ["echo cleanup >> \"{log_escaped}\""] }}
+                ]
+            }}
+        }}
+    }}"#
+	);
+
+	let runfile = parse_runfile(&json).unwrap();
+	let result = run_target("t", &runfile, &shell, &RunArgs::default(), dir.path()).unwrap();
+	// The target failed (error() marked the command failed).
+	assert!(!result.final_status.success(), "error() should fail the target");
+
+	let lines: Vec<String> = std::fs::read_to_string(&log)
+		.unwrap_or_default()
+		.lines()
+		.map(|l| l.trim().to_string())
+		.filter(|l| !l.is_empty())
+		.collect();
+	assert!(lines.contains(&"step1".to_string()), "step1 should run: {lines:?}");
+	assert!(
+		!lines.contains(&"step2".to_string()),
+		"step2 (default when:success) should be skipped after error(): {lines:?}"
+	);
+	assert!(
+		lines.contains(&"onfail".to_string()),
+		"when:failure should run: {lines:?}"
+	);
+	assert!(
+		lines.contains(&"cleanup".to_string()),
+		"when:always should run: {lines:?}"
+	);
+}
+
+#[test]
+fn error_swallowed_by_ignore_errors() {
+	use crate::runner::run_target;
+	use runfile_parser::parse_runfile;
+
+	let shell = get_test_shell();
+	let dir = TempDir::new().unwrap();
+	let log = dir.path().join("log.txt");
+	let log_escaped = json_escape_path(&log);
+
+	let json = format!(
+		r#"{{
+        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {{
+            "t": {{
+                "ignoreErrors": true,
+                "commands": [
+                    "{{{{ error('non-fatal') }}}}",
+                    "echo after >> \"{log_escaped}\""
+                ]
+            }}
+        }}
+    }}"#
+	);
+
+	let runfile = parse_runfile(&json).unwrap();
+	let result = run_target("t", &runfile, &shell, &RunArgs::default(), dir.path()).unwrap();
+	assert!(result.final_status.success(), "ignoreErrors should swallow error()");
+	let log_contents = std::fs::read_to_string(&log).unwrap_or_default();
+	assert!(
+		log_contents.contains("after"),
+		"subsequent step should run when error() is ignored: {log_contents:?}"
+	);
+}

@@ -864,7 +864,27 @@ fn execute_one_shell(
 	force_kill_guard: &Option<ForceKillGuard>,
 	state: &mut WalkState,
 ) -> Result<(), ExecuteError> {
-	let cmd_str = args.substitute(template, &setup.env)?;
+	let cmd_str = match args.substitute(template, &setup.env) {
+		Ok(s) => s,
+		Err(SubstitutionError::UserError(_)) => {
+			// `error('msg')` fired during substitution. The message was already
+			// printed to stderr by the function itself. Treat this line as a
+			// failed command — consume a step, record the failure, and return
+			// `Ok` so the walker keeps going: subsequent `when: failure` /
+			// `when: always` steps still run, and `ignoreErrors` is honored (the
+			// walker derives `state.failed` from `state.failures`, same as a
+			// non-zero shell exit).
+			let (step, total) = counter.next_step();
+			if setup.logging {
+				log_command("error(...)", step, total);
+			}
+			state.commands_run += 1;
+			state.last_status = Some(failed_status());
+			state.failures += 1;
+			return Ok(());
+		}
+		Err(e) => return Err(e.into()),
+	};
 
 	// Empty after substitution → true no-op: no shell dispatch, no step
 	// number consumed, no log line, no contribution to the global step
