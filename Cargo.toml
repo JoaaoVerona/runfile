@@ -14,7 +14,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.28.0"
+version = "0.29.0"
 rust-version = "1.94.1"
 edition = "2021"
 license = "MIT"
@@ -32,6 +32,10 @@ tempfile = "3.27.0"
 which = "8.0.2"
 keyring-core = "1.0.0"
 linux-keyutils-keyring-store = "1.0.0"
+# Pure-Rust D-Bus Secret Service client (zbus, no libdbus/OpenSSL C deps) so it
+# links cleanly into the static musl release binaries. `blocking-api` ships by
+# default; rt-async-io-crypto-rust selects the async-io reactor + RustCrypto.
+secret-service = { version = "5.1.0", default-features = false, features = ["rt-async-io-crypto-rust"] }
 apple-native-keyring-store = { version = "1.0.0", features = ["keychain"] }
 windows-native-keyring-store = "1.0.0"
 notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
