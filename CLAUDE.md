@@ -205,6 +205,41 @@ crates/
 - `keyring_store` is the low-level wrapper: `load_blob`/`store_blob`/`delete_blob` operate on the
   single keystore entry. `is_available()` is the public probe used by callers to surface
   "credential store not running" early.
+- **Per-platform backends (and the Linux Secret-Service-with-keyutils-fallback).** Windows uses
+  Credential Manager and macOS uses Keychain (both persistent), via keyring-core. On **Linux**,
+  `keyring_store` picks a backend once per process (`OnceLock<LinuxBackend>` in `linux_backend()`):
+  it prefers the **persistent D-Bus Secret Service** (gnome-keyring / KWallet) and falls back to
+  **kernel keyutils** (in-memory, cleared on reboot) when no session bus / secret-service provider /
+  default collection is present. The selection **never errors** — a missing Secret Service silently
+  degrades to keyutils, so `secret-keys add` keeps working in headless / CI environments exactly as
+  before (it just isn't durably persisted there). This fixes the long-standing "keys added on Linux
+  never survive a reboot/new session" bug: keyutils was the *only* Linux backend, and it's an
+  in-kernel store, not a disk-backed one. `is_available()` is therefore always `true` on Linux (the
+  keyutils fallback is always present). The four `keyring_store` entry points dispatch on
+  `using_secret_service()`; the keyutils/macOS/Windows paths still go through keyring-core
+  (`keyring_core_{load,store,delete}_blob` / `keyring_core_is_available`).
+- The Secret Service path lives in `secret_service_store.rs` (`#[cfg(target_os = "linux")]`, declared
+  in `lib.rs`). It uses the **`secret-service` crate's blocking API** (`secret-service` v5 with
+  `default-features = false, features = ["rt-async-io-crypto-rust"]`) — pure Rust (zbus + RustCrypto,
+  **no libdbus / OpenSSL C dependency**) so it links cleanly into the static musl release binaries
+  built natively per-arch (`ubuntu-24.04` / `ubuntu-24.04-arm` with `musl-tools`, no `cross`). The
+  blob is one item in the user's **default** collection, identified by attributes
+  `{ service: "runfile", user: "__keystore__" }` (mirroring the keyring-core `(service, user)` pair),
+  stored with `create_item(.., replace = true)` so saves upsert in place. `connect` uses
+  `EncryptionType::Dh` so the secret is encrypted in transit over the bus. `with_default_collection`
+  centralizes connect + unlock-if-locked and runs per operation (no cached connection — sidesteps the
+  self-referential `SecretService`/`Collection` lifetime; key-management calls are infrequent).
+  `is_usable()` is the probe `linux_backend()` consults — it connects + resolves the default
+  collection but deliberately **does not unlock**, so picking the backend never triggers an
+  interactive prompt; an unlock prompt can still fire later on an actual `load`/`store`/`delete` of a
+  locked keyring (same as macOS Keychain — and `LazyPrivateKeys` keeps decryption runs from touching
+  the store unless an `encrypted:` value is actually present). SS errors map to `keyring_core::Error`
+  (`Locked` → `NoStorageAccess`, else `PlatformFailure`) so the dispatch return types stay uniform.
+- **CI is unaffected by the backend change.** The GitHub setup action exports keys as
+  `RUNFILE_PRIVATE_KEYS` and never touches the credential store, so CI runs don't depend on which
+  Linux backend is active. The CI runners (ubuntu-latest) generally have no D-Bus session, so
+  `is_usable()` returns false there and the keyutils fallback is used — identical to the old
+  behavior.
 
 ### runfile-crypto
 

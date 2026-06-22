@@ -23,6 +23,7 @@ apple-native-keyring-store = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 linux-keyutils-keyring-store = { workspace = true }
+secret-service = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

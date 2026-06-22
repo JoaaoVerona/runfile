@@ -26,7 +26,8 @@ pub enum KeyringKeysError {
 
 	#[error(
 		"OS credential store is unavailable. Private keys require a working credential store \
-		 (Windows Credential Manager / macOS Keychain / Linux Secret Service)."
+		 (Windows Credential Manager / macOS Keychain). On Linux this never triggers — keys fall \
+		 back to kernel keyutils when no D-Bus Secret Service is available."
 	)]
 	StoreUnavailable,
 
