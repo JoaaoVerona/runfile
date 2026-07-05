@@ -127,6 +127,57 @@ fn provided_positional_args_skip_bare_args_prompt() {
 }
 
 #[test]
+fn missing_args_as_function_arg_prompts() {
+	// `ARGS` used as a function argument (e.g. `one_of(ARGS, ...)`) must prompt
+	// just like bare `{{ ARGS }}` — the eager function-arg path previously
+	// resolved missing positional args to "" without asking (the `release`
+	// bump-target use case).
+	let prompter = Arc::new(MockPrompter::default().with_value("ARGS", Some("patch")));
+	let args = args_with(prompter.clone());
+	let result = args
+		.substitute("part={{ one_of(ARGS, 'major', 'minor', 'patch') }}", &HashMap::new())
+		.unwrap();
+	assert_eq!(result, "part=patch");
+	let calls = prompter.value_calls.lock().unwrap();
+	assert_eq!(calls.len(), 1);
+	assert_eq!(calls[0], "ARGS");
+}
+
+#[test]
+fn provided_args_as_function_arg_skip_prompt() {
+	// A supplied positional value flows into the function without prompting.
+	let prompter = Arc::new(MockPrompter::default());
+	let args = RunArgs::parse(&["minor".into()]).with_stdin_prompter(Some(prompter.clone()));
+	let result = args
+		.substitute("part={{ one_of(ARGS, 'major', 'minor', 'patch') }}", &HashMap::new())
+		.unwrap();
+	assert_eq!(result, "part=minor");
+	assert!(prompter.value_calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn missing_args_as_non_oneof_function_arg_prompts() {
+	// The prompt fires for `ARGS` in ANY function, not just `one_of` — every
+	// function argument funnels through the same `evaluate_arg` path.
+	let prompter = Arc::new(MockPrompter::default().with_value("ARGS", Some("hi")));
+	let args = args_with(prompter.clone());
+	let result = args.substitute("v={{ to_upper(ARGS) }}", &HashMap::new()).unwrap();
+	assert_eq!(result, "v=HI");
+	assert_eq!(*prompter.value_calls.lock().unwrap(), vec!["ARGS".to_string()]);
+}
+
+#[test]
+fn missing_args_in_dsl_expression_prompts() {
+	// `ARGS` as a DSL operand (`==`, `!=`, ...) resolves via `evaluate_arg` too,
+	// so it prompts rather than comparing against an empty string.
+	let prompter = Arc::new(MockPrompter::default().with_value("ARGS", Some("major")));
+	let args = args_with(prompter.clone());
+	let result = args.substitute("{{ ARGS == 'major' }}", &HashMap::new()).unwrap();
+	assert_eq!(result, "true");
+	assert_eq!(*prompter.value_calls.lock().unwrap(), vec!["ARGS".to_string()]);
+}
+
+#[test]
 fn missing_env_prompts_and_uses_answer() {
 	let prompter = Arc::new(MockPrompter::default().with_value("ENV.SECRET", Some("hush")));
 	let args = args_with(prompter);
