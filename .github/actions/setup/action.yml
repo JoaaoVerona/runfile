@@ -1,6 +1,6 @@
 name: Setup Runfile
 description: Installs Runfile and add it to PATH
-author: Skiley
+author: JoaaoVerona
 
 inputs:
   version:
@@ -92,9 +92,9 @@ runs:
         archive="runfile-cli-${TARGET}.${EXT}"
 
         if [ "$VERSION" = "latest" ]; then
-          url="https://github.com/Skiley/runfile/releases/latest/download/${archive}"
+          url="https://github.com/JoaaoVerona/runfile/releases/latest/download/${archive}"
         else
-          url="https://github.com/Skiley/runfile/releases/download/${VERSION}/${archive}"
+          url="https://github.com/JoaaoVerona/runfile/releases/download/${VERSION}/${archive}"
         fi
 
         install_dir="$RUNNER_TEMP/runfile-bin"

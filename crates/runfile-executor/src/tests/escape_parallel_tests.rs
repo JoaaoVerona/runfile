@@ -280,7 +280,7 @@ fn run_target_unknown_target_errors() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["echo build"] }
         }
@@ -314,7 +314,7 @@ fn run_target_global_depends_on_skips_self() {
 	// After globals merge, self-referencing before steps are filtered out.
 	// A target with no before should run successfully.
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "init": { "commands": ["echo init"] }
         }
@@ -333,7 +333,7 @@ fn extract_unknown_target_errors() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["echo build"] }
         }
@@ -355,7 +355,7 @@ fn extract_with_working_directory_cwd() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "test": {
                 "commands": ["echo test"],
@@ -415,7 +415,7 @@ fn extract_decrypts_envfile_when_private_key_provided() {
 	.unwrap();
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "deploy": {
                 "commands": ["echo {{ ENV.MY_SECRET }}"],

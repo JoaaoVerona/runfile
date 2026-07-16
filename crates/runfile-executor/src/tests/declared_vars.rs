@@ -24,7 +24,7 @@ fn vars_resolve_in_commands_and_see_env() {
 
 	let json = format!(
 		r#"{{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {{
                 "t": {{
                     "env": {{ "FOO": "envval" }},
@@ -53,7 +53,7 @@ fn vars_resolve_from_args() {
 
 	let json = format!(
 		r#"{{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {{
                 "t": {{
                     "vars": {{ "x": "{{{{ ARG.abc }}}}" }},
@@ -78,7 +78,7 @@ fn vars_missing_no_default_errors() {
 	let dir = TempDir::new().unwrap();
 
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {
                 "t": {
                     "vars": { "x": "{{ ARG.missing }}" },
@@ -101,7 +101,7 @@ fn vars_with_default_falls_back() {
 
 	let json = format!(
 		r#"{{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {{
                 "t": {{
                     "vars": {{ "x": "{{{{ ARG.missing ? 'fallback' }}}}" }},
@@ -128,7 +128,7 @@ fn vars_scoped_per_target_no_leak() {
 
 	let json = format!(
 		r#"{{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {{
                 "parent": {{
                     "vars": {{ "X": "P" }},
@@ -163,7 +163,7 @@ fn parent_vars_inherited_by_child_without_own() {
 
 	let json = format!(
 		r#"{{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {{
                 "parent": {{
                     "vars": {{ "X": "fromparent" }},
@@ -193,7 +193,7 @@ fn declared_var_overridden_by_runtime_define() {
 
 	let json = format!(
 		r#"{{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {{
                 "t": {{
                     "vars": {{ "X": "declared" }},
@@ -216,7 +216,7 @@ fn declared_var_overridden_by_runtime_define() {
 #[test]
 fn invalid_var_key_rejected_at_parse() {
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {
                 "t": {
                     "vars": { "bad key": "x" },
@@ -235,7 +235,7 @@ fn missing_var_error_unaffected_by_feature() {
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": { "t": { "commands": ["echo {{ VAR.nope }}"] } }
         }"#;
 	let runfile = parse_runfile(json).unwrap();

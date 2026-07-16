@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO="Skiley/runfile"
+REPO="JoaaoVerona/runfile"
 INSTALL_DIR="${RUNFILE_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${1:-latest}"
 

@@ -9,9 +9,9 @@
 	"files": [
 		"bin"
 	],
-	"homepage": "https://github.com/Skiley/runfile",
+	"homepage": "https://github.com/JoaaoVerona/runfile",
 	"license": "MIT",
 	"name": "@runfile/cli",
-	"repository": "https://github.com/Skiley/runfile",
+	"repository": "https://github.com/JoaaoVerona/runfile",
 	"version": "0.0.0"
 }

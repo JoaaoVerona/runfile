@@ -9,7 +9,7 @@ fn make_runfile(targets: Vec<(&str, CommandSpec)>) -> Runfile {
 		target_map.insert(name.to_string(), spec);
 	}
 	Runfile {
-		schema: "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json".into(),
+		schema: "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json".into(),
 		includes: None,
 		targets: target_map,
 		globals: None,

@@ -84,7 +84,7 @@ Create a `Runfile.json` in your project root:
 
 ```json
 {
-	"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+	"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 	"targets": {
 		"build": {
 			"description": "Build the project",
@@ -220,7 +220,7 @@ echo Deploy complete.
 
 ```json
 {
-	"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+	"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 	"includes": [
 		"./shared/ci.runfile.json"
 	],
@@ -242,7 +242,7 @@ echo Deploy complete.
 - `globals` (optional): Settings applied to all targets.
 
 - `$schema` (string, required) — Schema identifier. Use
-  `"https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json"` for now, or a path/URL to the JSON
+  `"https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json"` for now, or a path/URL to the JSON
   Schema file for editor autocomplete.
 - `targets` (object, required) — One or more named targets. At least one target must be defined.
 - `globals` (object, optional) — Settings that apply to all targets.
@@ -827,7 +827,7 @@ read as `{{ VAR.<key> }}` — the declarative counterpart to `define(...)`. It m
 
 ```jsonc
 {
-  "globals": { "vars": { "appName": "skiley" } },
+  "globals": { "vars": { "appName": "myapp" } },
   "targets": {
     "deploy": {
       "env": { "REGION": "us-east-1" },
@@ -1570,7 +1570,7 @@ steps:
 
 The value is a newline-separated list of 64-character hex-encoded private keys — pass one key, or several if multiple
 encrypted files use different keys. The env-supplied pool is merged ahead of any credential-store entries, so a key
-present in both sources is deduplicated. On GitHub Actions, the bundled `Skiley/runfile/.github/actions/setup` action
+present in both sources is deduplicated. On GitHub Actions, the bundled `JoaaoVerona/runfile/.github/actions/setup` action
 accepts a `secret-keys` input that wires this up for you (and supersedes the legacy `RUNFILE_ENCRYPTION_KEY` env var,
 which has been removed).
 
@@ -1691,7 +1691,7 @@ call from a lifecycle hook without exposing it as part of the public CLI.
 
 ```json
 {
-	"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+	"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 	"targets": {
 		"_setup": {
 			"description": "Shared bootstrap step",
@@ -1896,7 +1896,7 @@ either a plain path string or an object with a `path` and an optional
 
 ```json
 {
-	"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+	"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 	"includes": [
 		"./shared/ci.runfile.json",
 		{

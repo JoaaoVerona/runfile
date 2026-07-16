@@ -9,7 +9,7 @@ use crate::runfile_helpers::{load_or_create_runfile, runfile_for_generate, write
 /// (bash/zsh/sh/fish/powershell/cmd) and demonstrates the bare-string
 /// `commands` sugar so users see the cleanest form by default.
 pub(crate) const INIT_TEMPLATE: &str = r#"{
-	"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+	"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 	"targets": {
 		"hello": {
 			"description": "Say Hello World",

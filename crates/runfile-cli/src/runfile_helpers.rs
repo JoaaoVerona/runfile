@@ -277,7 +277,7 @@ pub fn load_or_create_runfile() -> Runfile {
 		})
 	} else {
 		Runfile {
-			schema: "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json".to_string(),
+			schema: "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json".to_string(),
 			includes: None,
 			targets: HashMap::new(),
 			globals: None,

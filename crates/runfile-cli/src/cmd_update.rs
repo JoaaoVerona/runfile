@@ -15,9 +15,9 @@ use std::path::Path;
 use std::process::{self, Command};
 
 #[cfg(not(windows))]
-const INSTALL_SH_URL: &str = "https://github.com/Skiley/runfile/releases/latest/download/install.sh";
+const INSTALL_SH_URL: &str = "https://github.com/JoaaoVerona/runfile/releases/latest/download/install.sh";
 #[cfg(windows)]
-const INSTALL_PS1_URL: &str = "https://github.com/Skiley/runfile/releases/latest/download/install.ps1";
+const INSTALL_PS1_URL: &str = "https://github.com/JoaaoVerona/runfile/releases/latest/download/install.ps1";
 
 /// How the running binary was installed — determines whether `:update` can
 /// manage it.

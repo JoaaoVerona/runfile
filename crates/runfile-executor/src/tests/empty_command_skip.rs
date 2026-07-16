@@ -157,7 +157,7 @@ fn dry_run_skips_empty_define_only_lines() {
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {
                 "t": {
                     "commands": [

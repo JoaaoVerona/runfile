@@ -301,7 +301,7 @@ fn for_in_namespaces_with_dynamic_target_call_runs_each_namespaced_target() {
 
 	let json = format!(
 		r#"{{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {{
 			"project_one:build": {{ "commands": ["{touch_one}"] }},
 			"project_two:build": {{ "commands": ["{touch_two}"] }},
@@ -714,7 +714,7 @@ fn nested_for_outer_parallel_inner_forced_sequential() {
 /// Build a parse-able single-target Runfile from a JSON target body.
 fn parallel_when_runfile(target_body: &str) -> runfile_parser::Runfile {
 	let json = format!(
-		r#"{{"$schema":"https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json","targets":{{"t":{target_body}}}}}"#
+		r#"{{"$schema":"https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json","targets":{{"t":{target_body}}}}}"#
 	);
 	runfile_parser::parse_runfile(&json).unwrap()
 }
@@ -1407,7 +1407,7 @@ fn parallel_propagates_prefix_through_real_dispatched_target() {
 
 	let json = format!(
 		r#"{{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {{
 			"child-a": {{ "commands": ["{touch_a}"] }},
 			"child-b": {{ "commands": ["{touch_b}"] }},

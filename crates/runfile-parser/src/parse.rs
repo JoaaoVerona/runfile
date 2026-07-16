@@ -17,7 +17,7 @@ pub enum ParseError {
 	MaxNestingDepthExceeded(usize),
 
 	#[error(
-		"Empty $schema field — set it to \"https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json\" or a schema URL"
+		"Empty $schema field — set it to \"https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json\" or a schema URL"
 	)]
 	EmptySchema,
 

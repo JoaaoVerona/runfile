@@ -575,7 +575,7 @@ fn merge_namespaces_dedup_in_final_runfile() {
 	let local_path = dir.path().join(RUNFILE_NAME);
 	let local = parse_runfile(
 		r#"{
-			"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+			"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 			"includes": [
 				{ "path": "a.json", "namespace": "shared" },
 				{ "path": "b.json", "namespace": "shared" }

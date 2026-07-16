@@ -13,7 +13,7 @@ fn make_runfile(targets: Vec<(&str, Vec<&str>)>) -> Runfile {
 		);
 	}
 	Runfile {
-		schema: "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json".into(),
+		schema: "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json".into(),
 		includes: None,
 		targets: target_map,
 		globals: None,

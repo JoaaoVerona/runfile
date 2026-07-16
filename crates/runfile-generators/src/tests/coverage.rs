@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn zed_no_targets_empty_result() {
 	let runfile = Runfile {
-		schema: "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json".into(),
+		schema: "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json".into(),
 		includes: None,
 		targets: HashMap::new(),
 		globals: None,
@@ -81,7 +81,7 @@ fn zed_merge_no_overlap() {
 #[test]
 fn jetbrains_no_targets_empty_result() {
 	let runfile = Runfile {
-		schema: "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json".into(),
+		schema: "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json".into(),
 		includes: None,
 		targets: HashMap::new(),
 		globals: None,

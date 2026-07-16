@@ -152,7 +152,7 @@ fn run_target_rejects_unexpected_args() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["echo hello"] }
         }
@@ -181,7 +181,7 @@ fn run_target_rejects_unknown_named_arg() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "deploy": { "commands": ["echo deploying to {{ ARG.env }}"] }
         }
@@ -211,7 +211,7 @@ fn run_target_accepts_valid_args() {
 
 	let shell = detect_default_shell().unwrap();
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "greet": { "commands": ["echo hello {{ ARGS }}"] }
         }
@@ -233,7 +233,7 @@ fn extract_rejects_unexpected_args() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["echo hello"] }
         }
@@ -268,7 +268,7 @@ fn run_target_dependency_args_accepted() {
 	let shell = detect_default_shell().unwrap();
 	// `@setup {{ ARGS }}` forwards the parent's args explicitly.
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["@setup {{ ARGS }}", "echo building"] },
             "setup": { "commands": ["echo setup {{ ARGS }}"] }
@@ -297,7 +297,7 @@ fn run_target_accepts_flag_referenced_only_in_env() {
 
 	let shell = detect_default_shell().unwrap();
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "test": {
                 "commands": "echo running",
@@ -321,7 +321,7 @@ fn run_target_accepts_arg_referenced_only_in_env() {
 
 	let shell = detect_default_shell().unwrap();
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "deploy": {
                 "commands": "echo deploying",
@@ -347,7 +347,7 @@ fn run_target_accepts_arg_referenced_only_in_env_files() {
 	// envFiles paths support substitution; missing files are silently skipped,
 	// so this still runs successfully even though `.env.prod` doesn't exist.
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "deploy": {
                 "commands": "echo deploying",
@@ -376,7 +376,7 @@ fn run_target_accepts_arg_referenced_only_in_force_shell() {
 	let shell_name = shell.kind.name().to_string();
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "x": {{
                 "commands": "echo go",
@@ -402,7 +402,7 @@ fn validate_args_rejects_truly_unknown_named_arg_with_aux_fields() {
 	let shell = detect_default_shell().unwrap();
 	// env references --side-effects only. --bogus is genuinely unknown.
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "test": {
                 "commands": "echo running",

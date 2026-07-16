@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn parse_minimal_runfile() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"] }
         }
@@ -13,7 +13,7 @@ fn parse_minimal_runfile() {
 	let rf = parse_runfile(json).unwrap();
 	assert_eq!(
 		rf.schema,
-		"https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json"
+		"https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json"
 	);
 	assert_eq!(rf.targets.len(), 1);
 	assert_eq!(rf.targets["build"].commands, vec!["cargo build"]);
@@ -21,9 +21,28 @@ fn parse_minimal_runfile() {
 }
 
 #[test]
-fn parse_full_runfile() {
+fn parse_accepts_legacy_skiley_schema_url() {
+	// The project moved from github.com/Skiley to github.com/JoaaoVerona.
+	// Runfiles in the wild still carry the old $schema URL — it must keep
+	// parsing forever (the parser only requires a non-empty $schema).
 	let json = r#"{
         "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "targets": {
+            "build": { "commands": ["cargo build"] }
+        }
+    }"#;
+	let rf = parse_runfile(json).expect("legacy Skiley schema URL must remain accepted");
+	assert_eq!(
+		rf.schema,
+		"https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json"
+	);
+	assert_eq!(rf.targets.len(), 1);
+}
+
+#[test]
+fn parse_full_runfile() {
+	let json = r#"{
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": {
                 "commands": ["npm run build {{ ARGS }}"]
@@ -56,7 +75,7 @@ fn parse_full_runfile() {
 #[test]
 fn parse_runfile_with_bool_env() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "test": {
                 "commands": ["cargo test"],
@@ -73,7 +92,7 @@ fn parse_runfile_with_bool_env() {
 #[test]
 fn parse_runfile_with_env_files() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "dev": {
                 "commands": ["npm start"],
@@ -120,7 +139,7 @@ fn reject_empty_schema() {
 #[test]
 fn accept_any_nonempty_schema() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": { "x": { "commands": ["echo hi"] } }
     }"#;
 	assert!(parse_runfile(json).is_ok());
@@ -135,7 +154,7 @@ fn accept_any_nonempty_schema() {
 #[test]
 fn reject_empty_targets_map() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {}
     }"#;
 	let err = parse_runfile(json).unwrap_err();
@@ -145,7 +164,7 @@ fn reject_empty_targets_map() {
 #[test]
 fn reject_command_with_empty_list() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": { "bad": { "commands": [] } }
     }"#;
 	let err = parse_runfile(json).unwrap_err();
@@ -155,7 +174,7 @@ fn reject_command_with_empty_list() {
 #[test]
 fn reject_unknown_top_level_field() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": { "x": { "commands": ["echo"] } },
         "extra": true
     }"#;
@@ -165,7 +184,7 @@ fn reject_unknown_top_level_field() {
 #[test]
 fn reject_unknown_command_field() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "x": { "commands": ["echo"], "unknown_field": 42 }
         }
@@ -176,7 +195,7 @@ fn reject_unknown_command_field() {
 #[test]
 fn reject_unknown_globals_field() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": { "x": { "commands": ["echo"] } },
         "globals": { "badField": true }
     }"#;
@@ -194,7 +213,7 @@ fn reject_missing_schema() {
 #[test]
 fn reject_missing_targets_key() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json"
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json"
     }"#;
 	assert!(parse_runfile(json).is_err());
 }
@@ -207,7 +226,7 @@ fn discover_in_current_dir() {
 	let runfile_path = dir.path().join(RUNFILE_NAME);
 	std::fs::write(
 		&runfile_path,
-		r#"{"$schema":"https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json","targets":{"a":{"commands":["echo"]}}}"#,
+		r#"{"$schema":"https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json","targets":{"a":{"commands":["echo"]}}}"#,
 	)
 	.unwrap();
 
@@ -224,7 +243,7 @@ fn discover_in_parent_dir() {
 	let runfile_path = dir.path().join(RUNFILE_NAME);
 	std::fs::write(
 		&runfile_path,
-		r#"{"$schema":"https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json","targets":{"a":{"commands":["echo"]}}}"#,
+		r#"{"$schema":"https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json","targets":{"a":{"commands":["echo"]}}}"#,
 	)
 	.unwrap();
 
@@ -261,7 +280,7 @@ fn parse_from_file() {
 	std::fs::write(
 		&path,
 		r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "hello": { "commands": ["echo hello world"] }
         }
@@ -287,7 +306,7 @@ fn roundtrip_serialization() {
 	targets.insert("build".into(), CommandSpec::new(vec!["cargo build".into()]));
 
 	let runfile = Runfile {
-		schema: "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json".into(),
+		schema: "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json".into(),
 		includes: None,
 		targets,
 		globals: Some(Globals {
@@ -317,7 +336,7 @@ fn roundtrip_serialization() {
 #[test]
 fn parse_many_commands() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["npm run build"] },
             "test": { "commands": ["npm test"] },
@@ -333,7 +352,7 @@ fn parse_many_commands() {
 #[test]
 fn parse_globals_only_add_to_path() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": { "x": { "commands": ["echo"] } },
         "globals": { "addToPath": ["/usr/local/bin", "vendor/bin"] }
     }"#;
@@ -347,7 +366,7 @@ fn parse_globals_only_add_to_path() {
 #[test]
 fn parse_globals_only_env() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": { "x": { "commands": ["echo"] } },
         "globals": { "env": { "A": "1", "B": 2 } }
     }"#;
@@ -361,7 +380,7 @@ fn parse_globals_only_env() {
 #[test]
 fn parse_target_and_global_vars() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "x": {
                 "commands": ["echo {{ VAR.xxx }}"],
@@ -382,7 +401,7 @@ fn parse_target_and_global_vars() {
 #[test]
 fn parse_rejects_invalid_var_key() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": { "x": { "commands": ["echo"], "vars": { "1bad": "v" } } }
     }"#;
 	assert!(parse_runfile(json).is_err());
@@ -391,7 +410,7 @@ fn parse_rejects_invalid_var_key() {
 #[test]
 fn parse_command_with_args_placeholder() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "run": { "commands": ["node app.js {{ ARGS }}"] }
         }
@@ -403,7 +422,7 @@ fn parse_command_with_args_placeholder() {
 #[test]
 fn parse_command_with_conditional_args() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "dev": {
                 "commands": ["npm run dev"],
@@ -422,7 +441,7 @@ fn parse_command_with_conditional_args() {
 #[test]
 fn parse_command_with_description() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": {
                 "description": "Build the project",
@@ -441,7 +460,7 @@ fn parse_command_with_description() {
 #[test]
 fn parse_command_with_force_shell() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "ps-task": {
                 "commands": ["Write-Host hello"],
@@ -465,7 +484,7 @@ fn parse_command_with_force_shell() {
 #[test]
 fn parse_command_force_shell_overrides_global() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "special": {
                 "commands": ["Write-Host hello"],
@@ -488,7 +507,7 @@ fn parse_command_force_shell_overrides_global() {
 #[test]
 fn parse_command_with_add_to_path() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": {
                 "commands": ["my-tool build"],
@@ -514,7 +533,7 @@ fn parse_command_with_add_to_path() {
 #[test]
 fn parse_logging_on_command() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "verbose": {
                 "commands": ["echo step1", "echo step2"],
@@ -538,7 +557,7 @@ fn parse_logging_on_command() {
 #[test]
 fn parse_logging_on_globals() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "x": { "commands": ["echo"] }
         },
@@ -553,7 +572,7 @@ fn parse_logging_on_globals() {
 #[test]
 fn parse_command_logging_overrides_global() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "quiet": {
                 "commands": ["echo"],
@@ -574,7 +593,7 @@ fn parse_command_logging_overrides_global() {
 #[test]
 fn parse_ignore_errors_on_command() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "risky": {
                 "commands": ["echo a", "echo b"],
@@ -593,7 +612,7 @@ fn parse_ignore_errors_on_command() {
 #[test]
 fn parse_ignore_errors_on_globals() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "x": { "commands": ["echo"] }
         },

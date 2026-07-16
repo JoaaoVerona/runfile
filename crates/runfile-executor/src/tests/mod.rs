@@ -841,7 +841,7 @@ fn dep_ignore_errors_does_not_abort_parent() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "_dep": {{ "commands": ["{fail_cmd}", "{fail_cmd}"], "ignoreErrors": true }},
             "parent": {{ "commands": ["@_dep", "{create_marker}"] }}
@@ -1079,7 +1079,7 @@ fn run_target_with_dependency() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "setup": {{ "commands": ["{create_marker}"] }},
             "build": {{ "commands": ["@setup", "echo building"] }}
@@ -1104,7 +1104,7 @@ fn run_target_cycle_detection() {
 	let dir = TempDir::new().unwrap();
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "a": { "commands": ["@b"] },
             "b": { "commands": ["@a"] }

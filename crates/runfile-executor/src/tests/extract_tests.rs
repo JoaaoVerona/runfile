@@ -8,7 +8,7 @@ fn extract_simple_target() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build", "echo done"] }
         }
@@ -36,7 +36,7 @@ fn extract_with_env_vars_bash() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": {
                 "commands": ["npm run build"],
@@ -69,7 +69,7 @@ fn extract_with_dependencies() {
 	// shell commands appear inline at the call site, with the dep's own env
 	// reflected on each command.
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "clean": { "commands": ["npm run clean"], "env": { "ENV": "test" } },
             "build": {
@@ -119,7 +119,7 @@ fn extract_with_global_dependency() {
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "setup": { "commands": ["echo setup"] },
             "build": { "commands": ["@setup", "echo build"] }
@@ -150,7 +150,7 @@ fn extract_detects_cycles() {
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "a": { "commands": ["@b"] },
             "b": { "commands": ["@a"] }
@@ -176,7 +176,7 @@ fn extract_target_call_with_args_forwards_to_dep() {
 	// `@deploy --env=prod` should pass `--env=prod` into the dep so the
 	// dep's `{{ ARG.env }}` substitution resolves.
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "deploy": { "commands": ["echo deploying to {{ ARG.env }}"] },
             "release": { "commands": ["@deploy --env=prod"] }
@@ -211,7 +211,7 @@ fn extract_for_namespaces_aggregator() {
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "dev": {
                 "commands": [
@@ -255,7 +255,7 @@ fn extract_for_in_literal_array_expands_per_iteration() {
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build-all": {
                 "commands": [
@@ -294,7 +294,7 @@ fn extract_for_glob_walks_filesystem() {
 	fs::write(dir.path().join("ignore.md"), b"c").unwrap();
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "lint": {
                 "commands": [
@@ -324,7 +324,7 @@ fn extract_for_glob_with_no_matches_emits_no_commands() {
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "lint": {
                 "commands": [
@@ -357,7 +357,7 @@ fn extract_for_shell_emits_placeholder_without_running_iterator() {
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "process-files": {
                 "commands": [
@@ -390,7 +390,7 @@ fn extract_if_evaluates_condition_against_run_context() {
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "stripe-webhook": {
                 "commands": [
@@ -443,7 +443,7 @@ fn extract_optional_target_call_skips_missing() {
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["@?missing", "echo built"] }
         }
@@ -469,7 +469,7 @@ fn extract_with_args_substitution() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "deploy": { "commands": ["echo deploying to {{ ARG.env }}"] }
         }
@@ -503,7 +503,7 @@ fn extract_substitutes_env_values_with_args_flags_and_env() {
 	// it to exercise `{{ ENV.* }}` resolution without mutating process env
 	// (which races with other parallel tests).
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "test": {
                 "commands": ["./gradlew test"],
@@ -545,7 +545,7 @@ fn extract_missing_required_arg_errors() {
 	use runfile_parser::Runfile;
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "deploy": { "commands": ["echo deploying to {{ ARG.env }}"] }
         }
@@ -645,7 +645,7 @@ fn extract_working_directory_resolves_env_from_globals() {
 	let dir = TempDir::new().unwrap();
 	let runfile_path = dir.path().join("Runfile.json");
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "globals": {
             "env": { "PROJECT_PATH": "/some/project" }
         },

@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn reject_target_name_starting_with_colon() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             ":build": { "commands": ["echo"] }
         }
@@ -17,7 +17,7 @@ fn reject_target_name_starting_with_colon() {
 #[test]
 fn reject_target_name_colon_list() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             ":list": { "commands": ["echo"] }
         }
@@ -29,7 +29,7 @@ fn reject_target_name_colon_list() {
 #[test]
 fn accept_target_names_with_colon_not_at_start() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "ci:build": { "commands": ["echo"] },
             "test:unit": { "commands": ["echo"] }
@@ -41,7 +41,7 @@ fn accept_target_names_with_colon_not_at_start() {
 #[test]
 fn accept_previously_reserved_target_names() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "list": { "commands": ["echo"] },
             "config": { "commands": ["echo"] },
@@ -56,7 +56,7 @@ fn accept_previously_reserved_target_names() {
 #[test]
 fn parse_target_with_aliases() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "stop-dev": { "commands": ["./stop.sh"], "aliases": ["stop", "sd"] }
         }
@@ -72,7 +72,7 @@ fn parse_target_with_aliases() {
 #[test]
 fn resolve_target_by_name() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"], "aliases": ["b"] }
         }
@@ -84,7 +84,7 @@ fn resolve_target_by_name() {
 #[test]
 fn resolve_target_by_alias() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"], "aliases": ["b"] }
         }
@@ -96,7 +96,7 @@ fn resolve_target_by_alias() {
 #[test]
 fn resolve_target_unknown_returns_none() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"] }
         }
@@ -108,7 +108,7 @@ fn resolve_target_unknown_returns_none() {
 #[test]
 fn all_target_names_includes_aliases() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"], "aliases": ["b"] },
             "test": { "commands": ["cargo test"] }
@@ -124,7 +124,7 @@ fn all_target_names_includes_aliases() {
 #[test]
 fn reject_alias_conflicts_with_target() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"], "aliases": ["test"] },
             "test": { "commands": ["cargo test"] }
@@ -137,7 +137,7 @@ fn reject_alias_conflicts_with_target() {
 #[test]
 fn reject_duplicate_alias_across_targets() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"], "aliases": ["x"] },
             "test": { "commands": ["cargo test"], "aliases": ["x"] }
@@ -150,7 +150,7 @@ fn reject_duplicate_alias_across_targets() {
 #[test]
 fn reject_alias_starting_with_colon() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"], "aliases": [":b"] }
         }
@@ -162,7 +162,7 @@ fn reject_alias_starting_with_colon() {
 #[test]
 fn accept_alias_with_colon_not_at_start() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"], "aliases": ["ci:b"] }
         }
@@ -173,7 +173,7 @@ fn accept_alias_with_colon_not_at_start() {
 #[test]
 fn reject_alias_same_as_target() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["cargo build"], "aliases": ["build"] }
         }
@@ -189,7 +189,7 @@ fn parse_working_directory_substitution_on_target() {
 	// `workingDirectory` is a free-form path that supports `{{ ... }}`
 	// substitution.
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": {
                 "commands": ["echo"],
@@ -206,7 +206,7 @@ fn parse_working_directory_relative_path_on_target() {
 	// Plain relative paths are accepted; the runner resolves them against
 	// the target's source Runfile directory.
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": {
                 "commands": ["echo"],
@@ -227,7 +227,7 @@ fn parse_working_directory_absolute_path_on_target() {
 	let abs = "/home/dev/project";
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "build": {{
                 "commands": ["echo"],
@@ -243,7 +243,7 @@ fn parse_working_directory_absolute_path_on_target() {
 #[test]
 fn parse_working_directory_on_globals() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["echo"] }
         },
@@ -258,7 +258,7 @@ fn parse_working_directory_on_globals() {
 #[test]
 fn parse_working_directory_absent_is_none() {
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "build": { "commands": ["echo"] }
         }

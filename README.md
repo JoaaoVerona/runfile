@@ -12,7 +12,7 @@ $ run dev --port=4000
 
 ```jsonc
 {
-  "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+  "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
   "targets": {
     "dev": {
       "description": "Starts the dev server",
@@ -55,13 +55,13 @@ npm install -g @runfile/cli
 Linux / macOS:
 
 ```bash
-curl -fsSL https://github.com/Skiley/runfile/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/JoaaoVerona/runfile/releases/latest/download/install.sh | sh
 ```
 
 Windows (via PowerShell):
 
 ```powershell
-iwr https://github.com/Skiley/runfile/releases/latest/download/install.ps1 | iex
+iwr https://github.com/JoaaoVerona/runfile/releases/latest/download/install.ps1 | iex
 ```
 
 **2. Generate a starter `Runfile.json`** in your project root:
@@ -449,7 +449,7 @@ exactly like everywhere else.
 ```jsonc
 {
   "globals": {
-    "vars": { "appName": "skiley" }      // available to every target
+    "vars": { "appName": "myapp" }      // available to every target
   },
   "targets": {
     "deploy": {

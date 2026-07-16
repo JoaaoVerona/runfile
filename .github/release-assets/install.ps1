@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 # it so the download doesn't appear to hang.
 $ProgressPreference = 'SilentlyContinue'
 
-$repo = 'Skiley/runfile'
+$repo = 'JoaaoVerona/runfile'
 $installDir = if ($env:RUNFILE_INSTALL_DIR) { $env:RUNFILE_INSTALL_DIR } else { "$env:LOCALAPPDATA\runfile\bin" }
 # Version precedence: positional arg, then $env:RUNFILE_VERSION (the
 # `iwr ... | iex` invocation form can't pass positional args), then latest.

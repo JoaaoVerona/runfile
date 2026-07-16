@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn parse_target_call_no_args() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build": { "commands": ["echo build"] },
 			"ci": { "commands": ["@build"] }
@@ -23,7 +23,7 @@ fn parse_target_call_no_args() {
 #[test]
 fn parse_target_call_with_args() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build": { "commands": ["echo build"] },
 			"ci": { "commands": ["@build --release --features foo"] }
@@ -43,7 +43,7 @@ fn parse_target_call_with_args_substitution_template() {
 	// {{ ARGS }} and {{ RUN.os }} are preserved in the args_template — substitution
 	// happens at runtime.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build": { "commands": ["echo build"] },
 			"ci": { "commands": ["@build {{ ARGS }} --os={{ RUN.os }}"] }
@@ -59,7 +59,7 @@ fn parse_target_call_with_args_substitution_template() {
 #[test]
 fn parse_target_call_inside_if_branches() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"prod-deploy": { "commands": ["echo prod"] },
 			"dev-deploy": { "commands": ["echo dev"] },
@@ -83,7 +83,7 @@ fn parse_target_call_inside_if_branches() {
 #[test]
 fn parse_target_call_inside_for_body() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build": { "commands": ["echo build"] },
 			"matrix": {
@@ -107,7 +107,7 @@ fn parse_target_call_inside_for_body() {
 fn parse_target_call_with_quoted_args() {
 	// Quoted args are kept verbatim — shlex-splitting happens at execute time.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"echo": { "commands": ["echo {{ ARGS }}"] },
 			"t": { "commands": ["@echo \"hello world\" foo"] }
@@ -124,7 +124,7 @@ fn parse_target_call_with_quoted_args() {
 fn parse_target_call_rejects_empty_target_name() {
 	// `@` alone or `@ args` is rejected at parse time.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": ["@ foo"] }
 		}
@@ -140,7 +140,7 @@ fn parse_target_call_rejects_empty_target_name() {
 fn parse_target_call_serializes_back_to_string() {
 	// Round-trip: TargetCall serializes as the original `@target args` form.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build": { "commands": ["echo build"] },
 			"t": { "commands": ["@build --release"] }
@@ -158,7 +158,7 @@ fn parse_target_call_serializes_back_to_string() {
 fn parse_plain_string_with_at_inside_is_shell_command() {
 	// `email@host` (no leading @) is a plain shell command.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"t": { "commands": ["echo email@host"] }
 		}
@@ -171,7 +171,7 @@ fn parse_plain_string_with_at_inside_is_shell_command() {
 fn parse_if_block_string_then_rejects_object() {
 	// A non-array, non-string `then` should still be a parse error.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
 				{ "if": "{{ ARG.x }}", "then": { "if": "true", "then": [] } }
@@ -184,7 +184,7 @@ fn parse_if_block_string_then_rejects_object() {
 #[test]
 fn parse_if_block_empty_then_allowed() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"noop": { "commands": [
 				{ "if": "{{ ARG.x }}", "then": [] }
@@ -197,7 +197,7 @@ fn parse_if_block_empty_then_allowed() {
 #[test]
 fn parse_if_rejects_empty_condition() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
 				{ "if": "", "then": [] }
@@ -216,7 +216,7 @@ fn parse_if_accepts_arbitrary_condition_text() {
 	// surface at runtime when the substitution machinery actually evaluates
 	// the body. So the parser accepts any non-empty string here.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
 				{ "if": "a && b || c", "then": [] }
@@ -236,7 +236,7 @@ fn parse_if_accepts_arbitrary_condition_text() {
 #[test]
 fn parse_for_in_block() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build_each": {
 				"commands": [
@@ -261,7 +261,7 @@ fn parse_for_in_block() {
 #[test]
 fn parse_for_do_accepts_single_string() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"each": {
 				"commands": [
@@ -284,7 +284,7 @@ fn parse_for_in_namespaces_magic_string() {
 	// `"in": "namespaces"` is the only string form accepted — anything else
 	// errors. Used to iterate over namespace prefixes from `includes`.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build_all": {
 				"commands": [
@@ -310,7 +310,7 @@ fn parse_for_in_array_still_works_alongside_magic_string() {
 	// Sanity: existing `in: [array]` form is unaffected by the new magic-string
 	// path through `ForInValue`.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"each": {
 				"commands": [
@@ -335,7 +335,7 @@ fn parse_for_in_string_other_than_namespaces_errors() {
 	// Only `"namespaces"` is a recognised string form — anything else is a
 	// hard error to catch typos like `"namespace"` (singular).
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": {
 				"commands": [
@@ -356,7 +356,7 @@ fn parse_for_in_string_other_than_namespaces_errors() {
 fn parse_for_in_object_form_errors() {
 	// Defensive: rejecting non-array/non-string `in` values with a clear message.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": {
 				"commands": [
@@ -390,7 +390,7 @@ fn for_in_namespaces_roundtrips_through_serde() {
 #[test]
 fn parse_for_glob_block() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"fmt": {
 				"commands": [
@@ -410,7 +410,7 @@ fn parse_for_glob_block() {
 #[test]
 fn parse_for_shell_block() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"check": {
 				"commands": [
@@ -430,7 +430,7 @@ fn parse_for_shell_block() {
 #[test]
 fn parse_for_rejects_no_iterator() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
 				{ "for": "x", "do": ["echo {{ VAR.x }}"] }
@@ -445,7 +445,7 @@ fn parse_for_rejects_no_iterator() {
 #[test]
 fn parse_for_rejects_multiple_iterators() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
 				{ "for": "x", "in": ["a"], "glob": "*.rs", "do": [] }
@@ -460,7 +460,7 @@ fn parse_for_rejects_multiple_iterators() {
 #[test]
 fn parse_for_rejects_invalid_var_name() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
 				{ "for": "1abc", "in": ["x"], "do": [] }
@@ -474,7 +474,7 @@ fn parse_for_rejects_invalid_var_name() {
 #[test]
 fn parse_for_with_parallel_flag() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"par": {
 				"commands": [
@@ -494,7 +494,7 @@ fn parse_for_with_parallel_flag() {
 #[test]
 fn parse_nested_control_flow() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"complex": {
 				"commands": [
@@ -516,7 +516,7 @@ fn parse_nested_control_flow() {
 #[test]
 fn parse_unknown_control_flow_field_rejected() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
 				{ "if": "{{ ARG.x }}", "then": [], "extraField": 1 }
@@ -529,7 +529,7 @@ fn parse_unknown_control_flow_field_rejected() {
 #[test]
 fn parse_object_without_if_or_for_rejected() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"bad": { "commands": [
 				{ "foo": "bar" }
@@ -545,7 +545,7 @@ fn parse_control_flow_inside_when_block() {
 	// step's previous "run inline commands first" role is now just
 	// prepending to `commands`; the always/failure-only cases use `when`.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"deploy": {
 				"commands": [
@@ -561,7 +561,7 @@ fn parse_control_flow_inside_when_block() {
 #[test]
 fn parse_backwards_compat_string_only_commands_still_works() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build": { "commands": ["cargo build", "cargo test"] }
 		}
@@ -576,7 +576,7 @@ fn parse_backwards_compat_string_only_commands_still_works() {
 #[test]
 fn walk_step_templates_visits_all_string_payloads() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"x": {
 				"commands": [
@@ -607,7 +607,7 @@ fn walk_step_templates_visits_all_string_payloads() {
 #[test]
 fn walk_spec_aux_templates_visits_all_substitutable_fields() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"x": {
 				"commands": ["echo go"],
@@ -1065,7 +1065,7 @@ fn match_walks_templates_inside_cases_and_default() {
 #[test]
 fn parse_target_with_metadata() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build": {
 				"commands": ["cargo build"],
@@ -1083,7 +1083,7 @@ fn parse_target_with_metadata() {
 #[test]
 fn parse_globals_with_metadata() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": { "x": { "commands": ["echo"] } },
 		"globals": { "metadata": { "excludeFromGenerateCommand": false } }
 	}"#;
@@ -1096,7 +1096,7 @@ fn parse_globals_with_metadata() {
 #[test]
 fn metadata_preserves_unknown_keys() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build": {
 				"commands": ["cargo build"],
@@ -1118,7 +1118,7 @@ fn metadata_accepts_any_property_with_any_value_type() {
 	// untouched. Editor extensions, CI scripts, and other tooling can stash
 	// arbitrary fields here without parser errors.
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"build": {
 				"commands": ["cargo build"],
@@ -1156,7 +1156,7 @@ fn metadata_accepts_any_property_with_any_value_type() {
 #[test]
 fn target_default_not_excluded_from_generate() {
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": { "build": { "commands": ["cargo build"] } }
 	}"#;
 	let rf = parse_runfile(json).unwrap();
@@ -1171,7 +1171,7 @@ fn merge_metadata_globals_into_target_target_wins() {
 	std::fs::write(
 		&path,
 		r#"{
-			"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+			"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 			"globals": {
 				"metadata": { "excludeFromGenerateCommand": true, "owner": "team-A" }
 			},
@@ -1216,7 +1216,7 @@ fn merge_metadata_no_globals_keeps_target_value() {
 	std::fs::write(
 		&path,
 		r#"{
-			"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+			"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 			"targets": {
 				"build": {
 					"commands": ["cargo build"],

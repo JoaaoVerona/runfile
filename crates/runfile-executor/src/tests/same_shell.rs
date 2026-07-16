@@ -75,7 +75,7 @@ fn cd_persists_across_steps() {
 
 	let json = format!(
 		r#"{{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {{
                 "go": {{
                     "commands": ["cd sub", "{touch_relative}"],
@@ -123,7 +123,7 @@ fn cd_persists_across_steps() {
 fn rejects_at_target_call() {
 	let shell = get_test_shell();
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {
                 "dep": { "commands": ["echo hi"] },
                 "go": {
@@ -158,7 +158,7 @@ fn rejects_at_target_call() {
 #[test]
 fn dry_run_emits_one_joined_line() {
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {
                 "go": {
                     "commands": ["cd ci-scripts", "./ci-deploy.sh"],
@@ -196,7 +196,7 @@ fn dry_run_emits_one_joined_line() {
 #[test]
 fn dry_run_uses_powershell_separator() {
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {
                 "go": {
                     "commands": ["cmd1", "cmd2"],
@@ -228,7 +228,7 @@ fn dry_run_uses_powershell_separator() {
 #[test]
 fn dry_run_uses_cmd_separator_for_ignore_errors() {
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {
                 "go": {
                     "commands": ["cmd1", "cmd2"],
@@ -283,7 +283,7 @@ fn ignore_errors_runs_all_steps() {
 
 	let json = format!(
 		r#"{{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {{
                 "go": {{
                     "commands": ["{fail}", "{touch_after}"],
@@ -321,7 +321,7 @@ fn globals_same_shell_baked_into_target() {
 	// `sameShell` on globals applies to every target unless the target
 	// overrides it with `sameShell: false`.
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "globals": { "sameShell": true },
             "targets": {
                 "inherits": { "commands": ["echo a", "echo b"] },
@@ -348,7 +348,7 @@ fn detach_with_same_shell_allowed_without_parallel() {
 	// rejected at parse time. With sameShell: it's allowed because the
 	// commands collapse to one shell invocation.
 	let json = r#"{
-            "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+            "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
             "targets": {
                 "bg": {
                     "commands": ["echo a", "echo b"],

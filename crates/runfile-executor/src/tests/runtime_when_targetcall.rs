@@ -14,7 +14,7 @@ fn when_always_runs_after_success() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": [
@@ -46,7 +46,7 @@ fn when_failure_skips_on_success() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": [
@@ -85,7 +85,7 @@ fn when_failure_runs_on_failure() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": [
@@ -130,7 +130,7 @@ fn when_with_if_block() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": [
@@ -169,7 +169,7 @@ fn when_ignore_errors_does_not_flip_target_state() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": [
@@ -204,7 +204,7 @@ fn when_inside_parallel_target_partitions_by_phase() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "parallel": true,
@@ -243,7 +243,7 @@ fn detach_evaluates_if_block_and_does_not_run_condition_as_shell() {
 	use std::collections::HashMap;
 
 	let json = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"install": {
 				"commands": [
@@ -280,7 +280,7 @@ fn detach_evaluates_if_block_and_does_not_run_condition_as_shell() {
 
 	// And `@target` calls inside detach are rejected.
 	let json2 = r#"{
-		"$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
 		"targets": {
 			"foo": { "commands": ["echo hi"] },
 			"bad": { "commands": ["@foo"], "detach": true, "forceShell": "sh" }
@@ -319,7 +319,7 @@ fn target_call_runs_dependency_and_passes_args() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "echo-arg": {{ "commands": ["{append_arg}"] }},
             "main": {{
@@ -360,7 +360,7 @@ fn target_call_no_dedup() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "tick": {{ "commands": ["{bump}"] }},
             "main": {{ "commands": ["@tick", "@tick", "@tick"] }}
@@ -397,7 +397,7 @@ fn target_call_passes_parent_env_to_dep() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "show-env": {{ "commands": ["{echo_var}"] }},
             "parent": {{
@@ -439,7 +439,7 @@ fn target_call_dep_env_overrides_parent_env() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "show": {{
                 "env": {{ "SHARED": "from-dep" }},
@@ -473,7 +473,7 @@ fn target_call_cycle_is_detected() {
 	let dir = TempDir::new().unwrap();
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "a": { "commands": ["@b"] },
             "b": { "commands": ["@a"] }
@@ -499,7 +499,7 @@ fn target_call_unknown_target_errors() {
 	let dir = TempDir::new().unwrap();
 
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "main": { "commands": ["@nonexistent"] }
         }
@@ -524,7 +524,7 @@ fn target_call_in_parallel_parent_runs_each_dep() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "log": {{ "commands": ["{bump}"] }},
             "main": {{
@@ -574,7 +574,7 @@ fn target_call_inside_if_branch() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "prod": {{ "commands": ["{touch_prod}"] }},
             "dev": {{ "commands": ["{touch_dev}"] }},
@@ -610,7 +610,7 @@ fn target_call_substitutes_args_template() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "echo": {{ "commands": ["{echo}"] }},
             "fwd": {{ "commands": ["@echo {{{{ ARGS }}}}"] }}
@@ -648,7 +648,7 @@ fn run_target_cwd_working_directory() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "test-cwd": {{
                 "commands": ["{create_marker}"],
@@ -700,7 +700,7 @@ fn run_target_global_cwd_working_directory() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "test-cwd": {{
                 "commands": ["{create_marker}"],
@@ -757,7 +757,7 @@ fn run_target_working_directory_target_overrides_global() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "test-override": {{
                 "commands": ["{create_marker}"],
@@ -810,7 +810,7 @@ fn working_directory_accepts_substitution() {
 	// `{{ ARG.dir ? RUN.cwd }}` → falls back to RUN.cwd when --dir is missing.
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": ["{touch}"],
@@ -848,7 +848,7 @@ fn working_directory_relative_path_resolves_against_runfile_parent() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": ["{create_marker}"],
@@ -910,7 +910,7 @@ fn working_directory_resolves_env_from_globals() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "globals": {{
             "env": {{ "PROJECT_PATH": "{project_path}" }}
         }},
@@ -973,7 +973,7 @@ fn working_directory_resolves_target_env() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "build": {{
                 "commands": ["{create_marker}"],
@@ -1016,7 +1016,7 @@ fn working_directory_resolves_declared_var() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "build": {{
                 "commands": ["{create_marker}"],
@@ -1061,7 +1061,7 @@ fn working_directory_on_globals_resolves_env_from_globals() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "globals": {{
             "env": {{ "PROJECT_PATH": "{project_path}" }},
             "workingDirectory": "{{{{ ENV.PROJECT_PATH }}}}"
@@ -1110,7 +1110,7 @@ fn force_shell_accepts_substitution() {
 	let shell = get_test_shell();
 	let dir = TempDir::new().unwrap();
 	let json = r#"{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {
             "t": {
                 "commands": ["echo hi"],
@@ -1151,7 +1151,7 @@ fn add_to_path_resolves_relative_to_runfile_parent_not_working_directory() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": ["{write_path}"],
@@ -1237,7 +1237,7 @@ fn env_files_resolve_relative_to_runfile_parent_not_working_directory() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": ["{write_token}"],
@@ -1289,7 +1289,7 @@ fn error_fails_command_and_runs_when_failure_and_always() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "commands": [
@@ -1342,7 +1342,7 @@ fn error_swallowed_by_ignore_errors() {
 
 	let json = format!(
 		r#"{{
-        "$schema": "https://github.com/Skiley/runfile/releases/latest/download/v0.schema.json",
+        "$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
         "targets": {{
             "t": {{
                 "ignoreErrors": true,
