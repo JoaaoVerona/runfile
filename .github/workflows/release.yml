@@ -108,12 +108,15 @@ jobs:
         run: sha256sum * > sha256.sum
 
       - name: Create release
-        uses: softprops/action-gh-release@v2.4.0
-        with:
-          fail_on_unmatched_files: true
-          files: dist/*
-          generate_release_notes: true
-          tag_name: ${{ inputs.tag || github.ref_name }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*
 
   npm:
     name: Publish npm package
