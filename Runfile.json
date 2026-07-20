@@ -29,10 +29,9 @@
 		"check": {
 			"commands": [
 				"cargo fmt --all -- --check",
-				"cargo clippy --all-targets --all-features --locked -- -D warnings",
-				"cargo check --all-targets --all-features --locked"
+				"cargo clippy --all-targets --all-features --locked -- -D warnings"
 			],
-			"description": "Non-mutating gate: format check + Clippy (deny warnings) + type/borrow check"
+			"description": "Non-mutating gate: format check + Clippy (deny warnings; also type/borrow-checks)"
 		},
 		"clean": {
 			"commands": [
@@ -75,11 +74,10 @@
 		},
 		"lint": {
 			"commands": [
-				"cargo check --all-targets --all-features --locked",
 				"cargo fmt --all",
 				"cargo clippy --all-targets --all-features --locked -- -D warnings"
 			],
-			"description": "Mutating: type-check, format (write), and Clippy"
+			"description": "Mutating: format (write) + Clippy (deny warnings; also type/borrow-checks)"
 		},
 		"miri": {
 			"commands": [
