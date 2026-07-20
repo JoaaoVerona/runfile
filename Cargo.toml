@@ -50,6 +50,7 @@ windows-sys = { features = ["Win32_Foundation", "Win32_Security", "Win32_Storage
 zeroize = "=1.8.2"
 
 [profile.dev.package."*"]
+debug = 0
 opt-level = 3
 
 [profile.release]
