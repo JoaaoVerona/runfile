@@ -43,7 +43,7 @@ crates/
 
 ### runfile-parser
 
-**Files:** `schema.rs`, `discover.rs`, `parse.rs`, `merge.rs`, `dsl.rs`, `tests.rs`
+**Files:** `schema.rs`, `discover.rs`, `parse.rs`, `merge.rs`, `dsl.rs`, `prepare.rs`, `tests.rs`
 
 - Defines the Runfile schema as Rust types: `Runfile`, `CommandSpec`, `Globals`, `EnvValue`, `WhenStep`,
   `WhenCondition`, `ExtendStdio`, `StdioStream`, `CommandStep`, `IfStep`, `ForStep`, `MatchStep`, `TargetCallStep`,
@@ -168,7 +168,7 @@ crates/
 
 ### runfile-settings
 
-**Files:** `settings.rs`, `paths.rs`, `keyring_store.rs`, `keyring_keys.rs`, `tests.rs`
+**Files:** `settings.rs`, `paths.rs`, `prepare_state.rs`, `keyring_store.rs`, `keyring_keys.rs`, `tests.rs`
 
 - `Settings` struct holds `shell_paths`, `path_aliases`, `global_files` only — secret-key state
   is **not** part of settings.json in any form. Older binaries wrote a `secureKeyFingerprints`
@@ -973,10 +973,10 @@ Top-level: `$schema` (required), `targets` (required), `globals` (optional)
 
 Target properties: `commands` (required), `description`, `aliases`, `env`, `vars`, `envFiles`, `forceShell`, `addToPath`,
 `logging`, `ignoreErrors`, `parallel`, `detach`, `sameShell`, `workingDirectory`, `confirm`, `forceKillOnSigInt`,
-`extendStdio`, `watch`, `onlyInDirectories`, `metadata`
+`extendStdio`, `watch`, `onlyInDirectories`, `metadata`, `prepare`
 
 Global properties: `addToPath`, `env`, `vars`, `envFiles`, `forceShell`, `logging`, `ignoreErrors`, `sameShell`,
-`forceKillOnSigInt`, `workingDirectory`, `onlyInDirectories`, `metadata`
+`forceKillOnSigInt`, `workingDirectory`, `onlyInDirectories`, `metadata`, `prepare`
 
 Each entry of a `commands` array is a [`CommandStep`]: a raw shell command string, a target invocation
 (`"@target [args...]"` string), a `WhenStep` (`{ when, commands, [ignoreErrors] }`), an `IfStep`, a
@@ -1176,6 +1176,31 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   metadata-excluded targets are both hidden from generators with no extra wiring. Other tooling consuming
   `Runfile` (CLI `:list`, MCP, completions, etc.) is unaffected — `excludeFromGenerateCommand` is *only* a
   generator-output filter.
+- **Preparation targets (`prepare`)** — an enforced setup precondition, npm-`prepare`-style. `Globals.prepare` and
+  `CommandSpec.prepare` are `Option<String>` inputs; each is a `@target [args]` invocation (leading `@` **required**,
+  `@?` optional form rejected — validated at parse time in `parse.rs::validate_prepare_value` via
+  `schema::parse_prepare_value`, `ParseError::InvalidPrepare`). Unlike every other global field, `globals.prepare` is
+  **additive**, not overriding: `bake_globals_into_target()` computes `CommandSpec.required_prepares: Vec<String>`
+  (`#[serde(skip)]`, computed) = union of the file's `globals.prepare` + the target's own `prepare`, normalised to
+  invocation strings (`schema::prepare_invocation` — target name + whitespace-collapsed args, no `@`) and deduped
+  (global first). `apply_namespace_to_state` prefixes the target-name token of each `required_prepares` entry (so
+  `api:build` requires `api:setup`), mirroring the `@target` rewrite. The hash + prepare-set live in
+  `runfile-parser/src/prepare.rs`: `Runfile::prepare_command_hash(target)` is a `sha2`/`hex` digest of the target's raw
+  (pre-substitution) `commands` **plus every target it statically `@`-calls**, walked depth-first with a visited-set
+  (cycle-safe; dynamic `@{{ ... }}` names are opaque — captured in the parent's serialization, not recursed). Because
+  it hashes raw commands, edits to the setup *definition* re-trigger the requirement while runtime arg/env values
+  don't. `Runfile::prepare_target_names()` returns the canonical names of every referenced prepare target (for
+  gate-exemption + recording). State lives machine-locally in `runfile-settings` (`prepare_state.rs`,
+  `PrepareState` → `state.json`, separate from `settings.json`): `{ abs-runfile-path: { invocation: hash } }`, keyed by
+  canonicalized path (`prepare_state::path_key`). The gate is in `runfile-cli/cmd_run.rs::enforce_prepare_gate` (run
+  before `run_target_with_cwd`, so also before watch delegation): skips when `ci_detect::is_ci()`, when
+  `RUNFILE_SKIP_PREPARE` is set (non-empty), or when the invoked target is itself a prepare target; otherwise checks
+  each `required_prepares` entry against the recorded hash and hard-errors (exit 1) listing every unmet requirement as
+  `run <invocation>` with `(never run)` vs `(changed since you last ran it)`. Missing/internal prepare targets error
+  clearly at gate time (existence isn't validated at parse time — includes may define them). `record_prepare_if_needed`
+  (called on exit-0 of a directly-invoked prepare target) writes `invocation → hash`. `--dry-run` and `:` subcommands
+  are never gated (they don't route through `enforce_prepare_gate`). State keys use the **canonical** target name +
+  args on both the gate and record sides so alias-vs-canonical spellings agree.
 - Encrypted env vars use AES-256-GCM with the format `encrypted:<base64(nonce||ciphertext||tag)>`. Decryption happens
   in-memory inside `build_env()` — decrypted secrets never touch disk.
 - Each encrypted `.env` file contains a `RUNFILE_ENCRYPTION_PUBLIC_KEY` variable — a SHA-256 fingerprint of the private

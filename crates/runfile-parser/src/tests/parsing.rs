@@ -310,6 +310,7 @@ fn roundtrip_serialization() {
 		includes: None,
 		targets,
 		globals: Some(Globals {
+			prepare: None,
 			add_to_path: Some(vec!["bin".into()]),
 			env_files: None,
 			env: None,

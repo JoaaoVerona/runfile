@@ -429,6 +429,10 @@
 				},
 				"metadata": {
 					"$ref": "#/$defs/Metadata"
+				},
+				"prepare": {
+					"type": "string",
+					"description": "Preparation target this target requires before it can run, written as a target invocation (`@setup-tests`, `@setup --fast`). Must start with `@` (the optional `@?` form is not allowed). This is ADDED TO — not merged over — `globals.prepare`: the target must have run every prepare in the union before it will execute. Running any target listed as a prepare records a hash of its (recursively expanded) commands; the requirement is re-triggered whenever those commands change. Skipped in CI."
 				}
 			}
 		},
@@ -497,6 +501,10 @@
 				},
 				"metadata": {
 					"$ref": "#/$defs/Metadata"
+				},
+				"prepare": {
+					"type": "string",
+					"description": "Preparation target required by EVERY target in this Runfile, written as a target invocation (`@setup`, `@setup --prod`). Must start with `@` (the optional `@?` form is not allowed). Unlike other global settings this is ADDITIVE: a target's requirement is the union of this and the target's own `prepare`. Running the prepare target records a hash of its (recursively expanded) commands; when those commands change, every target that requires it is blocked until it is re-run. Skipped in CI."
 				}
 			}
 		},

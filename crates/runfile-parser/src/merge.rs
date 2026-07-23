@@ -5,7 +5,10 @@
 //! startup when parsing — the perf cost is irrelevant.
 
 use crate::parse::parse_runfile_from_path_partial;
-use crate::schema::{CommandSpec, CommandStep, Globals, Metadata, Runfile};
+use crate::schema::{
+	CommandSpec, CommandStep, Globals, Metadata, Runfile, parse_prepare_value, prepare_invocation,
+	prepare_invocation_target,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -321,12 +324,39 @@ fn is_cwd_allowed(cwd: &Path, base_dir: &Path, only_dirs: &[String]) -> bool {
 /// same reason.) `envFiles` are NOT pre-baked here — they're substitution
 /// templates and are resolved at runtime against `env_files_base_dir`
 /// (= the target's source dir) inside the env builder.
+/// Parse a `prepare` value into its canonical invocation string and append it
+/// to `required` unless already present (dedup preserves first-seen order).
+fn push_prepare(required: &mut Vec<String>, value: &str) {
+	if let Ok((target, args)) = parse_prepare_value(value) {
+		let invocation = prepare_invocation(&target, &args);
+		if !required.contains(&invocation) {
+			required.push(invocation);
+		}
+	}
+}
+
 fn bake_globals_into_target(
 	mut spec: CommandSpec,
 	globals: Option<&Globals>,
 	source_dir: &Path,
 	_target_name: &str,
 ) -> CommandSpec {
+	// prepare: additive union of the file's global prepare and the target's own
+	// prepare (global first, deduped), normalised to invocation strings. Runs
+	// before the `globals` early-return so a target's own `prepare` is honored
+	// even when the file has no globals. Values were format-validated at parse
+	// time, so an unparsable value here is simply skipped.
+	let mut required_prepares: Vec<String> = Vec::new();
+	if let Some(g) = globals
+		&& let Some(p) = &g.prepare
+	{
+		push_prepare(&mut required_prepares, p);
+	}
+	if let Some(p) = &spec.prepare {
+		push_prepare(&mut required_prepares, p);
+	}
+	spec.required_prepares = required_prepares;
+
 	// Always bake target's own addToPath entries to absolute. Relative paths
 	// resolve against the source Runfile's directory — same anchor as
 	// `{{ RUN.parent }}`, decoupled from the target's runtime
@@ -586,6 +616,15 @@ fn apply_namespace_to_state(state: &mut MergeState, namespace: &str) {
 			}
 		}
 		rewrite_target_calls_in_steps(&mut spec.commands, namespace);
+		// Prefix the target-name portion of every required-prepare invocation,
+		// leaving any args untouched (`setup --prod` → `api:setup --prod`), so a
+		// namespaced target's prepare requirement points at the namespaced
+		// prepare target — mirroring the `@target` rewrite above.
+		for invocation in spec.required_prepares.iter_mut() {
+			let target = prepare_invocation_target(invocation);
+			let rest = &invocation[target.len()..];
+			*invocation = format!("{namespace}:{target}{rest}");
+		}
 		state.targets.insert(prefix(&name), spec);
 	}
 

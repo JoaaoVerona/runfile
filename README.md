@@ -656,6 +656,40 @@ output is formatted to match the settings that apply to each written path — th
 sets the newline sequence, `insert_final_newline` and `trim_trailing_whitespace` are applied, and
 `charset = utf-8-bom` prepends a BOM. When no `.editorconfig` applies, the previous defaults are kept.
 
+#### Preparation targets (like `npm prepare`, but enforced)
+
+Most projects have a one-time setup step — install git hooks, pull dependencies, generate config.
+It's easy to forget, and easy to fall behind when it changes. Point `globals.prepare` at a target and
+Runfile makes it a precondition for **every** target in the file:
+
+```jsonc
+{
+  "globals": { "prepare": "@setup" },
+  "targets": {
+    "setup": { "commands": ["git config core.hooksPath .githooks", "npm ci"] },
+    "build": { "commands": ["npm run build"] },
+    "test":  { "commands": ["npm test"], "prepare": "@setup-tests" },
+    "setup-tests": { "commands": ["./scripts/seed-test-db.sh"] }
+  }
+}
+```
+
+Run anything before setup has run and you get a clear stop, not a confusing failure:
+
+```console
+$ run build
+Error: target "build" requires preparation steps that haven't been completed:
+  • run setup    (never run)
+```
+
+Once you `run setup`, Runfile records a hash of its commands (following `@target` calls, so nested
+setups count too). Future runs pass silently — **until those commands change**, at which point the
+requirement re-triggers and everyone is prompted to re-run it. A target's own `prepare` is *additive*
+on top of the global one, so `run test` above requires both `setup` and `setup-tests`.
+
+Preparation is a developer-machine concern, so the gate is **skipped automatically in CI** (detected
+via `CI`, `GITHUB_ACTIONS`, and friends). Set `RUNFILE_SKIP_PREPARE=1` to bypass it manually.
+
 #### Migrate in seconds
 
 ```bash

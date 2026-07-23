@@ -3,6 +3,7 @@ mod dsl;
 mod json;
 mod merge;
 mod parse;
+mod prepare;
 mod schema;
 
 pub use discover::*;

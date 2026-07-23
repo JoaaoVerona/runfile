@@ -7,5 +7,6 @@ mod features;
 mod includes_edge;
 mod json5_merge;
 mod parsing;
+mod prepare;
 mod targetcall_match_meta;
 mod targets_aliases;

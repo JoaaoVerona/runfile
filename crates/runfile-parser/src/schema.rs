@@ -398,6 +398,51 @@ pub(crate) fn command_step_from_string(s: String) -> Result<CommandStep, String>
 	}
 }
 
+/// Parse a `prepare` value (`@target [args...]`) into its target name and raw
+/// args template. The leading `@` is **required** (bare target names are
+/// rejected) and the optional `@?` form is disallowed — a preparation target
+/// must always exist. Returns `Err` with a human-readable message on any of
+/// those violations. Existence of `target` is validated later against the
+/// merged Runfile, not here.
+pub fn parse_prepare_value(value: &str) -> Result<(String, String), String> {
+	let rest = value
+		.strip_prefix('@')
+		.ok_or_else(|| format!("prepare value must start with '@' (got {value:?})"))?;
+	if rest.starts_with('?') {
+		return Err(format!(
+			"prepare value must not use the optional '@?' form (got {value:?})"
+		));
+	}
+	let (target, args) = match find_target_args_split(rest) {
+		Some(idx) => (rest[..idx].to_string(), rest[idx..].trim_start().to_string()),
+		None => (rest.to_string(), String::new()),
+	};
+	if target.is_empty() {
+		return Err("prepare value '@' must be followed by a target name".to_string());
+	}
+	Ok((target, args))
+}
+
+/// Build the canonical invocation string used both as the prepare-state key and
+/// in the `run <invocation>` hint shown to the user: the target name, plus its
+/// args with internal whitespace collapsed to single spaces. `@setup` →
+/// `"setup"`; `@setup   --prod` → `"setup --prod"`.
+pub fn prepare_invocation(target: &str, args: &str) -> String {
+	let args = args.split_whitespace().collect::<Vec<_>>().join(" ");
+	if args.is_empty() {
+		target.to_string()
+	} else {
+		format!("{target} {args}")
+	}
+}
+
+/// The target-name portion of a normalised prepare invocation (everything up to
+/// the first space). Used to test whether an invoked target is itself a
+/// preparation target and to apply namespace prefixes.
+pub fn prepare_invocation_target(invocation: &str) -> &str {
+	invocation.split(' ').next().unwrap_or(invocation)
+}
+
 /// A `@target [args...]` invocation parsed from a string command entry.
 /// The leading `@` is stripped at parse time. An optional `?` after the `@`
 /// (i.e. `@?target`) marks the call as **optional**: at execute time, if the
@@ -978,6 +1023,24 @@ pub struct CommandSpec {
 	/// untouched and can be used by external tools.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub metadata: Option<Metadata>,
+
+	/// Preparation target this specific target requires before it can run,
+	/// written as a target invocation (`@setup-tests`, `@setup --fast`). This is
+	/// **added to** — not merged over — the file's [`Globals::prepare`]; the two
+	/// together form [`Self::required_prepares`]. Must start with `@`; the
+	/// optional `@?` form is not allowed.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub prepare: Option<String>,
+
+	/// The union of this file's [`Globals::prepare`] and this target's own
+	/// [`Self::prepare`], normalised to invocation strings (target name plus
+	/// args, no leading `@`) and deduplicated. Computed during merge by
+	/// [`crate::merge`] and never (de)serialized. The runner gates a target on
+	/// every entry here: each must have been run (its command hash recorded in
+	/// the prepare state) before the target may execute. Namespaced includes
+	/// rewrite the target-name portion of each entry alongside `@target` refs.
+	#[serde(skip)]
+	pub required_prepares: Vec<String>,
 }
 
 impl CommandSpec {
@@ -1010,6 +1073,8 @@ impl CommandSpec {
 			watch: None,
 			only_in_directories: None,
 			metadata: None,
+			prepare: None,
+			required_prepares: Vec::new(),
 		}
 	}
 
@@ -1190,6 +1255,16 @@ impl EnvValue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Globals {
+	/// Preparation target required by **every** target in this Runfile, written
+	/// as a target invocation (`@setup`, `@setup --prod`). Unlike every other
+	/// global field this is **additive**, not overriding: a target's effective
+	/// requirement is the union of this value and the target's own `prepare`
+	/// (see [`CommandSpec::prepare`]). Baked into each target's
+	/// [`CommandSpec::required_prepares`] at parse time. Must start with `@`;
+	/// the optional `@?` form is not allowed.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub prepare: Option<String>,
+
 	/// Directories to prepend to PATH before running commands.
 	#[serde(default, rename = "addToPath", skip_serializing_if = "Option::is_none")]
 	pub add_to_path: Option<Vec<String>>,

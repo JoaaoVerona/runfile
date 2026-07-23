@@ -48,6 +48,7 @@ $ run build --release
 - [Detached Execution](#detached-execution)
 - [extendStdio](#extendstdio)
 - [Force-kill on Ctrl+C](#force-kill-on-ctrlc)
+- [Preparation Targets](#preparation-targets)
 - [Runfile Discovery](#runfile-discovery)
 	- [Global Files](#global-files)
 - [Local Settings](#local-settings)
@@ -296,6 +297,7 @@ Each target is an object under `targets`:
 | `watch`             | `string[]`                | No       | Glob patterns for watch mode. When present, the target automatically re-runs on matching file changes. Use `!` prefix to exclude.                                                                                                                                                                                                                                                           |
 | `onlyInDirectories` | `string[]`                | No       | Restrict this target to only be invocable when the current working directory is at or under one of the listed paths (relative to the Runfile location).                                                                                                                                                                                                                                     |
 | `metadata`          | `object`                  | No       | Free-form open object — accepts any property of any JSON type (strings, numbers, booleans, arrays, nested objects). Round-trips untouched, so editor extensions and CI scripts can stash arbitrary tooling-specific fields here. The only key Runfile itself currently interprets is `excludeFromGenerateCommand: bool`. See [Metadata](#metadata) for details.                              |
+| `prepare`           | `string`                  | No       | A preparation target this target requires before it can run, as a target invocation (`@setup-tests`, `@setup --fast`). Must start with `@` (the `@?` optional form is not allowed). **Additive** with `globals.prepare` — the effective requirement is the union of both. See [Preparation Targets](#preparation-targets).                                                                    |
 
 ### Global Properties
 
@@ -331,6 +333,7 @@ Everything in `globals` applies to all targets. Target-level settings always tak
 | `forceKillOnSigInt` | `boolean`  | Default for [`forceKillOnSigInt`](#force-kill-on-ctrlc). Overridden per-target.                                                                                                                      |
 | `onlyInDirectories` | `string[]` | Restrict this Runfile's targets to only be available when the current working directory is under one of the listed directories (relative to the Runfile's location).                                 |
 | `metadata`          | `object`   | Free-form open object merged into each target's `metadata`. Target-defined keys win; otherwise the global value carries through. See [Metadata](#metadata).                                          |
+| `prepare`           | `string`   | A preparation target required by **every** target in this Runfile, as a target invocation (`@setup`, `@setup --prod`). Must start with `@` (the `@?` optional form is not allowed). Unlike other global settings this is **additive**, not overriding — a target requires the union of this and its own `prepare`. See [Preparation Targets](#preparation-targets).                            |
 
 ---
 
@@ -2161,6 +2164,75 @@ Behavior:
 This is opt-in for two reasons: a heavier teardown path is unnecessary for normal CLI tools, and `SIGKILL`/
 `TerminateJobObject` give the child no chance to flush state. Don't enable it for processes that need a graceful
 shutdown (databases, message queues, etc.).
+
+---
+
+## Preparation Targets
+
+A **preparation target** is a one-time (or refresh-on-change) setup step that must run before other targets — the
+equivalent of npm's `prepare` script, but *enforced*. Point `globals.prepare` at a target and it becomes a
+precondition for **every** target in the file; add a `prepare` to an individual target for an extra requirement that
+applies only to it.
+
+```jsonc
+{
+	"globals": { "prepare": "@setup" },
+	"targets": {
+		"setup":       { "commands": ["git config core.hooksPath .githooks", "npm ci"] },
+		"build":       { "commands": ["npm run build"] },
+		"test":        { "commands": ["npm test"], "prepare": "@setup-tests" },
+		"setup-tests": { "commands": ["./scripts/seed-test-db.sh"] }
+	}
+}
+```
+
+### Value format
+
+The value is a target invocation, exactly like an [`@target`](#call-other-targets-inline-with-target) call inside
+`commands`:
+
+- It **must** start with `@`. A bare name (`"setup"`) is a parse error.
+- Arguments are allowed: `"@setup --prod"`. They are literal (no `{{ ... }}` substitution) and are part of the
+  requirement's identity, so `@setup --prod` and `@setup --dev` are tracked separately.
+- The optional `@?` form is **not** allowed — a preparation target must exist.
+
+### Additive semantics
+
+`globals.prepare` is the one global setting that is **added to** a target's own `prepare` rather than overridden by it.
+In the example above, `run test` requires **both** `setup` (from globals) and `setup-tests` (its own). Every other
+global field uses target-if-set-else-global; only `prepare` unions.
+
+### How the gate works
+
+When you run a target, Runfile checks each of its requirements against a machine-local record (`state.json`, alongside
+your [local settings](#local-settings)):
+
+```console
+$ run build
+Error: target "build" requires preparation steps that haven't been completed:
+  • run setup    (never run)
+
+Run the command(s) above first. (Set RUNFILE_SKIP_PREPARE=1 to bypass, e.g. in CI.)
+```
+
+Run the preparation target directly (`run setup`) and, on success, Runfile records a **hash of its commands**. The hash
+follows `@target` calls, so a setup that delegates to other targets (`"setup": ["@install", "@hooks"]`) re-triggers when
+*any* of those commands change. Until then, gated targets run silently. When the commands change, the recorded hash no
+longer matches and the requirement re-appears — now reported as `(changed since you last ran it)` — so everyone on the
+team is prompted to re-run it after a `git pull`.
+
+Notes:
+
+- **Preparation targets are never gated themselves** — you can always run one directly (that's how you satisfy it).
+  Layered setups are expressed by having one prepare target `@`-call another; the recursive hash and normal execution
+  both follow the call.
+- The gate is **automatically skipped in CI** — detected via `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`,
+  `BUILDKITE`, `JENKINS_URL`, `TF_BUILD`, `TEAMCITY_VERSION`, or `BITBUCKET_BUILD_NUMBER`. CI pipelines run their own
+  setup steps, so blocking there would be noise.
+- Set **`RUNFILE_SKIP_PREPARE=1`** to bypass the gate manually.
+- `--dry-run` and the read-only `:` subcommands are never gated.
+- The requirement resolves in the merged namespace, so in a monorepo `run api:build` requires `api:setup` when the
+  `api` include declares `globals.prepare: "@setup"`.
 
 ---
 

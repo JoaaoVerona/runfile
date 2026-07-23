@@ -88,6 +88,9 @@ pub enum ParseError {
 		"`match` block in {0} has no cases and no default — at least one of `cases` (with at least one entry) or `default` is required"
 	)]
 	EmptyMatchCases(String),
+
+	#[error("Invalid `prepare` in {context}: {reason}")]
+	InvalidPrepare { context: String, reason: String },
 }
 
 /// Maximum Runfile size in bytes (10 MiB). Prevents denial-of-service via
@@ -283,6 +286,20 @@ fn validate_var_keys(
 				return Err(ParseError::InvalidVarKey(key.clone(), context.to_string()));
 			}
 		}
+	}
+	Ok(())
+}
+
+/// Validate a `prepare` value's format (`@target [args]`): the leading `@` is
+/// required and the optional `@?` form is rejected. Existence of the referenced
+/// target is NOT checked here (the merged Runfile isn't available yet) — the
+/// runner validates that when it actually gates a target.
+fn validate_prepare_value(prepare: &Option<String>, context: &str) -> Result<(), ParseError> {
+	if let Some(value) = prepare {
+		crate::schema::parse_prepare_value(value).map_err(|reason| ParseError::InvalidPrepare {
+			context: context.to_string(),
+			reason,
+		})?;
 	}
 	Ok(())
 }
@@ -535,6 +552,9 @@ fn validate_runfile(runfile: &mut Runfile, require_targets: bool) -> Result<(), 
 		validate_env_keys(&spec.env, &format!("target \"{name}\""))?;
 		// Validate var key names so they're guaranteed referenceable as VAR.<key>
 		validate_var_keys(&spec.vars, &format!("target \"{name}\""))?;
+		// Validate the `prepare` value format (`@target [args]`). Existence of the
+		// referenced target is checked later against the merged Runfile.
+		validate_prepare_value(&spec.prepare, &format!("target \"{name}\""))?;
 	}
 
 	// Validate aliases
@@ -574,6 +594,8 @@ fn validate_runfile(runfile: &mut Runfile, require_targets: bool) -> Result<(), 
 		validate_env_keys(&globals.env, "(globals)")?;
 		// Validate global var key names
 		validate_var_keys(&globals.vars, "(globals)")?;
+		// Validate the global `prepare` value format.
+		validate_prepare_value(&globals.prepare, "(globals)")?;
 	}
 
 	Ok(())

@@ -30,3 +30,10 @@ pub fn settings_dir() -> Option<PathBuf> {
 pub fn settings_file_path() -> Option<PathBuf> {
 	settings_dir().map(|d| d.join("settings.json"))
 }
+
+/// Get the full path to the machine-state file (records completed preparation
+/// runs). Lives alongside `settings.json` but is kept separate because it holds
+/// ephemeral machine state rather than user configuration.
+pub fn state_file_path() -> Option<PathBuf> {
+	settings_dir().map(|d| d.join("state.json"))
+}

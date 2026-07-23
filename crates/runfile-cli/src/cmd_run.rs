@@ -2,8 +2,10 @@ use runfile_executor::{
 	InteractiveStdinPrompter, LazyPrivateKeys, RunArgs, RunContext, StdinPrompter, extract_target_with_cwd,
 	format_extracted_commands, log_total_timing, run_target_with_cwd,
 };
-use runfile_parser::{CommandSpec, Runfile, SourceKind, is_internal_target_name};
-use runfile_settings::{Settings, keyring_keys};
+use runfile_parser::{
+	CommandSpec, Runfile, SourceKind, is_internal_target_name, prepare_invocation, prepare_invocation_target,
+};
+use runfile_settings::{PrepareState, Settings, keyring_keys};
 use runfile_shell::ResolvedShell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -83,6 +85,120 @@ fn resolve_target_setup(
 		source_files,
 		shell,
 		args,
+	}
+}
+
+/// Environment variable that, when set to a non-empty value, bypasses the
+/// preparation-target gate for this invocation.
+const SKIP_PREPARE_ENV_VAR: &str = "RUNFILE_SKIP_PREPARE";
+
+/// Why a required preparation target isn't satisfied.
+enum PrepareUnmet {
+	NeverRun,
+	Changed,
+}
+
+/// The state-file key for a required-prepare invocation: the **canonical**
+/// target name plus the invocation's args, so alias-vs-canonical spellings and
+/// the recording side (which uses the canonical name) agree on one entry.
+fn prepare_state_key(invocation: &str, canonical_target: &str) -> String {
+	let token = prepare_invocation_target(invocation);
+	let args = &invocation[token.len()..];
+	format!("{canonical_target}{args}")
+}
+
+/// Enforce the preparation-target gate for the target about to run. Exits the
+/// process with an actionable message when a required preparation target hasn't
+/// been run (or its commands changed since). Returns when satisfied or skipped.
+fn enforce_prepare_gate(rt: &ResolvedTarget) {
+	// CI runs its own setup steps; preparation is a developer-machine concern
+	// (git hooks, local tooling). Never block there.
+	if crate::ci_detect::is_ci() {
+		return;
+	}
+	// Explicit manual bypass.
+	if std::env::var_os(SKIP_PREPARE_ENV_VAR).is_some_and(|v| !v.is_empty()) {
+		return;
+	}
+	// A preparation target is itself always runnable — otherwise it could never
+	// be satisfied. Its hash is recorded on successful completion instead.
+	let prepare_targets = rt.runfile.prepare_target_names();
+	if prepare_targets.contains(&rt.resolved_name) {
+		return;
+	}
+
+	let required = &rt.runfile.targets[&rt.resolved_name].required_prepares;
+	if required.is_empty() {
+		return;
+	}
+
+	let state = PrepareState::load().unwrap_or_default();
+	let mut problems: Vec<(String, PrepareUnmet)> = Vec::new();
+
+	for invocation in required {
+		let token = prepare_invocation_target(invocation);
+		let canonical = match rt.runfile.resolve_target(token) {
+			Some(c) if is_internal_target_name(c) => {
+				eprintln!(
+					"Error: preparation target \"{token}\" required by \"{}\" is internal and cannot be a preparation target.",
+					rt.resolved_name
+				);
+				process::exit(1);
+			}
+			Some(c) => c.to_string(),
+			None => {
+				eprintln!(
+					"Error: preparation target \"{token}\" required by \"{}\" does not exist.",
+					rt.resolved_name
+				);
+				process::exit(1);
+			}
+		};
+		let key = prepare_state_key(invocation, &canonical);
+		let current = rt.runfile.prepare_command_hash(&canonical);
+		match state.recorded_hash(&rt.runfile_path, &key) {
+			Some(recorded) if Some(recorded) == current.as_deref() => {}
+			Some(_) => problems.push((key, PrepareUnmet::Changed)),
+			None => problems.push((key, PrepareUnmet::NeverRun)),
+		}
+	}
+
+	if problems.is_empty() {
+		return;
+	}
+
+	eprintln!(
+		"Error: target \"{}\" requires preparation steps that haven't been completed:",
+		rt.resolved_name
+	);
+	for (key, kind) in &problems {
+		let reason = match kind {
+			PrepareUnmet::NeverRun => "never run",
+			PrepareUnmet::Changed => "changed since you last ran it",
+		};
+		eprintln!("  • run {key}    ({reason})");
+	}
+	eprintln!();
+	eprintln!("Run the command(s) above first. (Set {SKIP_PREPARE_ENV_VAR}=1 to bypass, e.g. in CI.)");
+	process::exit(1);
+}
+
+/// After a successful direct run of a preparation target, record the hash of its
+/// commands so it counts as satisfied for the targets that require it — until
+/// those commands change and the hash no longer matches.
+fn record_prepare_if_needed(rt: &ResolvedTarget, extra_args: &[String]) {
+	if !rt.runfile.prepare_target_names().contains(&rt.resolved_name) {
+		return;
+	}
+	let Some(hash) = rt.runfile.prepare_command_hash(&rt.resolved_name) else {
+		return;
+	};
+	// `resolved_name` is already canonical, so this key matches the gate's.
+	let invocation = prepare_invocation(&rt.resolved_name, &extra_args.join(" "));
+	let mut state = PrepareState::load().unwrap_or_default();
+	state.record(&rt.runfile_path, invocation, hash);
+	if let Err(e) = state.save() {
+		eprintln!("[runfile] Warning: could not record preparation state: {e}");
 	}
 }
 
@@ -258,6 +374,10 @@ pub fn cmd_run(
 ) {
 	let rt = resolve_target_setup(target_name, extra_args, file, stdin_args);
 
+	// Block the run if this target has unmet preparation requirements. Exits the
+	// process with an actionable message; returns when satisfied or skipped.
+	enforce_prepare_gate(&rt);
+
 	// If the target defines watch patterns, automatically enter watch mode
 	let spec = &rt.runfile.targets[&rt.resolved_name];
 	if spec.watch.as_ref().is_some_and(|p| !p.is_empty()) {
@@ -304,6 +424,12 @@ pub fn cmd_run(
 				.final_status
 				.code()
 				.unwrap_or(if result.final_status.success() { 0 } else { 1 });
+			// On a successful direct run of a preparation target, record the hash
+			// of its commands so it counts as satisfied for the targets that
+			// require it (until those commands change).
+			if code == 0 {
+				record_prepare_if_needed(&rt, extra_args);
+			}
 			process::exit(code);
 		}
 		Err(e) => {
