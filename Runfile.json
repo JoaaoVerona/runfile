@@ -5,7 +5,8 @@
 			"CARGO_TARGET_DIR": "target-{{ RUN.os }}",
 			"CARGO_TERM_COLOR": "always"
 		},
-		"logging": true
+		"logging": true,
+		"prepare": "@setup"
 	},
 	"includes": [
 		{
@@ -94,6 +95,19 @@
 				"cargo +nightly miri setup"
 			],
 			"description": "One-time: install the nightly Miri component and build its sysroot"
+		},
+		"precommit": {
+			"commands": [
+				"{{ define(rs, capture('git diff --cached --name-only --diff-filter=ACMR -- \"*.rs\" | xargs')) }}",
+				{
+					"if": "{{ VAR.rs != '' }}",
+					"then": [
+						"rustfmt {{ VAR.rs }}",
+						"git add {{ VAR.rs }}"
+					]
+				}
+			],
+			"description": "Format staged Rust files with rustfmt and re-stage them (pre-commit hook body)"
 		},
 		"release": {
 			"commands": [
