@@ -122,30 +122,56 @@ fn cli_parses_generate_jetbrains_with_output_dir() {
 }
 
 #[test]
-fn cli_parses_generate_vscode_tasks_stdout() {
+fn cli_rejects_generate_vscode_tasks_stdout() {
+	// `--stdout` was removed from the editor generators; `task-descriptors` is the
+	// stdout path now. The flag must no longer parse.
 	let result = try_parse(&["run", ":generate", "vscode-tasks", "--stdout"]);
-	assert!(
-		result.is_ok(),
-		"failed to parse ':generate vscode-tasks --stdout': {result:?}"
-	);
+	assert!(result.is_err(), "':generate vscode-tasks --stdout' should be rejected");
 }
 
 #[test]
-fn cli_parses_generate_zed_tasks_stdout() {
+fn cli_rejects_generate_zed_tasks_stdout() {
 	let result = try_parse(&["run", ":generate", "zed-tasks", "--stdout"]);
-	assert!(
-		result.is_ok(),
-		"failed to parse ':generate zed-tasks --stdout': {result:?}"
-	);
+	assert!(result.is_err(), "':generate zed-tasks --stdout' should be rejected");
 }
 
 #[test]
-fn cli_parses_generate_jetbrains_stdout() {
+fn cli_rejects_generate_jetbrains_stdout() {
 	let result = try_parse(&["run", ":generate", "jetbrains-run-configurations", "--stdout"]);
 	assert!(
-		result.is_ok(),
-		"failed to parse ':generate jetbrains-run-configurations --stdout': {result:?}"
+		result.is_err(),
+		"':generate jetbrains-run-configurations --stdout' should be rejected"
 	);
+}
+
+#[test]
+fn cli_parses_generate_task_descriptors() {
+	let result = try_parse(&["run", ":generate", "task-descriptors"]);
+	assert!(
+		result.is_ok(),
+		"failed to parse ':generate task-descriptors': {result:?}"
+	);
+}
+
+#[test]
+fn cli_parses_generate_task_descriptors_with_file() {
+	let result = try_parse(&["run", ":generate", "task-descriptors", "-f", "Runfile.json"]);
+	assert!(
+		result.is_ok(),
+		"failed to parse ':generate task-descriptors -f Runfile.json': {result:?}"
+	);
+}
+
+#[test]
+fn cli_rejects_generate_task_descriptors_include_flags() {
+	// task-descriptors always includes namespaces + globals; there are no toggles.
+	for flag in ["--stdout", "--include-namespaces", "--include-globals"] {
+		let result = try_parse(&["run", ":generate", "task-descriptors", flag]);
+		assert!(
+			result.is_err(),
+			"':generate task-descriptors {flag}' should be rejected"
+		);
+	}
 }
 
 #[test]

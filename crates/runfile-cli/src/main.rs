@@ -176,9 +176,6 @@ enum GenerateAction {
 		/// Directory to write .xml run configurations to (defaults to .run)
 		#[arg(short = 'o', long = "output-dir")]
 		output_dir: Option<PathBuf>,
-		/// Print the generated run configurations to stdout instead of writing them to disk
-		#[arg(long = "stdout")]
-		stdout: bool,
 		/// Also generate configurations for targets pulled in via `includes` (namespaced targets
 		/// carry their `namespace:` prefixes, just like `run :list`)
 		#[arg(long = "include-namespaces")]
@@ -193,9 +190,6 @@ enum GenerateAction {
 		/// Path to the Runfile.json (defaults to auto-discovery)
 		#[arg(short = 'f', long = "file")]
 		file: Option<PathBuf>,
-		/// Print the generated tasks to stdout instead of writing them to disk
-		#[arg(long = "stdout")]
-		stdout: bool,
 		/// Also generate tasks for targets pulled in via `includes` (namespaced targets carry
 		/// their `namespace:` prefixes, just like `run :list`)
 		#[arg(long = "include-namespaces")]
@@ -210,9 +204,6 @@ enum GenerateAction {
 		/// Path to the Runfile.json (defaults to auto-discovery)
 		#[arg(short = 'f', long = "file")]
 		file: Option<PathBuf>,
-		/// Print the generated tasks to stdout instead of writing them to disk
-		#[arg(long = "stdout")]
-		stdout: bool,
 		/// Also generate tasks for targets pulled in via `includes` (namespaced targets carry
 		/// their `namespace:` prefixes, just like `run :list`)
 		#[arg(long = "include-namespaces")]
@@ -221,6 +212,18 @@ enum GenerateAction {
 		/// via `run :config global-files` (the same ones `run :list` merges in)
 		#[arg(long = "include-globals")]
 		include_globals: bool,
+	},
+	/// Emit an editor-agnostic JSON description of every runnable target to stdout.
+	///
+	/// Always resolves `includes` (namespaces) and merges registered global files, and
+	/// carries per-target provenance (local / included / global) plus the source file
+	/// each came from. Intended for external tooling like the Runfile VS Code extension,
+	/// which builds its own editor integration from this — so there is nothing to write
+	/// to disk and no `--include-*` flags to toggle.
+	TaskDescriptors {
+		/// Path to the Runfile.json (defaults to auto-discovery)
+		#[arg(short = 'f', long = "file")]
+		file: Option<PathBuf>,
 	},
 }
 
@@ -501,29 +504,26 @@ fn main() {
 		Some(Commands::Generate { action }) => match action {
 			GenerateAction::ZedTasks {
 				file,
-				stdout,
 				include_namespaces,
 				include_globals,
-			} => cmd_utilities::cmd_generate_zed_tasks(file.as_deref(), stdout, include_namespaces, include_globals),
+			} => cmd_utilities::cmd_generate_zed_tasks(file.as_deref(), include_namespaces, include_globals),
 			GenerateAction::JetbrainsRunConfigurations {
 				file,
 				output_dir,
-				stdout,
 				include_namespaces,
 				include_globals,
 			} => cmd_utilities::cmd_generate_jetbrains_run_configs(
 				file.as_deref(),
 				output_dir.as_deref(),
-				stdout,
 				include_namespaces,
 				include_globals,
 			),
 			GenerateAction::VscodeTasks {
 				file,
-				stdout,
 				include_namespaces,
 				include_globals,
-			} => cmd_utilities::cmd_generate_vscode_tasks(file.as_deref(), stdout, include_namespaces, include_globals),
+			} => cmd_utilities::cmd_generate_vscode_tasks(file.as_deref(), include_namespaces, include_globals),
+			GenerateAction::TaskDescriptors { file } => cmd_utilities::cmd_generate_task_descriptors(file.as_deref()),
 		},
 		Some(Commands::Convert { action }) => match action {
 			ConvertAction::Makefile { path } => cmd_utilities::cmd_convert_makefile(path),

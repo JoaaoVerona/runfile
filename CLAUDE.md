@@ -1259,16 +1259,24 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   on Windows require function pointers, not closures.
 - VS Code tasks generator (`run :generate vscode-tasks`) follows the same pattern as the Zed generator: generates
   `.vscode/tasks.json`, merges with existing files preserving user-added fields via `#[serde(flatten)]`.
-- **`--stdout` on all three `:generate` subcommands** (a per-subcommand `bool` flag, default off; in `main.rs`'s
-  `GenerateAction` variants) prints the generated config to stdout instead of writing to disk. In this mode the
-  handlers (`cmd_generate_*` in `cmd_utilities.rs`) emit the **freshly generated** config — NOT merged with any
-  existing on-disk file — formatted per `.editorconfig` for the path it would occupy, and perform **no** disk
-  reads/writes (no existing-file read, no `.vscode`/`.zed`/`.run` dir creation, no stale sweep, no summary
-  messages). Bytes are written verbatim via the shared `write_generated_to_stdout` helper (exact bytes, no added
-  trailing newline, so redirects/pipes match on-disk output; a broken pipe exits 0 quietly). JetBrains produces one
-  file per target, so `--stdout` emits each config's XML and — only when there's more than one — prefixes each with
-  a `<!-- <run_dir>/<file> -->` comment delimiter (a single config is emitted verbatim for a clean redirect into a
-  `.run.xml`). The non-`--stdout` path is unchanged.
+- **`run :generate task-descriptors`** (in `runfile-generators/src/task_descriptors.rs`, wired via
+  `cmd_generate_task_descriptors` in `cmd_utilities.rs`) is the editor-**agnostic** stdout generator, meant for
+  external tooling (the Runfile VS Code extension) that builds its own integration rather than consuming an
+  editor's on-disk format. It ALWAYS prints to stdout and never writes disk, and — unlike the three editor
+  generators — ALWAYS resolves `includes` and merges registered global files (it goes through
+  `runfile_helpers::resolve_and_merge`, not `runfile_for_generate`), so it has no `--stdout`/`--include-*` flags,
+  only `-f`. Output is a `{ formatVersion, sources: [{ filePath, kind, targets: [{ name, namespace?, description? }]
+  }] }` document where `kind` is `local`/`included`/`global` (a `DescriptorKind` mapped from
+  `MergeResult.target_sources`' `SourceKind`) and `namespace` is the target's first `:`-segment when it's a real
+  include-namespace root (else omitted, so a colon-in-name local like `all:package` stays un-namespaced). Same visibility
+  filter as the editor generators (internal `_`-targets and `excludeFromGenerateCommand` are dropped); conflicts
+  are already excluded by the merge. Groups are keyed by `(kind, path)` for deterministic local→included→global
+  ordering; a file included twice under different namespaces collapses to one group (targets carry their own
+  `namespace`). Bump `TASK_DESCRIPTORS_FORMAT_VERSION` on an incompatible shape change.
+- **The editor generators write to disk only — `--stdout` was removed from all three.** `task-descriptors` is the
+  single stdout path now. (`VsCodeTasksFile` correspondingly dropped its stdout-only `runfileNamespaces` field.)
+  The `cmd_generate_*` handlers in `cmd_utilities.rs` read any existing on-disk file, merge, and write, formatted
+  per `.editorconfig`; the shared `write_generated_to_stdout` helper is used only by `task-descriptors` now.
 - **`--include-namespaces` on all three `:generate` subcommands** (a per-subcommand `bool` flag, default off; in
   `main.rs`'s `GenerateAction` variants, threaded through to each `cmd_generate_*`). By default the generators
   operate on the local Runfile's own targets only (single-file parse). With the flag, they operate on the local
@@ -1282,8 +1290,8 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   dropped by the merge, so they never reach the generators. The generators themselves are unchanged: they iterate
   `runfile.targets` regardless of source, and JetBrains' `sanitize_file_name` already maps the `:` in namespaced
   names to `_` for the on-disk `Runfile_api_deploy.run.xml` filename while the `run --stdin-args api:deploy`
-  invocation keeps the prefix. Composes with `--stdout` (each handler resolves the Runfile once, before branching
-  on `stdout`). The non-flag path is byte-for-byte unchanged.
+  invocation keeps the prefix. The non-flag path is byte-for-byte unchanged. (`task-descriptors` does not use this
+  helper or these flags — it always resolves includes AND globals via `resolve_and_merge`.)
 - All three editor generators (`vscode`, `zed`, `jetbrains-run-configurations`) inject `--stdin-args` into the
   generated invocation. Editor run configs are static (no per-invocation arg prompt UI built into the IDE), so
   `--stdin-args` is what lets a static config still cover targets that need user input — missing `{{ ARG.x }}` /
@@ -1366,8 +1374,8 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
 6. CLI command *behavior* (as opposed to arg parsing) is tested by driving the compiled binary as a subprocess:
    `runfile-cli/tests/generate_and_write_cli.rs` runs `env!("CARGO_BIN_EXE_run")` in an isolated temp dir (with
    `HOME` / `XDG_CONFIG_HOME` / `APPDATA` pointed at an empty dir so user settings and global Runfiles can't leak
-   targets in) and asserts on stdout and written files. This is where `:generate --stdout` (prints, touches no
-   disk), the `.editorconfig`-aware file output, and `:init` / `:convert` formatting are covered end-to-end —
+   targets in) and asserts on stdout and written files. This is where `:generate task-descriptors` (prints its
+   JSON, touches no disk), the `.editorconfig`-aware file output, and `:init` / `:convert` formatting are covered end-to-end —
    the `cmd_*` handlers themselves aren't unit-testable inline (they `process::exit` and use CWD-relative paths).
    Pure formatting logic stays unit-tested in `runfile-generators` (`src/tests/editorconfig.rs`); the subprocess
    tests only assert the wiring.

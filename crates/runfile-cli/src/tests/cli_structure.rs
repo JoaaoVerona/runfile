@@ -118,7 +118,8 @@ fn generate_has_subcommands() {
 		"missing generate jetbrains-run-configurations"
 	);
 	assert!(names.contains(&"vscode-tasks"), "missing generate vscode-tasks");
-	assert_eq!(names.len(), 3, "unexpected generate subcommands: {names:?}");
+	assert!(names.contains(&"task-descriptors"), "missing generate task-descriptors");
+	assert_eq!(names.len(), 4, "unexpected generate subcommands: {names:?}");
 }
 
 #[test]

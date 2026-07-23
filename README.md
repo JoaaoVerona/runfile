@@ -629,20 +629,48 @@ $ run :generate zed-tasks
 $ run :generate jetbrains-run-configurations
 ```
 
-Pass `--stdout` to any of these to print the generated configuration to standard output instead of
-writing it to disk — handy for previewing, piping, or diffing in CI. The output is the freshly
-generated config (not merged with any existing file on disk) and nothing is created or modified.
-For `jetbrains-run-configurations`, which produces one file per target, each block is delimited by a
-`<!-- .run/<file> -->` comment when more than one is emitted.
-
-By default only the local Runfile's own targets are generated. Two independent flags widen the set,
-and both compose with `--stdout` and the on-disk writers:
+Each writes its editor's config to disk (`.vscode/tasks.json`, `.zed/tasks.json`, `.run/*.run.xml`),
+merging with any existing file. By default only the local Runfile's own targets are generated; two
+independent flags widen the set:
 
 - `--include-namespaces` also generates entries for targets pulled in via `includes` — namespaced
   targets carry their `namespace:` prefixes, exactly as `run :list` shows them (e.g. `run api:build`).
 - `--include-globals` also generates entries for the global user-level Runfiles registered with
   `run :config global-files` — the same ones `run :list` folds in. Handy when an editor integration
   should offer your machine-wide targets (e.g. `run c`, `run backup-git`) alongside a project's own.
+
+##### Building your own integration: `task-descriptors`
+
+For tooling that builds its **own** editor integration (like the
+[Runfile VS Code extension](https://github.com/JoaaoVerona/runfile)), there's an editor-agnostic
+alternative that always prints to stdout and never touches disk:
+
+```bash
+$ run :generate task-descriptors
+```
+
+It always resolves `includes` and merges registered global files (no `--include-*` flags), and emits
+a stable JSON document describing every runnable target grouped by its source file, with per-target
+provenance so a client can bucket local vs. included vs. global targets itself:
+
+```jsonc
+{
+  "formatVersion": 1,
+  "sources": [
+    {
+      "filePath": "/abs/path/Runfile.json",
+      "kind": "local",              // "local" | "included" | "global"
+      "targets": [
+        {
+          "name": "api:build",      // full canonical invocation name
+          "namespace": "api",       // omitted for un-namespaced targets
+          "description": "Build the API"
+        }
+      ]
+    }
+  ]
+}
+```
 
 Skip a target from the generated configs by setting `metadata.excludeFromGenerateCommand: true`. The
 `metadata` block on `globals` and on each target is **fully open** — any property of any JSON type

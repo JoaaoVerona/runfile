@@ -1,11 +1,12 @@
-//! Behavioral integration tests for the file-writing subcommands (`:generate` vscode/zed/jetbrains,
-//! `:init`, `:convert`), driving the actual `run` binary as a subprocess.
+//! Behavioral integration tests for the generate/`:init`/`:convert` subcommands, driving the actual
+//! `run` binary as a subprocess.
 //!
-//! These cover the CLI wiring that the generators-crate unit tests can't reach: that `--stdout`
-//! prints the generated config and writes nothing to disk, that the on-disk paths produce the right
-//! files, and that every writer honors `.editorconfig`. Each test runs in an isolated temp dir with
-//! `HOME` / `XDG_CONFIG_HOME` / `APPDATA` pointed at an empty dir so user settings and global
-//! Runfiles can't leak targets into the output.
+//! These cover the CLI wiring that the generators-crate unit tests can't reach: that
+//! `:generate task-descriptors` prints the editor-agnostic descriptor JSON to stdout (writing
+//! nothing to disk), that the on-disk editor writers produce the right files and honor
+//! `.editorconfig`, and that the `--include-*` flags gate which targets reach those files. Each
+//! test runs in an isolated temp dir with `HOME` / `XDG_CONFIG_HOME` / `APPDATA` pointed at an empty
+//! dir so user settings and global Runfiles can't leak targets into the output.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -48,129 +49,146 @@ const RUNFILE_ONE_TARGET: &str = r#"{ "$schema": "x", "targets": { "build": { "c
 const EDITORCONFIG_2SPACE_FINAL_NL: &str =
 	"root = true\n[*]\nindent_style = space\nindent_size = 2\ninsert_final_newline = true\n";
 
-// ── :generate --stdout writes nothing to disk ────────────────────────────
+// ── :generate task-descriptors: editor-agnostic stdout contract ──────────
 
-#[test]
-fn generate_vscode_stdout_prints_config_and_writes_nothing() {
-	let dir = tempfile::tempdir().unwrap();
-	let root = dir.path();
-	write(&root.join("Runfile.json"), RUNFILE_TWO_TARGETS);
-	write(&root.join(".editorconfig"), EDITORCONFIG_2SPACE_FINAL_NL);
-
-	let out = run_in(root, &[":generate", "vscode-tasks", "--stdout"]);
+/// Run `:generate task-descriptors` in `root` and parse its stdout as JSON.
+fn task_descriptors(root: &Path) -> serde_json::Value {
+	let out = run_in(root, &[":generate", "task-descriptors"]);
 	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+	serde_json::from_str(&stdout_of(&out)).expect("task-descriptors emits valid JSON")
+}
 
-	let stdout = stdout_of(&out);
-	assert!(
-		stdout.contains("\"label\": \"run build\""),
-		"missing build task:\n{stdout}"
-	);
-	assert!(
-		stdout.contains("\"label\": \"run test\""),
-		"missing test task:\n{stdout}"
-	);
-	// EditorConfig: 2-space indent + final newline applied to stdout output.
-	assert!(stdout.contains("\n  \"version\""), "expected 2-space indent:\n{stdout}");
-	assert!(
-		stdout.ends_with("\n"),
-		"expected trailing newline from insert_final_newline"
-	);
+/// The first source group whose `kind` matches, or panic.
+fn source_of<'a>(doc: &'a serde_json::Value, kind: &str) -> &'a serde_json::Value {
+	doc["sources"]
+		.as_array()
+		.expect("sources array")
+		.iter()
+		.find(|s| s["kind"] == kind)
+		.unwrap_or_else(|| panic!("no source of kind {kind}: {doc}"))
+}
 
-	// Nothing written to disk.
-	assert!(!root.join(".vscode").exists(), "--stdout must not create .vscode/");
+/// The target named `name` across every source group, or panic.
+fn target_of<'a>(doc: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+	doc["sources"]
+		.as_array()
+		.expect("sources array")
+		.iter()
+		.flat_map(|s| s["targets"].as_array().expect("targets array"))
+		.find(|t| t["name"] == name)
+		.unwrap_or_else(|| panic!("no target {name}: {doc}"))
 }
 
 #[test]
-fn generate_zed_stdout_prints_array_and_writes_nothing() {
+fn task_descriptors_emits_local_targets_and_writes_nothing() {
 	let dir = tempfile::tempdir().unwrap();
 	let root = dir.path();
-	write(&root.join("Runfile.json"), RUNFILE_TWO_TARGETS);
-
-	let out = run_in(root, &[":generate", "zed-tasks", "--stdout"]);
-	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-
-	let stdout = stdout_of(&out);
-	assert!(
-		stdout.trim_start().starts_with('['),
-		"zed output should be a JSON array:\n{stdout}"
+	write(
+		&root.join("Runfile.json"),
+		r#"{ "$schema": "x", "targets": {
+			"build": { "description": "Build it", "commands": ["cargo build"] },
+			"test": { "commands": ["cargo test"] }
+		} }"#,
 	);
+
+	let doc = task_descriptors(root);
+	assert_eq!(doc["formatVersion"], 1);
+
+	let local = source_of(&doc, "local");
 	assert!(
-		stdout.contains("\"label\": \"run build\""),
-		"missing build task:\n{stdout}"
+		local["filePath"].as_str().unwrap().ends_with("Runfile.json"),
+		"local filePath should point at the source Runfile: {local}"
 	);
-	assert!(!root.join(".zed").exists(), "--stdout must not create .zed/");
+
+	let build = target_of(&doc, "build");
+	assert_eq!(build["description"], "Build it");
+	assert!(
+		build.get("namespace").is_none(),
+		"un-namespaced target must omit the namespace key"
+	);
+
+	let test = target_of(&doc, "test");
+	assert!(
+		test.get("description").is_none(),
+		"a target without a description omits the key"
+	);
+
+	// Pure stdout command — nothing lands on disk.
+	assert!(!root.join(".vscode").exists(), "task-descriptors must not write files");
 }
 
 #[test]
-fn generate_jetbrains_stdout_multi_has_headers() {
+fn task_descriptors_groups_by_kind_with_namespaces_and_globals_always_on() {
 	let dir = tempfile::tempdir().unwrap();
 	let root = dir.path();
-	write(&root.join("Runfile.json"), RUNFILE_TWO_TARGETS);
+	write_namespaced_project(root);
 
-	let out = run_in(root, &[":generate", "jetbrains-run-configurations", "--stdout"]);
-	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-
-	let stdout = stdout_of(&out);
-	assert!(
-		stdout.contains("<!-- .run/Runfile_build.run.xml -->"),
-		"expected filename header for build:\n{stdout}"
+	// Register a global file — task-descriptors always merges globals (no flag).
+	let global = root.join("global/Runfile.json");
+	write(
+		&global,
+		r#"{ "$schema": "x", "targets": { "deploy": { "commands": ["echo deploy"] } } }"#,
 	);
+	let add = run_in(root, &[":config", "global-files", "add", global.to_str().unwrap()]);
+	assert!(add.status.success(), "stderr: {}", String::from_utf8_lossy(&add.stderr));
+
+	let doc = task_descriptors(root);
+
+	// Local: the root's own build, un-namespaced.
+	assert_eq!(source_of(&doc, "local")["kind"], "local");
+	assert!(target_of(&doc, "build").get("namespace").is_none());
+
+	// Included + namespaced: `api:deploy` carries namespace "api"; the plain
+	// include's `clean` is pulled in but stays un-namespaced. Both come from
+	// `included` sources (always resolved, no --include-namespaces needed).
+	assert_eq!(target_of(&doc, "api:deploy")["namespace"], "api");
 	assert!(
-		stdout.contains("<!-- .run/Runfile_test.run.xml -->"),
-		"expected filename header for test:\n{stdout}"
+		target_of(&doc, "clean").get("namespace").is_none(),
+		"plain include stays un-namespaced"
+	);
+	assert_eq!(source_of(&doc, "included")["kind"], "included");
+
+	// Global: always merged in and tagged kind "global".
+	let global_src = source_of(&doc, "global");
+	assert!(
+		global_src["targets"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|t| t["name"] == "deploy"),
+		"global source should carry the registered global target: {global_src}"
+	);
+}
+
+#[test]
+fn task_descriptors_colon_named_local_is_not_a_namespace() {
+	let dir = tempfile::tempdir().unwrap();
+	let root = dir.path();
+	// A local target whose *name* contains a colon (like `all:package`) is NOT a
+	// namespace; only the real `api` include is.
+	write(
+		&root.join("Runfile.json"),
+		r#"{
+			"$schema": "x",
+			"includes": [ { "path": "api/Runfile.json", "namespace": "api" } ],
+			"targets": { "all:package": { "commands": ["echo all"] } }
+		}"#,
+	);
+	write(
+		&root.join("api/Runfile.json"),
+		r#"{ "$schema": "x", "targets": { "deploy": { "commands": ["echo deploy"] } } }"#,
+	);
+
+	let doc = task_descriptors(root);
+	assert!(
+		target_of(&doc, "all:package").get("namespace").is_none(),
+		"a colon in the name is not a namespace"
 	);
 	assert_eq!(
-		stdout.matches("<component").count(),
-		2,
-		"expected two run configs:\n{stdout}"
+		target_of(&doc, "api:deploy")["namespace"],
+		"api",
+		"a real include namespace is reported"
 	);
-	assert!(!root.join(".run").exists(), "--stdout must not create .run/");
-}
-
-#[test]
-fn generate_jetbrains_stdout_single_has_no_header() {
-	let dir = tempfile::tempdir().unwrap();
-	let root = dir.path();
-	write(&root.join("Runfile.json"), RUNFILE_ONE_TARGET);
-
-	let out = run_in(root, &[":generate", "jetbrains-run-configurations", "--stdout"]);
-	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-
-	let stdout = stdout_of(&out);
-	assert!(
-		!stdout.contains("<!--"),
-		"single config should have no header comment:\n{stdout}"
-	);
-	assert!(
-		stdout.trim_start().starts_with("<component"),
-		"single config should start with <component:\n{stdout}"
-	);
-}
-
-#[test]
-fn generate_jetbrains_stdout_honors_output_dir_in_header() {
-	let dir = tempfile::tempdir().unwrap();
-	let root = dir.path();
-	write(&root.join("Runfile.json"), RUNFILE_TWO_TARGETS);
-
-	let out = run_in(
-		root,
-		&[
-			":generate",
-			"jetbrains-run-configurations",
-			"-o",
-			".idea/runConfigurations",
-			"--stdout",
-		],
-	);
-	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-
-	let stdout = stdout_of(&out);
-	assert!(
-		stdout.contains("<!-- .idea/runConfigurations/Runfile_build.run.xml -->"),
-		"header should reflect --output-dir:\n{stdout}"
-	);
-	assert!(!root.join(".idea").exists(), "--stdout must not create the output dir");
 }
 
 // ── :generate --include-namespaces pulls in included/namespaced targets ──
@@ -205,54 +223,22 @@ fn generate_vscode_without_flag_excludes_namespaced_targets() {
 	let root = dir.path();
 	write_namespaced_project(root);
 
-	let out = run_in(root, &[":generate", "vscode-tasks", "--stdout"]);
+	let out = run_in(root, &[":generate", "vscode-tasks"]);
 	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
 
-	let stdout = stdout_of(&out);
+	let tasks = std::fs::read_to_string(root.join(".vscode/tasks.json")).expect(".vscode/tasks.json written");
 	assert!(
-		stdout.contains("\"label\": \"run build\""),
-		"expected root build:\n{stdout}"
+		tasks.contains("\"label\": \"run build\""),
+		"expected root build:\n{tasks}"
 	);
 	assert!(
-		!stdout.contains("run api:deploy"),
-		"namespaced target must be absent without the flag:\n{stdout}"
+		!tasks.contains("run api:deploy"),
+		"namespaced target must be absent without the flag:\n{tasks}"
 	);
 	assert!(
-		!stdout.contains("run clean"),
-		"included target must be absent without the flag:\n{stdout}"
+		!tasks.contains("run clean"),
+		"included target must be absent without the flag:\n{tasks}"
 	);
-}
-
-#[test]
-fn generate_vscode_stdout_include_namespaces_adds_prefixed_targets() {
-	let dir = tempfile::tempdir().unwrap();
-	let root = dir.path();
-	write_namespaced_project(root);
-
-	let out = run_in(root, &[":generate", "vscode-tasks", "--stdout", "--include-namespaces"]);
-	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-
-	let stdout = stdout_of(&out);
-	assert!(
-		stdout.contains("\"label\": \"run build\""),
-		"expected root build:\n{stdout}"
-	);
-	// Namespaced include: target name carries the `api:` prefix.
-	assert!(
-		stdout.contains("\"label\": \"run api:deploy\""),
-		"expected namespaced api:deploy task:\n{stdout}"
-	);
-	// The invocation arg is the prefixed name so `run api:deploy` dispatches correctly.
-	assert!(
-		stdout.contains("\"api:deploy\""),
-		"expected api:deploy invocation arg:\n{stdout}"
-	);
-	// Plain (un-namespaced) include contributes its target verbatim.
-	assert!(
-		stdout.contains("\"label\": \"run clean\""),
-		"expected plain-include clean task:\n{stdout}"
-	);
-	assert!(!root.join(".vscode").exists(), "--stdout must not create .vscode/");
 }
 
 #[test]
@@ -305,59 +291,6 @@ fn generate_jetbrains_include_namespaces_sanitizes_colon_in_filename() {
 	);
 }
 
-// ── :generate vscode emits real namespaces (not colon-named locals) ──────
-
-#[test]
-fn generate_vscode_stdout_emits_real_namespaces_only() {
-	let dir = tempfile::tempdir().unwrap();
-	let root = dir.path();
-	// A local target whose *name* contains a colon (like `all:package`) is NOT a
-	// namespace; only the `api` include is. `runfileNamespaces` must list `api` alone.
-	write(
-		&root.join("Runfile.json"),
-		r#"{
-			"$schema": "x",
-			"includes": [ { "path": "api/Runfile.json", "namespace": "api" } ],
-			"targets": { "all:package": { "commands": ["echo all"] } }
-		}"#,
-	);
-	write(
-		&root.join("api/Runfile.json"),
-		r#"{ "$schema": "x", "targets": { "deploy": { "commands": ["echo deploy"] } } }"#,
-	);
-
-	let out = run_in(root, &[":generate", "vscode-tasks", "--stdout", "--include-namespaces"]);
-	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-	let doc: serde_json::Value = serde_json::from_str(&stdout_of(&out)).expect("valid JSON");
-
-	let namespaces: Vec<&str> = doc["runfileNamespaces"]
-		.as_array()
-		.expect("runfileNamespaces array")
-		.iter()
-		.filter_map(|v| v.as_str())
-		.collect();
-	assert_eq!(namespaces, ["api"], "only the real include namespace should be listed");
-
-	// Both targets are generated; only `api:deploy` is namespaced.
-	let stdout = stdout_of(&out);
-	assert!(
-		stdout.contains("\"label\": \"run api:deploy\""),
-		"expected api:deploy:\n{stdout}"
-	);
-	assert!(
-		stdout.contains("\"label\": \"run all:package\""),
-		"expected local all:package:\n{stdout}"
-	);
-
-	// Without the flag, the key is omitted entirely (no namespaced targets emitted).
-	let bare = stdout_of(&run_in(root, &[":generate", "vscode-tasks", "--stdout"]));
-	let bare_doc: serde_json::Value = serde_json::from_str(&bare).expect("valid JSON");
-	assert!(
-		bare_doc.get("runfileNamespaces").is_none(),
-		"runfileNamespaces must be absent without --include-namespaces:\n{bare}"
-	);
-}
-
 // ── :generate --include-globals pulls in registered global-file targets ──
 
 #[test]
@@ -377,7 +310,9 @@ fn generate_vscode_include_globals_adds_global_targets_with_detail() {
 	assert!(add.status.success(), "stderr: {}", String::from_utf8_lossy(&add.stderr));
 
 	// Without the flag: only the local target — the global one stays out.
-	let plain = stdout_of(&run_in(root, &[":generate", "vscode-tasks", "--stdout"]));
+	let out = run_in(root, &[":generate", "vscode-tasks"]);
+	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+	let plain = std::fs::read_to_string(root.join(".vscode/tasks.json")).expect(".vscode/tasks.json written");
 	assert!(plain.contains("\"run build\""), "expected local build:\n{plain}");
 	assert!(
 		!plain.contains("run deploy"),
@@ -385,22 +320,21 @@ fn generate_vscode_include_globals_adds_global_targets_with_detail() {
 	);
 
 	// With the flag: local + global targets, and the global's description as `detail`.
-	let out = run_in(root, &[":generate", "vscode-tasks", "--stdout", "--include-globals"]);
+	let out = run_in(root, &[":generate", "vscode-tasks", "--include-globals"]);
 	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-	let stdout = stdout_of(&out);
+	let tasks = std::fs::read_to_string(root.join(".vscode/tasks.json")).expect(".vscode/tasks.json written");
 	assert!(
-		stdout.contains("\"label\": \"run build\""),
-		"expected local build:\n{stdout}"
+		tasks.contains("\"label\": \"run build\""),
+		"expected local build:\n{tasks}"
 	);
 	assert!(
-		stdout.contains("\"label\": \"run deploy\""),
-		"expected global deploy:\n{stdout}"
+		tasks.contains("\"label\": \"run deploy\""),
+		"expected global deploy:\n{tasks}"
 	);
 	assert!(
-		stdout.contains("\"detail\": \"Ship it\""),
-		"expected global description surfaced as detail:\n{stdout}"
+		tasks.contains("\"detail\": \"Ship it\""),
+		"expected global description surfaced as detail:\n{tasks}"
 	);
-	assert!(!root.join(".vscode").exists(), "--stdout must not create .vscode/");
 }
 
 #[test]
@@ -418,20 +352,24 @@ fn generate_vscode_include_globals_works_without_a_local_runfile() {
 	assert!(add.status.success(), "stderr: {}", String::from_utf8_lossy(&add.stderr));
 
 	// Without the flag and no local Runfile: the historical hard error stands.
-	let bare = run_in(root, &[":generate", "vscode-tasks", "--stdout"]);
+	let bare = run_in(root, &[":generate", "vscode-tasks"]);
 	assert!(
 		!bare.status.success(),
 		"expected failure with no local Runfile and no flag"
 	);
+	assert!(
+		!root.join(".vscode").exists(),
+		"no file should be written on the error path"
+	);
 
 	// With --include-globals: the global target generates even though there is no
 	// local Runfile to anchor to.
-	let out = run_in(root, &[":generate", "vscode-tasks", "--stdout", "--include-globals"]);
+	let out = run_in(root, &[":generate", "vscode-tasks", "--include-globals"]);
 	assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-	let stdout = stdout_of(&out);
+	let tasks = std::fs::read_to_string(root.join(".vscode/tasks.json")).expect(".vscode/tasks.json written");
 	assert!(
-		stdout.contains("\"label\": \"run deploy\""),
-		"expected global deploy with no local Runfile:\n{stdout}"
+		tasks.contains("\"label\": \"run deploy\""),
+		"expected global deploy with no local Runfile:\n{tasks}"
 	);
 }
 
