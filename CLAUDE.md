@@ -1015,11 +1015,16 @@ into the `.vsix`), `README.md` (packaged as the extension's marketplace/VSIX pag
   `actions/setup-node`**: `cache: pnpm` resolves the store path by shelling out to the pnpm binary, so a
   setup-node that runs first fails outright.
 - **Versioning is locked to the workspace version.** `package.json` carries the same version as `Cargo.toml`;
-  `run release` bumps it via the internal `@_bump-vscode-extension` target (`pnpm version --no-git-tag-version`,
-  which preserves the file's tab indentation and key order — do NOT hand-roll a regex over the JSON). Unlike
-  npm's, pnpm's lockfile stores no root package version, so `pnpm-lock.yaml` is left byte-identical by a bump
-  and only `editors/vscode/package.json` is in `release`'s `git commit` list. The release workflow's `extension`
-  job re-verifies `package.json`'s version equals the tag before packaging.
+  `run release` bumps it via the internal `@_bump-vscode-extension` target (`pnpm version --no-git-tag-version
+  --allow-same-version --no-git-checks`, which preserves the file's tab indentation and key order — do NOT
+  hand-roll a regex over the JSON). **`--no-git-checks` is load-bearing**: unlike `npm version`,
+  `pnpm version` refuses to run in a dirty working tree (`ERR_PNPM_UNCLEAN_WORKING_TREE`) *even with*
+  `--no-git-tag-version`, and by the time `release` calls it the tree is always dirty — `write_file('Cargo.toml')`
+  and `cargo update` ran two steps earlier. Note the check is silently skipped outside a git repo, so a scratch-dir
+  smoke test will not catch its absence; test the bump inside a dirty repo. Unlike npm's, pnpm's lockfile stores no
+  root package version, so `pnpm-lock.yaml` is left byte-identical by a bump and only `editors/vscode/package.json`
+  is in `release`'s `git commit` list. The release workflow's `extension` job re-verifies `package.json`'s version
+  equals the tag before packaging.
 - **CI (`.github/workflows/ci.yml`, `extension` job):** installs pnpm + Node + the *released* `run` (not
   `from-source` — compiling the Rust workspace to run `tsc` buys nothing), then `run vscode:deps` →
   `run vscode:package`, and uploads the `.vsix` as a build artifact so PRs are installable.

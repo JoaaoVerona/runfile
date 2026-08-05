@@ -150,7 +150,7 @@
 			"description": "Run all workspace tests"
 		},
 		"_bump-vscode-extension": {
-			"commands": "pnpm version --no-git-tag-version --allow-same-version {{ ARGS }}",
+			"commands": "pnpm version --no-git-tag-version --allow-same-version --no-git-checks {{ ARGS }}",
 			"description": "Stamp a version into the VS Code extension's package.json (used by `release`)",
 			"workingDirectory": "editors/vscode"
 		}
