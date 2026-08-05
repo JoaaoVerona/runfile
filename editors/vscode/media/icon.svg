@@ -1,0 +1,20 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- a list of runnable tasks: play triangles + task lines -->
+  <g fill="#fff" stroke="#fff" stroke-width="3" stroke-linejoin="round">
+    <path d="M33 32 L48 40 L33 48 Z"/>
+    <path d="M33 56 L48 64 L33 72 Z"/>
+    <path d="M33 80 L48 88 L33 96 Z"/>
+  </g>
+  <g stroke="#fff" stroke-width="7" stroke-linecap="round">
+    <path d="M60 40 H98"/>
+    <path d="M60 64 H98"/>
+    <path d="M60 88 H92"/>
+  </g>
+</svg>

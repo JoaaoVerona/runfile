@@ -1,6 +1,6 @@
 # Runfile
 
-[Quick start](#quick-start) · [Why Runfile?](#why-runfile) · [Features](#what-makes-it-different) · [Platforms](#platform-support) · [Docs](.github/DOCS.md)
+[Quick start](#quick-start) · [Why Runfile?](#why-runfile) · [Features](#what-makes-it-different) · [VS Code](#vs-code-extension) · [Platforms](#platform-support) · [Docs](.github/DOCS.md)
 
 **One JSON file. One binary. Every OS. Every shell.**
 
@@ -95,6 +95,30 @@ $ run :update --version v0.19.0   # or pin a specific release tag
 `:update` re-runs the install script for your platform, replacing the binary where it already lives. npm-managed
 installs are handled too: on Linux/macOS `:update` runs `npm install -g @runfile/cli@latest` for you; on Windows it
 prints that command to run from a fresh shell (npm can't overwrite the running `run.exe` there).
+
+---
+
+## VS Code extension
+
+Every release ships a VS Code extension that puts your targets in the editor — no `tasks.json` to generate or keep
+in sync. It runs `run :generate task-descriptors` and turns the result into real VS Code tasks plus a
+**Runfile → Targets** sidebar, complete with namespace folders and a **Globals** bucket for machine-wide targets.
+
+**Install** — download `runfile-vscode-<version>.vsix` from the
+[latest release](https://github.com/JoaaoVerona/runfile/releases/latest), then:
+
+```bash
+code --install-extension runfile-vscode-<version>.vsix
+```
+
+(or, in VS Code: **Extensions → … → Install from VSIX…**)
+
+Targets then show up in **Terminal → Run Task…** and in the Runfile sidebar. Every task is invoked with
+`--stdin-args`, so targets that need input prompt for it right in the task terminal. Nothing is written to your
+repository.
+
+The source lives in [`editors/vscode`](editors/vscode) — see its [README](editors/vscode/README.md) for settings,
+commands, and how the sidebar groups targets.
 
 ---
 
@@ -642,7 +666,7 @@ independent flags widen the set:
 ##### Building your own integration: `task-descriptors`
 
 For tooling that builds its **own** editor integration (like the
-[Runfile VS Code extension](https://github.com/JoaaoVerona/runfile)), there's an editor-agnostic
+[Runfile VS Code extension](editors/vscode) shipped with this repo), there's an editor-agnostic
 alternative that always prints to stdout and never touches disk:
 
 ```bash
@@ -773,6 +797,16 @@ run build          # debug build
 run check          # non-mutating gate: fmt --check + clippy (deny warnings) + cargo check
 run lint           # auto-format + clippy
 run test           # full workspace test suite
+```
+
+The VS Code extension in [`editors/vscode`](editors/vscode) has its own targets, namespaced under `vscode:`:
+
+```bash
+run vscode:deps      # one-time: pnpm install (required before the targets below)
+run vscode:compile   # type-check + compile to editors/vscode/out
+run vscode:watch     # recompile on change
+run vscode:package   # build the .vsix
+run vscode:install   # package + install into VS Code
 ```
 
 ---

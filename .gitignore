@@ -4,6 +4,11 @@
 /target-mac/
 /target-windows/
 
+# VS Code extension (editors/vscode) build output & dependencies
+/editors/vscode/out/
+/editors/vscode/node_modules/
+*.vsix
+
 # Editor / IDE — commit .claude/{agents,skills}; ignore the rest, and .idea
 /.claude/*
 !/.claude/agents/

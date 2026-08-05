@@ -161,9 +161,10 @@ $ run dev --port=4000           # Named arguments
 | `run :config reset`                                   | Delete the settings file, resetting all configuration to defaults                                  |
 | `run :convert package-json`                           | Convert `package.json` scripts into Runfile targets                                                |
 | `run :convert makefile`                               | Convert Makefile targets into Runfile targets                                                      |
-| `run :generate zed-tasks [--stdout]`                  | Generate Zed editor tasks from Runfile targets (`--stdout` prints instead of writing to disk)      |
-| `run :generate vscode-tasks [--stdout]`               | Generate VS Code tasks from Runfile targets (`--stdout` prints instead of writing to disk)         |
-| `run :generate jetbrains-run-configurations [--stdout]`| Generate JetBrains IDE run configurations from Runfile targets (`--stdout` prints instead of writing)|
+| `run :generate zed-tasks`                             | Generate Zed editor tasks from Runfile targets, into `.zed/tasks.json`                             |
+| `run :generate vscode-tasks`                          | Generate VS Code tasks from Runfile targets, into `.vscode/tasks.json`                             |
+| `run :generate jetbrains-run-configurations`          | Generate JetBrains IDE run configurations from Runfile targets, into `.run/`                       |
+| `run :generate task-descriptors`                      | Print an editor-agnostic JSON description of every target to stdout (for your own tooling)         |
 | `run :mcp inspect`                                    | Print the MCP tool definitions as JSON and exit                                                    |
 | `run :mcp install [<agent>]`                          | Install the MCP server config for an agent (claude-code, cursor, claude-desktop, codex, junie)     |
 | `run :mcp server`                                     | Start the MCP server on stdio                                                                      |
@@ -2669,6 +2670,30 @@ on update. Targets that use `{{ ARGS }}` patterns get an `${input:args}` variabl
 arguments. Every generated task is invoked with `--stdin-args` so any `{{ ARG.x }}` / `{{ ENV.X }}` / `{{ FLAG.x }}`
 value that has no default is prompted in the integrated terminal at run time.
 
+#### VS Code extension (no generated files)
+
+If you would rather not commit a generated `tasks.json` at all, install the Runfile VS Code extension. It contributes
+the same tasks **at runtime** — by running
+[`run :generate task-descriptors`](../README.md#building-your-own-integration-task-descriptors) and turning the result
+into real `vscode.Task`s — plus a **Runfile → Targets** sidebar with a folder per include namespace and a trailing
+**Globals** folder for machine-wide targets. Nothing is written to your repository.
+
+The extension is not published to the Marketplace; each release ships a `.vsix`. Download
+`runfile-vscode-<version>.vsix` from the [latest release](https://github.com/JoaaoVerona/runfile/releases/latest) and:
+
+```
+$ code --install-extension runfile-vscode-<version>.vsix
+```
+
+| Setting                   | Default                          | Description                                          |
+|---------------------------|----------------------------------|------------------------------------------------------|
+| `runfile.generateCommand` | `run :generate task-descriptors` | Run per workspace folder; must print JSON on stdout  |
+| `runfile.enabled`         | `true`                           | Turn off to stop contributing tasks entirely         |
+| `runfile.interactive`     | `true`                           | Use a pseudoterminal so `run` can prompt for input   |
+
+The source lives in [`editors/vscode`](../editors/vscode) — see its
+[README](../editors/vscode/README.md) for the full command and sidebar reference.
+
 ### Zed
 
 ```
@@ -2708,12 +2733,15 @@ a different configuration name or runs a different command, it is skipped with a
 
 These apply to all three `:generate` subcommands:
 
-- **`--stdout`** — print the freshly generated config to stdout instead of writing to disk. In this mode nothing is
-  read or written on disk (no merge with an existing file, no directory creation, no stale-entry pruning) — the exact
-  bytes that would be written are emitted, so `run :generate vscode-tasks --stdout > .vscode/tasks.json` matches the
-  on-disk output. JetBrains produces one config per target, so with more than one target each is emitted prefixed by a
-  `<!-- <dir>/<file> -->` delimiter comment (a single target is emitted verbatim for a clean redirect into a
-  `.run.xml`).
+- **`--include-namespaces`** — also generate entries for targets pulled in via `includes`. Namespaced targets keep
+  their `namespace:` prefixes, exactly as `run :list` shows them (e.g. `run api:build`).
+- **`--include-globals`** — also generate entries for the global user-level Runfiles registered with
+  `run :config global-files`, the same ones `run :list` folds in. The two flags are independent: pass both to get
+  local + included + global targets, or just one to widen along that axis only.
+- **These generators only write to disk.** There is no `--stdout` flag — if you want the target list as data (for a
+  script, or your own editor integration), use
+  [`run :generate task-descriptors`](../README.md#building-your-own-integration-task-descriptors), which always
+  prints to stdout, never touches disk, and always resolves both includes and globals.
 - **Stale-entry pruning** — re-running a generator after a target is renamed or removed deletes the now-orphan
   task/config it previously generated. The ownership check is structural (it matches the shape of entries Runfile
   itself emits), so hand-authored tasks/configs are never touched.

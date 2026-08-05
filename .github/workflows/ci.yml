@@ -29,6 +29,17 @@ jobs:
       - name: Verify Cargo.lock is in sync
         run: git diff --exit-code Cargo.lock
 
+      # The VS Code extension parses the `task-descriptors` document this CLI emits.
+      # Both now live in this repo, so a bumped format version must not silently
+      # outrun the extension's parser.
+      - name: Verify task-descriptors format version matches the VS Code extension
+        run: |
+          set -euo pipefail
+          emitted=$(run :generate task-descriptors | sed -n 's/.*"formatVersion": *\([0-9]*\).*/\1/p' | head -n1)
+          expected=$(sed -n 's/.*SUPPORTED_FORMAT_VERSION = \([0-9]*\).*/\1/p' editors/vscode/src/extension.ts | head -n1)
+          echo "CLI emits formatVersion=$emitted; extension supports $expected"
+          test -n "$emitted" && test -n "$expected" && test "$emitted" = "$expected"
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -51,3 +62,42 @@ jobs:
 
       - name: Test
         run: run ci:test
+
+  extension:
+    name: VS Code extension
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      # Must precede setup-node: `cache: pnpm` needs the pnpm binary to resolve
+      # the store path. The version comes from `packageManager` in package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.10
+        with:
+          package_json_file: editors/vscode/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: editors/vscode/pnpm-lock.yaml
+
+      # The extension only needs a working `run` to drive its own targets, so the
+      # released CLI is enough — no reason to compile the workspace for a `tsc` run.
+      - name: Setup Runfile
+        uses: ./.github/actions/setup
+
+      - name: Install extension dependencies
+        run: run vscode:deps
+
+      - name: Compile and package extension
+        run: run vscode:package
+
+      - name: Upload .vsix
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          if-no-files-found: error
+          name: runfile-vscode-extension
+          path: editors/vscode/*.vsix

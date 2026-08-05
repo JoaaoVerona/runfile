@@ -1,0 +1,149 @@
+{
+	"name": "runfile",
+	"displayName": "Runfile",
+	"description": "Contributes VS Code tasks generated at runtime by a shell command, so a project's tasks appear in Run Task without ever being written to tasks.json.",
+	"version": "0.41.0",
+	"icon": "media/icon.png",
+	"private": true,
+	"packageManager": "pnpm@11.13.1",
+	"publisher": "joaaoverona",
+	"license": "MIT",
+	"homepage": "https://github.com/JoaaoVerona/runfile#readme",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/JoaaoVerona/runfile.git",
+		"directory": "editors/vscode"
+	},
+	"bugs": {
+		"url": "https://github.com/JoaaoVerona/runfile/issues"
+	},
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"keywords": [
+		"tasks",
+		"task provider",
+		"runfile",
+		"command runner",
+		"build"
+	],
+	"main": "./out/extension.js",
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"contributes": {
+		"taskDefinitions": [
+			{
+				"type": "runfile",
+				"required": [
+					"task"
+				],
+				"properties": {
+					"task": {
+						"type": "string",
+						"description": "The label of the generated task to run."
+					}
+				}
+			}
+		],
+		"commands": [
+			{
+				"command": "runfile.refresh",
+				"title": "Refresh Targets",
+				"category": "Runfile",
+				"icon": "$(refresh)"
+			},
+			{
+				"command": "runfile.runTarget",
+				"title": "Run Target",
+				"category": "Runfile",
+				"icon": "$(play)"
+			},
+			{
+				"command": "runfile.showLog",
+				"title": "Show Log",
+				"category": "Runfile"
+			}
+		],
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "runfile",
+					"title": "Runfile",
+					"icon": "media/activity-icon.svg"
+				}
+			]
+		},
+		"views": {
+			"runfile": [
+				{
+					"type": "tree",
+					"id": "runfile.targets",
+					"name": "Targets",
+					"icon": "media/activity-icon.svg"
+				}
+			]
+		},
+		"viewsWelcome": [
+			{
+				"view": "runfile.targets",
+				"contents": "No Runfile targets were found in this workspace.\n[Refresh](command:runfile.refresh)\n\nIf you expected targets here, check the [output log](command:runfile.showLog) for a failing generate command."
+			}
+		],
+		"menus": {
+			"commandPalette": [
+				{
+					"command": "runfile.runTarget",
+					"when": "false"
+				}
+			],
+			"view/title": [
+				{
+					"command": "runfile.refresh",
+					"when": "view == runfile.targets",
+					"group": "navigation@2"
+				}
+			],
+			"view/item/context": [
+				{
+					"command": "runfile.runTarget",
+					"when": "view == runfile.targets && viewItem == runfileTarget",
+					"group": "inline"
+				},
+				{
+					"command": "runfile.runTarget",
+					"when": "view == runfile.targets && viewItem == runfileTarget",
+					"group": "0_run@1"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Runfile",
+			"properties": {
+				"runfile.generateCommand": {
+					"type": "string",
+					"default": "run :generate task-descriptors",
+					"markdownDescription": "Shell command run in each workspace folder to produce the **task descriptors** JSON on **stdout** — the `{ \"formatVersion\": 1, \"sources\": [...] }` document emitted by `run :generate task-descriptors`. It always includes namespaced (`includes`) and machine-wide global targets. Anything written to stderr is ignored. The command is re-run every time VS Code fetches tasks — keep it cheap."
+				},
+				"runfile.enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Contribute dynamically generated tasks. Turn off to stop running the generate command entirely."
+				},
+				"runfile.interactive": {
+					"type": "boolean",
+					"default": true,
+					"markdownDescription": "Run tasks that pass `--stdin-args` inside an interactive pseudoterminal so `run` can prompt for missing arguments and read your answers from the terminal. Turn off to run them as plain shell tasks (stdin prompts will fail, matching VS Code's default task behaviour)."
+				}
+			}
+		}
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"@types/vscode": "^1.85.0",
+		"typescript": "^5.4.0"
+	}
+}

@@ -1,0 +1,47 @@
+{
+	"$schema": "../../schemas/v0.schema.json",
+	"globals": {
+		"addToPath": [
+			"node_modules/.bin"
+		],
+		"logging": true,
+		"prepare": "@deps",
+		"vars": {
+			"extensionId": "joaaoverona.runfile",
+			"vsix": "runfile-vscode.vsix"
+		}
+	},
+	"targets": {
+		"compile": {
+			"commands": "tsc -p ./",
+			"description": "Type-check and compile the extension to ./out"
+		},
+		"deps": {
+			"commands": "pnpm install --frozen-lockfile",
+			"description": "Install the extension's dependencies exactly as pinned in pnpm-lock.yaml"
+		},
+		"install": {
+			"commands": [
+				"@package",
+				"code --install-extension {{ VAR.vsix }} --force",
+				"echo 'Installed {{ VAR.extensionId }} — run \"Developer: Reload Window\" in VS Code to activate.'"
+			],
+			"description": "Package and (re)install the extension into VS Code, replacing any existing copy"
+		},
+		"package": {
+			"commands": [
+				"@compile",
+				"pnpm dlx @vscode/vsce package --no-dependencies --out {{ ARG.out ? VAR.vsix }}"
+			],
+			"description": "Compile and package the extension into a .vsix (--out=<path> to override the file name)"
+		},
+		"uninstall": {
+			"commands": "code --uninstall-extension {{ VAR.extensionId }}",
+			"description": "Remove the extension from VS Code"
+		},
+		"watch": {
+			"commands": "tsc -watch -p ./",
+			"description": "Recompile the extension on change (development)"
+		}
+	}
+}

@@ -77,9 +77,59 @@ jobs:
             runfile-cli-*.tar.xz
             runfile-cli-*.zip
 
+  extension:
+    name: Package VS Code extension
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      # Must precede setup-node: `cache: pnpm` needs the pnpm binary to resolve
+      # the store path. The version comes from `packageManager` in package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.10
+        with:
+          package_json_file: editors/vscode/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: editors/vscode/pnpm-lock.yaml
+
+      - name: Verify tag matches the extension version
+        working-directory: editors/vscode
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "extension version: $version | tag: ${TAG#v}"
+          test "$version" = "${TAG#v}"
+
+      - name: Setup Runfile
+        uses: ./.github/actions/setup
+
+      - name: Install extension dependencies
+        run: run vscode:deps
+
+      - name: Compile and package extension
+        run: run vscode:package --out=runfile-vscode-${TAG#v}.vsix
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          if-no-files-found: error
+          name: vscode-extension
+          path: editors/vscode/runfile-vscode-*.vsix
+
   release:
     name: Create GitHub release
-    needs: build
+    needs: [build, extension]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

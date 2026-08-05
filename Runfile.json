@@ -10,6 +10,10 @@
 	},
 	"includes": [
 		{
+			"namespace": "vscode",
+			"path": "editors/vscode/Runfile.json"
+		},
+		{
 			"namespace": "wsl",
 			"path": "Runfile-wsl.json"
 		}
@@ -125,8 +129,9 @@
 				"{{ define(updated, regex_replace(VAR.cargo, '(?m)^version = \"[^\"]+\"', concat('version = \"', VAR.new, '\"'))) }}",
 				"{{ write_file('Cargo.toml', VAR.updated) }}",
 				"cargo update --workspace",
+				"@_bump-vscode-extension {{ VAR.new }}",
 				"echo 'Bumped: version {{ VAR.cur }} -> {{ VAR.new }}'",
-				"git commit Cargo.toml Cargo.lock -m {{ shell_quote(concat('bump to ', VAR.new)) }}",
+				"git commit Cargo.toml Cargo.lock editors/vscode/package.json -m {{ shell_quote(concat('bump to ', VAR.new)) }}",
 				"{{ define(tag, concat('v', VAR.new)) }}",
 				"echo Tagging {{ VAR.tag }}",
 				"git tag {{ shell_quote(VAR.tag) }}",
@@ -143,6 +148,11 @@
 		"test": {
 			"commands": "cargo test --workspace --all-features --locked {{ ARGS }}",
 			"description": "Run all workspace tests"
+		},
+		"_bump-vscode-extension": {
+			"commands": "pnpm version --no-git-tag-version --allow-same-version {{ ARGS }}",
+			"description": "Stamp a version into the VS Code extension's package.json (used by `release`)",
+			"workingDirectory": "editors/vscode"
 		}
 	}
 }

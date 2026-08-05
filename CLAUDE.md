@@ -19,6 +19,11 @@ run check                  # Non-mutating gate: fmt --check + clippy (deny warni
 run install                # Links the debug build to the global "rund" command
 run lint                   # Formats, checks and lints the code
 run test                   # Runs all tests
+
+run vscode:deps            # One-time: pnpm install for the VS Code extension (its `prepare` gate)
+run vscode:compile         # Type-check + compile the extension
+run vscode:package         # Build editors/vscode/runfile-vscode.vsix
+run vscode:install         # Package + `code --install-extension --force`
 ```
 
 ## Project Layout
@@ -28,6 +33,9 @@ Cargo.toml                     # Workspace root — defines all 5 crates and sha
 Runfile.json                   # Our own Runfile (self-hosting / bootstrapping)
 README.md                      # Public-facing documentation for users
 schemas/v0.schema.json         # JSON Schema for Runfile.json (editor autocomplete)
+
+editors/
+  vscode/                      # The Runfile VS Code extension (TypeScript) — see below
 
 crates/
   runfile-parser/              # Runfile.json discovery and parsing
@@ -967,6 +975,59 @@ crates/
   also bootstraps a session D-Bus + `gnome-keyring-daemon` on Linux runners (where no Secret Service is
   present by default) before calling this command.
 
+## VS Code Extension (`editors/vscode`)
+
+**Not a crate** — a TypeScript VS Code extension that lives in this repo and ships as a `.vsix` on every
+GitHub release. Moved here from a separate `vscode-extensions` monorepo so the extension and the CLI contract
+it consumes (`run :generate task-descriptors`) evolve together.
+
+**Files:** `src/extension.ts` (the whole extension — one file), `package.json` (manifest + contributions),
+`tsconfig.json`, `.vscodeignore`, `media/` (icons), `Runfile.json` (its own targets), `LICENSE` (MIT; packaged
+into the `.vsix`), `README.md` (packaged as the extension's marketplace/VSIX page).
+
+- **What it does:** registers a `TaskProvider` for the `runfile` task type plus a **Runfile → Targets** activity-bar
+  tree. Both are fed by running `run :generate task-descriptors` once per workspace folder and parsing the
+  `{ formatVersion, sources: [{ filePath, kind, targets }] }` document from stdout. Each target becomes a
+  `vscode.Task` invoking `run --stdin-args <name>`. Deliberately **no cache** — generation is cheap and re-runs on
+  every fetch. Sidebar grouping uses the descriptor's own `namespace` / `kind` fields (never re-derived from names):
+  `included` targets bucket into a folder per namespace, `global` targets into a trailing **Globals** folder
+  (deduped by name, since every workspace folder's descriptor merges the same machine-wide set).
+- **`runfile.interactive` (default on)** runs tasks through `RunfileInteractivePty`, a `vscode.Pseudoterminal` that
+  spawns `run` itself with a piped stdin so `--stdin-args` prompts actually work (a plain `ShellExecution` task
+  terminal cannot feed stdin). The child is spawned `detached: true` so it leads its own process group, and
+  close/Ctrl+C signal the negated pid — otherwise `run`'s own children (tsc, vsce, dev servers) would outlive the
+  terminal.
+- **`SUPPORTED_FORMAT_VERSION`** in `extension.ts` must track `TASK_DESCRIPTORS_FORMAT_VERSION` in
+  `runfile-generators/src/task_descriptors.rs`. CI's `check` job asserts the two agree (it greps the emitted JSON
+  and the TS constant), so bumping the Rust side without the TS side is a build failure, not a silent runtime
+  mismatch. A mismatched version is a warning in the extension, not a hard failure — it still parses.
+- **Targets** live in `editors/vscode/Runfile.json` and are pulled into the root `Runfile.json` via
+  `includes` with `namespace: "vscode"`, so they're invoked as `run vscode:<target>` from the repo root (or
+  bare `run <target>` from inside `editors/vscode`, since discovery walks up and finds that file first).
+  `globals.prepare: "@deps"` makes `pnpm install` an enforced precondition: `run vscode:compile` hard-errors until
+  `run vscode:deps` has been run (and re-errors if the `deps` commands change). The gate auto-skips in CI, which
+  runs `run vscode:deps` explicitly anyway. `package` accepts `--out=<path>` (`{{ ARG.out ? VAR.vsix }}`) so the
+  release workflow can stamp the version into the file name.
+- **Node package manager is pnpm** (`pnpm-lock.yaml`, lockfile v9; `package-lock.json` is deliberately absent —
+  do not reintroduce it). `deps` runs `pnpm install --frozen-lockfile` and `package` shells out via `pnpm dlx`
+  (not `npx`). The pinned pnpm version lives in `package.json`'s `packageManager` field, which is also what
+  `pnpm/action-setup` reads in CI — bump the two together. In workflows **`pnpm/action-setup` must come before
+  `actions/setup-node`**: `cache: pnpm` resolves the store path by shelling out to the pnpm binary, so a
+  setup-node that runs first fails outright.
+- **Versioning is locked to the workspace version.** `package.json` carries the same version as `Cargo.toml`;
+  `run release` bumps it via the internal `@_bump-vscode-extension` target (`pnpm version --no-git-tag-version`,
+  which preserves the file's tab indentation and key order — do NOT hand-roll a regex over the JSON). Unlike
+  npm's, pnpm's lockfile stores no root package version, so `pnpm-lock.yaml` is left byte-identical by a bump
+  and only `editors/vscode/package.json` is in `release`'s `git commit` list. The release workflow's `extension`
+  job re-verifies `package.json`'s version equals the tag before packaging.
+- **CI (`.github/workflows/ci.yml`, `extension` job):** installs pnpm + Node + the *released* `run` (not
+  `from-source` — compiling the Rust workspace to run `tsc` buys nothing), then `run vscode:deps` →
+  `run vscode:package`, and uploads the `.vsix` as a build artifact so PRs are installable.
+- **Release (`.github/workflows/release.yml`, `extension` job):** same flow, but packages
+  `runfile-vscode-<version>.vsix`. The `release` job `needs: [build, extension]`, so the file arrives via
+  `download-artifact` into `dist/` and is checksummed and uploaded with everything else. There is **no Marketplace
+  publish** — distribution is the release asset plus `code --install-extension`.
+
 ## Runfile.json Schema Quick Reference
 
 Top-level: `$schema` (required), `targets` (required), `globals` (optional)
@@ -1277,21 +1338,32 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   single stdout path now. (`VsCodeTasksFile` correspondingly dropped its stdout-only `runfileNamespaces` field.)
   The `cmd_generate_*` handlers in `cmd_utilities.rs` read any existing on-disk file, merge, and write, formatted
   per `.editorconfig`; the shared `write_generated_to_stdout` helper is used only by `task-descriptors` now.
-- **`--include-namespaces` on all three `:generate` subcommands** (a per-subcommand `bool` flag, default off; in
-  `main.rs`'s `GenerateAction` variants, threaded through to each `cmd_generate_*`). By default the generators
-  operate on the local Runfile's own targets only (single-file parse). With the flag, they operate on the local
-  Runfile *with its `includes` resolved* — namespaced included targets carry their `namespace:` prefixes exactly
-  as `run :list` shows them (e.g. `api:build`), and plain (un-namespaced) includes contribute their targets
-  verbatim. The resolution goes through the shared `runfile_helpers::runfile_for_generate(file, include_namespaces)`
-  helper: it always parses the local Runfile (respecting `-f`/`--file`, path aliases, `RUNFILE_TARGET`); when the
-  flag is set it additionally runs `merge_runfiles(Some((runfile, path)), &[], &cwd)` — an **empty** global-file
-  slice, so **global user-level Runfiles are deliberately never pulled in** (generated editor configs stay
-  scoped to the project) — and returns `MergeResult.runfile`. Conflicting targets (defined in multiple files) are
-  dropped by the merge, so they never reach the generators. The generators themselves are unchanged: they iterate
+- **`--include-namespaces` and `--include-globals` on all three `:generate` subcommands** (per-subcommand `bool`
+  flags, both default off; in `main.rs`'s `GenerateAction` variants, threaded through to each `cmd_generate_*`).
+  By default the generators operate on the local Runfile's own targets only (single-file parse). The two flags are
+  **independent** and widen that set along different axes:
+  - `--include-namespaces` also generates for targets pulled in via `includes` — namespaced included targets
+    carry their `namespace:` prefixes exactly as `run :list` shows them (e.g. `api:build`), and plain
+    (un-namespaced) includes contribute their targets verbatim.
+  - `--include-globals` also generates for the global user-level Runfiles registered via
+    `run :config global-files` (loaded from `Settings::load().global_files`) — the same ones `run :list` folds in.
+
+  Both resolve through the shared `runfile_helpers::runfile_for_generate(file, include_namespaces,
+  include_globals)` helper. With **neither** flag it takes a fast path: parse the local Runfile (respecting
+  `-f`/`--file`, path aliases, `RUNFILE_TARGET`) and return it verbatim — byte-for-byte the historical behaviour.
+  With **either** flag it runs `merge_runfiles(local, &global_files, &cwd)`, where `global_files` is empty unless
+  `--include-globals`. Because `merge_runfiles` *always* resolves the local file's `includes`, the
+  globals-without-namespaces combination is achieved by **post-filtering**: when `!include_namespaces`, targets
+  whose `target_sources` kind is `SourceKind::Included` are dropped from `result.runfile.targets` and
+  `runfile.namespaces` is cleared — that's what keeps the two flags orthogonal. One asymmetry worth knowing:
+  with `--include-globals`, an explicit `-f`/`RUNFILE_TARGET` must still resolve, but an **auto-discovered** local
+  Runfile that isn't found is only a hard error when there are no global files to fall back on — otherwise
+  generation proceeds from the globals alone. Conflicting targets (defined in multiple files) are dropped by the
+  merge, so they never reach the generators. The generators themselves are unchanged: they iterate
   `runfile.targets` regardless of source, and JetBrains' `sanitize_file_name` already maps the `:` in namespaced
   names to `_` for the on-disk `Runfile_api_deploy.run.xml` filename while the `run --stdin-args api:deploy`
-  invocation keeps the prefix. The non-flag path is byte-for-byte unchanged. (`task-descriptors` does not use this
-  helper or these flags — it always resolves includes AND globals via `resolve_and_merge`.)
+  invocation keeps the prefix. (`task-descriptors` does not use this helper or these flags — it always resolves
+  includes AND globals via `resolve_and_merge`.)
 - All three editor generators (`vscode`, `zed`, `jetbrains-run-configurations`) inject `--stdin-args` into the
   generated invocation. Editor run configs are static (no per-invocation arg prompt UI built into the IDE), so
   `--stdin-args` is what lets a static config still cover targets that need user input — missing `{{ ARG.x }}` /
