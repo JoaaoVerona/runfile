@@ -63,6 +63,18 @@
 				"icon": "$(play)"
 			},
 			{
+				"command": "runfile.pinTarget",
+				"title": "Pin Target",
+				"category": "Runfile",
+				"icon": "$(pin)"
+			},
+			{
+				"command": "runfile.unpinTarget",
+				"title": "Unpin Target",
+				"category": "Runfile",
+				"icon": "$(pinned)"
+			},
+			{
 				"command": "runfile.showLog",
 				"title": "Show Log",
 				"category": "Runfile"
@@ -98,6 +110,14 @@
 				{
 					"command": "runfile.runTarget",
 					"when": "false"
+				},
+				{
+					"command": "runfile.pinTarget",
+					"when": "false"
+				},
+				{
+					"command": "runfile.unpinTarget",
+					"when": "false"
 				}
 			],
 			"view/title": [
@@ -110,13 +130,33 @@
 			"view/item/context": [
 				{
 					"command": "runfile.runTarget",
+					"when": "view == runfile.targets && viewItem =~ /^runfileTarget/",
+					"group": "inline@1"
+				},
+				{
+					"command": "runfile.pinTarget",
 					"when": "view == runfile.targets && viewItem == runfileTarget",
-					"group": "inline"
+					"group": "inline@2"
+				},
+				{
+					"command": "runfile.unpinTarget",
+					"when": "view == runfile.targets && viewItem == runfileTargetPinned",
+					"group": "inline@2"
 				},
 				{
 					"command": "runfile.runTarget",
-					"when": "view == runfile.targets && viewItem == runfileTarget",
+					"when": "view == runfile.targets && viewItem =~ /^runfileTarget/",
 					"group": "0_run@1"
+				},
+				{
+					"command": "runfile.pinTarget",
+					"when": "view == runfile.targets && viewItem == runfileTarget",
+					"group": "1_pin@1"
+				},
+				{
+					"command": "runfile.unpinTarget",
+					"when": "view == runfile.targets && viewItem == runfileTargetPinned",
+					"group": "1_pin@1"
 				}
 			]
 		},

@@ -63,6 +63,16 @@ pub struct MergeResult {
 	/// Targets that are defined in multiple source files (not runnable).
 	/// Maps target name to the list of all files that define it.
 	pub conflicts: HashMap<String, Vec<(PathBuf, SourceKind)>>,
+	/// Global source files that declared `globals.onlyInDirectories`, mapped to
+	/// that directory list — i.e. the files that only merged in because the cwd
+	/// happened to be inside one of those directories.
+	///
+	/// Only global files are ever gated this way ([`is_cwd_allowed`] is consulted
+	/// nowhere else), so an entry here means "this source is not really
+	/// machine-wide". Consumers that bucket targets by provenance can use it to
+	/// treat such a source as project-local rather than global. Files without the
+	/// restriction are absent from the map.
+	pub directory_scoped_sources: HashMap<PathBuf, Vec<String>>,
 }
 
 impl MergeResult {
@@ -195,6 +205,7 @@ fn merge_runfiles_inner(
 	warn: bool,
 ) -> Result<MergeResult, MergeError> {
 	let mut state = MergeState::new();
+	let mut directory_scoped_sources: HashMap<PathBuf, Vec<String>> = HashMap::new();
 
 	// Process global files first
 	for global_path in global_file_paths {
@@ -223,9 +234,13 @@ fn merge_runfiles_inner(
 		// Check onlyInDirectories filter
 		if let Some(globals) = &global_runfile.globals
 			&& let Some(only_dirs) = &globals.only_in_directories
-			&& !is_cwd_allowed(cwd, &global_dir, only_dirs)
 		{
-			continue;
+			if !is_cwd_allowed(cwd, &global_dir, only_dirs) {
+				continue;
+			}
+			// It passed, but only because of where we are — record that this
+			// source is directory-scoped rather than genuinely machine-wide.
+			directory_scoped_sources.insert(global_path.clone(), only_dirs.clone());
 		}
 
 		let globals_ref = global_runfile.globals.as_ref();
@@ -295,6 +310,7 @@ fn merge_runfiles_inner(
 		source_dirs: state.source_dirs,
 		target_sources: state.target_sources,
 		conflicts,
+		directory_scoped_sources,
 	})
 }
 

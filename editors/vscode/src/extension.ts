@@ -16,11 +16,18 @@ const DEFAULT_COMMAND = "run :generate task-descriptors"
 /** The `task-descriptors` schema version this extension understands. */
 const SUPPORTED_FORMAT_VERSION = 1
 
+/** `workspaceState` key holding the pinned targets (see [`PinStore`]). */
+const PINNED_STATE_KEY = "runfile.pinnedTargets"
+
 let output: vscode.OutputChannel
+let pins: PinStore
 
 export function activate(context: vscode.ExtensionContext): void {
 	output = vscode.window.createOutputChannel("Runfile")
 	context.subscriptions.push(output)
+	// Pins are per-workspace: they record which of *this* project's targets you
+	// reach for, so they have no meaning in another window.
+	pins = new PinStore(context.workspaceState)
 
 	const provider: vscode.TaskProvider = {
 		provideTasks: () => provideRunfileTasks(),
@@ -41,11 +48,17 @@ export function activate(context: vscode.ExtensionContext): void {
 			output.appendLine(`Refreshed — ${tasks.length} task(s) available.`)
 		}),
 		vscode.commands.registerCommand("runfile.runTarget", (arg?: TargetNode | TargetEntry) => {
-			const entry = arg && "entry" in arg ? arg.entry : arg
+			const entry = entryOf(arg)
 			if (entry) {
 				void vscode.tasks.executeTask(entry.task)
 			}
 		}),
+		vscode.commands.registerCommand("runfile.pinTarget", (arg?: TargetNode | TargetEntry) =>
+			setPinned(arg, true, targets)
+		),
+		vscode.commands.registerCommand("runfile.unpinTarget", (arg?: TargetNode | TargetEntry) =>
+			setPinned(arg, false, targets)
+		),
 		// Keep the sidebar in sync when relevant settings change or folders come and go.
 		vscode.workspace.onDidChangeConfiguration((e) => {
 			if (e.affectsConfiguration("runfile")) {
@@ -75,6 +88,11 @@ interface TaskDescriptors {
 interface DescriptorSource {
 	filePath?: string
 	kind?: string
+	/**
+	 * The `globals.onlyInDirectories` restriction that gated this source, when it
+	 * had one. Only ever set on `global` sources. Absent from older CLIs.
+	 */
+	onlyInDirectories?: string[]
 	targets?: DescriptorTarget[]
 }
 
@@ -120,7 +138,7 @@ async function collectEntries(): Promise<TargetEntry[]> {
 	const entries: TargetEntry[] = []
 	for (const folder of folders) {
 		for (const source of await loadDescriptors(folder)) {
-			const kind = normalizeKind(source.kind)
+			const kind = normalizeKind(source)
 			for (const target of source.targets ?? []) {
 				if (!target.name) {
 					continue
@@ -140,9 +158,82 @@ async function collectEntries(): Promise<TargetEntry[]> {
 	return entries
 }
 
-/** Coerce the descriptor's `kind` string to a known [`SourceKind`], defaulting to `local`. */
-function normalizeKind(kind: string | undefined): SourceKind {
-	return kind === "global" || kind === "included" ? kind : "local"
+/**
+ * Coerce a descriptor source's `kind` to a known [`SourceKind`], defaulting to `local`.
+ *
+ * A `global` source that carries `onlyInDirectories` is deliberately reported as
+ * `local`. That restriction means the file merges in *only* while the working
+ * directory sits inside one of those directories — so despite being registered
+ * machine-wide it is, in practice, scoped to this project. Filing it under
+ * **Globals** would misrepresent it and bury targets that belong in the main tree.
+ */
+function normalizeKind(source: DescriptorSource): SourceKind {
+	if (source.kind === "global") {
+		return source.onlyInDirectories && source.onlyInDirectories.length > 0 ? "local" : "global"
+	}
+	return source.kind === "included" ? "included" : "local"
+}
+
+// ---------------------------------------------------------------------------
+// Pinning
+// ---------------------------------------------------------------------------
+
+/**
+ * The set of targets the user pinned, persisted in `workspaceState`.
+ *
+ * Pinning **moves** a target: it is lifted out of its namespace / workspace / Globals
+ * folder and listed as a loose leaf at the top of the tree, so it appears exactly
+ * once. Unpinning drops it back where it belongs.
+ */
+class PinStore {
+	constructor(private readonly memento: vscode.Memento) {}
+
+	private get keys(): string[] {
+		return this.memento.get<string[]>(PINNED_STATE_KEY, [])
+	}
+
+	has(entry: TargetEntry): boolean {
+		return this.keys.includes(pinKey(entry))
+	}
+
+	/** Pin or unpin `entry`. Idempotent — pinning twice stores one key. */
+	async set(entry: TargetEntry, pinned: boolean): Promise<void> {
+		const key = pinKey(entry)
+		const current = this.keys
+		if (current.includes(key) === pinned) {
+			return
+		}
+		const next = pinned ? [...current, key] : current.filter((k) => k !== key)
+		await this.memento.update(PINNED_STATE_KEY, next)
+	}
+}
+
+/**
+ * Stable identity for a pin: the target name scoped to the workspace folder it runs
+ * in, so the same target name in two roots of a multi-root workspace pins separately.
+ * Keys for folders that are no longer open match nothing and render nothing — they
+ * are kept rather than pruned so closing and reopening a folder does not drop pins.
+ */
+function pinKey(entry: TargetEntry): string {
+	return `${entry.folder.uri.toString()} ${entry.name}`
+}
+
+/** Resolve the entry behind a tree node or a bare entry argument. */
+function entryOf(arg: TargetNode | TargetEntry | undefined): TargetEntry | undefined {
+	return arg && "entry" in arg ? arg.entry : arg
+}
+
+async function setPinned(
+	arg: TargetNode | TargetEntry | undefined,
+	pinned: boolean,
+	tree: RunfileTargetsProvider
+): Promise<void> {
+	const entry = entryOf(arg)
+	if (!entry) {
+		return
+	}
+	await pins.set(entry, pinned)
+	tree.refresh()
 }
 
 /**
@@ -270,6 +361,15 @@ class RunfileTargetsProvider implements vscode.TreeDataProvider<TreeNode> {
 			return node.kind === "group" ? node.children : []
 		}
 		const { main, globals } = partitionEntries(await collectEntries())
+		// Pinning *moves* a target to the top: it is pulled out of the tree below, so
+		// it is listed exactly once. A namespace (or workspace) folder whose targets
+		// are all pinned therefore disappears, which is the point — nothing is left
+		// behind to scroll past.
+		const isPinned = (e: TargetEntry): boolean => pins.has(e)
+		const pinned = [...main, ...globals].filter(isPinned)
+		const restMain = main.filter((e) => !isPinned(e))
+		const restGlobals = globals.filter((e) => !isPinned(e))
+
 		const folders = vscode.workspace.workspaceFolders ?? []
 		let roots: TreeNode[]
 		// In a multi-root workspace, group by workspace folder first, then by
@@ -277,16 +377,26 @@ class RunfileTargetsProvider implements vscode.TreeDataProvider<TreeNode> {
 		if (folders.length > 1) {
 			roots = folders
 				.map((folder) => {
-					const own = main.filter((e) => e.folder === folder)
+					const own = restMain.filter((e) => e.folder === folder)
 					return own.length > 0 ? makeFolderNode(folder, own) : undefined
 				})
 				.filter((n): n is GroupNode => n !== undefined)
 		} else {
-			roots = groupByNamespace(main, "")
+			roots = groupByNamespace(restMain, "")
 		}
 		// The machine-wide globals always hang off a trailing folder, regardless of how
 		// many are registered (it stays put even when empty, so its place never shifts).
-		roots.push(makeGlobalsNode(globals))
+		roots.push(makeGlobalsNode(restGlobals))
+		// Pinned targets lead the root as loose leaves — no wrapper folder, so they cost
+		// no expand click. Labels keep the full canonical name (`api:build`, not
+		// `build`): a pin is lifted out of the namespace folder that supplied the prefix.
+		// The id prefix carries the workspace folder so two roots of a multi-root
+		// workspace can pin the same target name without colliding.
+		roots.unshift(
+			...pinned
+				.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+				.map((entry) => makeTargetNode(entry, entry.name, `pinned:${entry.folder.uri.toString()}::`))
+		)
 		return roots
 	}
 }
@@ -372,9 +482,11 @@ function displayName(entry: TargetEntry, ns: string): string {
 
 function makeTargetNode(entry: TargetEntry, display: string, idPrefix: string): TargetNode {
 	const item = new vscode.TreeItem(display, vscode.TreeItemCollapsibleState.None)
+	const pinned = pins.has(entry)
 	item.id = `${idPrefix}target:${entry.name}`
-	item.iconPath = new vscode.ThemeIcon("play")
-	item.contextValue = "runfileTarget"
+	item.iconPath = new vscode.ThemeIcon(pinned ? "pinned" : "play")
+	// The two values drive which of Pin / Unpin the menus offer (see package.json).
+	item.contextValue = pinned ? "runfileTargetPinned" : "runfileTarget"
 	if (entry.detail) {
 		item.description = entry.detail
 		item.tooltip = new vscode.MarkdownString(`**${entry.label}**\n\n${entry.detail}`)

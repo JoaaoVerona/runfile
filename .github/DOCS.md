@@ -2678,6 +2678,15 @@ the same tasks **at runtime** — by running
 into real `vscode.Task`s — plus a **Runfile → Targets** sidebar with a folder per include namespace and a trailing
 **Globals** folder for machine-wide targets. Nothing is written to your repository.
 
+Two sidebar behaviours worth knowing:
+
+- **Pinned targets** — right-click a target and **Pin Target** to move it to the very top of the tree, listed loose
+  (no wrapper folder, no copy left behind). Pinned targets show the pin icon and their full canonical name; **Unpin
+  Target** sends them back. Pins are stored per workspace, so they never touch your repository.
+- **Directory-scoped globals stay out of Globals** — a global Runfile with [`onlyInDirectories`](#onlyindirectories)
+  merges in only inside those directories, so it is scoped in practice even though it is registered machine-wide.
+  The sidebar puts its targets in the main tree, exactly as if they came from a local Runfile.
+
 The extension is not published to the Marketplace; each release ships a `.vsix`. Download
 `runfile-vscode-<version>.vsix` from the [latest release](https://github.com/JoaaoVerona/runfile/releases/latest) and:
 

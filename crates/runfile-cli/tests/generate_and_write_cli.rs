@@ -160,6 +160,66 @@ fn task_descriptors_groups_by_kind_with_namespaces_and_globals_always_on() {
 	);
 }
 
+/// A global file gated by `globals.onlyInDirectories` is not really machine-wide —
+/// it merges in only where the cwd allows it. `task-descriptors` reports the
+/// restriction on the source so clients (the VS Code extension) can bucket those
+/// targets as project-local instead of global. An unrestricted global omits the key.
+#[test]
+fn task_descriptors_reports_only_in_directories_on_scoped_globals() {
+	let dir = tempfile::tempdir().unwrap();
+	let root = dir.path();
+	write(
+		&root.join("Runfile.json"),
+		r#"{ "$schema": "x", "targets": { "build": { "commands": ["echo build"] } } }"#,
+	);
+
+	// Scoped to the project root, so it merges in here — but stays restricted.
+	let scoped = root.join("global/scoped.json");
+	write(
+		&scoped,
+		&format!(
+			r#"{{ "$schema": "x", "globals": {{ "onlyInDirectories": [{}] }},
+			   "targets": {{ "deploy": {{ "commands": ["echo deploy"] }} }} }}"#,
+			serde_json::to_string(&root.to_string_lossy()).unwrap()
+		),
+	);
+	// Unrestricted: genuinely machine-wide.
+	let plain = root.join("global/plain.json");
+	write(
+		&plain,
+		r#"{ "$schema": "x", "targets": { "backup": { "commands": ["echo backup"] } } }"#,
+	);
+	for path in [&scoped, &plain] {
+		let add = run_in(root, &[":config", "global-files", "add", path.to_str().unwrap()]);
+		assert!(add.status.success(), "stderr: {}", String::from_utf8_lossy(&add.stderr));
+	}
+
+	let doc = task_descriptors(root);
+	let source_for = |target: &str| {
+		doc["sources"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|s| s["targets"].as_array().unwrap().iter().any(|t| t["name"] == target))
+			.unwrap_or_else(|| panic!("no source contributes {target}: {doc}"))
+			.clone()
+	};
+
+	let scoped_src = source_for("deploy");
+	assert_eq!(scoped_src["kind"], "global", "provenance is still the global file");
+	assert_eq!(
+		scoped_src["onlyInDirectories"].as_array().unwrap().len(),
+		1,
+		"the gated source reports its directory restriction: {scoped_src}"
+	);
+
+	let plain_src = source_for("backup");
+	assert!(
+		plain_src.get("onlyInDirectories").is_none(),
+		"an unrestricted global omits the key: {plain_src}"
+	);
+}
+
 #[test]
 fn task_descriptors_colon_named_local_is_not_a_namespace() {
 	let dir = tempfile::tempdir().unwrap();

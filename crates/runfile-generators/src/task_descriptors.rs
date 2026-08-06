@@ -57,6 +57,15 @@ pub struct DescriptorSource {
 	#[serde(rename = "filePath")]
 	pub file_path: String,
 	pub kind: DescriptorKind,
+	/// The `globals.onlyInDirectories` list that gated this source, when it had
+	/// one. Present only on `global` sources — that restriction is enforced
+	/// nowhere else — and it means this file is *not* really machine-wide: it
+	/// merged in only because the cwd is inside one of these directories.
+	///
+	/// Clients that bucket targets by provenance should treat such a source as
+	/// project-local rather than global. Omitted when the source is unrestricted.
+	#[serde(rename = "onlyInDirectories", skip_serializing_if = "Option::is_none")]
+	pub only_in_directories: Option<Vec<String>>,
 	pub targets: Vec<DescriptorTarget>,
 }
 
@@ -123,6 +132,7 @@ pub fn generate_task_descriptors(merge: &MergeResult) -> TaskDescriptors {
 		.map(|((kind, path), mut targets)| {
 			targets.sort_by(|a, b| a.name.cmp(&b.name));
 			DescriptorSource {
+				only_in_directories: merge.directory_scoped_sources.get(&path).cloned(),
 				file_path: path.to_string_lossy().into_owned(),
 				kind,
 				targets,

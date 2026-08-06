@@ -75,6 +75,23 @@ The view's title bar has one button:
 
 - **↻ Refresh** — re-runs generation.
 
+## Pinned targets
+
+Right-click any target (or use its inline 📌 button) and choose **Pin Target** to
+keep it at hand. Pinning **moves** the target to the very top of the tree, listed
+loose — no wrapper folder to expand, and no copy left behind further down.
+
+Because a pin is lifted out of its namespace folder, the label becomes the full
+canonical name (`api:build`, not `build`) — the folder that used to supply the
+prefix is no longer there to do it. A namespace or workspace folder whose targets
+are *all* pinned disappears entirely, which is the point: there's nothing left to
+scroll past. **Unpin Target** drops the target back where it belongs.
+
+Pins live in the workspace's own state, so they're per-project and travel with
+neither your settings nor your repository. In a multi-root workspace a pin is
+scoped to the folder it runs in, so the same target name in two roots pins
+separately.
+
 ## Global targets
 
 The **global** targets you've registered with `run :config global-files` — the
@@ -88,6 +105,15 @@ source carries (`local` / `included` / `global`), so a single generation is
 enough — nothing is re-derived from target names. The same machine-wide targets
 appear once per workspace folder, so they are deduplicated by name before the
 folder is built.
+
+**Directory-scoped globals are not treated as globals.** A global Runfile that
+declares `globals.onlyInDirectories` only merges in while you're inside one of
+those directories — registered machine-wide, but in practice scoped to certain
+projects. Burying those targets in **Globals** would misrepresent them, so the
+extension puts them in the main tree exactly as if they came from a local
+Runfile. The descriptor reports the restriction via `onlyInDirectories` on the
+source; this needs a `run` CLI new enough to emit it (older ones simply keep the
+old behaviour of filing them under **Globals**).
 
 ## No caching by design
 
@@ -111,7 +137,12 @@ Palette (or click **↻** in the Targets view).
 | --- | --- |
 | **Runfile: Refresh Targets** | Force a fresh regeneration of the task list and sidebar. |
 | **Runfile: Run Target** | Spawn a target as a task (used by the sidebar's rows and ▶ buttons). |
+| **Runfile: Pin Target** | Move a target to the top of the tree. |
+| **Runfile: Unpin Target** | Send a pinned target back to its normal place. |
 | **Runfile: Show Log** | Open the output channel (useful when the command fails or emits invalid JSON). |
+
+Pin/Run/Unpin act on a sidebar row, so they're only offered from the tree (not
+the Command Palette).
 
 ## Expected stdout format
 
@@ -124,6 +155,7 @@ The task-descriptors document emitted by `run :generate task-descriptors`:
     {
       "filePath": "/abs/path/Runfile.json",
       "kind": "local",              // "local" | "included" | "global"
+      "onlyInDirectories": ["~/w"], // present only on directory-scoped globals
       "targets": [
         {
           "name": "api:build",      // full canonical invocation name
@@ -137,5 +169,7 @@ The task-descriptors document emitted by `run :generate task-descriptors`:
 ```
 
 `local`/`included` targets are grouped by namespace in the sidebar; `global`
-targets land in the trailing **Globals** folder. Log output should go to
-**stderr** so it does not corrupt the JSON on stdout.
+targets land in the trailing **Globals** folder — unless the source carries
+`onlyInDirectories`, in which case it is treated as local (see
+[Global targets](#global-targets)). Log output should go to **stderr** so it does
+not corrupt the JSON on stdout.

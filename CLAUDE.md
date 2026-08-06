@@ -80,6 +80,16 @@ crates/
   `addToPath` was already baked the same way; the target-side baking just extends the rule. `envFiles` are NOT
   baked (they're substitution templates) — they're resolved at runtime via `EnvBuildParams::env_files_base_dir`,
   which the runner / extract pipeline always sets to the target's source dir.
+- `merge.rs` (`onlyInDirectories`): the ONLY place `is_cwd_allowed` is consulted is the **global-file** loop in
+  `merge_runfiles_inner` — a global whose `globals.onlyInDirectories` doesn't cover the cwd is skipped wholesale.
+  Target-level `CommandSpec.only_in_directories` exists in the schema and is merged (globals prepended before the
+  target's own list) but is never read afterwards, so it is effectively inert. When a global file DOES pass the
+  check, its path + directory list are recorded in `MergeResult.directory_scoped_sources`
+  (`HashMap<PathBuf, Vec<String>>`). That map is how consumers tell "registered machine-wide" apart from "actually
+  machine-wide": an entry means the source only merged in because of where we are. `task-descriptors` surfaces it
+  as the per-source `onlyInDirectories` field, and the VS Code extension uses it to file such targets in the main
+  tree instead of the **Globals** bucket. Sources without the restriction are absent from the map (not present
+  with an empty vec).
 - `merge.rs` (cont.): include entries (`IncludeEntry`) are either a plain path string or
   `{ path, namespace? }`. When a namespace is set, `apply_namespace_to_state()` rewrites every target name and alias
   in that include's sub-state, plus every `@target` reference inside its command tree (`rewrite_target_calls_in_steps`
@@ -992,6 +1002,24 @@ into the `.vsix`), `README.md` (packaged as the extension's marketplace/VSIX pag
   every fetch. Sidebar grouping uses the descriptor's own `namespace` / `kind` fields (never re-derived from names):
   `included` targets bucket into a folder per namespace, `global` targets into a trailing **Globals** folder
   (deduped by name, since every workspace folder's descriptor merges the same machine-wide set).
+- **`normalizeKind` downgrades directory-scoped globals to `local`.** A source with `kind: "global"` AND a non-empty
+  `onlyInDirectories` only merged in because the cwd is inside those paths — registered machine-wide, scoped in
+  practice — so it is bucketed like a local Runfile rather than buried in **Globals**. Note this also opts those
+  entries out of the by-name dedup in `partitionEntries` (only `kind === "global"` entries are deduped), which is
+  correct: as local-like entries they belong to each workspace folder that sees them, one per folder.
+- **Pinning** (`PinStore`, backed by `context.workspaceState` under `runfile.pinnedTargets`): pinned targets are
+  `unshift`-ed onto the tree root as **loose leaves** — deliberately NOT wrapped in a "Pinned" folder, so they cost
+  no expand click. Pinning **moves**: `getChildren` splits the partitioned entries into `pinned` / `restMain` /
+  `restGlobals` and builds the tree below from the `rest*` lists only, so a pinned target is listed exactly once
+  and a namespace / workspace folder whose targets are all pinned drops out entirely. Two details to preserve:
+  (1) pinned leaves are labelled with the FULL canonical name (`api:build`), since they're lifted out of the
+  namespace folder that would otherwise supply the prefix; (2) their `idPrefix` is
+  `` `pinned:${entry.folder.uri.toString()}::` `` — the folder segment is **load-bearing**, because pin keys are
+  per-folder, so a multi-root workspace can have the same target name pinned in two roots and a fixed `"pinned::"`
+  prefix would give both the same tree-item id (VS Code silently drops duplicate ids). Keys for closed folders are
+  kept, not pruned, so reopening a folder restores its pins. `package.json` menus switch Pin/Unpin off the
+  `runfileTarget` / `runfileTargetPinned` contextValue, and the run action's `when` uses
+  `viewItem =~ /^runfileTarget/` to cover both states.
 - **`runfile.interactive` (default on)** runs tasks through `RunfileInteractivePty`, a `vscode.Pseudoterminal` that
   spawns `run` itself with a piped stdin so `--stdin-args` prompts actually work (a plain `ShellExecution` task
   terminal cannot feed stdin). The child is spawned `detached: true` so it leads its own process group, and
@@ -1331,10 +1359,17 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   editor's on-disk format. It ALWAYS prints to stdout and never writes disk, and — unlike the three editor
   generators — ALWAYS resolves `includes` and merges registered global files (it goes through
   `runfile_helpers::resolve_and_merge`, not `runfile_for_generate`), so it has no `--stdout`/`--include-*` flags,
-  only `-f`. Output is a `{ formatVersion, sources: [{ filePath, kind, targets: [{ name, namespace?, description? }]
-  }] }` document where `kind` is `local`/`included`/`global` (a `DescriptorKind` mapped from
+  only `-f`. Output is a `{ formatVersion, sources: [{ filePath, kind, onlyInDirectories?, targets: [{ name,
+  namespace?, description? }] }] }` document where `kind` is `local`/`included`/`global` (a `DescriptorKind` mapped from
   `MergeResult.target_sources`' `SourceKind`) and `namespace` is the target's first `:`-segment when it's a real
-  include-namespace root (else omitted, so a colon-in-name local like `all:package` stays un-namespaced). Same visibility
+  include-namespace root (else omitted, so a colon-in-name local like `all:package` stays un-namespaced).
+  `onlyInDirectories` is copied from `MergeResult.directory_scoped_sources` and therefore only ever appears on a
+  `global` source — it means that file declared `globals.onlyInDirectories` and merged in solely because the cwd is
+  inside one of those paths, i.e. it is registered machine-wide but scoped in practice. Clients are expected to
+  bucket such a source as project-local (the VS Code extension does exactly this). Adding it did NOT bump
+  `TASK_DESCRIPTORS_FORMAT_VERSION`: an optional field is backward compatible in both directions — an older
+  extension ignores it and keeps the old "file it under Globals" behaviour, a newer one simply never sees it from
+  an older CLI. Same visibility
   filter as the editor generators (internal `_`-targets and `excludeFromGenerateCommand` are dropped); conflicts
   are already excluded by the merge. Groups are keyed by `(kind, path)` for deterministic local→included→global
   ordering; a file included twice under different namespaces collapses to one group (targets carry their own

@@ -14,6 +14,16 @@ fn spec(description: Option<&str>, commands: Vec<&str>) -> CommandSpec {
 /// `target_sources` provenance the descriptor generator reads. `namespaces` seeds
 /// `Runfile.namespaces` (the real include-namespace list).
 fn merge_of(rows: Vec<(&str, SourceKind, &str, CommandSpec)>, namespaces: Vec<&str>) -> MergeResult {
+	merge_of_scoped(rows, namespaces, vec![])
+}
+
+/// [`merge_of`] plus `scoped`: `(file, onlyInDirectories)` pairs marking global
+/// sources that merged in only because the cwd is inside those directories.
+fn merge_of_scoped(
+	rows: Vec<(&str, SourceKind, &str, CommandSpec)>,
+	namespaces: Vec<&str>,
+	scoped: Vec<(&str, Vec<&str>)>,
+) -> MergeResult {
 	let mut targets = HashMap::new();
 	let mut target_sources = HashMap::new();
 	let mut source_dirs = HashMap::new();
@@ -23,6 +33,10 @@ fn merge_of(rows: Vec<(&str, SourceKind, &str, CommandSpec)>, namespaces: Vec<&s
 		target_sources.insert(name.to_string(), (path.clone(), kind));
 		source_dirs.insert(name.to_string(), path.parent().unwrap().to_path_buf());
 	}
+	let directory_scoped_sources = scoped
+		.into_iter()
+		.map(|(file, dirs)| (PathBuf::from(file), dirs.into_iter().map(String::from).collect()))
+		.collect();
 	MergeResult {
 		runfile: Runfile {
 			schema: "x".into(),
@@ -34,6 +48,7 @@ fn merge_of(rows: Vec<(&str, SourceKind, &str, CommandSpec)>, namespaces: Vec<&s
 		source_dirs,
 		target_sources,
 		conflicts: HashMap::new(),
+		directory_scoped_sources,
 	}
 }
 
@@ -137,6 +152,43 @@ fn skips_internal_and_excluded_targets() {
 		names,
 		vec!["build"],
 		"internal `_helper` and excluded `hidden` are filtered out"
+	);
+}
+
+#[test]
+fn directory_scoped_global_source_reports_its_restriction() {
+	let merge = merge_of_scoped(
+		vec![
+			(
+				"backup",
+				SourceKind::Global,
+				"/home/me/globals.json",
+				spec(None, vec!["echo back"]),
+			),
+			(
+				"deploy",
+				SourceKind::Global,
+				"/home/me/work-only.json",
+				spec(None, vec!["echo deploy"]),
+			),
+		],
+		vec![],
+		vec![("/home/me/work-only.json", vec!["~/Workspace"])],
+	);
+
+	let doc = generate_task_descriptors(&merge);
+	let by_path = |p: &str| doc.sources.iter().find(|s| s.file_path == p).expect("source");
+
+	// The unrestricted global stays a plain global — no restriction to report.
+	assert_eq!(by_path("/home/me/globals.json").only_in_directories, None);
+
+	// The gated one keeps `kind: global` (that IS where it came from) but carries
+	// the restriction, so a client can tell it is not really machine-wide.
+	let scoped = by_path("/home/me/work-only.json");
+	assert_eq!(scoped.kind, DescriptorKind::Global);
+	assert_eq!(
+		scoped.only_in_directories.as_deref(),
+		Some(["~/Workspace".to_string()].as_slice())
 	);
 }
 

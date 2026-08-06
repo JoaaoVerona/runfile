@@ -684,6 +684,7 @@ provenance so a client can bucket local vs. included vs. global targets itself:
     {
       "filePath": "/abs/path/Runfile.json",
       "kind": "local",              // "local" | "included" | "global"
+      "onlyInDirectories": ["~/w"], // only on globals restricted to certain dirs
       "targets": [
         {
           "name": "api:build",      // full canonical invocation name
@@ -695,6 +696,11 @@ provenance so a client can bucket local vs. included vs. global targets itself:
   ]
 }
 ```
+
+`onlyInDirectories` appears only on a `global` source that declared
+[`globals.onlyInDirectories`](.github/DOCS.md#onlyindirectories) — meaning it merged in only because the
+current directory is inside one of those paths. Such a source is registered machine-wide but scoped in
+practice, so clients are expected to treat it as project-local rather than truly global.
 
 Skip a target from the generated configs by setting `metadata.excludeFromGenerateCommand: true`. The
 `metadata` block on `globals` and on each target is **fully open** — any property of any JSON type
