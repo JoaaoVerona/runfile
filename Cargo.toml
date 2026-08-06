@@ -46,7 +46,7 @@ thiserror = "=2.0.18"
 tokio = { features = ["full"], version = "=1.52.2" }
 which = "=8.0.2"
 windows-native-keyring-store = "=1.0.0"
-windows-sys = { features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_JobObjects"], version = "=0.61.2" }
+windows-sys = { features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"], version = "=0.61.2" }
 zeroize = "=1.8.2"
 
 [profile.dev.package."*"]

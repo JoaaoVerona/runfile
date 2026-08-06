@@ -5,6 +5,7 @@ use crate::control_flow::{
 };
 use crate::env::{EnvFileError, PrivateKeyProvider, build_env_with_base};
 use crate::force_kill::ForceKillGuard;
+use crate::interrupt::{CleanupScope, InterruptGuard, announce_interrupt, should_abort};
 use crate::logging::{StepCounter, is_logging_enabled, log_command, log_command_timing};
 use crate::parallel::{ParallelLeaf, collect_leaves_parallel, run_parallel_leaves};
 use crate::parallel_output::{OutputStream, flush_writer_thread, spawn_line_pump};
@@ -363,6 +364,12 @@ pub fn execute_command_with_counter(
 	parent_add_to_path_chain: &[Vec<String>],
 	output_prefix: Option<&str>,
 ) -> Result<ExecutionResult, ExecuteError> {
+	// Declared BEFORE `ExecSetup::new` on purpose: `forceKillOnSigInt` installs
+	// its own SIGINT handler in there, and it must layer ON TOP of ours (it
+	// saves and restores whatever it replaced). Reverse drop order then unwinds
+	// them in the right sequence. See [`interrupt`] for why the guard exists.
+	let _interrupt_guard = InterruptGuard::new();
+
 	let (setup, tailer, force_kill_guard) = ExecSetup::new(
 		spec,
 		args,
@@ -404,8 +411,9 @@ pub fn execute_command_with_counter(
 	// If the target had a real failure (a step exited non-zero with no
 	// `ignoreErrors` override at any level), surface a non-zero status to
 	// the caller even if a later `when: failure` / `when: always` step
-	// happened to exit cleanly.
-	let final_status = if state.failed {
+	// happened to exit cleanly. An interrupt counts here too — it is not
+	// suppressible by `ignoreErrors`, so an aborted run never reports success.
+	let final_status = if state.failed || should_abort() {
 		state.last_status.filter(|s| !s.success()).unwrap_or_else(failed_status)
 	} else {
 		state.last_status.unwrap_or_else(dummy_success_status)
@@ -481,6 +489,10 @@ pub fn execute_same_shell_with_counter(
 	parent_add_to_path_chain: &[Vec<String>],
 	output_prefix: Option<&str>,
 ) -> Result<ExecutionResult, ExecuteError> {
+	// Before `ExecSetup::new` — see the ordering note in
+	// `execute_command_with_counter`.
+	let _interrupt_guard = InterruptGuard::new();
+
 	let (setup, tailer, force_kill_guard) = ExecSetup::new(
 		spec,
 		args,
@@ -651,7 +663,15 @@ fn execute_steps_walk(
 		// current target state. Steps that don't carry `when` default to
 		// `Success`, preserving the classic "abort on first failure" feel
 		// (failed → skip the rest of `success` steps).
-		if !step.effective_when().matches(state.failed) {
+		//
+		// A Ctrl+C gates exactly like a failure — remaining `success` work is
+		// abandoned, `failure` / `always` cleanup still runs — but is read from
+		// process state rather than `state.failed` so `ignoreErrors` cannot
+		// swallow it: forgiving a failed command is reasonable, ignoring "the
+		// user asked to stop" is not. Inside a cleanup block `should_abort`
+		// reads `false` (see `interrupt::CleanupScope`), so the cleanup's own
+		// children still execute.
+		if !step.effective_when().matches(state.failed || should_abort()) {
 			continue;
 		}
 
@@ -763,6 +783,12 @@ fn execute_when_block(
 	// For `failure` / `always` entries we reset the local failed state so
 	// the inner walker doesn't skip every default-`when:success` child.
 	// The outer state is restored (or merged) below.
+	//
+	// The same reasoning applies to a Ctrl+C abort, which lives in process
+	// state rather than `state.failed`: the `CleanupScope` suppresses it for
+	// the duration of this block (and for any `@target` dispatched from it,
+	// since the scope is thread-local) so cleanup actually runs.
+	let _cleanup = CleanupScope::enter_if(when_step.when != WhenCondition::Success);
 	if when_step.when != WhenCondition::Success {
 		state.failed = false;
 	}
@@ -968,6 +994,14 @@ fn execute_one_shell(
 		log_command_timing(cmd_start.elapsed());
 	}
 
+	// A Ctrl+C reached this child through the foreground process group. Tell
+	// the user what happened here — at the point the signal actually landed —
+	// rather than after the cleanup output. The notice is latched, so repeats
+	// (and the CLI's own exit-path call) print nothing.
+	if should_abort() {
+		announce_interrupt();
+	}
+
 	state.commands_run += 1;
 	state.last_status = Some(status);
 	if !status.success() {
@@ -1012,6 +1046,7 @@ fn execute_if_block(
 	// inner branch runs in "fresh" mode (state.failed=false locally) so
 	// its default-success children execute.
 	let entered_in_failure_mode = if_step.when.unwrap_or_default() != WhenCondition::Success;
+	let _cleanup = CleanupScope::enter_if(entered_in_failure_mode);
 	let mut local_state = WalkState {
 		commands_run: 0,
 		failures: 0,
@@ -1072,6 +1107,7 @@ fn execute_match_block(
 
 	let local_ignore = match_step.ignore_errors.unwrap_or(false);
 	let entered_in_failure_mode = match_step.when.unwrap_or_default() != WhenCondition::Success;
+	let _cleanup = CleanupScope::enter_if(entered_in_failure_mode);
 	let mut local_state = WalkState {
 		commands_run: 0,
 		failures: 0,
@@ -1171,6 +1207,7 @@ fn execute_for_block(
 		// body runs in "fresh" mode locally so default-success children
 		// inside execute.
 		let entered_in_failure_mode = for_step.when.unwrap_or_default() != WhenCondition::Success;
+		let _cleanup = CleanupScope::enter_if(entered_in_failure_mode);
 		let mut local_state = WalkState {
 			commands_run: 0,
 			failures: 0,
@@ -1184,6 +1221,14 @@ fn execute_for_block(
 		// if none) when it drops at end-of-loop.
 		let var_guard = LoopVarGuard::enter(&args.vars, for_step.var.as_str());
 		for value in &iterations {
+			// After a Ctrl+C, stop iterating outright rather than spinning
+			// through the remaining values letting the inner `when` gate skip
+			// every step: a 500-iteration loop would otherwise take visible
+			// time to drain, and with `ignoreErrors: true` the body would keep
+			// launching commands the user just asked to stop.
+			if should_abort() {
+				break;
+			}
 			var_guard.set(value.clone());
 			let result = execute_steps_walk(
 				&for_step.body,
@@ -1415,6 +1460,10 @@ pub fn execute_parallel_with_counter(
 	parent_add_to_path_chain: &[Vec<String>],
 	output_prefix: Option<&str>,
 ) -> Result<ExecutionResult, ExecuteError> {
+	// Before `ExecSetup::new` — see the ordering note in
+	// `execute_command_with_counter`.
+	let _interrupt_guard = InterruptGuard::new();
+
 	let (setup, tailer, force_kill_guard) = ExecSetup::new(
 		spec,
 		args,
@@ -1461,8 +1510,9 @@ pub fn execute_parallel_with_counter(
 	// later-iterated parallel `@target` succeeded while an earlier one failed),
 	// synthesize a non-zero status. The CLI derives the process exit code from
 	// `final_status.code()` alone, so without this a failing parallel batch
-	// would report success.
-	let final_status = if state.failed {
+	// would report success. An interrupt counts as a failure here too (see the
+	// same rule in `execute_command_with_counter`).
+	let final_status = if state.failed || should_abort() {
 		state.last_status.filter(|s| !s.success()).unwrap_or_else(failed_status)
 	} else {
 		state.last_status.unwrap_or_else(dummy_success_status)
@@ -1663,65 +1713,6 @@ impl Drop for ProcessTreeTracker {
 			}
 		}
 	}
-}
-
-// ──── SIGINT guard for parallel execution ────
-//
-// When running commands in parallel, Ctrl-C sends SIGINT to the entire
-// foreground process group (parent + children). Without intervention the
-// Rust runtime's default handler kills the parent before all `child.wait()`
-// calls complete. The guard temporarily ignores SIGINT in the parent so
-// only the children react; after all children exit the guard is dropped
-// and default SIGINT handling is restored.
-
-/// RAII guard that ignores SIGINT while alive and restores previous handling on drop.
-#[cfg(unix)]
-pub(crate) struct IgnoreSigint {
-	prev: libc::sighandler_t,
-}
-
-#[cfg(unix)]
-impl IgnoreSigint {
-	pub(crate) fn new() -> Self {
-		let prev = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
-		Self { prev }
-	}
-}
-
-#[cfg(unix)]
-impl Drop for IgnoreSigint {
-	fn drop(&mut self) {
-		unsafe {
-			libc::signal(libc::SIGINT, self.prev);
-		}
-	}
-}
-
-#[cfg(windows)]
-pub(crate) struct IgnoreSigint;
-
-#[cfg(windows)]
-impl IgnoreSigint {
-	pub(crate) fn new() -> Self {
-		unsafe {
-			windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(ignore_ctrl_handler), 1);
-		}
-		Self
-	}
-}
-
-#[cfg(windows)]
-impl Drop for IgnoreSigint {
-	fn drop(&mut self) {
-		unsafe {
-			windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(ignore_ctrl_handler), 0);
-		}
-	}
-}
-
-#[cfg(windows)]
-unsafe extern "system" fn ignore_ctrl_handler(_ctrl_type: u32) -> i32 {
-	1 // TRUE = handled (suppress default behaviour)
 }
 
 /// Spawn a compound command as a detached background process and return immediately.

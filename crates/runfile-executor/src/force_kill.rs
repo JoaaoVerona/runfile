@@ -128,6 +128,17 @@ mod platform {
 			return 0; // Not active, pass to next handler
 		}
 
+		// This handler shadows the run-level one for the duration of a
+		// `forceKillOnSigInt` target, so it owns recording the interrupt —
+		// without this the walker would sail past the kill into the next
+		// command instead of running only its cleanup blocks. A repeat is the
+		// user's "get me out now".
+		if crate::interrupt::mark_interrupted() {
+			unsafe {
+				windows_sys::Win32::System::Threading::ExitProcess(crate::interrupt::INTERRUPTED_EXIT_CODE as u32);
+			}
+		}
+
 		// Terminate all processes in the job
 		if let Ok(guard) = JOB_HANDLE.lock()
 			&& let Some(SendHandle(handle)) = &*guard
@@ -218,6 +229,16 @@ pub(crate) mod platform {
 	extern "C" fn sigint_handler(_sig: libc::c_int) {
 		if !ACTIVE.load(Ordering::Relaxed) {
 			return;
+		}
+
+		// This handler shadows the run-level one for the duration of a
+		// `forceKillOnSigInt` target, so it owns recording the interrupt —
+		// without this the walker would sail past the kill into the next
+		// command instead of running only its cleanup blocks. A repeat is the
+		// user's "get me out now" (`_exit`, since `exit` is not
+		// async-signal-safe).
+		if crate::interrupt::mark_interrupted() {
+			unsafe { libc::_exit(crate::interrupt::INTERRUPTED_EXIT_CODE) };
 		}
 
 		// Async-signal-safe body: ONLY atomic loads and `libc::kill` — no

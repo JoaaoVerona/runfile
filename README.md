@@ -614,6 +614,15 @@ Wrap any commands in a `when:` block to run them only after a failure, or always
 ]
 ```
 
+**Ctrl+C runs your cleanup too.** Pressing Ctrl+C stops the running command and skips everything still pending,
+but `when: failure` and `when: always` blocks still execute before Runfile exits (with code `130`) — so a
+container, a lock file, or a dev server started earlier gets torn down instead of leaked. The interrupt is not
+suppressible by `ignoreErrors` (that forgives a failed command, not a user asking to stop), it stops `for` loops
+from starting further iterations, and it reaches every target on the stack: an interrupted `@target` dependency
+runs its own cleanup, then its caller runs the caller's. Cleanup blocks are exempt from the abort, so their own
+steps — including a `@teardown` they delegate to — run in full. Press Ctrl+C **again** to quit immediately if a
+cleanup block is itself slow or stuck.
+
 #### Single-shell mode with `sameShell`
 
 By default each step runs in its own shell process, so `cd`, exported variables, and other shell state don't carry

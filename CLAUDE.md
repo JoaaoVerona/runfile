@@ -335,7 +335,7 @@ crates/
 ### runfile-executor
 
 **Files:** `args.rs`, `functions.rs`, `dsl_eval.rs`, `control_flow.rs`, `env.rs`, `executor.rs`, `parallel.rs`,
-`force_kill.rs`, `logging.rs`, `parallel_output.rs`, `runner.rs`, `stdio_tailer.rs`, `tests/`
+`force_kill.rs`, `interrupt.rs`, `logging.rs`, `parallel_output.rs`, `runner.rs`, `stdio_tailer.rs`, `tests/`
 
 - `functions.rs`: the built-in `{{ funcname(...) }}` registry — `evaluate_function` (the dispatch entry point, called
   from the chain resolver in `args.rs`) plus its numeric / json / regex / string / shell-quoting helpers. Extracted
@@ -347,6 +347,10 @@ crates/
   runner (`run_parallel_leaves` → `run_parallel_batch` / `run_sequential_leaves`). Extracted from `executor.rs`;
   borrows `pub(crate)` executor internals (`ExecSetup`, `WalkState`, `ProcessTreeTracker`, `dummy_success_status`,
   etc.). `execute_parallel*` orchestration entry points stay in `executor.rs`.
+- `interrupt.rs`: Ctrl+C handling — see the "**Ctrl+C / SIGINT**" design-decision entry below. Owns the
+  process-global `INTERRUPTED` flag, the `InterruptGuard` (refcounted SIGINT / console-ctrl handler install),
+  the thread-local `CleanupScope`, and `announce_interrupt` (latched one-line notice). Public surface re-exported
+  from `lib.rs`: `interrupted()`, `InterruptGuard`, `announce_interrupt()`, `INTERRUPTED_EXIT_CODE` (130).
 - Test modules live under `tests/` (one file per topic: `functions`, `control_flow_match_parallel`,
   `extract_tests`, `flags_run_tests`, `parallel`-related, etc.), with shared helpers (`get_test_shell`,
   `json_escape_path`, `parse_target`) in `tests/mod.rs`.
@@ -693,10 +697,12 @@ crates/
   `remove_dir_all`; missing/permission errors ignored). The CLI calls it in `cmd_run.rs` right before **both**
   `process::exit` paths (success and the `Err` arm) and **after each watch-mode iteration** (so a long-lived
   `run --watch`-style session doesn't accumulate artifacts). `--dry-run` (`cmd_dry_run`) never wires cleanup because
-  the dry-run pass creates nothing. **Caveat:** a hard kill (SIGKILL) or a Ctrl+C that terminates before the run
-  completes skips cleanup — those leftover artifacts stay in the OS temp dir for the OS to reclaim. No SIGINT handler
-  is installed for this (it would entangle with `force_kill.rs`'s conditional SIGINT machinery and require
-  async-signal-safe deletion); normal success/failure exit is the guaranteed cleanup path. Tests that exercise these
+  the dry-run pass creates nothing. **Caveat:** a hard kill (SIGKILL) skips cleanup, as does the SECOND Ctrl+C
+  (which `_exit`s from the signal handler) — those leftover artifacts stay in the OS temp dir for the OS to reclaim.
+  A single Ctrl+C does NOT: `interrupt::InterruptGuard` keeps the process alive through the cleanup blocks and out
+  to the CLI's normal exit path, which calls `cleanup_temp_artifacts()` as usual. No cleanup runs from inside a
+  signal handler (deletion isn't async-signal-safe); normal success/failure/interrupt exit is the cleanup path.
+  Tests that exercise these
   functions serialize on a dedicated lock (`TEMP_TEST_LOCK` in `tests/functions.rs`) because the shared global
   registry means one test's `cleanup_temp_artifacts()` drain would otherwise race a sibling test's create→assert
   window.
@@ -1233,6 +1239,43 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   execution does NOT abort. This lets `when: failure` / `when: always` blocks at later positions still run.
   `final_status` is set to a synthetic non-zero status (via `failed_status()`) when `state.failed` is true and the
   last command exited 0 (e.g. an `always` cleanup succeeded after a prior failure).
+- **Ctrl+C / SIGINT** (`interrupt.rs`): Ctrl+C delivers SIGINT to the whole foreground process group — the shell
+  child AND `run` itself. With the default disposition `run` died on the spot, so `when: failure` / `when: always`
+  cleanup never ran (the bug this module fixes). `InterruptGuard` installs a handler that ONLY records the
+  interrupt (`INTERRUPTED: AtomicBool`); the child dies from the same signal (a handler is reset to SIG_DFL across
+  `exec`, so children are unaffected), the executor sees its signal exit status through the normal path, and the
+  walker keeps going. A **second** Ctrl+C `_exit(130)`s (Windows: `ExitProcess`) — the escape hatch for a stuck
+  cleanup block; the handler stays async-signal-safe (one atomic swap, no locks/allocation/IO). The guard is
+  refcounted (only the first installs, only the last uninstalls) and is created in the three executor entry points
+  — `execute_command_with_counter`, `execute_parallel_with_counter`, `execute_same_shell_with_counter` — **before**
+  `ExecSetup::new`, so `forceKillOnSigInt`'s handler layers ON TOP of ours (it saves/restores whatever it
+  replaced) and reverse drop order unwinds them correctly. Scoping it to the executor (rather than
+  `run_target_with_cwd`) keeps the runner's interactive `confirm` prompt on the default disposition, where Ctrl+C
+  still kills instantly. `force_kill.rs`'s handlers call `interrupt::mark_interrupted()` because they shadow ours
+  for the duration of such a target. The old `IgnoreSigint` (SIG_IGN around a parallel batch) is gone — the
+  `InterruptGuard` subsumes it and additionally records the abort.
+  Two gating rules make the semantics work:
+  - **`ignoreErrors` cannot suppress an interrupt.** That's why the abort lives in process state instead of
+    `WalkState::failed` — `ignoreErrors` forgives a failed command, not a user asking to stop. Consumers:
+    `execute_steps_walk`'s gate (`state.failed || should_abort()`), the `final_status` computation in
+    `execute_command_with_counter` / `execute_parallel_with_counter`, `run_parallel_leaves`'s `batch_failed`,
+    `execute_for_block`'s per-iteration `break`, and `RunnerDependencyResolver::run_dependency`'s
+    `ignoreErrors` containment (`dep_ignores_errors && !should_abort()`).
+  - **Cleanup blocks are exempt from their own abort**, or a `when: always` body would gate away its own
+    default-`when: success` children. `CleanupScope` (thread-local depth counter, RAII) is entered for every
+    `when != Success` body — `execute_when_block`, the `entered_in_failure_mode` branches of
+    `execute_if_block` / `execute_match_block` / `execute_for_block`, and both cleanup partitions in
+    `run_parallel_leaves` — and `should_abort()` reads `false` inside it. Thread-local (not a `WalkState` field)
+    so it flows into `@target` dependencies dispatched from a cleanup block without changing the
+    `DependencyResolver` signature; `run_parallel_batch` snapshots `in_cleanup()` and re-enters the scope on each
+    worker thread, since thread-locals don't cross `thread::scope`.
+  The CLI (`cmd_run.rs`) checks `interrupted()` on BOTH result arms, calls `exit_interrupted()` (which
+  `announce_interrupt()`s and exits `INTERRUPTED_EXIT_CODE` = 130), skips `record_prepare_if_needed`, and
+  suppresses the propagated "terminated by signal" error text. Watch mode checks it after each iteration and after
+  the initial run, so Ctrl+C ends the session — while an *idle* Ctrl+C (between iterations, no guard installed)
+  still terminates via the default disposition as before. Coverage:
+  `runfile-cli/tests/interrupt_cli.rs` (Unix-only, drives the real binary in its own process group and
+  `kill(-pgid, SIGINT)`s it) plus unit tests on the pure `abort_gate` / `CleanupScope` in `interrupt.rs`.
 - Parallel parents partition leaves by `when`: `when: success` leaves run as the parallel batch; if any failed,
   `when: failure` leaves run sequentially after; `when: always` leaves always run sequentially after.
   See `run_parallel_leaves` in `executor.rs`. `execute_parallel_with_counter` computes its returned `final_status`
@@ -1350,7 +1393,10 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   children and grandchildren. On Unix, `SIGKILL` is sent to each child PID. The handler suppresses the default
   SIGINT behavior so the executor can cleanly reap children and report the exit status. Implementation is in
   `force_kill.rs` using global state (static Mutex for the Job Object handle / PID list) since console ctrl handlers
-  on Windows require function pointers, not closures.
+  on Windows require function pointers, not closures. Because these handlers SHADOW the run-level one from
+  `interrupt.rs`, they also call `interrupt::mark_interrupted()` (and `_exit(130)` on a repeat) — without that the
+  walker would sail past the kill into the next command instead of jumping to its cleanup blocks. After the kill,
+  the run follows the normal interrupt path (see the "**Ctrl+C / SIGINT**" entry).
 - VS Code tasks generator (`run :generate vscode-tasks`) follows the same pattern as the Zed generator: generates
   `.vscode/tasks.json`, merges with existing files preserving user-added fields via `#[serde(flatten)]`.
 - **`run :generate task-descriptors`** (in `runfile-generators/src/task_descriptors.rs`, wired via
@@ -1491,6 +1537,11 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
    the `cmd_*` handlers themselves aren't unit-testable inline (they `process::exit` and use CWD-relative paths).
    Pure formatting logic stays unit-tested in `runfile-generators` (`src/tests/editorconfig.rs`); the subprocess
    tests only assert the wiring.
+7. Signal behavior is likewise a subprocess test: `runfile-cli/tests/interrupt_cli.rs` (`#![cfg(unix)]`) spawns the
+   binary with `.process_group(0)` and sends `kill(-pgid, SIGINT)` — the same delivery a terminal's Ctrl+C makes,
+   which is the whole point (signalling only the child would not reproduce the bug). Targets `touch` marker files
+   rather than printing, so assertions never race a pipe; the test waits for a `started` marker before signalling.
+   Keep the no-signal control test (`uninterrupted_run_is_unaffected`) whenever touching this area.
 
 ## README
 

@@ -164,6 +164,18 @@ pub fn log_parallel_failure_summary(failures: &[(String, String)]) {
 	}
 }
 
+/// Announce that the run was interrupted (Ctrl+C) and that only cleanup
+/// steps remain. Printed at most once per process — see
+/// [`crate::announce_interrupt`], which owns the latch.
+pub(crate) fn log_interrupted() {
+	#[cfg(windows)]
+	enable_ansi_support();
+
+	eprintln!(
+		"{BOLD}{CYAN}[runfile]{RESET} {BOLD}{RED}Interrupted{RESET} {DIM}— skipping remaining steps, running `when: failure` / `when: always` blocks (Ctrl+C again to quit){RESET}"
+	);
+}
+
 /// Format a duration for human display.
 fn format_duration(d: Duration) -> String {
 	let secs = d.as_secs_f64();

@@ -5,6 +5,7 @@ use crate::executor::{
 	DependencyResolver, ExecuteError, ExecutionResult, execute_command_with_counter, execute_detached,
 	execute_parallel_with_counter, execute_same_shell_with_counter, join_shell_commands,
 };
+use crate::interrupt::should_abort;
 use crate::logging::{StepCounter, log_command, log_target_timing};
 use runfile_parser::{
 	CommandStep, ForInValue, ForStep, IfStep, MatchStep, Runfile, WORKING_DIRECTORY_DEFAULT, WhenStep,
@@ -153,6 +154,11 @@ impl DependencyResolver for RunnerDependencyResolver<'_> {
 				// every subsequent default-`when: success` sibling. The dep's
 				// `ignoreErrors` is meant to opt the dep out of the failure
 				// chain entirely, so we present a clean result here.
+				//
+				// An interrupt is exempt: `ignoreErrors` forgives a command
+				// that failed, not a user who asked to stop. Reporting success
+				// here would let the caller carry on with its remaining
+				// `when: success` siblings.
 				let dep_ignores_errors = self
 					.root
 					.runfile
@@ -160,7 +166,7 @@ impl DependencyResolver for RunnerDependencyResolver<'_> {
 					.get(target_name)
 					.and_then(|spec| spec.ignore_errors)
 					.unwrap_or(false);
-				if dep_ignores_errors {
+				if dep_ignores_errors && !should_abort() {
 					Ok(ExecutionResult {
 						commands_run: result.commands_run,
 						failures: 0,

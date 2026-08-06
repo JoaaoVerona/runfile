@@ -1258,10 +1258,11 @@ fn register_temp_artifact(path: PathBuf, is_dir: bool) {
 /// permission error is silently ignored. The CLI calls this before each
 /// `process::exit` and between watch-mode iterations.
 ///
-/// Note: a hard kill (SIGKILL, power loss) skips this entirely — those leftover
-/// artifacts stay in the OS temp directory for the OS to reclaim. SIGINT
-/// (Ctrl+C) likewise terminates before cleanup unless the run completes
-/// normally, so long-running interrupted targets may leave artifacts behind.
+/// A single Ctrl+C DOES reach this: `interrupt::InterruptGuard` keeps the
+/// process alive through the target's cleanup blocks and out to the CLI's
+/// normal exit path. What skips it is a hard kill (SIGKILL, power loss) or the
+/// second Ctrl+C, which `_exit`s straight out of the signal handler — those
+/// leftover artifacts stay in the OS temp directory for the OS to reclaim.
 pub fn cleanup_temp_artifacts() {
 	if let Ok(mut guard) = TEMP_ARTIFACTS.lock() {
 		for artifact in guard.drain(..) {

@@ -44,6 +44,7 @@ $ run build --release
 - [Dry Run](#dry-run)
 - [File Includes](#file-includes)
 - [Error Handling](#error-handling)
+	- [Interrupting a run (Ctrl+C)](#interrupting-a-run-ctrlc)
 - [Parallel Execution](#parallel-execution)
 - [Detached Execution](#detached-execution)
 - [extendStdio](#extendstdio)
@@ -1828,6 +1829,8 @@ wrapper:
   block.
 - Target-level `"ignoreErrors": true` swallows failures entirely — the target exits 0 even if steps failed.
   `when: failure` blocks still don't run in that case (since "failure" wasn't observed).
+- A **Ctrl+C** gates like a failure — remaining `when: success` steps are skipped, `failure` / `always` blocks run —
+  except that `ignoreErrors` cannot suppress it. See [Interrupting a run](#interrupting-a-run-ctrlc).
 - Nested combinations like `when: success` outside and `when: failure` inside collapse to "never runs" (the inner is
   unreachable from the outer's gate). Parser keeps it; runtime simply skips the dead path.
 
@@ -2007,6 +2010,36 @@ When `ignoreErrors` is `true`:
 
 Set it globally if you want this behavior for all targets, and override per-target where strictness matters.
 
+### Interrupting a run (Ctrl+C)
+
+Pressing Ctrl+C stops the running command and abandons everything still pending — but Runfile does **not** die on the
+spot. It first executes the target's `when: failure` and `when: always` blocks, then exits with code **130**
+(`128 + SIGINT`, the shell convention), so cleanup you attached to a target actually runs instead of leaking a
+container, a lock file, or a background dev server.
+
+```jsonc
+"commands": [
+  "docker compose up -d && ./integration-tests.sh",  // Ctrl+C here…
+  "./publish-results.sh",                            // …skips this
+  { "when": "always", "commands": ["docker compose down"] }  // …but still runs this
+]
+```
+
+Details:
+
+- **`ignoreErrors` does not suppress it.** That flag forgives a command that failed; it has no say over a user asking
+  to stop. An interrupted run never exits 0, and remaining commands are not resumed.
+- **`for` loops stop iterating.** No further iterations start (they would otherwise keep launching the very commands
+  you interrupted).
+- **Every target on the stack cleans up.** An interrupted `@target` dependency runs its own `when:` blocks, then its
+  caller runs the caller's.
+- **Cleanup blocks are exempt from the abort.** Steps inside a `when: failure` / `when: always` block run in full,
+  including a `@teardown` target they delegate to.
+- **Press Ctrl+C again to quit immediately** — the escape hatch when a cleanup block is itself slow or stuck.
+- In [watch mode](#watch-mode), Ctrl+C during a run ends the whole watch session (after cleanup), not just the
+  current iteration.
+- Targets with [`forceKillOnSigInt`](#force-kill-on-ctrlc) behave the same, on top of force-killing the process tree.
+
 ---
 
 ## Parallel Execution
@@ -2154,10 +2187,13 @@ Behavior:
 
 - **Windows.** Runfile creates a Windows **Job Object** and assigns the spawned children to it. On `CTRL+C` (or any
   signal that reaches the console handler), `TerminateJobObject` kills every process in the job — direct children **and
-  ** all transitive grandchildren — before Runfile exits.
-- **Unix.** Runfile records the PID of each spawned child and, on `SIGINT`, sends `SIGKILL` to each before exiting. (The
+  ** all transitive grandchildren.
+- **Unix.** Runfile records the PID of each spawned child and, on `SIGINT`, sends `SIGKILL` to each. (The
   default-handler `SIGINT` propagation is also suppressed so Runfile can reap children cleanly and report the exit
   status.)
+- Once the tree is dead, the run follows the normal
+  [interrupt path](#interrupting-a-run-ctrlc): remaining steps are skipped, `when: failure` / `when: always` blocks
+  run, and Runfile exits 130.
 - The flag has no effect on processes that **do** handle `CTRL+C` correctly — they receive the signal first and exit on
   their own.
 - Available on **both targets and `globals`**. Target-level value wins when both are set.

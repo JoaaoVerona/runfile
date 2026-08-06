@@ -11,10 +11,11 @@
 use crate::args::{LoopVarGuard, RunArgs};
 use crate::control_flow::{evaluate_if_condition, expand_for_iterations, resolve_match_branch};
 use crate::executor::{
-	DependencyResolver, ExecSetup, ExecuteError, ExecutionResult, IgnoreSigint, ProcessTreeTracker, WalkState,
+	DependencyResolver, ExecSetup, ExecuteError, ExecutionResult, ProcessTreeTracker, WalkState,
 	dep_result_failure_detail, execute_error_failure_detail, format_target_call_label, resolve_target_call_argv,
 };
 use crate::force_kill::ForceKillGuard;
+use crate::interrupt::{CleanupScope, announce_interrupt, in_cleanup, should_abort};
 use crate::logging::{StepCounter, log_command, log_parallel_command, log_parallel_failure_summary};
 use crate::parallel_output::{
 	OutputStream, flush_writer_thread, format_parallel_prefix, line_prefixing_enabled, shell_prefix_label,
@@ -306,7 +307,10 @@ pub(crate) fn run_parallel_leaves(
 		Ok(())
 	};
 
-	let batch_failed = state.failures > pre_failures && !setup.ignore_errors && !local_ignore;
+	// A Ctrl+C counts as a batch failure regardless of `ignoreErrors` — the
+	// user asked to stop, which `ignoreErrors` has no business forgiving — so
+	// the `when: failure` partition runs even for an otherwise-forgiving batch.
+	let batch_failed = (state.failures > pre_failures && !setup.ignore_errors && !local_ignore) || should_abort();
 	if batch_failed {
 		// Bubble the failure into the surrounding state so subsequent
 		// `when: failure` / `when: always` blocks (at outer levels) see
@@ -314,7 +318,10 @@ pub(crate) fn run_parallel_leaves(
 		state.failed = true;
 	}
 
+	// Both cleanup partitions run inside a `CleanupScope` so an interrupt
+	// doesn't gate away their own steps (see `interrupt::should_abort`).
 	if batch_failed && !failure_leaves.is_empty() {
+		let _cleanup = CleanupScope::enter();
 		run_sequential_leaves(
 			failure_leaves,
 			setup,
@@ -328,6 +335,7 @@ pub(crate) fn run_parallel_leaves(
 	}
 
 	if !always_leaves.is_empty() {
+		let _cleanup = CleanupScope::enter();
 		run_sequential_leaves(
 			always_leaves,
 			setup,
@@ -585,12 +593,12 @@ fn run_parallel_batch(
 	#[cfg(unix)]
 	tree_tracker.children_spawned();
 
-	let _sigint_guard = if !setup.force_kill {
-		Some(IgnoreSigint::new())
-	} else {
-		None
-	};
-
+	// NOTE: what used to be an `IgnoreSigint` guard here — needed so Ctrl+C
+	// couldn't kill us mid-`child.wait()` — is now the run-wide
+	// `interrupt::InterruptGuard`, installed by whichever `execute_*` entry
+	// point led here (and, for `forceKillOnSigInt` targets, layered under
+	// force-kill's own handler). Both record the interrupt, so the cleanup
+	// partitions below are reached either way.
 	let mut failures = 0usize;
 	let mut shells_run = children.len();
 	let mut first_error: Option<ExecuteError> = None;
@@ -608,10 +616,16 @@ fn run_parallel_batch(
 	// `parent_env`, and `parent_chain` without requiring `'static`. Each
 	// worker forwards its leaf's `output_prefix` so the dispatched dep's
 	// transitive shells get tagged with the partition identity (e.g. `[3] `).
+	// `CleanupScope` is thread-local, so a batch dispatched from inside a
+	// `when: always` block has to re-enter it on each worker — otherwise the
+	// dispatched target would see the run-level abort and skip its own body,
+	// which is exactly the cleanup we're here to run.
+	let cleanup_ctx = in_cleanup();
 	let dep_results: Vec<Result<ExecutionResult, ExecuteError>> = std::thread::scope(|scope| {
 		let mut handles = Vec::with_capacity(target_calls.len());
 		for (target, argv, optional, leaf_prefix) in target_calls {
 			handles.push(scope.spawn(move || {
+				let _cleanup = CleanupScope::enter_if(cleanup_ctx);
 				deps.run_dependency(
 					&target,
 					argv,
@@ -698,7 +712,11 @@ fn run_parallel_batch(
 	}
 
 	tree_tracker.wait_for_descendants();
-	drop(_sigint_guard);
+	// Explain the wall of "terminated by signal" lines the summary below is
+	// about to print. Latched, so it prints at most once per run.
+	if should_abort() {
+		announce_interrupt();
+	}
 
 	state.commands_run += shells_run;
 	state.failures += failures;

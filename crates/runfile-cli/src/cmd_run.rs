@@ -415,6 +415,12 @@ pub fn cmd_run(
 			// `process::exit` skips destructors, so this explicit call is the
 			// only cleanup hook on the normal exit path.
 			runfile_executor::cleanup_temp_artifacts();
+			if runfile_executor::interrupted() {
+				// The run reached here because we swallowed the Ctrl+C long
+				// enough to run the target's cleanup blocks; report the
+				// interrupt to our own caller the way the signal would have.
+				exit_interrupted();
+			}
 			// `final_status` already accounts for `ignoreErrors` (it's
 			// computed in the executor): if any step failed and the target
 			// wasn't `ignoreErrors`-ed, status is non-zero. Otherwise it's
@@ -437,10 +443,26 @@ pub fn cmd_run(
 				log_total_timing(total_start.elapsed());
 			}
 			runfile_executor::cleanup_temp_artifacts();
+			if runfile_executor::interrupted() {
+				// Don't dress a Ctrl+C up as an error — the propagated one is
+				// invariably the interrupted command's own "terminated by
+				// signal", which tells the user nothing they don't know.
+				exit_interrupted();
+			}
 			eprintln!("Error: {e}");
 			process::exit(1);
 		}
 	}
+}
+
+/// Exit after a Ctrl+C with the conventional 128 + SIGINT code, so callers
+/// (scripts, CI, an outer `run`) see the interrupt rather than the exit status
+/// of whichever cleanup block happened to run last.
+fn exit_interrupted() -> ! {
+	// Idempotent: normally the executor already printed this when the signal
+	// landed on a running child. This covers a Ctrl+C between commands.
+	runfile_executor::announce_interrupt();
+	process::exit(runfile_executor::INTERRUPTED_EXIT_CODE);
 }
 
 pub fn cmd_dry_run(target_name: &str, extra_args: &[String], file: Option<&std::path::Path>, stdin_args: bool) {
@@ -567,6 +589,15 @@ pub fn cmd_watch(
 		pk_provider,
 	);
 
+	// A Ctrl+C during the run is swallowed by the executor's interrupt guard so
+	// cleanup blocks can run — which means leaving the watch session is now OUR
+	// job. (An idle Ctrl+C, while no run is in flight, still terminates the
+	// process the usual way: no guard is installed between iterations.)
+	if runfile_executor::interrupted() {
+		runfile_executor::cleanup_temp_artifacts();
+		exit_interrupted();
+	}
+
 	// Set up file watcher
 	let (tx, rx) = mpsc::channel();
 	let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
@@ -662,6 +693,10 @@ pub fn cmd_watch(
 		// Clean up `temp_file()` / `temp_dir()` artifacts from this iteration so
 		// a long-lived watch session doesn't accumulate them in the temp dir.
 		runfile_executor::cleanup_temp_artifacts();
+
+		if runfile_executor::interrupted() {
+			exit_interrupted();
+		}
 
 		eprintln!("{BOLD}{CYAN}[runfile]{RESET} {DIM}Watching for changes... (Ctrl+C to stop){RESET}");
 	}
