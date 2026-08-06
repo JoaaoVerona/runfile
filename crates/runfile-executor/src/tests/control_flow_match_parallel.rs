@@ -282,7 +282,6 @@ fn for_in_namespaces_with_dynamic_target_call_runs_each_namespaced_target() {
 	// The for-block iterates the runfile's namespaces; for each value, the
 	// `@{{ VAR.ns }}:build` target call is substituted and dispatched to the
 	// real namespaced target. Each project's `build` writes a marker file.
-	use crate::runner::run_target;
 	use runfile_parser::parse_runfile;
 
 	let shell = get_test_shell();
@@ -314,14 +313,31 @@ fn for_in_namespaces_with_dynamic_target_call_runs_each_namespaced_target() {
 	}}"#
 	);
 
-	let mut runfile = parse_runfile(&json).unwrap();
+	let runfile = parse_runfile(&json).unwrap();
 	// Simulate what `merge_runfiles` would populate after resolving namespaced
-	// includes (those tests live in the parser crate); here we plug the list in
-	// directly so the executor sees the same shape it'd see at runtime.
-	runfile.namespaces = vec!["project_one".to_string(), "project_two".to_string()];
+	// includes (those tests live in the parser crate). Namespaces are scoped to
+	// each target's source file, so both maps have to be supplied.
+	let runfile_path = dir.path().join("Runfile.json");
+	let (source_files, namespaces_by_source) =
+		super::namespace_maps(&runfile, &runfile_path, &["project_one", "project_two"]);
 
 	let args = RunArgs::default();
-	let result = run_target("build_all", &runfile, &shell, &args, dir.path()).unwrap();
+	let result = crate::runner::run_target_with_cwd(
+		"build_all",
+		&runfile,
+		&shell,
+		&args,
+		&runfile_path,
+		dir.path(),
+		dir.path(),
+		&HashMap::new(),
+		&source_files,
+		&namespaces_by_source,
+		false,
+		false,
+		None,
+	)
+	.unwrap();
 	assert!(result.final_status.success(), "build_all should succeed");
 	assert!(
 		dir.path().join("one.built").exists(),
@@ -338,7 +354,6 @@ fn optional_target_call_skips_when_missing() {
 	// The user's adb-forward use case: iterate every namespace, calling an
 	// optional `@?<ns>:adb-forward`. Only namespaces that define the target
 	// run; missing ones are silent no-ops (no error, no failure).
-	use crate::runner::run_target;
 	use runfile_parser::parse_runfile;
 
 	let shell = get_test_shell();
@@ -365,11 +380,28 @@ fn optional_target_call_skips_when_missing() {
 	}}"#
 	);
 
-	let mut runfile = parse_runfile(&json).unwrap();
-	runfile.namespaces = vec!["with_it".to_string(), "without_it".to_string()];
+	let runfile = parse_runfile(&json).unwrap();
+	let runfile_path = dir.path().join("Runfile.json");
+	let (source_files, namespaces_by_source) =
+		super::namespace_maps(&runfile, &runfile_path, &["with_it", "without_it"]);
 
 	let args = RunArgs::default();
-	let result = run_target("adb-forward", &runfile, &shell, &args, dir.path()).unwrap();
+	let result = crate::runner::run_target_with_cwd(
+		"adb-forward",
+		&runfile,
+		&shell,
+		&args,
+		&runfile_path,
+		dir.path(),
+		dir.path(),
+		&HashMap::new(),
+		&source_files,
+		&namespaces_by_source,
+		false,
+		false,
+		None,
+	)
+	.unwrap();
 	assert!(
 		result.final_status.success(),
 		"adb-forward should succeed even when one namespace lacks the target"

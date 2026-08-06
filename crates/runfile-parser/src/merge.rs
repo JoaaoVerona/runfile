@@ -27,9 +27,6 @@ pub enum MergeError {
 	#[error("Included file not found: {0}")]
 	IncludeNotFound(PathBuf),
 
-	#[error("Included file escapes the project directory: {0}")]
-	IncludePathTraversal(PathBuf),
-
 	#[error("Failed to parse included file {0}: {1}")]
 	IncludeParse(PathBuf, crate::parse::ParseError),
 
@@ -63,6 +60,17 @@ pub struct MergeResult {
 	/// Targets that are defined in multiple source files (not runnable).
 	/// Maps target name to the list of all files that define it.
 	pub conflicts: HashMap<String, Vec<(PathBuf, SourceKind)>>,
+	/// Per-source-file namespace lists: source Runfile path → the namespaces
+	/// that file declares directly in its own `includes` array (unprefixed,
+	/// sorted, deduplicated).
+	///
+	/// This is what `for "in": "namespaces"` iterates. Scoping it per file —
+	/// rather than handing every target one flat machine-wide list — is what
+	/// keeps a project's loop from suddenly iterating namespaces that a
+	/// registered *global* Runfile happens to declare, and vice versa. Keys are
+	/// the same path values recorded in [`Self::target_sources`], so a target's
+	/// list is `namespaces_by_source[target_sources[name].0]`.
+	pub namespaces_by_source: HashMap<PathBuf, Vec<String>>,
 	/// Global source files that declared `globals.onlyInDirectories`, mapped to
 	/// that directory list — i.e. the files that only merged in because the cwd
 	/// happened to be inside one of those directories.
@@ -85,6 +93,16 @@ impl MergeResult {
 			.iter()
 			.map(|(name, (path, _))| (name.clone(), path.clone()))
 			.collect()
+	}
+
+	/// The namespaces visible to `target_name` — i.e. those declared by the
+	/// Runfile that defined it. Empty when the target is unknown or its source
+	/// file declares no namespaced includes.
+	pub fn namespaces_for_target(&self, target_name: &str) -> &[String] {
+		self.target_sources
+			.get(target_name)
+			.and_then(|(path, _)| self.namespaces_by_source.get(path))
+			.map_or(&[], |v| v.as_slice())
 	}
 }
 
@@ -121,13 +139,11 @@ pub(crate) struct MergeState {
 	pub(crate) target_sources: HashMap<String, (PathBuf, SourceKind)>,
 	/// Track ALL sources for each target name to detect conflicts across files.
 	pub(crate) all_sources: HashMap<String, Vec<(PathBuf, SourceKind)>>,
-	/// Namespace prefixes that have been applied to this state, in
-	/// post-composition form (e.g. `outer:inner` after both `outer` and
-	/// `inner` namespaces stacked). Each include with a non-empty namespace
-	/// contributes one entry; nested includes prefix existing entries via
-	/// [`apply_namespace_to_state`]. Final list is sorted + deduplicated by
-	/// [`merge_runfiles_inner`] before being placed on `Runfile.namespaces`.
-	pub(crate) namespaces: Vec<String>,
+	/// Source file path → the namespaces that file declares directly in its own
+	/// `includes` (unprefixed). Accumulated as each file is loaded; never
+	/// rewritten by [`apply_namespace_to_state`], because a file's namespace
+	/// list is a property of the file, not of where it was included from.
+	pub(crate) namespaces_by_source: HashMap<PathBuf, Vec<String>>,
 }
 
 impl MergeState {
@@ -137,7 +153,16 @@ impl MergeState {
 			source_dirs: HashMap::new(),
 			target_sources: HashMap::new(),
 			all_sources: HashMap::new(),
-			namespaces: Vec::new(),
+			namespaces_by_source: HashMap::new(),
+		}
+	}
+
+	/// Record the namespaces a freshly-parsed Runfile declares in its own
+	/// `includes`, keyed by the same path value its targets are recorded under.
+	fn record_namespaces(&mut self, source_path: &Path, runfile: &Runfile) {
+		let direct = runfile.direct_namespaces();
+		if !direct.is_empty() {
+			self.namespaces_by_source.insert(source_path.to_path_buf(), direct);
 		}
 	}
 
@@ -192,9 +217,9 @@ impl MergeState {
 			}
 			self.targets.insert(name, spec);
 		}
-		// Namespaces accumulate across siblings; sort/dedupe happens once at
-		// the top-level merge result.
-		self.namespaces.extend(other.namespaces);
+		// Per-file namespace lists are keyed by source path, so sibling states
+		// never collide — a plain extend is enough.
+		self.namespaces_by_source.extend(other.namespaces_by_source);
 	}
 }
 
@@ -243,7 +268,36 @@ fn merge_runfiles_inner(
 			directory_scoped_sources.insert(global_path.clone(), only_dirs.clone());
 		}
 
+		// Resolve the global file's own `includes` (namespaced or not). Targets
+		// they contribute are recorded as `Global`: the user registered *this
+		// file* machine-wide, so everything it drags in is machine-wide too —
+		// that keeps them grouped under `global` in `:list`, filed under
+		// Globals by the VS Code extension, and out of the `Included` filter
+		// that `--include-globals` would otherwise silently drop them through.
+		//
+		// Errors are warn-and-skip rather than fatal, matching how this loop
+		// already treats a missing or unparsable global file. A broken include
+		// in one registered global must not take down every `run` invocation
+		// on the machine.
+		let canonical_global = std::fs::canonicalize(global_path).unwrap_or_else(|_| global_path.clone());
+		let mut visited = HashSet::new();
+		visited.insert(canonical_global.clone());
+		if let Err(e) = resolve_includes(
+			&global_runfile,
+			&canonical_global,
+			&mut state,
+			&mut visited,
+			SourceKind::Global,
+		) && warn
+		{
+			eprintln!(
+				"[runfile] Warning: failed to resolve includes of global file {}: {e}",
+				global_path.display()
+			);
+		}
+
 		let globals_ref = global_runfile.globals.as_ref();
+		state.record_namespaces(global_path, &global_runfile);
 		state.insert_targets(
 			global_runfile.targets,
 			globals_ref,
@@ -261,9 +315,16 @@ fn merge_runfiles_inner(
 		let canonical_local = std::fs::canonicalize(&local_path).unwrap_or(local_path.clone());
 		let mut visited = HashSet::new();
 		visited.insert(canonical_local.clone());
-		resolve_includes(&local_runfile, &canonical_local, &mut state, &mut visited)?;
+		resolve_includes(
+			&local_runfile,
+			&canonical_local,
+			&mut state,
+			&mut visited,
+			SourceKind::Included,
+		)?;
 
 		let globals_ref = local_runfile.globals.as_ref();
+		state.record_namespaces(&local_path, &local_runfile);
 		state.insert_targets(
 			local_runfile.targets,
 			globals_ref,
@@ -292,10 +353,11 @@ fn merge_runfiles_inner(
 		return Err(MergeError::NoTargets);
 	}
 
-	// Sort + dedupe namespaces so consumers (particularly `for in:
-	// "namespaces"`) get deterministic order across runs and don't iterate
-	// the same namespace twice when it appears under multiple include paths.
-	let mut namespaces = state.namespaces;
+	// Flat union of every participating file's namespaces, for consumers that
+	// need to recognise namespace roots across the whole merge (the
+	// `task-descriptors` generator). Runtime `for "in": "namespaces"` does NOT
+	// read this — it goes through `namespaces_by_source`, per target.
+	let mut namespaces: Vec<String> = state.namespaces_by_source.values().flatten().cloned().collect();
 	namespaces.sort();
 	namespaces.dedup();
 
@@ -310,6 +372,7 @@ fn merge_runfiles_inner(
 		source_dirs: state.source_dirs,
 		target_sources: state.target_sources,
 		conflicts,
+		namespaces_by_source: state.namespaces_by_source,
 		directory_scoped_sources,
 	})
 }
@@ -498,11 +561,17 @@ pub(crate) fn merge_metadata(global: &Metadata, target: Option<&Metadata>) -> Me
 /// `<namespace>:`. Nesting composes from the innermost include outward, so a
 /// child's references that already resolve to its own namespaced targets stay
 /// internally consistent when an outer namespace is applied.
+///
+/// `kind` is the [`SourceKind`] recorded for every target this include tree
+/// contributes. The local Runfile passes `Included`; a registered global file
+/// passes `Global`, so the targets its includes bring in stay attributed to the
+/// machine-wide file the user actually registered.
 pub(crate) fn resolve_includes(
 	runfile: &Runfile,
 	runfile_path: &Path,
 	state: &mut MergeState,
 	visited: &mut HashSet<PathBuf>,
+	kind: SourceKind,
 ) -> Result<(), MergeError> {
 	let includes = match &runfile.includes {
 		Some(inc) if !inc.is_empty() => inc.clone(),
@@ -510,10 +579,6 @@ pub(crate) fn resolve_includes(
 	};
 
 	let base_dir = runfile_path.parent().unwrap_or(Path::new("."));
-
-	// Compute the canonical root directory to restrict path traversal.
-	// All includes must resolve to paths within this directory tree.
-	let canonical_base = std::fs::canonicalize(base_dir).unwrap_or_else(|_| base_dir.to_path_buf());
 
 	for entry in &includes {
 		let include_path = base_dir.join(&entry.path);
@@ -524,10 +589,12 @@ pub(crate) fn resolve_includes(
 			return Err(MergeError::IncludeNotFound(include_path));
 		}
 
-		// Security: reject includes that escape the Runfile's directory tree
-		if !canonical.starts_with(&canonical_base) {
-			return Err(MergeError::IncludePathTraversal(include_path));
-		}
+		// Includes may point anywhere the user can read, including outside the
+		// declaring Runfile's directory (`../shared/Runfile.json`, an absolute
+		// path, a symlink). There is deliberately no containment check: a
+		// Runfile already executes arbitrary shell commands, so restricting
+		// which files it may *read* bought no real security — it only blocked
+		// the legitimate layout of sharing one Runfile across sibling projects.
 
 		// Validate namespace shape (if any) before doing any I/O work below.
 		if let Some(ns) = entry.namespace.as_deref() {
@@ -557,15 +624,10 @@ pub(crate) fn resolve_includes(
 			// (if any) is then applied to the entire sub-state, so nesting
 			// composes from innermost outward.
 			let mut child_state = MergeState::new();
-			resolve_includes(&included_runfile, &canonical, &mut child_state, visited)?;
+			resolve_includes(&included_runfile, &canonical, &mut child_state, visited, kind)?;
 			let globals_ref = included_runfile.globals.as_ref();
-			child_state.insert_targets(
-				included_runfile.targets,
-				globals_ref,
-				&include_path,
-				&include_dir,
-				SourceKind::Included,
-			);
+			child_state.record_namespaces(&include_path, &included_runfile);
+			child_state.insert_targets(included_runfile.targets, globals_ref, &include_path, &include_dir, kind);
 
 			if let Some(ns) = entry.namespace.as_deref() {
 				apply_namespace_to_state(&mut child_state, ns);
@@ -657,16 +719,13 @@ fn apply_namespace_to_state(state: &mut MergeState, namespace: &str) {
 		.map(|(k, v)| (prefix(&k), v))
 		.collect();
 
-	// Compose namespaces: existing entries (from sub-includes) get this
-	// include's namespace prepended, then this include's own namespace is
-	// appended. So a chain `outer → inner → leaf` ends up tracking `outer`,
-	// `outer:inner`, and `outer:inner:leaf` (any inner-leaf descendants
-	// already encoded inside the sub-state retain their composition).
-	state.namespaces = std::mem::take(&mut state.namespaces)
-		.into_iter()
-		.map(|ns| prefix(&ns))
-		.collect();
-	state.namespaces.push(namespace.to_string());
+	// `namespaces_by_source` is deliberately NOT rewritten. Its keys are source
+	// file paths (unaffected by namespacing) and its values are each file's own
+	// declared namespaces, which stay unprefixed: a file that declares `inner`
+	// reports `inner` no matter how deeply it was included. The `@target`
+	// rewrite above is what composes the full path — a dynamic
+	// `@{{ VAR.ns }}:build` in this file becomes `{namespace}:{{ VAR.ns }}:build`,
+	// so the bare loop value still resolves to the right target.
 }
 
 /// Recursively rewrite every `@target` reference inside a command-step tree

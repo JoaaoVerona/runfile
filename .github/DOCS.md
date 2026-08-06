@@ -43,6 +43,7 @@ $ run build --release
 - [When-guarded blocks](#when-guarded-blocks-when)
 - [Dry Run](#dry-run)
 - [File Includes](#file-includes)
+	- [Namespace iteration scope](#namespace-iteration-scope)
 - [Error Handling](#error-handling)
 	- [Interrupting a run (Ctrl+C)](#interrupting-a-run-ctrlc)
 - [Parallel Execution](#parallel-execution)
@@ -942,8 +943,8 @@ For an exhaustive table of target invocation semantics (no dedup, env layering, 
 // Lines of stdout from a shell command (run once, at planning time):
 { "for": "f", "shell": "git diff --name-only", "do": ["clang-format -i {{ VAR.f }}"] }
 
-// Iterate over every namespace prefix declared via `includes` — handy for
-// monorepo-style "build everything" targets that compose namespaced subprojects.
+// Iterate over the namespaces THIS file declares in its own `includes` — handy
+// for monorepo-style "build everything" targets that compose namespaced subprojects.
 // `@{{ VAR.ns }}:build` substitutes the loop var into the target name and
 // dispatches to the matching namespaced target on each iteration.
 { "for": "ns", "in": "namespaces", "do": "@{{ VAR.ns }}:build" }
@@ -955,7 +956,7 @@ For an exhaustive table of target invocation semantics (no dedup, env layering, 
 | Field          | Type                         | Required             | Description                                                                                                                                                                                                                                                                                                                                                  |
 |----------------|------------------------------|----------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `for`          | `string`                     | Yes                  | Loop variable name. Matches `[A-Za-z_][A-Za-z0-9_]*`. Reference inside the body as `{{ VAR.<name> }}`.                                                                                                                                                                                                                                                      |
-| `in`           | `string[]` or `"namespaces"` | One of in/glob/shell | Iterate over each element of an explicit array (each element is substituted, so `{{ ARG.x }}` etc. work), OR pass the magic string `"namespaces"` to iterate over every namespace prefix declared via `includes` (alphabetically sorted, deduplicated, composed across nested includes — a chain `outer:inner` shows up as both `outer` and `outer:inner`). |
+| `in`           | `string[]` or `"namespaces"` | One of in/glob/shell | Iterate over each element of an explicit array (each element is substituted, so `{{ ARG.x }}` etc. work), OR pass the magic string `"namespaces"` to iterate over the namespaces declared by **this target's own Runfile** in its `includes` array (alphabetically sorted, deduplicated). See [Namespace iteration scope](#namespace-iteration-scope).                       |
 | `glob`         | `string`                     | One of in/glob/shell | Iterate over file paths matching the pattern, relative to the working directory.                                                                                                                                                                                                                                                                             |
 | `shell`        | `string`                     | One of in/glob/shell | Iterate over each non-empty line of the command's stdout. Lines are trimmed; blank lines are dropped. The iterator runs once at planning time. **A non-zero exit is a hard error.**                                                                                                                                                                          |
 | `do`           | `string \| commandStep[]`    | Yes                  | Body steps run once per iteration. May be empty. Accepts either a single shell-command string (sugar for a one-element array) or an array of command steps.                                                                                                                                                                                                  |
@@ -1928,12 +1929,16 @@ either a plain path string or an object with a `path` and an optional
 ```
 
 - Include paths are relative to the including file's directory.
+- Paths may point **anywhere you can read** — including outside that directory (`../shared/Runfile.json`) or at an
+  absolute path. Sharing one Runfile across sibling projects is a supported layout.
 - Local targets always override included targets with the same name.
 - Among included files, the first one wins on name conflict.
 - Included files can themselves include other files (recursive includes supported).
 - Cycle detection prevents circular includes.
 - Each included file's `globals` are baked into its own targets only — they don't leak into the including file's
   targets.
+- **Registered [global files](#global-files) resolve their own `includes` too**, on exactly these rules. The targets
+  they pull in are attributed to the global file that registered them (see below).
 
 ### Namespacing
 
@@ -1962,6 +1967,35 @@ or whitespace, or start with `@`, `:`, or `_`. An empty or omitted
 The same file may be included twice under different namespaces — the targets
 end up as independent copies (e.g. `api:build` and `web:build` both come
 from a shared template).
+
+### Namespace iteration scope
+
+`{ "for": "ns", "in": "namespaces", ... }` iterates the namespaces declared by
+**the Runfile that defines the running target**, in that file's own `includes`
+array — nothing else. Values are bare, never composed:
+
+| Target defined in                         | `in: "namespaces"` yields |
+|-------------------------------------------|---------------------------|
+| root, which includes `api` and `web`      | `api`, `web`              |
+| `api`'s file, which includes `db` as `db` | `db` (not `api:db`)       |
+| `db`'s file, which includes nothing       | *(empty — body skipped)*  |
+| a registered global file including `tools` | `tools`                  |
+
+Two consequences worth internalising:
+
+- **No leaking between files.** A project target never iterates a registered
+  global Runfile's namespaces, and a global target never iterates the
+  project's. Each file's loop is about its own subprojects.
+- **Bare values still resolve correctly when nested.** Because `@target`
+  references inside a namespaced include are rewritten at parse time, a
+  `@{{ VAR.ns }}:build` written inside `api`'s file becomes
+  `api:{{ VAR.ns }}:build` — so the bare `db` from the loop lands on
+  `api:db:build`. You write the same loop at every level and composition takes
+  care of itself.
+
+Pair it with the `@?` optional-call marker (see
+[Target invocations](#target-invocations--target-args)) when only some
+namespaces define the dispatched target.
 
 **Internal targets stay internal.** The `_`-prefix rule (see [Internal
 targets](#internal-targets)) is applied to the **last** `:`-separated
@@ -2317,6 +2351,20 @@ Once registered, its targets are always available when you run `run :list` or `r
 
 Global files are processed in registration order. If two global files define the same target, the **first-registered
 file wins**.
+
+#### Includes inside a global file
+
+A registered global file's own `includes` are resolved just like a local Runfile's — namespaced or not — so you can
+split a large machine-wide Runfile across several files, or namespace a shared template into it.
+
+The targets an include contributes are recorded as **global**, not "included": you registered the outer file
+machine-wide, so everything it brings with it is machine-wide too. That means they group under `global` in
+`run :list`, land in the **Globals** bucket in the VS Code extension, and are kept by
+`run :generate <editor> --include-globals` even without `--include-namespaces`.
+
+If an include inside a global file can't be resolved (missing file, parse error, bad namespace), Runfile prints a
+warning and skips **just that include** — the rest of that file's targets, and every other global file, still merge.
+A broken include in one registered global never takes down `run` machine-wide.
 
 To see all registered global files:
 

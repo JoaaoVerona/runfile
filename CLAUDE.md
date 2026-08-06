@@ -102,13 +102,41 @@ crates/
   ("diamond" includes) work — and the same file can be included twice under different namespaces, yielding two
   independent copies. Empty/absent `namespace` is normalised to `None` at `IncludeEntry` deserialize time and is
   equivalent to the legacy string form. Namespace validation: non-empty, no `:` or whitespace, no leading `@`/`:`/`_`.
-- `MergeState.namespaces: Vec<String>` accumulates every namespace that's been applied. `apply_namespace_to_state`
-  prefixes the existing entries with the include's own namespace and pushes the new namespace onto the list, so
-  a chain `outer → inner → leaf` ends up tracking `outer`, `outer:inner`, and `outer:inner:leaf`.
-  `merge_from` extends sibling lists; `merge_runfiles_inner` sorts + dedupes once at the end and places the
-  result on `Runfile.namespaces` (a `#[serde(skip)]` field — never serialized; populated only by the merge
-  step). The runner attaches this list to `RunArgs.run_context.namespaces` via `Arc<Vec<String>>` so
-  `for "in": "namespaces"` resolves at execution time without threading another parameter through the executor.
+  `resolve_includes` takes a `kind: SourceKind` parameter recorded for every target its tree contributes — the local
+  Runfile passes `Included`, a registered global passes `Global` (see the global-includes entry below).
+  **There is no path-containment check**: includes may resolve anywhere the user can read, including `../sibling` and
+  absolute paths. The old `MergeError::IncludePathTraversal` guard was removed — a Runfile already executes arbitrary
+  shell, so restricting which files it may *read* bought no security while blocking the legitimate
+  "share one Runfile across sibling projects" layout.
+- **Global files resolve their own `includes`.** `merge_runfiles_inner`'s global-file loop calls `resolve_includes`
+  with `SourceKind::Global` before inserting the file's own targets. Previously it never called it at all, so
+  `includes` inside a registered global Runfile were parsed and then silently dropped (namespaced or not) — the bug
+  this was written to fix. Errors are **warn-and-skip**, not fatal: the surrounding loop already tolerates a missing
+  or unparsable global file, and a broken include in one registered global must not take down every `run` invocation
+  on the machine. Marking the contributed targets `Global` (rather than `Included`) is load-bearing in three places:
+  they group under `global` in `:list`, they land in the VS Code extension's **Globals** bucket, and they survive
+  `runfile_helpers.rs`'s `!include_namespaces` filter — which drops `SourceKind::Included` and would otherwise make
+  `--include-globals` silently emit a subset of the user's globals.
+- **Namespaces are per-source-file, not one flat list.** `MergeState.namespaces_by_source:
+  HashMap<PathBuf, Vec<String>>` maps a source Runfile path → the namespaces **that file declares in its own
+  `includes`**, computed by `Runfile::direct_namespaces()` (sorted, deduped, **unprefixed**). Recorded via
+  `MergeState::record_namespaces` as each file is loaded (local, global, and every include), keyed by the same path
+  value `insert_targets` records, so `MergeResult::namespaces_for_target(name)` is a two-hop lookup through
+  `target_sources`. `apply_namespace_to_state` deliberately does **not** rewrite this map — keys are paths (unaffected
+  by namespacing) and values stay bare, because the `@target` rewrite already composes the prefix: a dynamic
+  `@{{ VAR.ns }}:build` inside a file included under `outer` becomes `outer:{{ VAR.ns }}:build`, so the bare loop
+  value resolves correctly at every nesting depth. Net effect: a project target's `for "in": "namespaces"` never
+  iterates a registered global's namespaces and vice versa, and no level ever sees a composed `outer:inner` value.
+  `merge_from` plain-extends (paths can't collide). `Runfile.namespaces` survives as the **flat union** of every
+  participating file's list — a `#[serde(skip)]` reporting view used only to recognise namespace roots (the
+  `task-descriptors` generator); it is NOT what the runtime iterates.
+- Runtime plumbing for the above: `run_target_with_cwd` / `extract_target_with_cwd` take
+  `namespaces_by_source: &HashMap<PathBuf, Vec<String>>` alongside `source_files`. `RunRoot::target_namespaces` /
+  `ExtractContext::target_namespaces` do the per-target lookup, and the existing per-target `ensure_run_context`
+  refresh (which already re-syncs `RUN.file`/`RUN.parent`) now also re-syncs `run_context.namespaces` — so a
+  dispatched `@target` defined in another file sees *its* namespaces, not the caller's. The static leaf counter
+  threads a `LeafCountCtx` (runfile + both maps) so `For { in: "namespaces" }` is sized from the enclosing target's
+  own file rather than a global list.
 - Control-flow blocks (`if` / `for` / `match` / `when`) and target calls (`@target`): each entry of a `commands`
   array is a [`CommandStep`] — either `Shell(String)` (raw command),
   `TargetCall(TargetCallStep)` (a string starting with `@`), `When(WhenStep)`, `If(IfStep)`, `For(ForStep)`, or
@@ -124,8 +152,9 @@ crates/
   at parse time, so the in-memory shape always normalizes to `Vec<CommandStep>`. `ForStep` requires exactly one of
   `in`/`glob`/`shell` (XOR validated at parse time) and has an optional `parallel` flag. `ForStep.in` is a custom
   `ForInValue` enum: `Literal(Vec<String>)` for the array form (each element substitutable), or `Namespaces` for
-  the magic string `"in": "namespaces"` which expands at execution time to every namespace prefix declared via
-  `includes` — composed across nesting (`outer:inner`), sorted, deduplicated. `ForInValue` has hand-rolled
+  the magic string `"in": "namespaces"` which expands at execution time to the namespaces declared by **the running
+  target's own source Runfile** in its `includes` — sorted, deduplicated, and unprefixed (never composed; see the
+  per-source-file namespaces entry above). `ForInValue` has hand-rolled
   `Serialize` / `Deserialize` impls so it round-trips cleanly: literal arrays → JSON array, `Namespaces` → the
   string `"namespaces"`. Any other string value is a hard parse error. Free function `walk_step_templates(steps, &mut visit)` recursively yields every leaf
   template string (used by IDE generators, MCP, args-usage scanning). The companion `walk_spec_aux_templates(spec, &mut visit)`
@@ -716,8 +745,9 @@ crates/
   etc. are truthy (matches what raw shell commands see). `{{ FLAG.x }}` resolves to `"true"`/`"false"` strings, both
   non-empty, so flag presence checks must use explicit `== true`/`== false`. `expand_for_iterations` produces the
   iteration values: `ForInValue::Literal(arr)` is substituted element-wise; `ForInValue::Namespaces` snapshots
-  `args.run_context.namespaces` (sorted + deduped at merge time, threaded down via `RunContext`'s
-  `Arc<Vec<String>>` field — empty when no namespaced includes are configured); `glob` patterns are expanded
+  `args.run_context.namespaces` (the *running target's own source file's* namespaces — sorted + deduped at merge
+  time, re-synced per target by `ensure_run_context`, threaded via `RunContext`'s `Arc<Vec<String>>` field — empty
+  when that file configures no namespaced includes); `glob` patterns are expanded
   against the working directory using `globset` (matches normalized to forward-slash relative paths, sorted);
   `shell` iterators run the command at planning time, capture stdout, trim each line, and drop blank lines.
   **`for shell` failure (non-zero exit) is a hard error regardless of `ignoreErrors`** — that flag controls
@@ -877,8 +907,8 @@ crates/
   evaluated (not flattened) against the same context the runner would see — only the matching branch is
   printed. Cycles are caught at extract time via per-call-stack tracking; sibling calls to the same target
   expand twice (matching runtime no-dedup semantics). Optional calls (`@?target`) silently skip when the target
-  is missing. `extract_target_with_cwd` auto-syncs `args.run_context.namespaces` from the merged Runfile (matches
-  the runner's `ensure_run_context`) so `for in: "namespaces"` resolves identically in dry-run.
+  is missing. `extract_target_with_cwd` auto-syncs `args.run_context.namespaces` from `namespaces_by_source`, per
+  target (matches the runner's `ensure_run_context`) so `for in: "namespaces"` resolves identically in dry-run.
   `for` blocks expand at extract time wherever it's safe to do so: `for in: [...]` substitutes per element,
   `for in: "namespaces"` snapshots the namespace list, and **`for glob:` walks the filesystem** (via
   `control_flow::expand_glob`, threading the target's resolved `working_dir` into [`walk_extract_steps`]) so
@@ -1223,6 +1253,10 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   rewrite happens before merging. Nesting composes innermost-first (`outer:inner:build`). Same-file-twice with
   different namespaces is allowed (independent copies). Empty/absent namespace = legacy behavior. Internal targets
   preserve their `_`-prefix internal status under namespacing (`is_internal_target_name` checks the last `:`-segment).
+  Include paths are unrestricted (sibling dirs, absolute paths — no containment check), and **registered global
+  Runfiles resolve their own `includes` on the same rules**, contributing `SourceKind::Global` targets with
+  warn-and-skip on error. `for "in": "namespaces"` is scoped **per source file**: each Runfile's targets iterate only
+  the namespaces that file itself declares, bare and uncomposed, because the `@target` rewrite supplies the prefix.
   Per-target source-dir tracking (`source_dirs` map keyed by post-rewrite name, plus `target_sources` for the
   full file path) ensures `{{ RUN.parent }}` / `{{ RUN.file }}` and relative `envFiles` paths resolve relative
   to the file that *defined* the target, not the merged root. The runner / extract pipelines accept a

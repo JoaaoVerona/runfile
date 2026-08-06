@@ -188,7 +188,7 @@
 					"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
 				},
 				"in": {
-					"description": "Iterate over an explicit array of strings, or use the magic value \"namespaces\" to iterate over every namespace prefix declared via `includes` (alphabetically sorted, deduplicated, composed across nested namespaces).",
+					"description": "Iterate over an explicit array of strings, or use the magic value \"namespaces\" to iterate over the namespaces declared by *this target's own Runfile* in its `includes` array (alphabetically sorted, deduplicated). Scoped per file and unprefixed: a target only ever sees its own Runfile's namespaces, never those of an included file, a parent, or a registered global Runfile. Nesting composes automatically via the `@target` rewrite, so `@{{ VAR.ns }}:build` inside a file included under `outer` resolves to `outer:<ns>:build`.",
 					"oneOf": [
 						{
 							"type": "array",

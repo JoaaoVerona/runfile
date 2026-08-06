@@ -379,6 +379,7 @@ fn extract_with_working_directory_cwd() {
 		caller_cwd.path(),
 		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
+		&std::collections::HashMap::new(),
 		None,
 		&ShellKind::Bash,
 	)
@@ -438,6 +439,7 @@ fn extract_decrypts_envfile_when_private_key_provided() {
 		dir.path(),
 		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
+		&std::collections::HashMap::new(),
 		None,
 		&ShellKind::Bash,
 	)
@@ -457,6 +459,7 @@ fn extract_decrypts_envfile_when_private_key_provided() {
 		&runfile_path,
 		dir.path(),
 		dir.path(),
+		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
 		Some(&private_keys),

@@ -48,6 +48,7 @@ fn merge_of_scoped(
 		source_dirs,
 		target_sources,
 		conflicts: HashMap::new(),
+		namespaces_by_source: HashMap::new(),
 		directory_scoped_sources,
 	}
 }

@@ -60,6 +60,10 @@ struct RunRoot<'a> {
 	caller_cwd: &'a Path,
 	source_dirs: &'a HashMap<String, PathBuf>,
 	source_files: &'a HashMap<String, PathBuf>,
+	/// Source Runfile path → the namespaces that file declares in its own
+	/// `includes`. Drives `for "in": "namespaces"`, scoped per source file so a
+	/// target only ever iterates its own Runfile's namespaces.
+	namespaces_by_source: &'a HashMap<PathBuf, Vec<String>>,
 	timings: bool,
 	yes: bool,
 	available_private_keys: Option<&'a dyn PrivateKeyProvider>,
@@ -84,6 +88,15 @@ impl RunRoot<'_> {
 			.get(target_name)
 			.map(|p| p.as_path())
 			.unwrap_or(self.runfile_path)
+	}
+
+	/// The namespaces visible to `target_name` — those declared by the Runfile
+	/// that defined it. A target in a project Runfile therefore never iterates
+	/// namespaces belonging to a registered global file, and vice versa.
+	fn target_namespaces(&self, target_name: &str) -> &[String] {
+		self.namespaces_by_source
+			.get(self.target_file(target_name))
+			.map_or(&[], |v| v.as_slice())
 	}
 }
 
@@ -207,6 +220,7 @@ pub fn run_target(
 		working_dir,
 		&HashMap::new(),
 		&HashMap::new(),
+		&HashMap::new(),
 		false,
 		false,
 		None,
@@ -218,6 +232,10 @@ pub fn run_target(
 /// `source_files` maps target names to the source Runfile *path* (used to
 /// populate `{{ RUN.file }}` / `{{ RUN.parent }}` per-target). Both matter
 /// when targets come from different files (e.g. global files, `includes`).
+/// `namespaces_by_source` maps a source Runfile path to the namespaces that
+/// file declares in its own `includes`, which is what `for "in": "namespaces"`
+/// iterates — scoped per file, so a target never sees another Runfile's
+/// namespaces.
 ///
 /// The caller's `args.run_context` is used as the baseline for `{{ RUN.* }}`
 /// resolution; the runner rewrites `run_context.shell` / `file` / `parent`
@@ -234,20 +252,26 @@ pub fn run_target_with_cwd(
 	caller_cwd: &Path,
 	source_dirs: &HashMap<String, PathBuf>,
 	source_files: &HashMap<String, PathBuf>,
+	namespaces_by_source: &HashMap<PathBuf, Vec<String>>,
 	timings: bool,
 	yes: bool,
 	available_private_keys: Option<&dyn PrivateKeyProvider>,
 ) -> Result<ExecutionResult, RunError> {
 	// Make sure the run_context is in sync with the resolved shell the caller
-	// decided on AND carries the merged Runfile's namespace list (for `for
+	// decided on AND carries the entry target's namespace list (for `for
 	// "in": "namespaces"` resolution), plus baseline `cwd`/`file`/`parent`
 	// values for `{{ RUN.* }}` substitution. The runner refreshes
-	// `file`/`parent` per-target downstream — these top-level values are the
-	// fallback for targets without a `source_files` / `source_dirs` entry.
+	// `file`/`parent`/`namespaces` per-target downstream — these top-level
+	// values are the fallback for targets without a `source_files` /
+	// `source_dirs` entry.
+	let entry_namespaces = source_files
+		.get(target_name)
+		.and_then(|f| namespaces_by_source.get(f))
+		.map_or(&[][..], |v| v.as_slice());
 	let args_owned = ensure_run_context(
 		args,
 		&shell.kind,
-		&runfile.namespaces,
+		entry_namespaces,
 		caller_cwd,
 		runfile_path,
 		runfile_dir,
@@ -266,7 +290,7 @@ pub fn run_target_with_cwd(
 	// both branches (worst case) and `for-glob`/`for-shell` use a 1-iteration
 	// estimate — `count_leaves` semantics, but recursively across `@target`
 	// references so the global counter sees the whole reachable tree.
-	let total_leaves = count_target_leaves(target_name, runfile)?;
+	let total_leaves = count_target_leaves(target_name, runfile, source_files, namespaces_by_source)?;
 
 	let root = RunRoot {
 		runfile,
@@ -277,6 +301,7 @@ pub fn run_target_with_cwd(
 		caller_cwd,
 		source_dirs,
 		source_files,
+		namespaces_by_source,
 		timings,
 		yes,
 		available_private_keys,
@@ -374,7 +399,7 @@ fn run_target_inner_body(
 	let target_args_owned = ensure_run_context(
 		args,
 		&shell.kind,
-		&root.runfile.namespaces,
+		root.target_namespaces(target_name),
 		root.caller_cwd,
 		target_runfile_file,
 		target_runfile_dir,
@@ -606,18 +631,48 @@ fn run_target_inner_body(
 /// Differences from `collect_all_commands`: condition strings and args
 /// templates do NOT count as steps (they're scannable for `{{ ARG.x }}` but
 /// don't contribute to the (N/total) display).
-fn count_target_leaves(target_name: &str, runfile: &Runfile) -> Result<usize, RunError> {
+fn count_target_leaves(
+	target_name: &str,
+	runfile: &Runfile,
+	source_files: &HashMap<String, PathBuf>,
+	namespaces_by_source: &HashMap<PathBuf, Vec<String>>,
+) -> Result<usize, RunError> {
 	let mut cache: HashMap<String, usize> = HashMap::new();
 	let mut in_progress: HashSet<String> = HashSet::new();
-	count_target_leaves_recursive(target_name, runfile, &mut cache, &mut in_progress)
+	let ctx = LeafCountCtx {
+		runfile,
+		source_files,
+		namespaces_by_source,
+	};
+	count_target_leaves_recursive(target_name, &ctx, &mut cache, &mut in_progress)
+}
+
+/// Read-only context for the static leaf counter. Bundles the maps needed to
+/// resolve a target's own namespace count, so `for "in": "namespaces"` can be
+/// sized per source file rather than from one flat list.
+struct LeafCountCtx<'a> {
+	runfile: &'a Runfile,
+	source_files: &'a HashMap<String, PathBuf>,
+	namespaces_by_source: &'a HashMap<PathBuf, Vec<String>>,
+}
+
+impl LeafCountCtx<'_> {
+	/// How many namespaces `target_name`'s source Runfile declares.
+	fn ns_count(&self, target_name: &str) -> usize {
+		self.source_files
+			.get(target_name)
+			.and_then(|f| self.namespaces_by_source.get(f))
+			.map_or(0, |v| v.len())
+	}
 }
 
 fn count_target_leaves_recursive(
 	target_name: &str,
-	runfile: &Runfile,
+	ctx: &LeafCountCtx<'_>,
 	cache: &mut HashMap<String, usize>,
 	in_progress: &mut HashSet<String>,
 ) -> Result<usize, RunError> {
+	let runfile = ctx.runfile;
 	if let Some(&cached) = cache.get(target_name) {
 		return Ok(cached);
 	}
@@ -638,7 +693,11 @@ fn count_target_leaves_recursive(
 	let count = if spec.same_shell.unwrap_or(false) {
 		1
 	} else {
-		count_step_leaves_recursive(&spec.commands, runfile, cache, in_progress)?
+		// `for "in": "namespaces"` inside this target iterates THIS target's
+		// source file's namespaces, so the multiplier is resolved here and
+		// handed down rather than read from a single global list.
+		let ns_count = ctx.ns_count(target_name);
+		count_step_leaves_recursive(&spec.commands, ctx, ns_count, cache, in_progress)?
 	};
 
 	in_progress.remove(target_name);
@@ -648,10 +707,12 @@ fn count_target_leaves_recursive(
 
 fn count_step_leaves_recursive(
 	steps: &[CommandStep],
-	runfile: &Runfile,
+	ctx: &LeafCountCtx<'_>,
+	ns_count: usize,
 	cache: &mut HashMap<String, usize>,
 	in_progress: &mut HashSet<String>,
 ) -> Result<usize, RunError> {
+	let runfile = ctx.runfile;
 	let mut total = 0;
 	for step in steps {
 		total += match step {
@@ -669,36 +730,38 @@ fn count_step_leaves_recursive(
 				} else if call.optional && !runfile.targets.contains_key(&call.target) {
 					0
 				} else {
-					count_target_leaves_recursive(&call.target, runfile, cache, in_progress)?
+					count_target_leaves_recursive(&call.target, ctx, cache, in_progress)?
 				}
 			}
 			CommandStep::When(WhenStep { commands, .. }) => {
-				count_step_leaves_recursive(commands, runfile, cache, in_progress)?
+				count_step_leaves_recursive(commands, ctx, ns_count, cache, in_progress)?
 			}
 			CommandStep::If(IfStep { then, r#else, .. }) => {
-				let then_count = count_step_leaves_recursive(then, runfile, cache, in_progress)?;
+				let then_count = count_step_leaves_recursive(then, ctx, ns_count, cache, in_progress)?;
 				let else_count = if let Some(e) = r#else {
-					count_step_leaves_recursive(e, runfile, cache, in_progress)?
+					count_step_leaves_recursive(e, ctx, ns_count, cache, in_progress)?
 				} else {
 					0
 				};
 				then_count + else_count
 			}
 			CommandStep::For(ForStep { r#in, body, .. }) => {
-				let body_count = count_step_leaves_recursive(body, runfile, cache, in_progress)?;
+				let body_count = count_step_leaves_recursive(body, ctx, ns_count, cache, in_progress)?;
 				match r#in {
 					Some(ForInValue::Literal(items)) => items.len() * body_count,
-					Some(ForInValue::Namespaces) => runfile.namespaces.len() * body_count,
+					// Scoped to the enclosing target's own source file, matching
+					// what `expand_for_iterations` resolves at runtime.
+					Some(ForInValue::Namespaces) => ns_count * body_count,
 					None => body_count, // glob/shell — 1-iteration estimate
 				}
 			}
 			CommandStep::Match(MatchStep { cases, default, .. }) => {
 				let mut total = 0;
 				for branch in cases.values() {
-					total += count_step_leaves_recursive(branch, runfile, cache, in_progress)?;
+					total += count_step_leaves_recursive(branch, ctx, ns_count, cache, in_progress)?;
 				}
 				if let Some(default_steps) = default {
-					total += count_step_leaves_recursive(default_steps, runfile, cache, in_progress)?;
+					total += count_step_leaves_recursive(default_steps, ctx, ns_count, cache, in_progress)?;
 				}
 				total
 			}

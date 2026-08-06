@@ -131,31 +131,39 @@ fn include_within_project_succeeds() {
 	let mut visited = std::collections::HashSet::new();
 	visited.insert(canonical.clone());
 
-	let result = crate::merge::resolve_includes(&runfile, &canonical, &mut state, &mut visited);
+	let result = crate::merge::resolve_includes(
+		&runfile,
+		&canonical,
+		&mut state,
+		&mut visited,
+		crate::SourceKind::Included,
+	);
 	assert!(result.is_ok(), "include within project should succeed");
 	assert!(state.targets.contains_key("included"));
 }
 
 #[test]
-fn include_path_traversal_rejected() {
+fn include_relative_path_outside_project_allowed() {
+	// Sibling-directory includes (`../shared/...`) are a legitimate layout for
+	// sharing one Runfile across sibling projects. There is no containment
+	// check: a Runfile already runs arbitrary shell commands, so restricting
+	// which files it may *read* bought no real security.
 	let dir = TempDir::new().unwrap();
 
-	// Create an outer file that's OUTSIDE the project
-	let outer = dir.path().join("outer");
-	std::fs::create_dir(&outer).unwrap();
+	let shared = dir.path().join("shared");
+	std::fs::create_dir(&shared).unwrap();
 	std::fs::write(
-		outer.join("evil.json"),
-		r#"{ "$schema": "x", "targets": { "evil": { "commands": ["echo pwned"] } } }"#,
+		shared.join("common.json"),
+		r#"{ "$schema": "x", "targets": { "common": { "commands": ["echo common"] } } }"#,
 	)
 	.unwrap();
 
-	// Create project directory with a Runfile that tries to include ../outer/evil.json
 	let project = dir.path().join("project");
 	std::fs::create_dir(&project).unwrap();
 	let root_path = project.join(RUNFILE_NAME);
 	std::fs::write(
 		&root_path,
-		r#"{ "$schema": "x", "includes": ["../outer/evil.json"], "targets": { "safe": { "commands": ["echo safe"] } } }"#,
+		r#"{ "$schema": "x", "includes": ["../shared/common.json"], "targets": { "safe": { "commands": ["echo safe"] } } }"#,
 	)
 	.unwrap();
 
@@ -165,20 +173,24 @@ fn include_path_traversal_rejected() {
 	let mut visited = std::collections::HashSet::new();
 	visited.insert(canonical.clone());
 
-	let result = crate::merge::resolve_includes(&runfile, &canonical, &mut state, &mut visited);
-	assert!(result.is_err(), "include path traversal should be rejected");
-	let err = result.unwrap_err().to_string();
-	assert!(
-		err.contains("escapes the project directory"),
-		"error should mention path traversal: {err}"
+	let result = crate::merge::resolve_includes(
+		&runfile,
+		&canonical,
+		&mut state,
+		&mut visited,
+		crate::SourceKind::Included,
 	);
+	assert!(
+		result.is_ok(),
+		"sibling-directory include should be allowed: {result:?}"
+	);
+	assert!(state.targets.contains_key("common"));
 }
 
 #[test]
-fn include_absolute_path_outside_project_rejected() {
+fn include_absolute_path_outside_project_allowed() {
 	let dir = TempDir::new().unwrap();
 
-	// Create an outside file
 	let outside = dir.path().join("outside");
 	std::fs::create_dir(&outside).unwrap();
 	let outside_file = outside.join("external.json");
@@ -188,7 +200,6 @@ fn include_absolute_path_outside_project_rejected() {
 	)
 	.unwrap();
 
-	// Create project dir with Runfile including the absolute outside path
 	let project = dir.path().join("project2");
 	std::fs::create_dir(&project).unwrap();
 	let root_path = project.join(RUNFILE_NAME);
@@ -207,8 +218,15 @@ fn include_absolute_path_outside_project_rejected() {
 	let mut visited = std::collections::HashSet::new();
 	visited.insert(canonical.clone());
 
-	let result = crate::merge::resolve_includes(&runfile, &canonical, &mut state, &mut visited);
-	assert!(result.is_err(), "absolute path outside project should be rejected");
+	let result = crate::merge::resolve_includes(
+		&runfile,
+		&canonical,
+		&mut state,
+		&mut visited,
+		crate::SourceKind::Included,
+	);
+	assert!(result.is_ok(), "absolute path outside project should be allowed");
+	assert!(state.targets.contains_key("ext"));
 }
 
 // ── Include namespacing ───────────────────────────────────────────
@@ -232,7 +250,14 @@ fn run_namespace_include(root_json: &str, files: &[(&str, &str)]) -> crate::merg
 	let canonical = std::fs::canonicalize(&root_path).unwrap();
 	let mut visited = std::collections::HashSet::new();
 	visited.insert(canonical.clone());
-	crate::merge::resolve_includes(&runfile, &canonical, &mut state, &mut visited).unwrap();
+	crate::merge::resolve_includes(
+		&runfile,
+		&canonical,
+		&mut state,
+		&mut visited,
+		crate::SourceKind::Included,
+	)
+	.unwrap();
 	state
 }
 
@@ -474,11 +499,35 @@ fn include_namespace_preserves_internal_targets() {
 
 // ── Namespace tracking for `for in: "namespaces"` ──────────────────
 
+/// Write `files` into a temp dir alongside a root Runfile, run the full
+/// `merge_runfiles` pipeline, and hand back the result. Exercises the real
+/// public path (which is what records the *root* file's own namespaces —
+/// `resolve_includes` alone only sees the included files').
+fn merge_namespace_fixture(root_json: &str, files: &[(&str, &str)]) -> (crate::MergeResult, std::path::PathBuf) {
+	let dir = TempDir::new().unwrap();
+	for (rel, body) in files {
+		let path = dir.path().join(rel);
+		if let Some(parent) = path.parent() {
+			std::fs::create_dir_all(parent).unwrap();
+		}
+		std::fs::write(path, body).unwrap();
+	}
+	let root_path = dir.path().join(RUNFILE_NAME);
+	std::fs::write(&root_path, root_json).unwrap();
+	let local = parse_runfile(root_json).unwrap();
+	let result = crate::merge_runfiles(Some((local, root_path.clone())), &[], dir.path()).unwrap();
+	// Keep the TempDir alive for the caller's assertions by leaking it — these
+	// are short-lived unit tests and the OS reclaims the dir.
+	std::mem::forget(dir);
+	(result, root_path)
+}
+
 #[test]
 fn merge_records_top_level_namespace() {
-	// A single namespaced include populates `state.namespaces` with that
-	// one entry — used at runtime to expand `for "in": "namespaces"`.
-	let state = run_namespace_include(
+	// A single namespaced include is recorded against the file that DECLARED
+	// it (the root), which is what `for "in": "namespaces"` reads for targets
+	// defined in that root.
+	let (result, root_path) = merge_namespace_fixture(
 		r#"{
 			"$schema": "x",
 			"includes": [{ "path": "child.json", "namespace": "child" }],
@@ -489,14 +538,20 @@ fn merge_records_top_level_namespace() {
 			r#"{ "$schema": "x", "targets": { "build": { "commands": ["echo build"] } } }"#,
 		)],
 	);
-	assert_eq!(state.namespaces, vec!["child".to_string()]);
+	assert_eq!(
+		result.namespaces_by_source.get(&root_path),
+		Some(&vec!["child".to_string()])
+	);
+	assert_eq!(result.namespaces_for_target("root"), ["child".to_string()]);
+	// The included file declares no includes of its own, so its targets see none.
+	assert!(result.namespaces_for_target("child:build").is_empty());
 }
 
 #[test]
 fn merge_records_no_namespaces_for_unnamespaced_includes() {
 	// String-form (no namespace) and object-form-without-namespace contribute
-	// nothing to the namespaces list.
-	let state = run_namespace_include(
+	// nothing to any namespace list.
+	let (result, _) = merge_namespace_fixture(
 		r#"{
 			"$schema": "x",
 			"includes": ["plain.json", { "path": "obj.json" }],
@@ -514,17 +569,21 @@ fn merge_records_no_namespaces_for_unnamespaced_includes() {
 		],
 	);
 	assert!(
-		state.namespaces.is_empty(),
+		result.namespaces_by_source.is_empty(),
 		"unnamespaced includes contribute nothing: {:?}",
-		state.namespaces
+		result.namespaces_by_source
 	);
+	assert!(result.namespaces_for_target("root").is_empty());
 }
 
 #[test]
-fn merge_namespaces_compose_innermost_first() {
-	// Nested includes layer up: a chain `outer → inner` lands as both
-	// `outer` and `outer:inner` in the namespaces list.
-	let state = run_namespace_include(
+fn merge_namespaces_are_per_file_and_unprefixed() {
+	// Nested includes do NOT compose into one flat list. Each file reports
+	// only what its own `includes` declare, bare: the root sees `outer`, and
+	// `mid.json` sees `inner` (not `outer:inner`). Composition is handled by
+	// the `@target` rewrite, so a dynamic `@{{ VAR.ns }}:build` inside
+	// `mid.json` still resolves to `outer:inner:build`.
+	let (result, root_path) = merge_namespace_fixture(
 		r#"{
 			"$schema": "x",
 			"includes": [{ "path": "mid.json", "namespace": "outer" }],
@@ -543,12 +602,25 @@ fn merge_namespaces_compose_innermost_first() {
 			),
 		],
 	);
-	let mut ns = state.namespaces.clone();
-	ns.sort();
+
+	// Root's own list: just its direct include's namespace.
 	assert_eq!(
-		ns,
-		vec!["outer".to_string(), "outer:inner".to_string()],
-		"nested namespaces compose with the outer prefix"
+		result.namespaces_by_source.get(&root_path),
+		Some(&vec!["outer".to_string()])
+	);
+	assert_eq!(result.namespaces_for_target("root"), ["outer".to_string()]);
+
+	// A target defined in mid.json sees mid.json's own namespace, unprefixed.
+	assert_eq!(result.namespaces_for_target("outer:build"), ["inner".to_string()]);
+
+	// The deepest file declares nothing.
+	assert!(result.namespaces_for_target("outer:inner:build").is_empty());
+
+	// The flat reporting union still carries every namespace, for consumers
+	// (task-descriptors) that need to recognise namespace roots.
+	assert_eq!(
+		result.runfile.namespaces,
+		vec!["inner".to_string(), "outer".to_string()]
 	);
 }
 
@@ -677,7 +749,13 @@ fn invalid_namespace_rejected() {
 		let canonical = std::fs::canonicalize(&root_path).unwrap();
 		let mut visited = std::collections::HashSet::new();
 		visited.insert(canonical.clone());
-		let result = crate::merge::resolve_includes(&runfile, &canonical, &mut state, &mut visited);
+		let result = crate::merge::resolve_includes(
+			&runfile,
+			&canonical,
+			&mut state,
+			&mut visited,
+			crate::SourceKind::Included,
+		);
 		if bad.is_empty() {
 			assert!(result.is_ok(), "blank namespace must round-trip as no-namespace");
 		} else {
@@ -744,7 +822,13 @@ fn diamond_include_no_namespace_no_cycle_error() {
 	let canonical = std::fs::canonicalize(&root_path).unwrap();
 	let mut visited = std::collections::HashSet::new();
 	visited.insert(canonical.clone());
-	let result = crate::merge::resolve_includes(&runfile, &canonical, &mut state, &mut visited);
+	let result = crate::merge::resolve_includes(
+		&runfile,
+		&canonical,
+		&mut state,
+		&mut visited,
+		crate::SourceKind::Included,
+	);
 	assert!(
 		result.is_ok(),
 		"diamond include should not be reported as a cycle: {:?}",

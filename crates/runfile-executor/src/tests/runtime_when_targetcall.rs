@@ -672,6 +672,7 @@ fn run_target_cwd_working_directory() {
 		caller_cwd.path(),
 		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
+		&std::collections::HashMap::new(),
 		false,
 		false,
 		None,
@@ -722,6 +723,7 @@ fn run_target_global_cwd_working_directory() {
 		&runfile_path,
 		runfile_dir.path(),
 		caller_cwd.path(),
+		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
 		false,
@@ -779,6 +781,7 @@ fn run_target_working_directory_target_overrides_global() {
 		&runfile_path,
 		runfile_dir.path(),
 		caller_cwd.path(),
+		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
 		false,
@@ -871,6 +874,7 @@ fn working_directory_relative_path_resolves_against_runfile_parent() {
 		caller_cwd.path(),
 		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
+		&std::collections::HashMap::new(),
 		false,
 		false,
 		None,
@@ -940,6 +944,7 @@ fn working_directory_resolves_env_from_globals() {
 		caller_cwd.path(),
 		&merged.source_dirs,
 		&merged.source_files(),
+		&merged.namespaces_by_source,
 		false,
 		false,
 		None,
@@ -1087,6 +1092,7 @@ fn working_directory_on_globals_resolves_env_from_globals() {
 		caller_cwd.path(),
 		&merged.source_dirs,
 		&merged.source_files(),
+		&merged.namespaces_by_source,
 		false,
 		false,
 		None,
@@ -1171,6 +1177,7 @@ fn add_to_path_resolves_relative_to_runfile_parent_not_working_directory() {
 	let source_files = merge_result.source_files();
 	let runfile = merge_result.runfile;
 	let source_dirs = merge_result.source_dirs;
+	let namespaces_by_source = merge_result.namespaces_by_source;
 
 	let args = RunArgs::default();
 	run_target_with_cwd(
@@ -1183,6 +1190,7 @@ fn add_to_path_resolves_relative_to_runfile_parent_not_working_directory() {
 		caller_cwd.path(),
 		&source_dirs,
 		&source_files,
+		&namespaces_by_source,
 		false,
 		false,
 		None,
@@ -1259,6 +1267,7 @@ fn env_files_resolve_relative_to_runfile_parent_not_working_directory() {
 		&runfile_path,
 		runfile_dir.path(),
 		caller_cwd.path(),
+		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
 		&std::collections::HashMap::new(),
 		false,

@@ -548,3 +548,146 @@ fn parse_partial_also_rejects_invalid_env_keys() {
 	let result = parse_runfile_partial(json);
 	assert!(result.is_err());
 }
+
+// ── Includes declared inside registered *global* Runfiles ─────────────
+
+/// Build a global Runfile at `<dir>/global/Runfile.json` that includes
+/// `sub/Runfile.json`, optionally under a namespace. Returns (tempdir, path).
+fn global_with_include(namespace: Option<&str>) -> (TempDir, std::path::PathBuf) {
+	let dir = TempDir::new().unwrap();
+	let gdir = dir.path().join("global");
+	std::fs::create_dir_all(gdir.join("sub")).unwrap();
+	std::fs::write(
+		gdir.join("sub").join("Runfile.json"),
+		r#"{ "$schema": "x", "targets": { "subtarget": { "commands": ["echo sub"] } } }"#,
+	)
+	.unwrap();
+	let entry = match namespace {
+		Some(ns) => format!(r#"{{ "path": "sub/Runfile.json", "namespace": "{ns}" }}"#),
+		None => r#""sub/Runfile.json""#.to_string(),
+	};
+	let gpath = gdir.join("Runfile.json");
+	std::fs::write(
+		&gpath,
+		format!(
+			r#"{{ "$schema": "x", "includes": [{entry}],
+			      "targets": {{ "gtarget": {{ "commands": ["echo g"] }} }} }}"#
+		),
+	)
+	.unwrap();
+	(dir, gpath)
+}
+
+#[test]
+fn global_file_namespaced_includes_are_resolved() {
+	// Regression: a registered global Runfile's `includes` used to be parsed
+	// and then silently ignored — only the local Runfile's includes were ever
+	// resolved. Namespaced or not, they now merge in.
+	let (dir, gpath) = global_with_include(Some("gns"));
+	let result = merge_runfiles(None, &[gpath], dir.path()).unwrap();
+
+	assert!(
+		result.runfile.targets.contains_key("gns:subtarget"),
+		"namespaced include of a global file should merge in: {:?}",
+		result.runfile.targets.keys().collect::<Vec<_>>()
+	);
+	assert!(result.runfile.targets.contains_key("gtarget"));
+}
+
+#[test]
+fn global_file_plain_includes_are_resolved() {
+	// The un-namespaced (string) form was equally ignored.
+	let (dir, gpath) = global_with_include(None);
+	let result = merge_runfiles(None, &[gpath], dir.path()).unwrap();
+	assert!(result.runfile.targets.contains_key("subtarget"));
+}
+
+#[test]
+fn global_file_included_targets_are_kind_global() {
+	// Provenance: the user registered the *outer* file machine-wide, so
+	// everything it drags in is machine-wide too. This keeps them grouped
+	// under `global` in `:list` / filed under Globals by the VS Code
+	// extension, and — critically — out of the `SourceKind::Included` filter
+	// that `--include-globals` (without `--include-namespaces`) applies.
+	let (dir, gpath) = global_with_include(Some("gns"));
+	let result = merge_runfiles(None, &[gpath], dir.path()).unwrap();
+
+	let (_, kind) = result.target_sources.get("gns:subtarget").expect("target recorded");
+	assert_eq!(*kind, crate::SourceKind::Global);
+}
+
+#[test]
+fn global_file_broken_include_warns_and_skips_rest_of_merge() {
+	// A broken include inside ONE registered global must not take down every
+	// `run` invocation on the machine — the surrounding loop already treats a
+	// missing / unparsable global file as warn-and-continue, and includes now
+	// match that. The other global's targets still merge.
+	let dir = TempDir::new().unwrap();
+	let broken = dir.path().join("broken.json");
+	std::fs::write(
+		&broken,
+		r#"{ "$schema": "x", "includes": ["does-not-exist.json"],
+		     "targets": { "from-broken": { "commands": ["echo b"] } } }"#,
+	)
+	.unwrap();
+	let good = dir.path().join("good.json");
+	std::fs::write(
+		&good,
+		r#"{ "$schema": "x", "targets": { "from-good": { "commands": ["echo g"] } } }"#,
+	)
+	.unwrap();
+
+	// `merge_runfiles_silent` takes the same path minus the stderr warning.
+	let result = crate::merge_runfiles_silent(None, &[broken, good], dir.path()).unwrap();
+	assert!(
+		result.runfile.targets.contains_key("from-good"),
+		"a sibling global must still merge after a broken include"
+	);
+	assert!(
+		result.runfile.targets.contains_key("from-broken"),
+		"the broken file's own targets are unaffected — only its include is skipped"
+	);
+}
+
+#[test]
+fn namespaces_are_scoped_per_source_file_across_local_and_global() {
+	// `for "in": "namespaces"` must not leak across files: a project target
+	// iterates only its own Runfile's namespaces, and a global target only
+	// its own — regardless of what else took part in the merge.
+	let dir = TempDir::new().unwrap();
+
+	// Global declares namespace `gns`.
+	let (gdir_holder, gpath) = global_with_include(Some("gns"));
+
+	// Local declares namespace `api`.
+	std::fs::create_dir_all(dir.path().join("api")).unwrap();
+	std::fs::write(
+		dir.path().join("api").join("Runfile.json"),
+		r#"{ "$schema": "x", "targets": { "dev": { "commands": ["echo api-dev"] } } }"#,
+	)
+	.unwrap();
+	let local_json = r#"{
+		"$schema": "https://github.com/JoaaoVerona/runfile/releases/latest/download/v0.schema.json",
+		"includes": [{ "path": "api/Runfile.json", "namespace": "api" }],
+		"targets": { "root": { "commands": ["echo root"] } }
+	}"#;
+	let local_path = dir.path().join(RUNFILE_NAME);
+	std::fs::write(&local_path, local_json).unwrap();
+	let local = parse_runfile(local_json).unwrap();
+
+	let result = merge_runfiles(Some((local, local_path)), &[gpath], dir.path()).unwrap();
+
+	assert_eq!(
+		result.namespaces_for_target("root"),
+		["api".to_string()],
+		"a local target sees only its own file's namespaces"
+	);
+	assert_eq!(
+		result.namespaces_for_target("gtarget"),
+		["gns".to_string()],
+		"a global target sees only its own file's namespaces"
+	);
+	// The flat reporting union still spans both, for namespace-root detection.
+	assert_eq!(result.runfile.namespaces, vec!["api".to_string(), "gns".to_string()]);
+	drop(gdir_holder);
+}

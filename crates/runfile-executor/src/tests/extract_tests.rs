@@ -207,7 +207,7 @@ fn extract_for_namespaces_aggregator() {
 	// `extract_target_with_cwd` now auto-syncs namespaces (matching what
 	// the runner does via `ensure_run_context`) and walks `@target`
 	// invocations into their dep's commands.
-	use crate::extract::{extract_target, format_extracted_commands};
+	use crate::extract::format_extracted_commands;
 	use runfile_parser::parse_runfile;
 
 	let json = r#"{
@@ -223,20 +223,35 @@ fn extract_for_namespaces_aggregator() {
         }
     }"#;
 
-	// Post-merge state: `runfile.namespaces` is populated by the merge
-	// step. Set it directly to simulate that, since this test doesn't go
-	// through merge. Pass plain `RunArgs::default()` and let the extract
-	// auto-sync pick the namespaces up — that matches what the CLI does.
-	let mut runfile = parse_runfile(json).unwrap();
-	runfile.namespaces = vec!["web-admin".to_string(), "web-docs".to_string()];
+	// Post-merge state: the merge step records each file's own namespaces in
+	// `namespaces_by_source`. Supply that (plus `source_files`) directly, since
+	// this test doesn't go through merge. Pass plain `RunArgs::default()` and
+	// let the extract auto-sync pick the namespaces up — matching the CLI.
+	let runfile = parse_runfile(json).unwrap();
 	let shell = ResolvedShell {
 		kind: ShellKind::Bash,
 		path: PathBuf::from("/bin/bash"),
 	};
 	let args = RunArgs::default();
 	let dir = TempDir::new().unwrap();
+	let runfile_path = dir.path().join("Runfile.json");
+	let (source_files, namespaces_by_source) =
+		super::namespace_maps(&runfile, &runfile_path, &["web-admin", "web-docs"]);
 
-	let commands = extract_target("dev", &runfile, &args, dir.path()).unwrap();
+	let commands = crate::extract::extract_target_with_cwd(
+		"dev",
+		&runfile,
+		&args,
+		&runfile_path,
+		dir.path(),
+		dir.path(),
+		&HashMap::new(),
+		&source_files,
+		&namespaces_by_source,
+		None,
+		&ShellKind::Bash,
+	)
+	.unwrap();
 	let lines = format_extracted_commands(&commands, &shell.kind);
 
 	assert_eq!(

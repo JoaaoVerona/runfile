@@ -25,6 +25,9 @@ struct ResolvedTarget {
 	caller_cwd: PathBuf,
 	source_dirs: HashMap<String, PathBuf>,
 	source_files: HashMap<String, PathBuf>,
+	/// Source Runfile path -> that file's own declared `includes` namespaces.
+	/// Backs `for "in": "namespaces"`, scoped per file.
+	namespaces_by_source: HashMap<PathBuf, Vec<String>>,
 	shell: ResolvedShell,
 	args: RunArgs,
 }
@@ -42,6 +45,7 @@ fn resolve_target_setup(
 	check_conflict(target_name, &merge_result);
 
 	let source_files = merge_result.source_files();
+	let namespaces_by_source = merge_result.namespaces_by_source;
 	let runfile = merge_result.runfile;
 	let source_dirs = merge_result.source_dirs;
 
@@ -83,6 +87,7 @@ fn resolve_target_setup(
 		caller_cwd,
 		source_dirs,
 		source_files,
+		namespaces_by_source,
 		shell,
 		args,
 	}
@@ -403,6 +408,7 @@ pub fn cmd_run(
 		&rt.caller_cwd,
 		&rt.source_dirs,
 		&rt.source_files,
+		&rt.namespaces_by_source,
 		timings,
 		yes,
 		pk_provider,
@@ -488,6 +494,7 @@ pub fn cmd_dry_run(target_name: &str, extra_args: &[String], file: Option<&std::
 		&rt.caller_cwd,
 		&rt.source_dirs,
 		&rt.source_files,
+		&rt.namespaces_by_source,
 		pk_provider,
 		&rt.shell.kind,
 	) {
@@ -584,6 +591,7 @@ pub fn cmd_watch(
 		&rt.caller_cwd,
 		&rt.source_dirs,
 		&rt.source_files,
+		&rt.namespaces_by_source,
 		timings,
 		yes,
 		pk_provider,
@@ -685,6 +693,7 @@ pub fn cmd_watch(
 			&rt.caller_cwd,
 			&rt.source_dirs,
 			&rt.source_files,
+			&rt.namespaces_by_source,
 			timings,
 			yes,
 			pk_provider,

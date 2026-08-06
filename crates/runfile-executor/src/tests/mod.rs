@@ -25,6 +25,30 @@ impl SubstituteNoEnv for RunArgs {
 	}
 }
 
+/// Helper: wire up per-file namespaces for a synthetic (non-merged) Runfile.
+///
+/// `for "in": "namespaces"` resolves through `namespaces_by_source` keyed by
+/// each target's *source file*, not off `Runfile.namespaces` (which is only a
+/// flat reporting union). Tests that build a Runfile by hand therefore have to
+/// supply both maps the way `merge_runfiles` would: every target points at the
+/// single synthetic Runfile path, and that path owns the namespace list.
+fn namespace_maps(
+	runfile: &runfile_parser::Runfile,
+	runfile_path: &std::path::Path,
+	namespaces: &[&str],
+) -> (HashMap<String, PathBuf>, HashMap<PathBuf, Vec<String>>) {
+	let source_files = runfile
+		.targets
+		.keys()
+		.map(|name| (name.clone(), runfile_path.to_path_buf()))
+		.collect();
+	let by_source = HashMap::from([(
+		runfile_path.to_path_buf(),
+		namespaces.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+	)]);
+	(source_files, by_source)
+}
+
 /// Helper: parse a single-target Runfile JSON and return its (validated) [`CommandSpec`].
 fn parse_target(json: &str, target_name: &str) -> CommandSpec {
 	let rf = runfile_parser::parse_runfile(json).expect("test runfile must parse");

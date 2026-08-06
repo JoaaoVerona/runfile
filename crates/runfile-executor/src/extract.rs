@@ -65,6 +65,7 @@ pub fn extract_target(
 		working_dir,
 		&HashMap::new(),
 		&HashMap::new(),
+		&HashMap::new(),
 		None,
 		&ShellKind::Bash,
 	)
@@ -93,6 +94,7 @@ pub fn extract_target_with_cwd<'a>(
 	caller_cwd: &'a Path,
 	source_dirs: &'a HashMap<String, PathBuf>,
 	source_files: &'a HashMap<String, PathBuf>,
+	namespaces_by_source: &'a HashMap<PathBuf, Vec<String>>,
 	available_private_keys: Option<&'a dyn PrivateKeyProvider>,
 	shell_kind: &'a ShellKind,
 ) -> Result<Vec<ExtractedCommand>, ExtractError> {
@@ -100,23 +102,28 @@ pub fn extract_target_with_cwd<'a>(
 	validate_args(args, &all_commands)?;
 
 	// Sync `run_context.namespaces` (and the static cwd/file/parent baselines)
-	// from the merged Runfile if the caller didn't already attach matching
-	// values. The runner does this via its own `ensure_run_context` before
-	// dispatch; we mirror it here so `for in: "namespaces"` and `{{ RUN.* }}`
-	// resolve identically in dry-run and real execution. Only allocate when
-	// out of sync. Per-target `RUN.file`/`RUN.parent` overrides happen later
+	// if the caller didn't already attach matching values. The runner does this
+	// via its own `ensure_run_context` before dispatch; we mirror it here so
+	// `for in: "namespaces"` and `{{ RUN.* }}` resolve identically in dry-run
+	// and real execution. Namespaces are scoped to the entry target's own
+	// source file, matching the runner. Only allocate when out of sync.
+	// Per-target `RUN.file`/`RUN.parent`/`namespaces` overrides happen later
 	// inside `extract_recursive_inner`.
 	let cwd_str = caller_cwd.to_string_lossy();
 	let file_str = runfile_path.to_string_lossy();
 	let parent_str = runfile_dir.to_string_lossy();
-	let needs_clone = args.run_context.namespaces.as_slice() != runfile.namespaces.as_slice()
+	let entry_namespaces = source_files
+		.get(target_name)
+		.and_then(|f| namespaces_by_source.get(f))
+		.map_or(&[][..], |v| v.as_slice());
+	let needs_clone = args.run_context.namespaces.as_slice() != entry_namespaces
 		|| args.run_context.cwd != cwd_str
 		|| args.run_context.file != file_str
 		|| args.run_context.parent != parent_str;
 	let synced_args;
 	let args = if needs_clone {
 		let mut owned = args.clone();
-		owned.run_context.namespaces = Arc::new(runfile.namespaces.clone());
+		owned.run_context.namespaces = Arc::new(entry_namespaces.to_vec());
 		owned.run_context.cwd = cwd_str.into_owned();
 		owned.run_context.file = file_str.into_owned();
 		owned.run_context.parent = parent_str.into_owned();
@@ -132,6 +139,7 @@ pub fn extract_target_with_cwd<'a>(
 		runfile_dir,
 		source_dirs,
 		source_files,
+		namespaces_by_source,
 		available_private_keys,
 		shell_kind,
 		in_progress: HashSet::new(),
@@ -145,6 +153,10 @@ struct ExtractContext<'a> {
 	runfile_dir: &'a Path,
 	source_dirs: &'a HashMap<String, PathBuf>,
 	source_files: &'a HashMap<String, PathBuf>,
+	/// Source Runfile path → that file's own declared namespaces. Mirrors the
+	/// runner's per-file scoping so `for "in": "namespaces"` previews exactly
+	/// what a real run would iterate.
+	namespaces_by_source: &'a HashMap<PathBuf, Vec<String>>,
 	available_private_keys: Option<&'a dyn PrivateKeyProvider>,
 	/// Shell kind used to pick the correct sequencing operator (`&&` / `;` /
 	/// `&`) when joining `sameShell: true` targets into a single command line.
@@ -166,6 +178,14 @@ impl ExtractContext<'_> {
 			.get(target_name)
 			.map(|p| p.as_path())
 			.unwrap_or(self.runfile_path)
+	}
+
+	/// The namespaces visible to `target_name` — those declared by the Runfile
+	/// that defined it. Mirrors `RunRoot::target_namespaces`.
+	fn target_namespaces(&self, target_name: &str) -> &[String] {
+		self.namespaces_by_source
+			.get(self.target_file(target_name))
+			.map_or(&[], |v| v.as_slice())
 	}
 }
 
@@ -216,18 +236,23 @@ fn extract_recursive_inner(
 	let target_runfile_dir = ctx.target_dir(target_name);
 	let target_runfile_file = ctx.target_file(target_name);
 
-	// Refresh `RUN.file` / `RUN.parent` to reflect *this* target's source
-	// Runfile. `RUN.cwd` was already set by the top-level `extract_target_with_cwd`
-	// and stays constant. We allocate only when at least one field changed
-	// (e.g. when entering an included target whose source differs).
+	// Refresh `RUN.file` / `RUN.parent` — and the namespace list backing
+	// `for "in": "namespaces"` — to reflect *this* target's source Runfile.
+	// `RUN.cwd` was already set by the top-level `extract_target_with_cwd` and
+	// stays constant. We allocate only when at least one field changed (e.g.
+	// when entering an included target whose source differs).
 	let file_str = target_runfile_file.to_string_lossy();
 	let parent_str = target_runfile_dir.to_string_lossy();
-	let needs_clone = args.run_context.file != file_str || args.run_context.parent != parent_str;
+	let target_namespaces = ctx.target_namespaces(target_name);
+	let needs_clone = args.run_context.file != file_str
+		|| args.run_context.parent != parent_str
+		|| args.run_context.namespaces.as_slice() != target_namespaces;
 	let synced_args;
 	let args = if needs_clone {
 		let mut owned = args.clone();
 		owned.run_context.file = file_str.into_owned();
 		owned.run_context.parent = parent_str.into_owned();
+		owned.run_context.namespaces = Arc::new(target_namespaces.to_vec());
 		synced_args = owned;
 		&synced_args
 	} else {

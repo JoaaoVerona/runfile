@@ -843,13 +843,40 @@ pub struct Runfile {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub globals: Option<Globals>,
 
-	/// Namespace prefixes declared via `includes`, sorted and deduplicated.
-	/// Populated by the merge step — never serialized or deserialized. Used
-	/// at execution time to resolve `for "in": "namespaces"` blocks. Composes
-	/// across nested includes: a chain of `outer:inner` shows up as both
-	/// `outer` and `outer:inner`.
+	/// Flat union of every namespace declared by any file that took part in the
+	/// merge, sorted and deduplicated. Populated by the merge step — never
+	/// serialized or deserialized.
+	///
+	/// This is a *reporting* view, used to recognise namespace roots (e.g. by the
+	/// `task-descriptors` generator). It is deliberately NOT what
+	/// `for "in": "namespaces"` iterates: that resolves per-runfile via
+	/// [`crate::MergeResult::namespaces_by_source`], so a target only ever sees
+	/// the namespaces its own source file declared. See [`Runfile::direct_namespaces`].
 	#[serde(skip)]
 	pub namespaces: Vec<String>,
+}
+
+impl Runfile {
+	/// The namespaces this file declares directly in its own `includes` array,
+	/// sorted and deduplicated.
+	///
+	/// Unprefixed and non-composing by design: an included file reports its own
+	/// `includes` namespaces bare (`inner`, not `outer:inner`). Composition is
+	/// already handled by the `@target` rewrite in [`crate::merge`] — a dynamic
+	/// `@{{ VAR.ns }}:build` inside a file that was itself included under
+	/// `outer` becomes `outer:{{ VAR.ns }}:build`, so the bare loop value still
+	/// resolves to the right fully-qualified target at every nesting level.
+	pub fn direct_namespaces(&self) -> Vec<String> {
+		let mut out: Vec<String> = self
+			.includes
+			.iter()
+			.flatten()
+			.filter_map(|e| e.namespace.clone())
+			.collect();
+		out.sort();
+		out.dedup();
+		out
+	}
 }
 
 /// A single entry in the `includes` array. Accepts either a plain string
