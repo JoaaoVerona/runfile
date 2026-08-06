@@ -2,7 +2,7 @@
 	"name": "runfile",
 	"displayName": "Runfile",
 	"description": "Contributes VS Code tasks generated at runtime by a shell command, so a project's tasks appear in Run Task without ever being written to tasks.json.",
-	"version": "0.42.0",
+	"version": "0.43.0",
 	"icon": "media/icon.png",
 	"private": true,
 	"packageManager": "pnpm@11.13.1",
