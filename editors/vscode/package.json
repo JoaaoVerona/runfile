@@ -45,6 +45,10 @@
 					"task": {
 						"type": "string",
 						"description": "The label of the generated task to run."
+					},
+					"file": {
+						"type": "string",
+						"description": "Path to the Runfile the target is resolved against (passed as `run -f`). Omit to let `run` discover the Runfile from the workspace folder."
 					}
 				}
 			}
@@ -59,6 +63,12 @@
 			{
 				"command": "runfile.runTarget",
 				"title": "Run Target",
+				"category": "Runfile",
+				"icon": "$(play)"
+			},
+			{
+				"command": "runfile.runTargetInFile",
+				"title": "Run Target in Runfile",
 				"category": "Runfile",
 				"icon": "$(play)"
 			},
@@ -109,6 +119,10 @@
 			"commandPalette": [
 				{
 					"command": "runfile.runTarget",
+					"when": "false"
+				},
+				{
+					"command": "runfile.runTargetInFile",
 					"when": "false"
 				},
 				{
@@ -172,6 +186,11 @@
 					"type": "boolean",
 					"default": true,
 					"description": "Contribute dynamically generated tasks. Turn off to stop running the generate command entirely."
+				},
+				"runfile.codeLens": {
+					"type": "boolean",
+					"default": true,
+					"markdownDescription": "Show an inline **Run** button above every target in a Runfile — any `Runfile*.json` or `Runfile*.json5`, at any depth, so files reached through `includes` (`Runfile-ci.json`, `Runfile.dev.json5`, …) are covered too. Each button runs that target from the file that defines it (`run --stdin-args -f <that file> <target>`), so a target inside an included Runfile runs under the name the file spells it with. Internal (`_`-prefixed) targets and targets carrying `metadata.excludeFromGenerateCommand` get no button."
 				},
 				"runfile.interactive": {
 					"type": "boolean",

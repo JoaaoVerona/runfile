@@ -115,6 +115,45 @@ Runfile. The descriptor reports the restriction via `onlyInDirectories` on the
 source; this needs a `run` CLI new enough to emit it (older ones simply keep the
 old behaviour of filing them under **Globals**).
 
+## Inline Run buttons
+
+Open a Runfile and every target gets a **▶ Run** button above the line that
+defines it, so you can launch a target from the file you're already editing:
+
+```jsonc
+"targets": {
+  ▶ Run
+  "build": {
+    "commands": "cargo build",
+    ...
+```
+
+The buttons read the file directly — the `run` CLI is not consulted, so they show
+up immediately, on any Runfile, including ones outside the workspace. Because the
+file is parsed as JSON5 (like `run` itself does), comments, trailing commas,
+unquoted keys and single-quoted strings are all fine.
+
+Any file named `Runfile*.json` or `Runfile*.json5` qualifies, at any depth —
+`Runfile.json` and `Runfile.json5` are the only names `run` *discovers*, but a
+file reached through `includes` or `-f` can be called anything, and
+`Runfile-ci.json` / `Runfile.dev.json5` style siblings are a normal way to split
+one up. A file that matches the name but has no `targets` object simply gets no
+buttons.
+
+Clicking one runs `run --stdin-args -f <that file> <target>` from the file's own
+directory. Pinning the invocation to the file with `-f` is what makes the buttons
+correct inside an **included** Runfile: a target written as `compile` in
+`editors/vscode/Runfile.json` is `vscode:compile` from the repository root, so
+running the name exactly as the file spells it only makes sense against the file
+that spells it that way. As with the sidebar, `--stdin-args` means a target that
+needs an argument prompts for it in the task terminal.
+
+Two kinds of target get no button, because neither can be invoked directly:
+**internal** targets (a `_`-prefixed name, reachable only as `@_name` from another
+target) and targets carrying `metadata.excludeFromGenerateCommand`, which opts a
+target out of every editor integration. Set `runfile.codeLens` to `false` to turn
+the buttons off entirely.
+
 ## No caching by design
 
 The generate command is cheap, so the extension keeps **no cache** — it is
@@ -129,6 +168,7 @@ Palette (or click **↻** in the Targets view).
 | --- | --- | --- |
 | `runfile.generateCommand` | `run :generate task-descriptors` | Shell command run in each workspace folder to produce the task-descriptors JSON on stdout. |
 | `runfile.enabled` | `true` | Turn off to stop contributing tasks (and stop running the command). |
+| `runfile.codeLens` | `true` | Show an inline **▶ Run** button above every target in a `Runfile*.json` / `Runfile*.json5`. |
 | `runfile.interactive` | `true` | Run `--stdin-args` tasks through an interactive pseudoterminal so `run` can prompt for missing arguments. |
 
 ## Commands
@@ -137,12 +177,14 @@ Palette (or click **↻** in the Targets view).
 | --- | --- |
 | **Runfile: Refresh Targets** | Force a fresh regeneration of the task list and sidebar. |
 | **Runfile: Run Target** | Spawn a target as a task (used by the sidebar's rows and ▶ buttons). |
+| **Runfile: Run Target in Runfile** | Spawn a target against a specific Runfile (used by the inline ▶ Run buttons). |
 | **Runfile: Pin Target** | Move a target to the top of the tree. |
 | **Runfile: Unpin Target** | Send a pinned target back to its normal place. |
 | **Runfile: Show Log** | Open the output channel (useful when the command fails or emits invalid JSON). |
 
-Pin/Run/Unpin act on a sidebar row, so they're only offered from the tree (not
-the Command Palette).
+Pin/Run/Unpin act on a sidebar row and **Run Target in Runfile** on a specific
+target in a specific file, so they're only offered from the tree and the inline
+buttons (not the Command Palette).
 
 ## Expected stdout format
 

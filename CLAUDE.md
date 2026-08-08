@@ -1027,12 +1027,15 @@ crates/
 GitHub release. Moved here from a separate `vscode-extensions` monorepo so the extension and the CLI contract
 it consumes (`run :generate task-descriptors`) evolve together.
 
-**Files:** `src/extension.ts` (the whole extension — one file), `package.json` (manifest + contributions),
-`tsconfig.json`, `.vscodeignore`, `media/` (icons), `Runfile.json` (its own targets), `LICENSE` (MIT; packaged
-into the `.vsix`), `README.md` (packaged as the extension's marketplace/VSIX page).
+**Files:** `src/extension.ts` (activation, task provider, sidebar tree, interactive pty), `src/codeLens.ts`
+(the inline Run buttons), `src/runfileParser.ts` (dependency-free JSON5 reader, no `vscode` import),
+`package.json` (manifest + contributions), `tsconfig.json`, `.vscodeignore`, `media/` (icons), `Runfile.json`
+(its own targets), `LICENSE` (MIT; packaged into the `.vsix`), `README.md` (packaged as the extension's
+marketplace/VSIX page).
 
-- **What it does:** registers a `TaskProvider` for the `runfile` task type plus a **Runfile → Targets** activity-bar
-  tree. Both are fed by running `run :generate task-descriptors` once per workspace folder and parsing the
+- **What it does:** registers a `TaskProvider` for the `runfile` task type, a **Runfile → Targets** activity-bar
+  tree, and a `CodeLensProvider` putting a **▶ Run** button on every target inside a Runfile. The first two are
+  fed by running `run :generate task-descriptors` once per workspace folder and parsing the
   `{ formatVersion, sources: [{ filePath, kind, targets }] }` document from stdout. Each target becomes a
   `vscode.Task` invoking `run --stdin-args <name>`. Deliberately **no cache** — generation is cheap and re-runs on
   every fetch. Sidebar grouping uses the descriptor's own `namespace` / `kind` fields (never re-derived from names):
@@ -1056,6 +1059,35 @@ into the `.vsix`), `README.md` (packaged as the extension's marketplace/VSIX pag
   kept, not pruned, so reopening a folder restores its pins. `package.json` menus switch Pin/Unpin off the
   `runfileTarget` / `runfileTargetPinned` contextValue, and the run action's `when` uses
   `viewItem =~ /^runfileTarget/` to cover both states.
+- **Inline Run buttons (`runfile.codeLens`, default on).** `RunfileCodeLensProvider` (`src/codeLens.ts`) is
+  registered against the **file-name** selector `{ scheme: "file", pattern: "**/[Rr]unfile*.{json,json5}" }` — not
+  a language id, since `.json` / `.jsonc` / no-association are all possible — and emits one `$(play) Run` lens per
+  target, anchored to the line of its key. The `*` after the stem is load-bearing: `Runfile.json` / `Runfile.json5`
+  are the only names `discover.rs` looks for, but anything reached via `includes` or `-f` is equally a Runfile
+  (this repo's own `Runfile-ci.json` / `Runfile-wsl.json`), and the lens invocation passes `-f`, which doesn't care
+  what the file is called. Over-matching is harmless — no top-level `targets` object means no lenses — so the
+  pattern is deliberately loose rather than a curated name list. **CodeLens, not a gutter decoration**: VS Code exposes no clickable
+  gutter outside its own debug/testing surfaces and a `gutterIconPath` decoration cannot carry a command, so
+  CodeLens is the only way to get a JetBrains-style inline run button (same approach as the `kotest` extension
+  this was modelled on). Targets are read **straight from the file**, never from `run :generate task-descriptors`
+  — the buttons work with no CLI on PATH, on Runfiles outside the workspace, and without a subprocess per
+  keystroke. Internal (`_`-prefixed) targets and `metadata.excludeFromGenerateCommand` targets are skipped (neither
+  is directly invocable / both are opted out of editor surfaces). A parse failure yields **no lenses plus an output-channel
+  line** — a file mid-edit is unparseable most of the time, so this must never surface as a notification.
+- **`src/runfileParser.ts`** is a hand-rolled JSON5 lexer + recursive-descent reader (`findTargets(text)` →
+  `RunfileTarget[]` with `keyStart`/`keyEnd` offsets, `description`, `excluded`, `internal`). `JSON.parse` is not
+  usable: the CLI parses every Runfile as JSON5, so comments / trailing commas / unquoted keys / single quotes are
+  all legal on screen. It keeps no `vscode` import so it can be exercised with plain Node. `parseDocument` asserts
+  the token stream is fully consumed, so trailing garbage is an error rather than a silently-ignored tail.
+  `isInternalTargetName` mirrors the CLI's rule exactly (last `:`-segment starts with `_`).
+- **The lens invocation is pinned to its file with `-f`.** `buildFileTargetTask` runs
+  `run --stdin-args -f <file> <target>` with cwd = the file's directory, versus the sidebar's
+  `run --stdin-args <target>` at the workspace-folder root; both funnel through the shared `buildTask`. The `-f`
+  is what makes buttons correct inside an **included** Runfile — `compile` in `editors/vscode/Runfile.json` is
+  `vscode:compile` from the repo root, so the name as the file spells it is only meaningful against that file.
+  Flag order matters: `run`'s `args` is `trailing_var_arg`, so every flag must precede the target name.
+  `RunfileTaskDefinition` gained an optional `file` (declared in `package.json`'s `taskDefinitions` so it is
+  writable in `tasks.json`); `resolveRunfileTask` short-circuits on it, skipping the descriptor lookup entirely.
 - **`runfile.interactive` (default on)** runs tasks through `RunfileInteractivePty`, a `vscode.Pseudoterminal` that
   spawns `run` itself with a piped stdin so `--stdin-args` prompts actually work (a plain `ShellExecution` task
   terminal cannot feed stdin). The child is spawned `detached: true` so it leads its own process group, and

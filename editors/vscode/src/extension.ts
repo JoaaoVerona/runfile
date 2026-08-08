@@ -1,8 +1,24 @@
 import * as cp from "node:child_process"
+import * as path from "node:path"
 import * as vscode from "vscode"
+import { RunfileCodeLensProvider } from "./codeLens"
 
 /** The task type we register a provider for and stamp on every generated task. */
 const TASK_TYPE = "runfile"
+
+/**
+ * Runfiles are matched by file name, not language id, so the inline Run buttons appear
+ * no matter which language the document ends up associated with (`json` and `jsonc` are
+ * both common, and `.json5` often has no association at all).
+ *
+ * The suffix wildcard is deliberate. `Runfile.json` / `Runfile.json5` are the only names
+ * the CLI *discovers*, but any file reachable through `includes` or `-f` is a real
+ * Runfile — this repository's own `Runfile-ci.json` and `Runfile-wsl.json` among them —
+ * and the buttons run `-f <that file>`, which works whatever the file is called. The
+ * broad pattern costs nothing: a matched file with no top-level `targets` object simply
+ * yields no buttons.
+ */
+const RUNFILE_SELECTOR: vscode.DocumentSelector = { scheme: "file", pattern: "**/[Rr]unfile*.{json,json5}" }
 
 /**
  * Default command run in each workspace folder to emit the target descriptors on
@@ -39,6 +55,9 @@ export function activate(context: vscode.ExtensionContext): void {
 	const treeView = vscode.window.createTreeView("runfile.targets", { treeDataProvider: targets })
 	context.subscriptions.push(treeView)
 
+	const codeLens = new RunfileCodeLensProvider((message) => output.appendLine(message))
+	context.subscriptions.push(codeLens, vscode.languages.registerCodeLensProvider(RUNFILE_SELECTOR, codeLens))
+
 	context.subscriptions.push(
 		vscode.commands.registerCommand("runfile.showLog", () => output.show()),
 		vscode.commands.registerCommand("runfile.refresh", async () => {
@@ -53,6 +72,11 @@ export function activate(context: vscode.ExtensionContext): void {
 				void vscode.tasks.executeTask(entry.task)
 			}
 		}),
+		vscode.commands.registerCommand("runfile.runTargetInFile", (uri?: vscode.Uri, name?: string) => {
+			if (uri && name) {
+				void vscode.tasks.executeTask(buildFileTargetTask(uri, name))
+			}
+		}),
 		vscode.commands.registerCommand("runfile.pinTarget", (arg?: TargetNode | TargetEntry) =>
 			setPinned(arg, true, targets)
 		),
@@ -63,6 +87,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.workspace.onDidChangeConfiguration((e) => {
 			if (e.affectsConfiguration("runfile")) {
 				targets.refresh()
+				codeLens.refresh()
 			}
 		}),
 		vscode.workspace.onDidChangeWorkspaceFolders(() => targets.refresh())
@@ -262,27 +287,54 @@ async function provideRunfileTasks(): Promise<vscode.Task[]> {
 	return [...main, ...globals].map((e) => e.task)
 }
 
-/**
- * Build the `vscode.Task` that runs a descriptor target. Every task invokes
- * `run --stdin-args <name>` so `run` can prompt for any missing `{{ ARG.x }}` /
- * `{{ FLAG.x }}` / `{{ ENV.X }}` values. When the `interactive` setting is on those
- * prompts are served by a pseudoterminal we control (see [`RunfileInteractivePty`]);
- * otherwise the task runs as a plain shell task (matching VS Code's default, where
- * stdin prompts fail).
- */
+/** Build the task that runs a descriptor target, from the workspace folder it came from. */
 function buildRunTask(target: DescriptorTarget, folder: vscode.WorkspaceFolder): vscode.Task {
-	const name = target.name as string
-	const args = ["--stdin-args", name]
-	const cwd = folder.uri.fsPath
+	return buildTask(target.name as string, folder, folder.uri.fsPath, undefined, target.description)
+}
+
+/**
+ * Build the task behind an inline **Run** button: the same invocation, pinned to the
+ * Runfile the button was rendered in via `-f` and run from that file's directory.
+ *
+ * Anchoring to the file is what makes the buttons correct inside an included Runfile.
+ * A target written as `compile` in `editors/vscode/Runfile.json` is `vscode:compile`
+ * from the repository root, so running the name exactly as the file spells it only
+ * makes sense against the file that spells it that way.
+ */
+function buildFileTargetTask(file: vscode.Uri, name: string): vscode.Task {
+	const scope = vscode.workspace.getWorkspaceFolder(file) ?? vscode.TaskScope.Workspace
+	return buildTask(name, scope, path.dirname(file.fsPath), file.fsPath)
+}
+
+/**
+ * The one place a `vscode.Task` is built. Every task invokes `run --stdin-args <name>`
+ * so `run` can prompt for any missing `{{ ARG.x }}` / `{{ FLAG.x }}` / `{{ ENV.X }}`
+ * values. When the `interactive` setting is on those prompts are served by a
+ * pseudoterminal we control (see [`RunfileInteractivePty`]); otherwise the task runs as
+ * a plain shell task (matching VS Code's default, where stdin prompts fail).
+ */
+function buildTask(
+	name: string,
+	scope: vscode.WorkspaceFolder | vscode.TaskScope,
+	cwd: string,
+	file?: string,
+	description?: string
+): vscode.Task {
+	// Every flag has to precede the target name: `run` collects the target and
+	// everything after it as trailing arguments to pass through to the target itself.
+	const args = ["--stdin-args", ...(file ? ["-f", file] : []), name]
 
 	const execution = isInteractive()
 		? new vscode.CustomExecution(async () => new RunfileInteractivePty("run", args, cwd))
 		: new vscode.ShellExecution("run", args, { cwd })
 
 	const definition: RunfileTaskDefinition = { type: TASK_TYPE, task: name }
-	const task = new vscode.Task(definition, folder, `run ${name}`, TASK_TYPE, execution)
-	if (target.description) {
-		task.detail = target.description
+	if (file) {
+		definition.file = file
+	}
+	const task = new vscode.Task(definition, scope, `run ${name}`, TASK_TYPE, execution)
+	if (description) {
+		task.detail = description
 	}
 	task.presentationOptions = {
 		reveal: vscode.TaskRevealKind.Always,
@@ -297,9 +349,15 @@ function buildRunTask(target: DescriptorTarget, folder: vscode.WorkspaceFolder):
  * match by name so the reference gets a real execution attached.
  */
 async function resolveRunfileTask(task: vscode.Task): Promise<vscode.Task | undefined> {
-	const wanted = (task.definition as RunfileTaskDefinition).task
+	const definition = task.definition as RunfileTaskDefinition
+	const wanted = definition.task
 	if (typeof wanted !== "string") {
 		return undefined
+	}
+	// A `file` pins the invocation to one Runfile, so there is nothing to look up —
+	// `run -f` resolves the name against that file itself.
+	if (typeof definition.file === "string") {
+		return buildFileTargetTask(vscode.Uri.file(definition.file), wanted)
 	}
 	const folder = folderOfScope(task.scope)
 	if (!folder) {
@@ -714,4 +772,6 @@ function isInteractive(): boolean {
 
 interface RunfileTaskDefinition extends vscode.TaskDefinition {
 	task: string
+	/** Absolute path of the Runfile to resolve `task` against (`run -f`), when pinned. */
+	file?: string
 }
