@@ -2,6 +2,7 @@ use crate::*;
 use std::collections::HashMap;
 use tempfile::TempDir;
 
+mod arg_scan;
 mod dsl;
 mod features;
 mod includes_edge;

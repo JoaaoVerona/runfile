@@ -422,3 +422,129 @@ fn validate_args_rejects_truly_unknown_named_arg_with_aux_fields() {
 		"expected unknown-arg error, got: {err}"
 	);
 }
+
+// ── Non-ASCII inside a substitution ────────────────────────────────────
+//
+// The scanner walks the substitution body looking for `ARG.` / `FLAG.` /
+// `ARGS`, and it must step over characters, not bytes: slicing a `&str` at an
+// offset that lands inside a multi-byte character panics. Real Runfiles carry
+// prose in their substitutions — `{{ error('… — …') }}` — so every one of these
+// must scan cleanly.
+
+#[test]
+fn scan_args_usage_survives_non_ascii_in_substitution() {
+	for body in [
+		"echo {{ concat('café') }}",               // accented Latin (2-byte)
+		"echo {{ concat('a — b') }}",              // em dash (3-byte)
+		"echo {{ concat('世界') }}",               // CJK (3-byte)
+		"echo {{ concat('🚀 ship it') }}",         // emoji (4-byte)
+		"echo {{ concat('é', '—', '世', '🚀') }}", // all of them at once
+	] {
+		let (positional, named) = scan_args_usage(&[body.into()]);
+		assert!(!positional, "no ARGS reference in {body:?}");
+		assert!(named.is_empty(), "no named keys in {body:?}, got {named:?}");
+	}
+}
+
+#[test]
+fn scan_args_usage_finds_keys_alongside_non_ascii() {
+	// The key must still be found when multi-byte text sits on either side of
+	// it — scanning must not stop at, or trip over, the first non-ASCII char.
+	let cmds = vec![
+		"echo {{ ARG.env }} — déjà vu".into(),
+		"echo 🚀 {{ ARG.port ? '8080' }}".into(),
+	];
+	let (positional, named) = scan_args_usage(&cmds);
+	assert!(!positional);
+	assert!(named.contains("env"), "got {named:?}");
+	assert!(named.contains("port"), "got {named:?}");
+}
+
+#[test]
+fn scan_args_usage_finds_keys_after_non_ascii_inside_one_substitution() {
+	// Same substitution body: prose first, reference second. This is the shape
+	// that panicked in the wild — a message string followed by an arg lookup.
+	let cmds = vec!["{{ error(concat('não encontrado — ', ARG.name)) }}".into()];
+	let (positional, named) = scan_args_usage(&cmds);
+	assert!(!positional);
+	assert!(named.contains("name"), "got {named:?}");
+}
+
+#[test]
+fn scan_args_usage_detects_positional_alongside_non_ascii() {
+	let cmds = vec![
+		"{{ define(p, one_of(ARGS, 'major', 'minor')) }}".into(),
+		"echo 'não — ok'".into(),
+	];
+	let (positional, named) = scan_args_usage(&cmds);
+	assert!(positional);
+	assert!(named.is_empty(), "got {named:?}");
+
+	// And when the multi-byte text is inside the *same* body, before ARGS.
+	let (positional, _) = scan_args_usage(&["{{ concat('café — ', ARGS) }}".into()]);
+	assert!(positional);
+}
+
+#[test]
+fn scan_args_usage_non_ascii_adjacent_to_args_is_not_a_word_char() {
+	// A multi-byte character butting up against `ARGS` must not be mistaken for
+	// an identifier character, which would suppress the positional reference.
+	let (positional, _) = scan_args_usage(&["{{ concat('é', ARGS) }}".into()]);
+	assert!(positional, "ARGS preceded by a multi-byte char still counts");
+
+	// `ARGS` as part of a longer identifier is still not a reference.
+	let (positional, named) = scan_args_usage(&["echo {{ concat('x', MYARGS_é) }}".into()]);
+	assert!(!positional, "MYARGS_é is not a bare ARGS reference");
+	assert!(named.is_empty());
+}
+
+#[test]
+fn scan_args_usage_non_ascii_outside_substitutions_is_ignored() {
+	// Prose outside the braces never reached the body scanner, but pin it so the
+	// two loops stay in agreement.
+	let cmds = vec!["echo 'olá — mundo' && echo {{ ARG.who }} 🚀".into()];
+	let (positional, named) = scan_args_usage(&cmds);
+	assert!(!positional);
+	assert!(named.contains("who"), "got {named:?}");
+}
+
+// ── Agreement with the shared scanner ──────────────────────────────────
+//
+// Validation here and the MCP server's tool schema are two projections of the
+// same scan (runfile_parser::scan_arg_usage). These pin this side's projection
+// over the shapes that matter, so a target the schema advertises as taking
+// input is one this validator will actually accept input for.
+
+#[test]
+fn scan_args_accepts_positional_referenced_from_a_function_call() {
+	// The shape that used to be invisible to the MCP server: the positional is
+	// consumed by `one_of`, not by a bare `{{ ARGS }}` body.
+	for cmd in [
+		"{{ define(part, one_of(ARGS, 'major', 'minor', 'patch')) }}",
+		"{{ concat('x', ARGS) }}",
+		"{{ upper(concat(ARGS)) }}",
+	] {
+		let (positional, named) = scan_args_usage(&[cmd.into()]);
+		assert!(positional, "{cmd} consumes positionals");
+		assert!(named.is_empty(), "{cmd} names no keys, got {named:?}");
+	}
+}
+
+#[test]
+fn scan_args_lookalike_identifiers_are_not_positional() {
+	for cmd in ["{{ concat(MYARGS) }}", "{{ concat(ARGS_FOO) }}", "{{ concat(X_ARGS) }}"] {
+		let (positional, _) = scan_args_usage(&[cmd.into()]);
+		assert!(!positional, "{cmd} is not a bare ARGS reference");
+	}
+}
+
+#[test]
+fn scan_args_named_keys_merge_args_and_flags() {
+	// Validation asks only "is `--name` referenced?", so both kinds land in one
+	// set — unlike the schema side, which needs them apart (string vs boolean).
+	let (positional, named) = scan_args_usage(&["deploy {{ ARG.env }} {{ FLAG.force ? --force : }}".into()]);
+	assert!(!positional);
+	assert!(named.contains("env"));
+	assert!(named.contains("force"));
+	assert_eq!(named.len(), 2);
+}

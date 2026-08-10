@@ -1,3 +1,4 @@
+mod arg_scan;
 mod discover;
 mod dsl;
 mod json;
@@ -6,6 +7,7 @@ mod parse;
 mod prepare;
 mod schema;
 
+pub use arg_scan::*;
 pub use discover::*;
 pub use dsl::*;
 pub use json::*;
