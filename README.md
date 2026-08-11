@@ -583,8 +583,13 @@ When commands run in parallel (`"parallel": true` on a target or `for` block), e
 line-buffered, prefixed with a colored bracketed label identifying the branch, and stripped of cursor-control
 escapes — so progress-bar redraws (`docker compose pull`, `cargo build`, etc.) become chronological append-only
 lines instead of corrupting each other's output. The label shows the full resolved `@target` invocation
-(`[@dev --port 5000]`) for target-call branches, or the raw command truncated to 12 characters (`[docker compo]`)
-for shell branches; each label gets one of six cycling colors so adjacent branches stay distinct.
+(`[@dev --port 5000]`) for target-call branches; for shell branches it shows the first *meaningful* part of the
+command, skipping setup like `cd`, `export` and `FOO=bar` assignments — so
+`cd ../battle-tanks-api && run api` is labelled `[run api]`, not `[cd /Users/jo]`. Labels are also guaranteed
+unique within a batch: two branches that would otherwise share a label are widened until they differ, then
+distinguished by the directory they `cd` into (`[battle-tanks-api]` vs `[battle-tanks]`), and finally by an
+ordinal suffix (`[npm run dev #1]`). They're padded to a common width so the brackets line up, and each gets one
+of six cycling colors so adjacent branches stay distinct.
 SGR colors flow through unchanged. The prefix propagates through `@target` invocations too,
 so monorepo fan-outs like `{ "for": "ns", "in": "namespaces", "do": "@{{ VAR.ns }}:dev" }` tag every nested shell
 with its branch identity. Set `RUNFILE_NO_LINE_PREFIX=1` to opt out and inherit raw stdio.

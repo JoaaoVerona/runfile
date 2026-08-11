@@ -82,15 +82,205 @@ fn prefix_contains_label() {
 	assert!(p.ends_with(' '));
 }
 
-#[test]
-fn shell_label_truncates_to_12_chars() {
-	assert_eq!(shell_prefix_label("echo hello world"), "echo hello w");
-	assert_eq!(shell_prefix_label("short"), "short");
+// ── Label derivation ──────────────────────────────────────────────
+
+fn label_of(cmd: &str) -> String {
+	shell_label_parts(cmd).0
+}
+
+fn context_of(cmd: &str) -> Option<String> {
+	shell_label_parts(cmd).1
+}
+
+/// Resolve labels for a batch of shell commands, trimming the alignment
+/// padding so assertions stay readable.
+fn labels_for(cmds: &[&str]) -> Vec<String> {
+	let candidates: Vec<LabelCandidate> = cmds.iter().map(|c| LabelCandidate::shell(c)).collect();
+	resolve_parallel_labels(&candidates)
+		.into_iter()
+		.map(|l| l.trim_end().to_string())
+		.collect()
 }
 
 #[test]
 fn shell_label_uses_first_nonempty_line_trimmed() {
-	assert_eq!(shell_prefix_label("\n   \n  npm run build  \n"), "npm run buil");
+	assert_eq!(label_of("\n   \n  npm run build  \n"), "npm run build");
+}
+
+#[test]
+fn shell_label_truncates_at_max_width() {
+	// 24 scalars, counted in chars rather than bytes.
+	assert_eq!(
+		labels_for(&["echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]),
+		["echo aaaaaaaaaaaaaaaaaaa"]
+	);
+	assert_eq!(
+		labels_for(&["echo ãããããããããããããããããããããããã"]),
+		["echo ããããããããããããããããããã"]
+	);
+}
+
+#[test]
+fn shell_label_skips_leading_cd() {
+	// The reported case: a shared `cd <path> &&` prefix used to render both
+	// leaves as `cd /Users/jo`.
+	assert_eq!(
+		labels_for(&[
+			"cd /Users/joao.verona/Workspace/battle-tanks-api && run api",
+			"cd /Users/joao.verona/Workspace/battle-tanks && run game-room --delay",
+		]),
+		["run api", "run game-room --delay"]
+	);
+}
+
+#[test]
+fn shell_label_skips_env_assignments_and_other_setup() {
+	assert_eq!(label_of("FOO=bar BAZ=1 npm run dev"), "npm run dev");
+	assert_eq!(label_of("export FOO=bar && npm run dev"), "npm run dev");
+	assert_eq!(label_of("source .venv/bin/activate; python app.py"), "python app.py");
+	assert_eq!(label_of("FOO=bar; npm run dev"), "npm run dev");
+}
+
+#[test]
+fn shell_label_takes_first_meaningful_segment() {
+	// The first real command identifies the branch; later steps don't.
+	assert_eq!(
+		label_of("cd api && docker compose up -d && echo ready"),
+		"docker compose up -d"
+	);
+}
+
+#[test]
+fn shell_label_falls_back_to_whole_line_when_all_setup() {
+	assert_eq!(label_of("cd /tmp"), "cd /tmp");
+	assert_eq!(label_of("FOO=bar"), "FOO=bar");
+}
+
+#[test]
+fn shell_label_does_not_split_inside_quotes_or_subshells() {
+	assert_eq!(label_of("echo 'a && b'"), "echo 'a && b'");
+	assert_eq!(label_of("echo \"x; y\""), "echo \"x; y\"");
+	assert_eq!(label_of("echo $(a && b)"), "echo $(a && b)");
+	// A pipeline is one logical command; a lone `&` is not a separator.
+	assert_eq!(label_of("cd api && cat f | grep x"), "cat f | grep x");
+}
+
+#[test]
+fn cd_context_is_last_cd_basename() {
+	assert_eq!(
+		context_of("cd /a/b/battle-tanks-api && run api").as_deref(),
+		Some("battle-tanks-api")
+	);
+	assert_eq!(context_of("cd /a/ && cd b/c/ && run x").as_deref(), Some("c"));
+	assert_eq!(context_of("cd 'my dir' && run x").as_deref(), Some("my dir"));
+	// Relative hops carry no identity.
+	assert_eq!(context_of("cd .. && run x"), None);
+	assert_eq!(context_of("npm run dev"), None);
+}
+
+// ── Batch-wide uniqueness ─────────────────────────────────────────
+
+#[test]
+fn colliding_labels_widen_until_distinct() {
+	// Identical for the first 24 chars — the group widens rather than
+	// collapsing to two identical prefixes.
+	let labels = labels_for(&[
+		"pnpm --filter @acme/web-frontend dev",
+		"pnpm --filter @acme/web-backend dev",
+	]);
+	assert_eq!(
+		labels,
+		["pnpm --filter @acme/web-frontend", "pnpm --filter @acme/web-backend"]
+	);
+}
+
+#[test]
+fn identical_commands_fall_back_to_cd_context() {
+	let labels = labels_for(&["cd api && npm run dev", "cd web && npm run dev"]);
+	assert_eq!(labels, ["api", "web"]);
+}
+
+#[test]
+fn truly_identical_leaves_get_ordinal_suffixes() {
+	let labels = labels_for(&["npm run dev", "npm run dev"]);
+	assert_eq!(labels, ["npm run dev #1", "npm run dev #2"]);
+}
+
+#[test]
+fn only_colliding_leaves_are_disambiguated() {
+	// The distinct leaf keeps its plain label; only the pair is touched.
+	let labels = labels_for(&["cd api && npm run dev", "cd web && npm run dev", "docker compose up"]);
+	assert_eq!(labels, ["api", "web", "docker compose up"]);
+}
+
+#[test]
+fn disambiguation_does_not_create_a_new_collision() {
+	// The `cd` fallback would produce a second `api`, so the group must
+	// escalate to ordinals instead of silently colliding again.
+	let labels = labels_for(&["cd api && npm run dev", "cd api && npm run dev", "api"]);
+	assert_eq!(labels, ["npm run dev #1", "npm run dev #2", "api"]);
+}
+
+#[test]
+fn target_call_labels_participate_in_uniqueness() {
+	let candidates = vec![
+		LabelCandidate::target("@build".to_string()),
+		LabelCandidate::target("@build".to_string()),
+	];
+	let labels: Vec<String> = resolve_parallel_labels(&candidates)
+		.into_iter()
+		.map(|l| l.trim_end().to_string())
+		.collect();
+	assert_eq!(labels, ["@build #1", "@build #2"]);
+}
+
+// ── Alignment ─────────────────────────────────────────────────────
+
+#[test]
+fn labels_are_padded_to_a_common_width() {
+	let candidates: Vec<LabelCandidate> = ["run api", "run game-room"]
+		.iter()
+		.map(|c| LabelCandidate::shell(c))
+		.collect();
+	let labels = resolve_parallel_labels(&candidates);
+	assert_eq!(labels, ["run api      ", "run game-room"]);
+	assert!(labels.iter().all(|l| l.chars().count() == 13));
+}
+
+#[test]
+fn padding_is_capped_so_one_outlier_does_not_bloat_the_rest() {
+	// A target-call label is never truncated, so it can exceed the 24-char
+	// cap. It sticks out on its own rather than padding every other leaf to
+	// its width.
+	let long = "@web-user:build:infrastructure".to_string();
+	assert!(long.chars().count() > 24);
+	let candidates = vec![
+		LabelCandidate::shell("a"),
+		LabelCandidate::shell("b"),
+		LabelCandidate::target(long.clone()),
+	];
+	let labels = resolve_parallel_labels(&candidates);
+	assert_eq!(labels[0].chars().count(), 24);
+	assert_eq!(labels[1].chars().count(), 24);
+	assert_eq!(labels[2], long);
+}
+
+#[test]
+fn truncation_does_not_leave_a_trailing_space() {
+	// Cutting at the cap can land on a space; the label must not carry it
+	// into the alignment pass.
+	assert_eq!(
+		labels_for(&["echo starting game-room --delay"]),
+		["echo starting game-room"]
+	);
+}
+
+#[test]
+fn single_leaf_gets_no_padding() {
+	assert_eq!(
+		resolve_parallel_labels(&[LabelCandidate::shell("run api")]),
+		["run api"]
+	);
 }
 
 // ── End-to-end pump tests via OutputStream::Capture ───────────────

@@ -18,8 +18,8 @@ use crate::force_kill::ForceKillGuard;
 use crate::interrupt::{CleanupScope, announce_interrupt, in_cleanup, should_abort};
 use crate::logging::{StepCounter, log_command, log_parallel_command, log_parallel_failure_summary};
 use crate::parallel_output::{
-	OutputStream, flush_writer_thread, format_parallel_prefix, line_prefixing_enabled, shell_prefix_label,
-	spawn_line_pump,
+	LabelCandidate, OutputStream, flush_writer_thread, format_parallel_prefix, line_prefixing_enabled,
+	resolve_parallel_labels, spawn_line_pump,
 };
 use runfile_parser::{CommandStep, WhenCondition};
 use runfile_shell::ResolvedShell;
@@ -507,27 +507,40 @@ fn run_parallel_batch(
 	// identity); otherwise each leaf gets a per-step prefix `[N]` matching
 	// the upfront `(N/total)` log line.
 	let prefix_output = line_prefixing_enabled();
+	// Bracket labels are resolved for the batch as a whole: a leaf's own text
+	// isn't enough to identify it when siblings share a prefix (`cd <path> &&
+	// <command>` being the canonical case), so `resolve_parallel_labels` also
+	// guarantees uniqueness within the batch and pads to a common width.
+	// Skipped entirely when an ancestor's prefix is inherited or prefixing is
+	// off, since nothing would consume the result.
+	let leaf_labels: Vec<String> = if prefix_output && setup.output_prefix.is_none() {
+		let candidates: Vec<LabelCandidate> = leaves
+			.iter()
+			.map(|leaf| match leaf {
+				ParallelLeaf::Shell { substituted, .. } => LabelCandidate::shell(substituted),
+				ParallelLeaf::TargetCall {
+					target, argv, optional, ..
+				} => LabelCandidate::target(format_target_call_label(target, argv, *optional)),
+			})
+			.collect();
+		resolve_parallel_labels(&candidates)
+	} else {
+		Vec::new()
+	};
+
 	let mut shells: Vec<(String, String, Option<String>, Option<PathBuf>)> = Vec::new();
 	let mut target_calls: Vec<(String, Vec<String>, bool, Option<String>)> = Vec::new();
 	// Pre-computed labels for each target call, parallel to `target_calls`.
 	// Captured before the worker threads consume the call data so we can still
 	// build the failure summary after the fact (e.g. `@web-user:build:infrastructure`).
 	let mut target_labels: Vec<String> = Vec::new();
-	for (leaf, &(step, _total)) in leaves.into_iter().zip(step_pairs.iter()) {
-		// The bracket label reflects what's running: a resolved `@target` call
-		// (shown in full) or a raw shell command (truncated to 12 chars).
-		let label = match &leaf {
-			ParallelLeaf::Shell { substituted, .. } => shell_prefix_label(substituted),
-			ParallelLeaf::TargetCall {
-				target, argv, optional, ..
-			} => format_target_call_label(target, argv, *optional),
-		};
+	for (idx, (leaf, &(step, _total))) in leaves.into_iter().zip(step_pairs.iter()).enumerate() {
 		let leaf_prefix = if !prefix_output {
 			None
 		} else if let Some(parent) = setup.output_prefix.as_deref() {
 			Some(parent.to_string())
 		} else {
-			Some(format_parallel_prefix(step, &label))
+			Some(format_parallel_prefix(step, &leaf_labels[idx]))
 		};
 		match leaf {
 			ParallelLeaf::Shell {

@@ -533,13 +533,397 @@ pub(crate) fn format_parallel_prefix(step: usize, label: &str) -> String {
 	}
 }
 
-/// Build the bracket label for a raw shell leaf: the resolved command
-/// truncated to at most 12 characters (Unicode scalars, not bytes), taken
-/// from the first non-empty line and with surrounding whitespace trimmed so
-/// the prefix stays compact and readable.
-pub(crate) fn shell_prefix_label(substituted: &str) -> String {
+/// Normal cap on a bracket label's width, in Unicode scalars.
+const LABEL_MAX_WIDTH: usize = 24;
+/// A group of colliding labels may widen past [`LABEL_MAX_WIDTH`] up to this,
+/// since one long but distinguishable label beats two identical short ones.
+const LABEL_COLLISION_MAX_WIDTH: usize = 32;
+/// Labels are right-padded to the batch's widest label so the closing brackets
+/// form a column — but never past [`LABEL_MAX_WIDTH`], so a label that had to
+/// exceed the normal cap (a widened collision, or a long `@target` call) sticks
+/// out on its own instead of bloating the prefix on every other line.
+const LABEL_PAD_MAX_WIDTH: usize = LABEL_MAX_WIDTH;
+
+/// The raw material for one leaf's bracket label, before the batch-wide
+/// uniqueness and alignment pass in [`resolve_parallel_labels`].
+///
+/// Labels are resolved for the batch as a whole rather than per leaf because
+/// the interesting failure mode is *collision*: sibling leaves in a parallel
+/// target routinely share a long prefix (`cd <path> && …`, `docker compose …`,
+/// `pnpm --filter … `), and a per-leaf truncation renders them identical.
+pub(crate) struct LabelCandidate {
+	/// The label text: for a shell leaf, the meaningful command segment (see
+	/// [`shell_label_parts`]); for a target call, the full resolved `@target`
+	/// invocation.
+	primary: String,
+	/// Discriminator drawn from the setup segments stripped out of `primary` —
+	/// the basename of the last `cd` in the chain. Used when two leaves differ
+	/// only in the directory they run in. `None` when there was no usable `cd`.
+	context: Option<String>,
+	/// Whether `primary` may be shortened to fit the width cap. Target-call
+	/// labels are meaningful in full, so they are never truncated.
+	truncatable: bool,
+}
+
+impl LabelCandidate {
+	/// Build a candidate from a resolved shell command.
+	pub(crate) fn shell(substituted: &str) -> Self {
+		let (primary, context) = shell_label_parts(substituted);
+		Self {
+			primary,
+			context,
+			truncatable: true,
+		}
+	}
+
+	/// Build a candidate from an already-formatted `@target` call label.
+	pub(crate) fn target(label: String) -> Self {
+		Self {
+			primary: label,
+			context: None,
+			truncatable: false,
+		}
+	}
+
+	fn rendered(&self, width: usize) -> String {
+		if self.truncatable {
+			truncate_chars(&self.primary, width)
+		} else {
+			self.primary.clone()
+		}
+	}
+
+	/// Like [`Self::rendered`], but rounded up to the end of the word `width`
+	/// lands in. Used when widening a colliding group: cutting one char past
+	/// the divergence point technically disambiguates
+	/// (`pnpm --filter @acme/web-f`) but reads as noise, whereas completing the
+	/// token (`pnpm --filter @acme/web-frontend`) shows *what* differs.
+	fn rendered_word_aligned(&self, width: usize) -> String {
+		if !self.truncatable {
+			return self.primary.clone();
+		}
+		truncate_chars(&self.primary, extend_to_word_end(&self.primary, width))
+	}
+}
+
+/// Grow `width` until it reaches whitespace in `s`, bounded by
+/// [`LABEL_COLLISION_MAX_WIDTH`]. Only ever extends, so a set of widths that
+/// already yielded distinct prefixes still does afterwards.
+fn extend_to_word_end(s: &str, width: usize) -> usize {
+	let mut end = width;
+	for (i, c) in s.chars().enumerate().skip(width) {
+		if c.is_whitespace() {
+			break;
+		}
+		end = i + 1;
+		if end >= LABEL_COLLISION_MAX_WIDTH {
+			break;
+		}
+	}
+	end
+}
+
+/// Resolve the bracket labels for one parallel batch: derive each leaf's
+/// label, guarantee no two leaves in the batch share one, and pad them to a
+/// common width so the brackets line up.
+///
+/// Collisions are broken in escalating order — widen the colliding group until
+/// its members diverge, then fall back to each leaf's `cd` context, and only
+/// then to an ordinal suffix. Every step is scoped to the colliding group, so
+/// leaves that were already distinct keep their short labels.
+pub(crate) fn resolve_parallel_labels(candidates: &[LabelCandidate]) -> Vec<String> {
+	let mut labels: Vec<String> = candidates.iter().map(|c| c.rendered(LABEL_MAX_WIDTH)).collect();
+
+	for group in duplicate_groups(&labels) {
+		// 1. Widen just this group. Siblings sharing a long prefix (the
+		//    `cd <path> && …` case) usually diverge within a few extra chars.
+		let widened = (LABEL_MAX_WIDTH + 1..=LABEL_COLLISION_MAX_WIDTH)
+			.map(|w| {
+				group
+					.iter()
+					.map(|&i| candidates[i].rendered_word_aligned(w))
+					.collect::<Vec<_>>()
+			})
+			.find(|attempt| accepts_group(&labels, &group, attempt));
+		if let Some(attempt) = widened {
+			apply_group(&mut labels, &group, attempt);
+			continue;
+		}
+
+		// 2. The commands are genuinely identical — distinguish them by where
+		//    they run instead (`[battle-tanks-api]` vs `[battle-tanks]`).
+		let contexts: Option<Vec<String>> = group
+			.iter()
+			.map(|&i| {
+				candidates[i]
+					.context
+					.as_deref()
+					.map(|c| truncate_chars(c, LABEL_COLLISION_MAX_WIDTH))
+			})
+			.collect();
+		if let Some(attempt) = contexts.filter(|a| accepts_group(&labels, &group, a)) {
+			apply_group(&mut labels, &group, attempt);
+			continue;
+		}
+
+		// 3. Nothing distinguishes them; fall back to position in the batch.
+		let attempt: Vec<String> = group
+			.iter()
+			.enumerate()
+			.map(|(n, &i)| {
+				let suffix = format!(" #{}", n + 1);
+				let room = LABEL_MAX_WIDTH.saturating_sub(suffix.chars().count());
+				format!("{}{suffix}", truncate_chars(&labels[i], room))
+			})
+			.collect();
+		apply_group(&mut labels, &group, attempt);
+	}
+
+	pad_labels(labels)
+}
+
+/// Whether `attempt` is a usable replacement for `group`: its entries must be
+/// distinct from each other *and* from every label outside the group, so
+/// resolving one collision can't quietly create another.
+fn accepts_group(labels: &[String], group: &[usize], attempt: &[String]) -> bool {
+	let mut seen: Vec<&str> = labels
+		.iter()
+		.enumerate()
+		.filter(|(i, _)| !group.contains(i))
+		.map(|(_, l)| l.as_str())
+		.collect();
+	for candidate in attempt {
+		if seen.contains(&candidate.as_str()) {
+			return false;
+		}
+		seen.push(candidate);
+	}
+	true
+}
+
+fn apply_group(labels: &mut [String], group: &[usize], attempt: Vec<String>) {
+	for (&i, label) in group.iter().zip(attempt) {
+		labels[i] = label;
+	}
+}
+
+/// Indices of labels that appear more than once, grouped by label. Groups and
+/// their members are ordered by first appearance so the outcome is stable
+/// across runs.
+fn duplicate_groups(labels: &[String]) -> Vec<Vec<usize>> {
+	let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+	for (i, label) in labels.iter().enumerate() {
+		match groups.iter_mut().find(|(l, _)| *l == label.as_str()) {
+			Some((_, members)) => members.push(i),
+			None => groups.push((label.as_str(), vec![i])),
+		}
+	}
+	groups
+		.into_iter()
+		.filter(|(_, members)| members.len() > 1)
+		.map(|(_, members)| members)
+		.collect()
+}
+
+/// Right-pad every label to the batch's widest one so the closing brackets
+/// form a column. Capped at [`LABEL_PAD_MAX_WIDTH`]: a single long label sticks
+/// out rather than forcing that width onto every other line.
+fn pad_labels(mut labels: Vec<String>) -> Vec<String> {
+	let width = labels
+		.iter()
+		.map(|l| l.chars().count())
+		.max()
+		.unwrap_or(0)
+		.min(LABEL_PAD_MAX_WIDTH);
+	for label in &mut labels {
+		let len = label.chars().count();
+		if len < width {
+			label.push_str(&" ".repeat(width - len));
+		}
+	}
+	labels
+}
+
+/// Take the first `width` Unicode scalars (not bytes), dropping whatever
+/// trailing whitespace the cut exposes so the label doesn't carry padding of
+/// its own into the alignment pass.
+fn truncate_chars(s: &str, width: usize) -> String {
+	let truncated: String = s.chars().take(width).collect();
+	truncated.trim_end().to_string()
+}
+
+/// Derive a shell leaf's label text plus its `cd` discriminator.
+///
+/// The label is the first *meaningful* segment of the command chain rather
+/// than its first characters: leading `cd` / `export` / `source` / env-
+/// assignment segments are setup, not identity, and truncating from the start
+/// of the line renders every branch of a `cd <path> && <command>` target
+/// identical. The first non-setup segment answers "what is this branch
+/// running"; the discarded `cd` target is kept aside for tie-breaking.
+pub(crate) fn shell_label_parts(substituted: &str) -> (String, Option<String>) {
 	let first_line = substituted.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-	first_line.chars().take(12).collect()
+	let segments = split_command_segments(first_line);
+	let context = cd_target_basename(&segments);
+	let primary = segments
+		.iter()
+		.find(|seg| !is_setup_segment(seg))
+		.map(|seg| strip_env_assignments(seg).trim())
+		.filter(|seg| !seg.is_empty())
+		.unwrap_or(first_line);
+	(primary.to_string(), context)
+}
+
+/// Split a command line on `&&`, `||` and `;`, ignoring separators inside
+/// quotes, backticks and `$(…)`. A lone `&` (background) and `|` (pipe) are
+/// not separators — a pipeline is one logical command.
+fn split_command_segments(line: &str) -> Vec<&str> {
+	let bytes = line.as_bytes();
+	let mut segments: Vec<&str> = Vec::new();
+	let mut start = 0usize;
+	let mut i = 0usize;
+	let (mut single, mut double, mut backtick) = (false, false, false);
+	let mut depth = 0usize;
+
+	while i < bytes.len() {
+		let b = bytes[i];
+		if single {
+			single = b != b'\'';
+			i += 1;
+			continue;
+		}
+		if double {
+			if b == b'\\' {
+				i += 2;
+				continue;
+			}
+			double = b != b'"';
+			i += 1;
+			continue;
+		}
+		match b {
+			b'\\' => {
+				i += 2;
+				continue;
+			}
+			b'\'' => single = true,
+			b'"' => double = true,
+			b'`' => backtick = !backtick,
+			b'(' => depth += 1,
+			b')' => depth = depth.saturating_sub(1),
+			b'&' | b'|' if !backtick && depth == 0 && bytes.get(i + 1) == Some(&b) => {
+				segments.push(&line[start..i]);
+				i += 2;
+				start = i;
+				continue;
+			}
+			b';' if !backtick && depth == 0 => {
+				segments.push(&line[start..i]);
+				i += 1;
+				start = i;
+				continue;
+			}
+			_ => {}
+		}
+		i += 1;
+	}
+	segments.push(&line[start..]);
+	segments.into_iter().map(str::trim).filter(|s| !s.is_empty()).collect()
+}
+
+/// Whether a segment is shell setup rather than the work the leaf is doing.
+fn is_setup_segment(segment: &str) -> bool {
+	let rest = strip_env_assignments(segment);
+	if rest.is_empty() {
+		// The whole segment was `FOO=bar` assignments.
+		return true;
+	}
+	matches!(
+		rest.split_whitespace().next().unwrap_or(""),
+		"cd" | "pushd" | "popd" | "export" | "set" | "unset" | "source" | "."
+	)
+}
+
+/// Drop leading `NAME=value` tokens from a segment, returning what's left
+/// (empty when the segment was nothing but assignments).
+fn strip_env_assignments(segment: &str) -> &str {
+	let mut rest = segment.trim();
+	while !rest.is_empty() {
+		let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+		if !is_env_assignment(&rest[..end]) {
+			break;
+		}
+		rest = rest[end..].trim_start();
+	}
+	rest
+}
+
+fn is_env_assignment(token: &str) -> bool {
+	let Some(eq) = token.find('=') else {
+		return false;
+	};
+	let name = &token[..eq];
+	!name.is_empty()
+		&& name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+		&& name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Basename of the last `cd` target in the chain — the discriminator for
+/// leaves whose commands are identical but which run in different directories.
+/// Purely-relative hops (`.`, `..`, `~`) carry no identity and are ignored.
+fn cd_target_basename(segments: &[&str]) -> Option<String> {
+	let mut found: Option<String> = None;
+	for segment in segments {
+		let rest = strip_env_assignments(segment);
+		let mut remaining = match rest.split_whitespace().next() {
+			Some("cd") => rest["cd".len()..].trim_start(),
+			_ => continue,
+		};
+		// Skip flags (`cd -P foo`, `cd -`) and take the first real argument.
+		// Tokenized quote-aware so `cd 'my dir'` isn't cut at the space.
+		let arg = loop {
+			if remaining.is_empty() {
+				break None;
+			}
+			let (token, tail) = next_shell_token(remaining);
+			if token.is_empty() {
+				break None;
+			}
+			if !token.starts_with('-') {
+				break Some(token);
+			}
+			remaining = tail.trim_start();
+		};
+		let Some(arg) = arg else { continue };
+		let path = arg
+			.trim_matches(|c| c == '\'' || c == '"')
+			.trim_end_matches(['/', '\\']);
+		let base = path.rsplit(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(path);
+		if !base.is_empty() && !matches!(base, "." | ".." | "~") {
+			found = Some(base.to_string());
+		}
+	}
+	found
+}
+
+/// Split off the leading whitespace-delimited token of `input`, keeping
+/// `'…'` / `"…"` groups intact. Returns `(token, rest)` with quotes still
+/// attached to the token.
+fn next_shell_token(input: &str) -> (&str, &str) {
+	let bytes = input.as_bytes();
+	let mut i = 0usize;
+	let mut quote: Option<u8> = None;
+	while i < bytes.len() {
+		let b = bytes[i];
+		match quote {
+			Some(q) if b == q => quote = None,
+			Some(_) => {}
+			None if b == b'\'' || b == b'"' => quote = Some(b),
+			None if b.is_ascii_whitespace() => break,
+			None => {}
+		}
+		i += 1;
+	}
+	(&input[..i], &input[i..])
 }
 
 /// Whether parallel children should pipe + prefix their output. Disabled by

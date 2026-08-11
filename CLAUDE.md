@@ -840,10 +840,8 @@ crates/
   reads from a `ChildStdout`/`ChildStderr`, splits on `\n` and `\r` (CR-as-soft-break flattens progress-bar
   redraws into chronological append-only lines), strips non-SGR ANSI escapes (cursor movement, erase-line, OSC
   title — SGR `…m` color/style codes are preserved), and writes each completed line prefixed with a bracketed
-  label identifying the leaf. The label content comes from the leaf type: a `@target` call shows its FULL
-  resolved invocation (`[@build]`, `[@dev --port 5000]`, `[@deploy a b c]`) via `format_target_call_label`; a
-  raw shell command shows its resolved text truncated to 12 Unicode scalars via `shell_prefix_label`
-  (first non-empty line, trimmed — e.g. `[npm run buil]`). `format_parallel_prefix(step, label)` still uses
+  label identifying the leaf. **Labels are resolved for the batch as a whole, not per leaf** — see
+  "**Parallel bracket labels**" below. `format_parallel_prefix(step, label)` still uses
   the global step number ONLY to pick one of six cycling ANSI colors so adjacent leaves stay visually
   distinct; the displayed text is the label, not the step number.
   Honors `NO_COLOR` for plain output. `\r\n` is collapsed (the LF after a CR is swallowed) so we
@@ -852,6 +850,31 @@ crates/
   `RUNFILE_NO_LINE_PREFIX=1`/`true` opts out (raw stdio inheritance). Pump threads terminate naturally on EOF
   (i.e. when the child closes its end of the pipe on exit) and are `join`-ed in the wait loop so all output is
   flushed before the function returns.
+- **Parallel bracket labels** (`parallel_output.rs`): resolved for the batch as a whole by
+  `resolve_parallel_labels(&[LabelCandidate])`, called once from `run_parallel_batch` before the leaf loop (and
+  skipped entirely when an ancestor's prefix is inherited or `RUNFILE_NO_LINE_PREFIX` is set). A per-leaf
+  truncation is not enough because the interesting failure mode is *collision*: sibling leaves routinely share a
+  long prefix (`cd <path> && …`, `pnpm --filter … `), and taking the first N chars renders them identical — the
+  bug this design replaced, where both branches of a `cd A && run api` / `cd B && run game-room` target showed
+  `[cd /Users/jo]`. Three layers:
+  - **Derivation** (`shell_label_parts`): split the first non-empty line on `&&` / `||` / `;` (quote-, backtick-
+    and `$(…)`-aware via `split_command_segments`; a lone `&` and `|` are NOT separators), drop *setup* segments
+    (`cd`/`pushd`/`popd`/`export`/`set`/`unset`/`source`/`.`, plus segments that are only `NAME=value`
+    assignments), and take the FIRST remaining segment with its leading env assignments stripped. First-not-last
+    because the opening command is what identifies the branch (`cd api && docker compose up -d && echo ready` →
+    `docker compose up -d`). All-setup lines fall back to the whole line. The basename of the LAST `cd` in the
+    chain is kept aside as `LabelCandidate.context` for tie-breaking. `@target` leaves become
+    `LabelCandidate::target(format_target_call_label(..))` and are marked non-truncatable (their full text is
+    meaningful).
+  - **Uniqueness**: `duplicate_groups` finds colliding labels (order-stable), then each group escalates —
+    (1) widen from `LABEL_MAX_WIDTH` (24) up to `LABEL_COLLISION_MAX_WIDTH` (32), rounding each width up to the
+    end of the word it lands in (`rendered_word_aligned`, so you get `pnpm --filter @acme/web-frontend`, not
+    `pnpm --filter @acme/web-f`); (2) fall back to `context` (`[battle-tanks-api]` vs `[battle-tanks]`);
+    (3) ordinal suffix (`npm run dev #1`). Every step goes through `accepts_group`, which checks the attempt
+    against labels OUTSIDE the group too, so resolving one collision can't silently create another.
+  - **Alignment** (`pad_labels`): right-pad to the batch's widest label, capped at `LABEL_MAX_WIDTH`, so
+    closing brackets form a column while a widened/long-`@target` outlier sticks out alone instead of
+    padding every other line to its width. `truncate_chars` trims the whitespace a cut can expose.
 - Output-prefix inheritance rule: when a parallel batch is reached via an ancestor that already set a prefix
   (i.e. this target was dispatched as `@dep` from an outer parallel parent and `setup.output_prefix.is_some()`),
   every leaf in this batch inherits that prefix verbatim — no per-leaf relabeling. This preserves the
@@ -1239,8 +1262,9 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
   `execute_command_with_counter` (failure count + `final_status` reflecting the last command's actual exit).
 - `parallel` spawns all shell commands simultaneously; their stdout/stderr is piped through line-buffered reader
   threads that prefix every line with a bracketed label — the full resolved `@target` call (`[@dev --port 5000]`)
-  or the raw command truncated to 12 chars (`[docker compo]`), colored by a per-step cycling palette — and strip
-  non-SGR ANSI cursor-control
+  or the shell command's first meaningful segment (`cd ../api && run api` → `[run api]`), made unique within the
+  batch and padded to a common width (see "**Parallel bracket labels**"), colored by a per-step cycling palette
+  — and strip non-SGR ANSI cursor-control
   escapes — so progress-bar redraws (`docker compose pull`, etc.) become append-only chronological lines instead
   of corrupting interleaved output. Stdin is inherited. **Failure summary**: when at least one leaf in a parallel
   batch failed, [`log_parallel_failure_summary`] prints a final `[runfile] [parallel] N command(s) failed:` block
