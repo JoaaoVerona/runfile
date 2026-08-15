@@ -63,20 +63,29 @@ runs:
       id: target
       shell: bash
       run: |
-        case "$RUNNER_OS" in
-          Linux)   os=unknown-linux-musl ;;
-          macOS)   os=apple-darwin ;;
-          Windows) os=pc-windows-msvc ;;
+        # Matched case-insensitively, and on more spellings than GitHub documents, because
+        # RUNNER_OS/RUNNER_ARCH are only reliable on GitHub-hosted runners. Gitea's act runner
+        # derives both from Go's own runtime whenever a job runs in host mode — which is how
+        # every macOS job runs, since macOS containers do not exist — and its translation table
+        # is incomplete: GOARCH `amd64` has no entry at all and falls through verbatim, so an
+        # Intel Mac reports `amd64` rather than `X64`. Only `darwin` is translated on the OS
+        # side, leaving `linux` and `windows` lowercase.
+        case "$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')" in
+          linux)   os=unknown-linux-musl ;;
+          macos)   os=apple-darwin ;;
+          windows) os=pc-windows-msvc ;;
           *)       echo "Unsupported OS: $RUNNER_OS" >&2; exit 1 ;;
         esac
 
-        case "$RUNNER_ARCH" in
-          X64)   arch=x86_64 ;;
-          ARM64) arch=aarch64 ;;
-          *)     echo "Unsupported arch: $RUNNER_ARCH" >&2; exit 1 ;;
+        case "$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')" in
+          x64|amd64|x86_64) arch=x86_64 ;;
+          arm64|aarch64)    arch=aarch64 ;;
+          *)                echo "Unsupported arch: $RUNNER_ARCH" >&2; exit 1 ;;
         esac
 
-        if [ "$RUNNER_OS" = "Windows" ]; then ext=zip; else ext=tar.xz; fi
+        # Keyed off the resolved target rather than RUNNER_OS again, so the normalisation above
+        # is the only place that has to know about the spellings.
+        if [ "$os" = "pc-windows-msvc" ]; then ext=zip; else ext=tar.xz; fi
 
         echo "target=${arch}-${os}" >> "$GITHUB_OUTPUT"
         echo "ext=${ext}" >> "$GITHUB_OUTPUT"
@@ -117,7 +126,11 @@ runs:
       run: |
         cargo build
         bin_dir="$GITHUB_WORKSPACE/target/debug"
-        if [ "$RUNNER_OS" = "Windows" ]; then bin="$bin_dir/run.exe"; else bin="$bin_dir/run"; fi
+        # Case-insensitive for the same reason as the target resolution above.
+        case "$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')" in
+          windows) bin="$bin_dir/run.exe" ;;
+          *)       bin="$bin_dir/run" ;;
+        esac
         echo "$bin_dir" >> "$GITHUB_PATH"
         "$bin" --version
 
