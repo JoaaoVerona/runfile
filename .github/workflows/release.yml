@@ -37,9 +37,15 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 
+      # `rustflags: ""` is load-bearing: the action defaults to exporting
+      # `RUSTFLAGS=-D warnings`, and a set RUSTFLAGS makes Cargo ignore
+      # `.cargo/config.toml`'s per-target rustflags outright (env wins, no
+      # merge) — which would silently drop `+crt-static` from the Windows
+      # binaries and reintroduce the VCRUNTIME140.dll dependency.
       - name: Install pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
+          rustflags: ""
           target: ${{ matrix.platform.target }}
 
       - name: Install musl tools

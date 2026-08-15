@@ -14,8 +14,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
 
+      # See release.yml: `rustflags: ""` keeps `.cargo/config.toml` in effect.
+      # `ci:check` passes `-D warnings` to clippy explicitly, so nothing is lost.
       - name: Install pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
+        with:
+          rustflags: ""
 
       - name: Setup Runfile (from source)
         uses: ./.github/actions/setup
@@ -51,8 +55,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
 
+      # Same as the check job — and here it also makes the windows-2025 leg
+      # actually build with `+crt-static`, so the release configuration is
+      # exercised on every PR rather than only at tag time.
       - name: Install pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
+        with:
+          rustflags: ""
 
       - name: Setup Runfile (from source)
         uses: ./.github/actions/setup

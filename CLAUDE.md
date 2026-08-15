@@ -1605,6 +1605,25 @@ Env values can be strings, numbers, or booleans (all converted to strings at run
     newline). `generate_jetbrains_configs` still populates each config's `xml` with the default-indent form (used
     by the ownership-check tests); the CLI just re-renders with resolved props before writing. Resolution errors
     (unreadable `.editorconfig`) degrade to "no settings" rather than failing generation.
+- **Windows binaries statically link the MSVC CRT** (`.cargo/config.toml`, `+crt-static` for
+  `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`). Rust's MSVC targets link the CRT dynamically by
+  default, so `run.exe` imported `VCRUNTIME140.dll` — part of the Visual C++ Redistributable, NOT in-box with
+  Windows. On a machine that never installed it (a fresh Windows Server, typically; desktop Win10/11 usually has
+  it dragged in by some other app) the loader aborts the process with `STATUS_DLL_NOT_FOUND` (0xC0000135) before
+  `main` runs: **cmd.exe** prints the missing-DLL message, **PowerShell exits silently** with
+  `$LASTEXITCODE = -1073741515` — the two symptoms are the same bug, and the silent one is the confusing one.
+  The UCRT (`ucrtbase.dll` / `api-ms-win-crt-*`) is in-box since Server 2016, so `vcruntime140.dll` was the only
+  real gap. Cost is a few hundred KB of binary size. Safe because **no C code compiles on Windows in this
+  workspace** — the only `cc` dependent in `Cargo.lock` is `iana-time-zone-haiku` — so there is no `/MT` vs
+  `/MD` object mismatch to reconcile.
+  **The load-bearing gotcha:** Cargo's four extra-flag sources (`CARGO_ENCODED_RUSTFLAGS`, `RUSTFLAGS`,
+  `target.<triple>.rustflags`, `build.rustflags`) are *mutually exclusive* — first match wins, they are never
+  merged. `actions-rust-lang/setup-rust-toolchain` exports `RUSTFLAGS=-D warnings` by default, which would make
+  Cargo ignore `.cargo/config.toml` outright and silently ship dynamically-linked binaries again. Every workflow
+  step using that action therefore passes `rustflags: ""` (`ci.yml` check + test jobs, `release.yml` build job);
+  `audit.yml` is left alone since it is Ubuntu-only and never builds the workspace. Nothing is lost by dropping
+  the default: `ci:check` passes `-D warnings` to clippy explicitly. CI's `windows-2025` test leg builds with
+  `+crt-static` too, so the release configuration is exercised on every PR rather than only at tag time.
 
 ## Testing Requirements
 

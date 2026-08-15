@@ -1,0 +1,24 @@
+# Statically link the MSVC C runtime into the Windows binaries.
+#
+# Rust's `*-pc-windows-msvc` targets link the CRT dynamically by default, so
+# `run.exe` imports VCRUNTIME140.dll — which ships in the Visual C++
+# Redistributable, not in-box with Windows. A fresh Windows Server install has
+# no reason to have it, and the loader then aborts the process with
+# STATUS_DLL_NOT_FOUND (0xC0000135) before `main` runs: cmd.exe reports the
+# missing DLL, PowerShell exits silently. Static linkage removes the dependency
+# (the UCRT is in-box since Server 2016) for ~a few hundred KB of binary size.
+#
+# No C code compiles on Windows in this workspace — the only `cc` dependent in
+# Cargo.lock is `iana-time-zone-haiku` — so there is no /MT vs /MD mismatch to
+# worry about.
+#
+# CAVEAT: a set `RUSTFLAGS` env var makes Cargo ignore these entirely (env wins
+# over config `rustflags`; they are NOT merged). `actions-rust-lang/setup-rust-toolchain`
+# exports `RUSTFLAGS=-D warnings` by default, so every workflow step using it
+# passes `rustflags: ""` to keep this file in effect. Do not drop that.
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
