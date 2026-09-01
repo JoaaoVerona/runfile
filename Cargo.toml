@@ -49,12 +49,16 @@ windows-native-keyring-store = "=1.0.0"
 windows-sys = { features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"], version = "=0.61.2" }
 zeroize = "=1.8.2"
 
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
 [profile.dev.package."*"]
 debug = 0
 opt-level = 3
 
 [profile.release]
-codegen-units = 1
-lto = true
+codegen-units = 16
+lto = false
 opt-level = 3
 strip = true
