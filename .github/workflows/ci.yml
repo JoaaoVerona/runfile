@@ -14,6 +14,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
 
+      # Entry-side bookend to the cleanup step at the end of this job: a previous
+      # job on a self-hosted runner may have died without cleaning up after
+      # itself. `setup` repeats this internally, for consumers of the action.
+      - name: Clean leftover Runfile runner state
+        uses: ./.github/actions/cleanup
+
       # See release.yml: `rustflags: ""` keeps `.cargo/config.toml` in effect.
       # `ci:check` passes `-D warnings` to clippy explicitly, so nothing is lost.
       - name: Install pinned Rust toolchain
@@ -44,6 +50,14 @@ jobs:
           echo "CLI emits formatVersion=$emitted; extension supports $expected"
           test -n "$emitted" && test -n "$expected" && test "$emitted" = "$expected"
 
+      # Composite actions have no `post` step, so the teardown half of `setup` is
+      # an explicit step. `always()` so a failed job still clears the global
+      # settings it registered and any secret it materialized — self-hosted
+      # runners keep `$HOME` between jobs and don't always clear `$RUNNER_TEMP`.
+      - name: Cleanup Runfile runner state
+        if: always()
+        uses: ./.github/actions/cleanup
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -54,6 +68,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+
+      # Entry-side bookend to the cleanup step at the end of this job: a previous
+      # job on a self-hosted runner may have died without cleaning up after
+      # itself. `setup` repeats this internally, for consumers of the action.
+      - name: Clean leftover Runfile runner state
+        uses: ./.github/actions/cleanup
 
       # Same as the check job — and here it also makes the windows-2025 leg
       # actually build with `+crt-static`, so the release configuration is
@@ -72,12 +92,26 @@ jobs:
       - name: Test
         run: run ci:test
 
+      # Composite actions have no `post` step, so the teardown half of `setup` is
+      # an explicit step. `always()` so a failed job still clears the global
+      # settings it registered and any secret it materialized — self-hosted
+      # runners keep `$HOME` between jobs and don't always clear `$RUNNER_TEMP`.
+      - name: Cleanup Runfile runner state
+        if: always()
+        uses: ./.github/actions/cleanup
+
   extension:
     name: VS Code extension
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+
+      # Entry-side bookend to the cleanup step at the end of this job: a previous
+      # job on a self-hosted runner may have died without cleaning up after
+      # itself. `setup` repeats this internally, for consumers of the action.
+      - name: Clean leftover Runfile runner state
+        uses: ./.github/actions/cleanup
 
       # Must precede setup-node: `cache: pnpm` needs the pnpm binary to resolve
       # the store path. The version comes from `packageManager` in package.json.
@@ -110,3 +144,11 @@ jobs:
           if-no-files-found: error
           name: runfile-vscode-extension
           path: editors/vscode/*.vsix
+
+      # Composite actions have no `post` step, so the teardown half of `setup` is
+      # an explicit step. `always()` so a failed job still clears the global
+      # settings it registered and any secret it materialized — self-hosted
+      # runners keep `$HOME` between jobs and don't always clear `$RUNNER_TEMP`.
+      - name: Cleanup Runfile runner state
+        if: always()
+        uses: ./.github/actions/cleanup

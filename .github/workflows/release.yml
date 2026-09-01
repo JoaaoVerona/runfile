@@ -37,6 +37,12 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 
+      # Entry-side bookend to the cleanup step at the end of this job: a previous
+      # job on a self-hosted runner may have died without cleaning up after
+      # itself. `setup` repeats this internally, for consumers of the action.
+      - name: Clean leftover Runfile runner state
+        uses: ./.github/actions/cleanup
+
       # `rustflags: ""` is load-bearing: the action defaults to exporting
       # `RUSTFLAGS=-D warnings`, and a set RUSTFLAGS makes Cargo ignore
       # `.cargo/config.toml`'s per-target rustflags outright (env wins, no
@@ -83,6 +89,14 @@ jobs:
             runfile-cli-*.tar.xz
             runfile-cli-*.zip
 
+      # Composite actions have no `post` step, so the teardown half of `setup` is
+      # an explicit step. `always()` so a failed job still clears the global
+      # settings it registered and any secret it materialized — self-hosted
+      # runners keep `$HOME` between jobs and don't always clear `$RUNNER_TEMP`.
+      - name: Cleanup Runfile runner state
+        if: always()
+        uses: ./.github/actions/cleanup
+
   extension:
     name: Package VS Code extension
     runs-on: ubuntu-24.04
@@ -91,6 +105,12 @@ jobs:
         uses: actions/checkout@v6.0.2
         with:
           ref: ${{ inputs.tag || github.ref_name }}
+
+      # Entry-side bookend to the cleanup step at the end of this job: a previous
+      # job on a self-hosted runner may have died without cleaning up after
+      # itself. `setup` repeats this internally, for consumers of the action.
+      - name: Clean leftover Runfile runner state
+        uses: ./.github/actions/cleanup
 
       # Must precede setup-node: `cache: pnpm` needs the pnpm binary to resolve
       # the store path. The version comes from `packageManager` in package.json.
@@ -132,6 +152,14 @@ jobs:
           if-no-files-found: error
           name: vscode-extension
           path: editors/vscode/runfile-vscode-*.vsix
+
+      # Composite actions have no `post` step, so the teardown half of `setup` is
+      # an explicit step. `always()` so a failed job still clears the global
+      # settings it registered and any secret it materialized — self-hosted
+      # runners keep `$HOME` between jobs and don't always clear `$RUNNER_TEMP`.
+      - name: Cleanup Runfile runner state
+        if: always()
+        uses: ./.github/actions/cleanup
 
   release:
     name: Create GitHub release

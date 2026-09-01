@@ -1152,6 +1152,58 @@ marketplace/VSIX page).
   `download-artifact` into `dist/` and is checksummed and uploaded with everything else. There is **no Marketplace
   publish** — distribution is the release asset plus `code --install-extension`.
 
+## GitHub Actions (`.github/actions`)
+
+Two composite actions, meant to be used as a pair:
+
+- **`setup`** — installs the CLI (release archive, or `cargo build` when `from-source: true`), puts it on `PATH`,
+  and wires up the optional `secret-keys` / `runfile-source` / `env-file-source` / `global-files` inputs.
+- **`cleanup`** — removes everything `setup` leaves on the runner *outside* the workspace: (1) the machine-global
+  settings directory — both `settings.json` (global files, path aliases, custom shell paths) and the `state.json`
+  prepare-state file live there, so removing the directory clears the whole of Runfile's global configuration in
+  one step; and (2) `$RUNNER_TEMP/runfile-source/`, where the `runfile-source` / `env-file-source` inputs
+  materialize a Runfile and a `.env` straight from GitHub secrets. An "encrypted" `.env` only has its *values*
+  encrypted, so that file is secret material either way.
+
+**Runner state is wiped at BOTH ends of a job.** Symmetry is deliberate: the entry-side pass means a job never
+*inherits* leftovers, the exit-side one means a job never *leaves* any. On GitHub-hosted runners this is redundant
+(the VM is discarded), but on self-hosted runners `$HOME` survives between jobs and `$RUNNER_TEMP` is not reliably
+cleared — so a cancelled job that had registered `global-files: Runfile-ci.json` would otherwise leak CI-only
+targets, and its plaintext secrets, into every later run on that machine. Three call sites, in order:
+
+1. **First step after `checkout`** in every workflow job that uses `setup` — an explicit `cleanup` step. This is
+   the one that runs earliest, and it is what a consumer reading the workflow sees.
+2. **Inside `setup`**, before it registers or materializes anything (gated on the `clean-runner-state` input,
+   default `'true'`). Overlaps with (1) in our own workflows, and that overlap is intentional: external consumers
+   who only `uses:` the `setup` action still get entry-side protection without having to know about `cleanup`.
+3. **Last step of the job**, as an `if: always()` `cleanup` step, so a failed or cancelled job still tidies up.
+
+Jobs that never invoke `run` (`release.yml`'s `release` and `npm`) are not bookended — there is nothing for them
+to leave behind.
+
+**Why `cleanup` is a separate action the workflow calls, rather than a `post:` step.** Composite actions cannot
+declare `post` / `post-if` — that metadata is only honoured for `using: node20` / Docker actions
+(actions/runner#1478 has been open for years). Rather than commit a JavaScript shim just to get a post hook, the
+teardown is an explicit `if: always()` step. Consumers of the published action must add it themselves; the input
+docs say so.
+
+**Both actions run the same script** — `.github/actions/cleanup/cleanup.sh` — with `setup` reaching it via
+`$GITHUB_ACTION_PATH/../cleanup/cleanup.sh`. The relative hop is safe for external consumers because the runner
+materializes the *entire* action repository under `_actions/<owner>/<repo>/<ref>/`, not just the one action
+directory. The script resolves the settings directory from `run :config --path` when the CLI is on `PATH` (which
+transparently honours `RUNFILE_CONFIG_DIR` and any future relocation) and otherwise falls back to a bash mirror of
+`runfile_settings::settings_dir()`. The `$RUNNER_TEMP/runfile-source` path is duplicated between the script and
+`setup`'s two materialize steps — both sides carry a comment pointing at the other. Two Windows-specific
+details: the CLI prints backslashes, which `dirname` does not treat as separators (it would answer `.`) and which
+MSYS tools do not accept as a path, so the value is converted to forward slashes **before** `dirname`; and a
+trailing `\r` is stripped. A guard refuses to `rm -rf` `""` / `/` / `$HOME` in case resolution goes wrong.
+
+**Two things are deliberately left alone.** The **OS credential store**: secret keys reach CI through
+`RUNFILE_PRIVATE_KEYS` (the `secret-keys` input writes it to `$GITHUB_ENV`), so the action never creates keyring
+entries and has no business deleting a machine's existing ones. And **`$RUNNER_TEMP/runfile-bin/`**, the installed
+CLI: it holds nothing sensitive, and deleting it would break any job that placed the `cleanup` action somewhere
+other than last.
+
 ## Runfile.json Schema Quick Reference
 
 Top-level: `$schema` (required), `targets` (required), `globals` (optional)
