@@ -1,5 +1,3 @@
 # Run all workspace tests
 
-.alias = "ci:test"
-
 $ cargo test --workspace --all-features --locked {{ ARGS }}

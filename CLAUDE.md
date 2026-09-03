@@ -117,8 +117,7 @@ the rest.
 
 ```
 GRAMMAR.ebnf                   # Normative grammar reference
-runfiles/                      # This project's own targets (self-hosting)
-ci-runfiles/                   # CI-only targets, installed into $HOME/.runfiles/ by the setup action
+runfiles/                      # This project's own targets (self-hosting); ci/ and wsl/ are namespaces
 editors/vscode/                # The VS Code extension (TypeScript) + its own runfiles/
 editors/tree-sitter/   # The tree-sitter grammar (Zed, Neovim, Helix) + its own runfiles/
 

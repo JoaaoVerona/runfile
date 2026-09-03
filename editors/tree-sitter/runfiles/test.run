@@ -5,4 +5,4 @@
 
 run generate
 $ tree-sitter test
-$ find ../../runfiles ../../ci-runfiles ../../editors/vscode/runfiles runfiles -name '*.run' -exec tree-sitter parse --quiet {} +
+$ find ../../runfiles ../../editors/vscode/runfiles runfiles -name '*.run' -exec tree-sitter parse --quiet {} +

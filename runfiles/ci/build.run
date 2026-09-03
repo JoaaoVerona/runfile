@@ -1,5 +1,3 @@
 # Release build for CI runners
 
-.alias = "ci:build"
-
 $ cargo build --locked --release {{ ARGS }}

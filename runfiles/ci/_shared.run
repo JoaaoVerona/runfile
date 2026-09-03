@@ -1,0 +1,11 @@
+# Settings for the CI-only targets.
+#
+# They live in this project's own `runfiles/`, so the directory name is the
+# namespace and no alias is needed: `runfiles/ci/check.run` is `ci:check`.
+
+.env.CARGO_TERM_COLOR = "always"
+
+# Back to cargo's default directory. The root `_shared.run` sets a per-OS one
+# so three platforms can share a checkout, which a runner never does -- and the
+# release workflow copies out of `target/<triple>/release/`.
+.env.CARGO_TARGET_DIR = "target"
