@@ -100,7 +100,7 @@ fn covers_cwd(anchor: &Path, dirs: &[String], cwd: &Path) -> bool {
 	let here = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
 	dirs.iter().any(|d| {
 		let expanded = match d.strip_prefix("~/") {
-			Some(rest) => dirs_home().map(|h| h.join(rest)).unwrap_or_else(|| PathBuf::from(d)),
+			Some(rest) => home_dir().map(|h| h.join(rest)).unwrap_or_else(|| PathBuf::from(d)),
 			None => PathBuf::from(d),
 		};
 		let allowed = if expanded.is_absolute() {
@@ -113,7 +113,12 @@ fn covers_cwd(anchor: &Path, dirs: &[String], cwd: &Path) -> bool {
 	})
 }
 
-fn dirs_home() -> Option<PathBuf> {
+/// The home directory: `HOME` when set, else `USERPROFILE`.
+///
+/// The environment first, on every platform: it is what Git Bash sets on
+/// Windows and what a test fixture can redirect, whereas the platform's Known
+/// Folder API answers the same thing however the process was started.
+pub fn home_dir() -> Option<PathBuf> {
 	std::env::var_os("HOME")
 		.or_else(|| std::env::var_os("USERPROFILE"))
 		.map(PathBuf::from)

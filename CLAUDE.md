@@ -289,8 +289,10 @@ tests that assert the mechanism rather than the symptom.
 2. New behaviour needs a test that would fail without it. Prefer asserting the mechanism (count the keyring
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with
-   `HOME` / `XDG_*` / `APPDATA` pointed at an empty directory and `CI`, `GITHUB_ACTIONS`,
-   `RUNFILE_SKIP_PREPARE` and `RUNFILE_PRIVATE_KEYS` stripped.
+   `HOME`, `USERPROFILE`, `RUNFILE_CONFIG_DIR`, `XDG_*` and `APPDATA` pointed at an empty directory and
+   `CI`, `GITHUB_ACTIONS`, `RUNFILE_SKIP_PREPARE` and `RUNFILE_PRIVATE_KEYS` stripped. The first three
+   matter on Windows, where the Known Folder API ignores `HOME` and `APPDATA`; the CLI reads `HOME` before
+   asking the platform for exactly this reason.
 4. LSP behaviour is tested by scripting a whole client conversation through the real transport
    (`crates/runfile-lsp/tests/protocol.rs`).
 5. Tests that need an external tool (shellcheck) skip cleanly when it is absent, so a contributor without it

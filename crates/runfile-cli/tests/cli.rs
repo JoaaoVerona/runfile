@@ -48,6 +48,11 @@ impl Project {
 		c.args(args)
 			.current_dir(cwd)
 			.env("HOME", self.home.path())
+			// Windows reads the home and config directories through the Known
+			// Folder API, which ignores HOME and APPDATA; these two are the
+			// overrides the CLI honours on every platform.
+			.env("USERPROFILE", self.home.path())
+			.env("RUNFILE_CONFIG_DIR", self.home.path())
 			.env("XDG_CONFIG_HOME", self.home.path())
 			.env("XDG_STATE_HOME", self.home.path())
 			.env("APPDATA", self.home.path())

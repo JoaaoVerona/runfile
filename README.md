@@ -279,6 +279,32 @@ argument.
 
 Shell is still there. It is just marked.
 
+## How it compares
+
+| | Runfile | Make | Just | Taskfile |
+| --- | :-: | :-: | :-: | :-: |
+| One target per file, so a shared task file never conflicts | ✅ | ❌ | ❌ | ❌ |
+| Encrypted env vars, built-in (AES-256-GCM) | ✅ | ❌ | ❌ | ❌ |
+| Inline OS / shell / cwd branching via `RUN.*` | ✅ | ❌ | ❌ | ❌ |
+| Editor diagnostics from the runner's own parser | ✅ | ❌ | ❌ | ❌ |
+| IDE task generation (VS Code / Zed / JetBrains) | ✅ | ❌ | ❌ | ❌ |
+| Per-target shell override | ✅ | ❌ | ✅ | ❌ |
+| Any interpreter for a block (`exec python3`) | ✅ | ❌ | ✅ | ❌ |
+| Strict parsing (typos are errors) | ✅ | ❌ | ✅ | ❌ |
+| Argument substitution with chained fallbacks | ✅ | ❌ | ✅ | ❌ |
+| Watch mode, built-in | ✅ | ❌ | ❌ | ✅ |
+| Shell completions | ✅ | ❌ | ✅ | ✅ |
+| Hidden targets | ✅ | ❌ | ✅ | ✅ |
+| Built-in string functions (upper, replace, trim, regex, base64, …) | ✅ | ❌ | ✅ | ✅ |
+| Parallel execution | ✅ | ✅ | ❌ | ✅ |
+| Single static binary | ✅ | ✅ | ✅ | ✅ |
+| Native Windows binary (`$` lines use Git Bash) | ✅ | ❌ | ✅ | ✅ |
+| First-class PowerShell / cmd.exe | ❌ | ❌ | ✅ | ❌ |
+| Output prefixing in parallel mode | ❌ | ❌ | ❌ | ✅ |
+| Pattern rules (`%.o: %.c`) | ❌ | ✅ | ❌ | ❌ |
+| Preconditions / status checks | ❌ | ❌ | ❌ | ✅ |
+| Incremental builds (sources / timestamps / checksums) | ❌ | ✅ | ❌ | ✅ |
+
 ## Editor support
 
 The VS Code extension gives you a Run button on every target, a task provider, a sidebar tree, and syntax
@@ -292,7 +318,20 @@ with what will actually happen. It also hands `$` lines and shell `exec` bodies 
 directory from a checkout, and `.run` files highlight.
 
 **Zed, Neovim and Helix** use the tree-sitter grammar in `editors/tree-sitter`, with highlight queries
-included. `run :generate zed` writes every target into `.zed/tasks.json`, and `run :generate jetbrains` into
+included. For Neovim with nvim-treesitter, register the parser from this repository and copy `queries/` into
+your runtime path as `queries/runfile/`:
+
+```lua
+require("nvim-treesitter.parsers").get_parser_configs().runfile = {
+  install_info = {
+    url = "https://github.com/JoaaoVerona/runfile",
+    location = "editors/tree-sitter",
+    files = { "src/parser.c", "src/scanner.c" },
+  },
+  filetype = "runfile",
+}
+vim.filetype.add({ extension = { run = "runfile" } })
+``` `run :generate zed` writes every target into `.zed/tasks.json`, and `run :generate jetbrains` into
 `.idea/runConfigurations/`; both leave entries you wrote yourself alone and replace only their own.
 
 ## Platform support

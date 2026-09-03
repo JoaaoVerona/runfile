@@ -196,5 +196,5 @@ fn catalog(flags: &Flags) -> Result<Catalog, String> {
 		Some(d) => d.clone(),
 		None => std::env::current_dir().map_err(|e| e.to_string())?,
 	};
-	discover(&from, dirs::home_dir().as_deref()).map_err(|e| e.to_string())
+	discover(&from, runfile_discovery::home_dir().as_deref()).map_err(|e| e.to_string())
 }
