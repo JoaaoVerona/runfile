@@ -165,7 +165,12 @@ pub fn call(name: &str, args: &[Expr], sc: &mut Scope, sp: Span) -> Result<Value
 		// ---- numbers
 		"number" => {
 			want!(1, "1 argument");
-			Value::Num(parse_number(s(0)?).map_err(|e| ty(sp, e))?)
+			// A number is already one; insisting on a string here would make
+			// `number(length(x))` an error for no gain.
+			match &v[0] {
+				Value::Num(n) => Value::Num(*n),
+				_ => Value::Num(parse_number(s(0)?).map_err(|e| ty(sp, e))?),
+			}
 		}
 		"is_number" => {
 			want!(1, "1 argument");

@@ -1,8 +1,9 @@
 {
 	"bin": {
-		"run": "bin/run.js"
+		"run": "bin/run.js",
+		"runfile-lsp": "bin/runfile-lsp.js"
 	},
-	"description": "Runfile CLI — an easy-to-use, batteries-included task runner",
+	"description": "Runfile CLI — a cross-platform command runner with its own small language",
 	"engines": {
 		"node": ">=16"
 	},

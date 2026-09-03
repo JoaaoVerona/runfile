@@ -202,6 +202,8 @@ segments. `$HOME/.runfiles/` is machine-wide, at a **fixed path with no setting 
 (shellcheck delegation).
 
 - Diagnostics come from the **real parser**, so an editor and the runner cannot disagree about validity.
+- The binary ships in the release archive beside `run`; both installers, the npm package (one launcher script
+  copied under each name) and `:update` install both. The editor integrations find it on PATH by name.
 - The transport is hand-rolled. LSP framing is a header and a byte count; a framework would reintroduce the
   async runtime this rewrite removed, for a server that answers one client, one message at a time.
 - Full document sync, deliberately: these files are small, and an incremental applier is a source of drift.

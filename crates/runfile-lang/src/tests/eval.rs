@@ -179,3 +179,10 @@ fn every_exported_function_name_is_actually_dispatched() {
 		assert!(known, "`{name}` is exported for completion but not dispatched");
 	}
 }
+
+#[test]
+fn number_of_a_number_is_itself() {
+	assert_eq!(v("number(3)"), Value::Num(3.0));
+	assert_eq!(v("number(length([1, 2]))"), Value::Num(2.0));
+	assert_eq!(v("number(\"4.5\")"), Value::Num(4.5));
+}

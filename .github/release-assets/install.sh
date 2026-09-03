@@ -36,6 +36,13 @@ tar -xJf "$tmp/$archive" -C "$tmp"
 mkdir -p "$INSTALL_DIR"
 mv "$tmp/runfile-cli-${target}/run" "$INSTALL_DIR/run"
 chmod +x "$INSTALL_DIR/run"
+# The language server ships beside the runner from 0.48 on; an older archive
+# simply does not have it.
+if [ -f "$tmp/runfile-cli-${target}/runfile-lsp" ]; then
+  mv "$tmp/runfile-cli-${target}/runfile-lsp" "$INSTALL_DIR/runfile-lsp"
+  chmod +x "$INSTALL_DIR/runfile-lsp"
+  echo "Installed runfile-lsp to $INSTALL_DIR/runfile-lsp"
+fi
 
 echo "Installed run to $INSTALL_DIR/run"
 
