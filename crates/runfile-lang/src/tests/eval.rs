@@ -175,7 +175,15 @@ fn every_exported_function_name_is_actually_dispatched() {
 		let known = (0..=4).any(|n| {
 			let args = vec!["\"x\""; n].join(", ");
 			let e = parse_expr(&format!("{name}({args})"), 0, 1).unwrap_or_else(|x| panic!("{name}: {x}"));
-			!matches!(eval(&e, &mut sc()), Err(crate::EvalError::UnknownFunction { .. }))
+			// Calling every function for real means calling the writing ones
+			// for real: this probe used to leave a file named `x` in the crate
+			// root and a trail of temp artifacts. `dry_run` makes them no-ops
+			// while still proving the name dispatches, since the dry-run arms
+			// are dispatch arms too.
+			let mut sc = sc();
+			sc.dry_run = true;
+			sc.base_dir = std::env::temp_dir();
+			!matches!(eval(&e, &mut sc), Err(crate::EvalError::UnknownFunction { .. }))
 		});
 		assert!(known, "`{name}` is exported for completion but not dispatched");
 	}
