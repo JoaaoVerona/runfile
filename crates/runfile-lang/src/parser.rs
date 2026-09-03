@@ -43,7 +43,12 @@ struct Line<'a> {
 fn scan_lines(src: &str) -> Vec<Line<'_>> {
 	let mut out = Vec::new();
 	let mut offset = 0usize;
-	for (i, raw) in src.split('\n').enumerate() {
+	for (i, full) in src.split('\n').enumerate() {
+		// A CRLF file must parse as its LF twin: the carriage return is line
+		// ending, not content. Left in, it reached exec bodies as text and made
+		// an indented `end` compare unequal to its opener's indentation, so the
+		// block never closed. Offsets still count it, since they index `src`.
+		let raw = full.strip_suffix('\r').unwrap_or(full);
 		let trimmed = raw.trim();
 		let indent = &raw[..raw.len() - raw.trim_start().len()];
 		out.push(Line {
@@ -53,7 +58,7 @@ fn scan_lines(src: &str) -> Vec<Line<'_>> {
 			offset,
 			no: i + 1,
 		});
-		offset += raw.len() + 1;
+		offset += full.len() + 1;
 	}
 	out
 }

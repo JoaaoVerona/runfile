@@ -869,3 +869,14 @@ fn a_flag_that_is_read_produces_no_warning() {
 	let o = p.run(&["f", "--force"]);
 	assert!(err(&o).is_empty(), "{}", err(&o));
 }
+
+#[test]
+fn a_crlf_file_runs_the_same_as_an_lf_one() {
+	// Windows editors write CRLF. An indented exec block in such a file never
+	// closed, and the carriage return reached the shell as part of each line.
+	let body = "if true\r\n\texec sh\r\n\t\techo hi\r\n\tend\r\nend\r\n$ echo after\r\n";
+	let p = project(&[("runfiles/t.run", body)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o), "hi\nafter\n");
+}
