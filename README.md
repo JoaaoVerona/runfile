@@ -189,12 +189,13 @@ Set on the file, or inside a block where marked.
 | `.env-file` | Load a `.env` file (encrypted values are decrypted in memory). |
 | `.add-path` | Prepend a directory to `PATH`. |
 | `.workdir` | Where commands run. |
-| `.parallel` | Run this block's commands at once. |
+| `.parallel` | Run this block's commands at once. On a `for`, its iterations. |
 | `.ignore-errors` | Keep going when a command fails. |
 | `.confirm` | Ask before running. |
 | `.watch` | Re-run when matching files change. |
 | `.alias` | Another name for this target. |
 | `.hide` | Keep out of `run :list`. |
+| `.detach` | Start the commands and do not wait. |
 | `.only-in-directories` | For `~/.runfiles/`: only offer these targets inside these directories. |
 
 `shell`, `env`, `workdir`, `parallel` and `ignore-errors` may be set inside an `if` / `for` / `match` block. The

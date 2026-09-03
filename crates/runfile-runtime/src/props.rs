@@ -23,6 +23,8 @@ pub struct Props {
 	pub confirm: Option<String>,
 	pub watch: Vec<String>,
 	pub hide: bool,
+	/// Start the commands and do not wait; see `Spawn::detach`.
+	pub detach: bool,
 	pub aliases: Vec<String>,
 	pub only_in_directories: Vec<String>,
 }
@@ -55,6 +57,11 @@ pub const PROPERTIES: &[KnownProperty] = &[
 		name: "alias",
 		block_scoped: false,
 		doc: "Another name this target answers to. Carries the target's namespace.",
+	},
+	KnownProperty {
+		name: "detach",
+		block_scoped: false,
+		doc: "Start the commands and do not wait. For something meant to outlive the run.",
 	},
 	KnownProperty {
 		name: "confirm",
@@ -131,6 +138,7 @@ impl Props {
 			out.watch.clear();
 			out.aliases.clear();
 			out.hide = false;
+			out.detach = false;
 		}
 		for p in &block.properties {
 			out.apply(p, sc, nested)?;
@@ -168,6 +176,7 @@ impl Props {
 			"ignore-errors" => self.ignore_errors = flag(p, sc)?,
 			"workdir" => self.workdir = Some(value(p, sc)?.to_string()),
 			"hide" => self.hide = flag(p, sc)?,
+			"detach" => self.detach = flag(p, sc)?,
 			"confirm" => self.confirm = Some(value(p, sc)?.to_string()),
 			"env" => {
 				if p.path.len() != 2 {

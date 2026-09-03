@@ -209,6 +209,15 @@ segments. `$HOME/.runfiles/` is machine-wide, at a **fixed path with no setting 
   parallel siblings are not mistaken for a cycle.
 - `.parallel`: bindings evaluate in source order, then executable leaves fan out via `std::thread::scope`.
   Control flow expands into the same batch, and every branch completes before a failure surfaces.
+- **The runner announces every command on stderr**, natively, with no property to turn it on: that is why the
+  old `logging` field was cut rather than renamed. stderr, so a pipeline reading stdout is unaffected, and
+  never under `--dry-run`, which already prints the commands to stdout.
+- **`.detach`** starts the commands and does not wait. Its streams go to null: inherited, they would hold the
+  runner's own stdout and stderr open after it exits, so whoever is reading them waits for the very command
+  that was meant to outlive the run.
+- **`.parallel` on a `for` body fans out the iterations**, not just each body's statements. Leaves are
+  collected across every iteration first, so they form one batch. Without that the property read as
+  "parallel" and behaved as "in turn".
 - **Parallel output is labelled per line**, since several children write at once. The label is the target
   name for a `run` leaf and the `exec` header otherwise, falling back to the first word of the body — never
   the shell, or every `$` branch would be called `bash`. It is threaded through `Dispatch::run`, so a
@@ -286,7 +295,7 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 
 ## Properties
 
-Header-only: `alias`, `confirm`, `env-file`, `add-path`, `hide`, `watch`, `only-in-directories`.
+Header-only: `alias`, `confirm`, `env-file`, `add-path`, `hide`, `watch`, `only-in-directories`, `detach`.
 Block-scoped (may also appear inside `if` / `for` / `match`): `shell`, `parallel`, `ignore-errors`, `workdir`,
 `env` (addressed by sub-key, `.env.NAME = "value"`).
 

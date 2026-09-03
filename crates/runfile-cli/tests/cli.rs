@@ -86,6 +86,17 @@ fn err(o: &Output) -> String {
 	String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
+/// Everything on stderr that the runner did not say itself, so a test can
+/// assert on warnings and a command's own output without the `[runfile]`
+/// announcements in the way.
+fn err_from_commands(o: &Output) -> String {
+	err(o)
+		.lines()
+		.filter(|l| !l.starts_with("[runfile]"))
+		.map(|l| format!("{l}\n"))
+		.collect()
+}
+
 /// The commands a `--dry-run` printed, without its `#` header lines.
 fn dry_commands(o: &Output) -> Vec<String> {
 	out(o)
@@ -849,7 +860,7 @@ fn a_double_dash_forwards_the_rest_of_the_line_untouched() {
 	let o = p.run(&["wrap", "--", "s3api", "--bucket", "x", "--dry-run"]);
 	assert!(o.status.success(), "{}", err(&o));
 	assert_eq!(out(&o).trim(), "s3api --bucket x --dry-run");
-	assert!(err(&o).is_empty(), "nothing to warn about: {}", err(&o));
+	assert!(err_from_commands(&o).is_empty(), "nothing to warn about: {}", err(&o));
 }
 
 #[test]
@@ -875,7 +886,7 @@ fn a_flag_that_is_read_produces_no_warning() {
 		"if FLAG.force\n\t$ echo on\nelse\n\t$ echo off\nend\n",
 	)]);
 	let o = p.run(&["f", "--force"]);
-	assert!(err(&o).is_empty(), "{}", err(&o));
+	assert!(err_from_commands(&o).is_empty(), "{}", err(&o));
 }
 
 #[test]
@@ -1280,7 +1291,7 @@ fn a_parallel_branch_labels_its_stderr_too() {
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(err(&o).trim(), "printf | oops", "{}", err(&o));
+	assert_eq!(err_from_commands(&o).trim(), "printf | oops", "{}", err(&o));
 	assert_eq!(out(&o).trim(), "printf | fine");
 }
 
@@ -1349,4 +1360,91 @@ fn a_target_with_no_alias_lists_exactly_as_before() {
 	let text = out(&p.run(&[":list"]));
 	assert!(text.contains("build  Builds it"), "{text}");
 	assert!(!text.contains("also"), "{text}");
+}
+
+// ---------------------------------------------- logging, detach, parallel for
+
+#[test]
+fn the_runner_announces_each_command_on_stderr() {
+	// Native, with no property to turn it on: the old `logging: true` field was
+	// cut because of this. On stderr, so a pipeline reading stdout is unaffected.
+	let p = project(&[("runfiles/t.run", "$ echo hello\n")]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o), "hello\n", "stdout stays exactly the command's own output");
+	assert!(err(&o).contains("[runfile] echo hello"), "{}", err(&o));
+}
+
+#[test]
+fn an_exec_block_is_announced_whole() {
+	// It is one process, so showing half of it would be a lie.
+	let p = project(&[("runfiles/t.run", "exec sh\n\techo one\n\techo two\nend\n")]);
+	let o = p.run(&["t"]);
+	assert!(err(&o).contains("[runfile] echo one"), "{}", err(&o));
+	assert!(err(&o).contains("[runfile] echo two"), "{}", err(&o));
+}
+
+#[test]
+fn a_preview_announces_nothing_twice() {
+	// `--dry-run` already prints the commands to stdout; announcing them again
+	// on stderr would double every line.
+	let p = project(&[("runfiles/t.run", "$ echo hello\n")]);
+	let o = p.run(&["--dry-run", "t"]);
+	assert!(!err(&o).contains("[runfile]"), "{}", err(&o));
+	assert!(out(&o).contains("echo hello"));
+}
+
+#[test]
+fn a_detached_target_does_not_wait_for_what_it_starts() {
+	// Fire and forget: the run returns while the command is still going.
+	let p = project(&[("runfiles/t.run", ".detach = true\n\n$ sleep 30; echo late > late.txt\n")]);
+	let started = std::time::Instant::now();
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(started.elapsed().as_secs() < 10, "it waited: {:?}", started.elapsed());
+	assert!(
+		!p.dir.path().join("late.txt").exists(),
+		"and the command is still running"
+	);
+}
+
+#[test]
+fn a_target_without_detach_still_waits() {
+	let p = project(&[("runfiles/t.run", "$ echo done > done.txt\n")]);
+	assert!(p.run(&["t"]).status.success());
+	assert!(
+		p.dir.path().join("done.txt").exists(),
+		"the file is there by the time run returns"
+	);
+}
+
+#[test]
+fn parallel_on_a_for_block_runs_the_iterations_at_once() {
+	// The spec's own example shape. `.parallel` inside the loop means the
+	// iterations are the branches, not just each body's statements.
+	let p = project(&[(
+		"runfiles/t.run",
+		"for n in [\"1\", \"2\", \"3\"]\n\t.parallel\n\t$ sleep 1; echo {{ n }} >> out.txt\nend\n",
+	)]);
+	let started = std::time::Instant::now();
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let elapsed = started.elapsed();
+	assert!(
+		elapsed.as_millis() < 2500,
+		"three one-second iterations took {elapsed:?}, so they ran in turn"
+	);
+	let done = std::fs::read_to_string(p.dir.path().join("out.txt")).unwrap();
+	assert_eq!(done.lines().count(), 3, "every iteration still ran: {done:?}");
+}
+
+#[test]
+fn a_for_block_without_parallel_still_runs_in_order() {
+	let p = project(&[(
+		"runfiles/t.run",
+		"for n in [\"1\", \"2\", \"3\"]\n\t$ echo {{ n }} >> out.txt\nend\n",
+	)]);
+	assert!(p.run(&["t"]).status.success());
+	let done = std::fs::read_to_string(p.dir.path().join("out.txt")).unwrap();
+	assert_eq!(done, "1\n2\n3\n", "source order, one at a time");
 }

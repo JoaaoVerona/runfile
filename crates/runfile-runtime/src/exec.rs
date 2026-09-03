@@ -36,6 +36,12 @@ pub struct Spawn<'a> {
 	/// several children write at once. `None` inherits the terminal, which is
 	/// what a sequential run wants: no prefix, no extra pipe, colours intact.
 	pub label: Option<&'a str>,
+	/// Start it and do not wait. For a fire-and-forget command whose whole
+	/// point is to outlive the run: a dev server, a log tailer.
+	pub detach: bool,
+	/// Announce the command before running it, on stderr. The runner does this
+	/// natively, which is why there is no `logging` property to turn it on.
+	pub announce: bool,
 }
 
 /// Split a command line into program and arguments, respecting quotes so
@@ -104,11 +110,22 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		c.env(k, v);
 	}
 	let labelled = s.label.is_some() && !s.capture;
-	if s.capture {
+	if s.detach {
+		// Its streams have to go nowhere. Inherited, they would keep the
+		// runner's own stdout and stderr open after it exits, so whoever is
+		// reading them waits for a command that was meant to outlive the run.
+		c.stdout(Stdio::null());
+		c.stderr(Stdio::null());
+	} else if s.capture {
 		c.stdout(Stdio::piped());
 	} else if labelled {
 		c.stdout(Stdio::piped());
 		c.stderr(Stdio::piped());
+	}
+	if s.announce {
+		// stderr, so a pipeline reading `run`'s output is unaffected. Bold
+		// cyan when a terminal is watching, plain when it is not.
+		announce(&label, s.body);
 	}
 	let mut child = c.spawn().map_err(|e| ExecError::Spawn {
 		cmd: label.clone(),
@@ -120,6 +137,11 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 			cmd: label.clone(),
 			source: e,
 		})?;
+	}
+	if s.detach {
+		// Nothing to wait for, and nothing to report: its exit status arrives
+		// long after this run is over.
+		return Ok(String::new());
 	}
 	if labelled {
 		let prefix = s.label.unwrap_or_default().to_string();
@@ -181,5 +203,27 @@ fn relay(stream: Option<impl std::io::Read>, label: &str, is_err: bool) {
 		} else {
 			println!("{label} | {line}");
 		}
+	}
+}
+
+/// Print the command about to run.
+///
+/// The body rather than the program, because `sh` is what almost every block
+/// is and `cargo build` is what the reader wants to see. A multi-line body is
+/// shown whole: it is one process, and half of it would be a lie.
+fn announce(program: &str, body: &str) {
+	let colour = std::io::IsTerminal::is_terminal(&std::io::stderr());
+	let (tag, bold, reset) = if colour {
+		("\x1b[1m\x1b[36m[runfile]\x1b[0m", "\x1b[1m", "\x1b[0m")
+	} else {
+		("[runfile]", "", "")
+	};
+	let text = if body.trim().is_empty() {
+		program
+	} else {
+		body.trim_end()
+	};
+	for line in text.lines() {
+		eprintln!("{tag} {bold}{line}{reset}");
 	}
 }

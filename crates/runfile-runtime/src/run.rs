@@ -78,6 +78,7 @@ enum Leaf {
 		dir: PathBuf,
 		/// What to prefix this branch's output with.
 		label: String,
+		detach: bool,
 	},
 	Run {
 		target: String,
@@ -218,6 +219,18 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			};
 			let prior = r.scope.vars.remove(name);
 			let inner = props.extend(body, &mut r.scope, true)?;
+			// `.parallel` on a loop body means the *iterations* are the
+			// branches, not just each body's own statements. Collecting across
+			// every iteration first is what makes them one batch.
+			if inner.parallel {
+				let mut leaves = Vec::new();
+				for item in items {
+					r.scope.bind(name, item);
+					collect(body, &inner, r, &mut leaves)?;
+				}
+				r.scope.restore(name, prior);
+				return run_leaves(leaves, &inner, r);
+			}
 			for item in items {
 				r.scope.bind(name, item);
 				if let Err(e) = walk(body, &inner, r)
@@ -270,6 +283,8 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				capture: false,
 				dry_run: r.dry_run,
 				label: r.label.as_deref(),
+				detach: props.detach,
+				announce: !r.dry_run,
 			})?;
 			Ok(())
 		}
@@ -299,6 +314,10 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		capture: true,
 		dry_run: r.dry_run,
 		label: r.label.as_deref(),
+		// A capture's output is a value, not something to show, and it is
+		// never detached: the whole point is waiting for what it prints.
+		detach: false,
+		announce: !r.dry_run,
 	})?;
 	Ok(Value::Str(out))
 }
@@ -385,6 +404,7 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 				let (cmd, text) = render(command.as_deref(), body, r)?;
 				out.push(Leaf::Exec {
 					label: exec_label(cmd.as_deref(), &text),
+					detach: props.detach,
 					cmd,
 					body: text,
 					env: merged_env(r, props),
@@ -499,6 +519,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 						env,
 						dir,
 						label,
+						detach,
 					} => exec::spawn(Spawn {
 						command: cmd.as_deref(),
 						body,
@@ -507,6 +528,8 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 						capture: false,
 						dry_run,
 						label: Some(label),
+						detach: *detach,
+						announce: !dry_run,
 					})
 					.map(|_| Some(body.clone()))
 					.map_err(RunError::from),
