@@ -116,6 +116,21 @@ let port = ARG.port ? ENV.PORT ? "3000"
 Arguments are `--key=value`. Writing `--key value` gives you a flag and a positional, because nothing declares
 which names take values — and if you meant an argument, the error says so.
 
+Everything after a bare `--` is passed through untouched, flags included. That is how a wrapper forwards a
+command line it does not understand:
+
+```sh
+# runfiles/aws.run
+$ docker run --rm amazon/aws-cli {{ ARGS }}
+```
+
+```bash
+run aws -- s3api list-buckets --output json
+```
+
+Forget the `--` and `--output` would be read as a flag for the target instead. `run` warns when a target is
+handed a flag it never reads, so that mistake does not pass silently.
+
 ### Interpolation quotes itself
 
 `{{ … }}` in a shell line becomes **exactly one argument** — or, for a list, one argument per item. So this is

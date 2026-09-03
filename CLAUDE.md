@@ -71,6 +71,17 @@ Lists index with `[n]` and work with `first`, `last`, `length`, `join`.
 names take values, so it cannot be disambiguated. It also cannot be silently guessed — so when `ARG.x` is
 missing and a flag `x` was passed, the error says exactly that.
 
+**A bare `--` ends parsing**: everything after it is a positional exactly as typed, flags included. That is how
+a wrapper forwards a command line (`run _aws -- s3api --bucket X`). Chosen over an `ARGV` source or making
+`ARGS` mean everything, so `ARGS` keeps one meaning. Because forgetting the `--` drops the flag silently, `Host`
+warns (via `Host::warn`) when a target is handed a `--flag` or `--key=value` that its text never reads as
+`FLAG.x` / `ARG.x`. The check is textual — the keys have no dynamic form — and includes `_shared.run`; it runs
+once per real run, not per `header_props` lookup.
+
+**`run` statement arguments are values, not shell text.** A `{{ x }}` in `run w {{ x }}` arrives at `w` as one
+positional even with spaces, and a list expands to one positional per item — there is no shell in between to
+quote for.
+
 `a ? b` takes `a`, or `b` if `a` does not resolve. It is not a ternary; branch with `if`.
 
 ### Interpolation self-quotes

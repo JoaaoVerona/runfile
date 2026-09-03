@@ -42,6 +42,9 @@ pub struct Host<'a> {
 	/// `Sync` so a `.parallel` fan-out can ask; a prompt during one is the
 	/// caller's problem to serialise.
 	pub prompt: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
+	/// Where non-fatal advice goes. The runtime never prints, so the CLI
+	/// decides what a warning looks like and tests can capture it.
+	pub warn: Option<&'a (dyn Fn(&str) + Sync)>,
 	/// Every shell body that ran. Order is arrival order, which under
 	/// `.parallel` is completion order rather than source order.
 	pub trace: Mutex<Vec<String>>,
@@ -56,6 +59,7 @@ impl<'a> Host<'a> {
 			ask: None,
 			keys: Vec::new,
 			prompt: None,
+			warn: None,
 			trace: Mutex::new(Vec::new()),
 		}
 	}
@@ -114,12 +118,17 @@ impl<'a> Host<'a> {
 
 	/// Everything both `run_inner` and `header_props` need: a scope with the
 	/// run context and arguments in place, plus `_shared.run` already folded in.
+	///
+	/// `advise` emits the unread-input warning. Only a real run wants it --
+	/// `header_props` is called ahead of one, and warning twice would teach
+	/// people to ignore it.
 	fn prepare(
 		&self,
 		target: &runfile_discovery::Target,
 		args: &[String],
+		advise: bool,
 	) -> Result<(runfile_lang::Target, Scope, Props), RunError> {
-		let ast = parse_file(&target.path)?;
+		let (ast, mut text) = parse_file(&target.path)?;
 		let mut scope = Scope::new();
 		populate_run_context(&mut scope, target, self.catalog);
 		parse_args(&mut scope, args);
@@ -133,13 +142,26 @@ impl<'a> Host<'a> {
 		// same scope.
 		let shared_props = match self.catalog.shared_for(target) {
 			Some(p) if p.is_file() => {
-				let shared = parse_file(&p)?;
+				let (shared, shared_text) = parse_file(&p)?;
 				let props = Props::default().extend(&shared.body, &mut scope, false)?;
 				crate::run::run_block_bindings(&shared.body, &mut scope)?;
+				// A flag the shared file reads is read for every target.
+				text.push_str(&shared_text);
 				props
 			}
 			_ => Props::default(),
 		};
+
+		if advise && let Some(warn) = self.warn {
+			for unread in unread_inputs(&scope, &text) {
+				let (_, key) = unread.split_at(2);
+				warn(&format!(
+					"`{unread}` was passed to `{}`, which never reads `FLAG.{key}` or `ARG.{key}`; \
+					 if it is meant for the command `{}` runs, put `--` before it",
+					target.name, target.name,
+				));
+			}
+		}
 		Ok((ast, scope, shared_props))
 	}
 
@@ -148,7 +170,7 @@ impl<'a> Host<'a> {
 	/// Watch mode needs `.watch` before the first execution, and the patterns
 	/// interpolate, so reading them off the source text would not do.
 	pub fn header_props(&self, target: &runfile_discovery::Target, args: &[String]) -> Result<Props, RunError> {
-		let (ast, mut scope, shared) = self.prepare(target, args)?;
+		let (ast, mut scope, shared) = self.prepare(target, args, false)?;
 		Ok(shared.extend(&ast.body, &mut scope, false)?)
 	}
 
@@ -158,7 +180,7 @@ impl<'a> Host<'a> {
 		args: &[String],
 		chain: Vec<String>,
 	) -> Result<Vec<String>, RunError> {
-		let (ast, scope, shared_props) = self.prepare(target, args)?;
+		let (ast, scope, shared_props) = self.prepare(target, args, true)?;
 
 		let adapter = HostDispatch { host: self };
 		let mut r = Runner {
@@ -187,19 +209,21 @@ impl Dispatch for HostDispatch<'_, '_> {
 	}
 }
 
-fn parse_file(p: &Path) -> Result<runfile_lang::Target, RunError> {
+/// Parse a target file, keeping its text: the unread-input check is textual.
+fn parse_file(p: &Path) -> Result<(runfile_lang::Target, String), RunError> {
 	let src = std::fs::read_to_string(p).map_err(|e| {
 		RunError::Host(Box::new(HostError::Read {
 			path: p.display().to_string(),
 			source: e,
 		}))
 	})?;
-	runfile_lang::parse(&src).map_err(|e| {
+	let ast = runfile_lang::parse(&src).map_err(|e| {
 		RunError::Host(Box::new(HostError::Parse {
 			path: p.display().to_string(),
 			source: e,
 		}))
-	})
+	})?;
+	Ok((ast, src))
 }
 
 /// `RUN.*`: the one place runtime context lives. `RUN.namespaces` is
@@ -228,9 +252,20 @@ fn populate_run_context(sc: &mut Scope, t: &runfile_discovery::Target, cat: &Cat
 	sc.env = std::env::vars().collect();
 }
 
+/// `--key=value` is an argument, `--key` a flag, anything else a positional.
+///
+/// A bare `--` ends parsing: everything after it is a positional exactly as
+/// typed, flags included. That is how a wrapper forwards a command line it
+/// does not understand -- `run _aws -- s3api --bucket X` -- without the
+/// runner claiming `--bucket` for itself.
 fn parse_args(sc: &mut Scope, args: &[String]) {
+	let mut passthrough = false;
 	for a in args {
-		if let Some(rest) = a.strip_prefix("--") {
+		if passthrough {
+			sc.positional.push(a.clone());
+		} else if a == "--" {
+			passthrough = true;
+		} else if let Some(rest) = a.strip_prefix("--") {
 			match rest.split_once('=') {
 				Some((k, v)) => {
 					sc.args.insert(k.to_string(), v.to_string());
@@ -241,6 +276,25 @@ fn parse_args(sc: &mut Scope, args: &[String]) {
 			sc.positional.push(a.clone());
 		}
 	}
+}
+
+/// Flags and arguments the target was given but never reads.
+///
+/// A wrapper that forwards `{{ ARGS }}` drops any `--flag` handed to it
+/// without a `--` before it, silently and with no error -- the command that
+/// runs is simply wrong. This is the check that makes it not silent. Textual
+/// rather than an AST walk, because `FLAG.x` and `ARG.x` are literal keys with
+/// no dynamic form; a mention inside a comment suppresses the warning, which
+/// is a harmless way for a heuristic to be wrong.
+fn unread_inputs(sc: &Scope, text: &str) -> Vec<String> {
+	let mut names: Vec<&String> = sc.flags.iter().chain(sc.args.keys()).collect();
+	names.sort();
+	names
+		.into_iter()
+		.filter(|k| !k.is_empty())
+		.filter(|k| !text.contains(&format!("FLAG.{k}")) && !text.contains(&format!("ARG.{k}")))
+		.map(|k| format!("--{k}"))
+		.collect()
 }
 
 fn os_name() -> &'static str {

@@ -1,6 +1,7 @@
 //! Execution tests. These spawn real processes -- the point is the process
 //! model, so a mock shell would test nothing.
 
+mod args;
 mod exec;
 mod keys;
 mod parallel;

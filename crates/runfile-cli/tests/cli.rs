@@ -832,3 +832,40 @@ fn the_version_is_printed_by_every_spelling() {
 		assert!(out(&o).contains(env!("CARGO_PKG_VERSION")), "{form}: {}", out(&o));
 	}
 }
+
+// ------------------------------------------------------------ passthrough
+
+#[test]
+fn a_double_dash_forwards_the_rest_of_the_line_untouched() {
+	let p = project(&[("runfiles/wrap.run", "$ echo {{ ARGS }}\n")]);
+	let o = p.run(&["wrap", "--", "s3api", "--bucket", "x", "--dry-run"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "s3api --bucket x --dry-run");
+	assert!(err(&o).is_empty(), "nothing to warn about: {}", err(&o));
+}
+
+#[test]
+fn a_forgotten_double_dash_is_warned_about_on_stderr() {
+	// The command still runs -- the runner cannot know the flag was meant for
+	// the wrapped tool -- but it no longer fails silently.
+	let p = project(&[("runfiles/wrap.run", "$ echo {{ ARGS }}\n")]);
+	let o = p.run(&["wrap", "s3api", "--bucket", "x"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "s3api x");
+	assert!(
+		err(&o).starts_with("warning: `--bucket` was passed to `wrap`"),
+		"{}",
+		err(&o)
+	);
+	assert!(err(&o).contains("put `--` before it"), "{}", err(&o));
+}
+
+#[test]
+fn a_flag_that_is_read_produces_no_warning() {
+	let p = project(&[(
+		"runfiles/f.run",
+		"if FLAG.force\n\t$ echo on\nelse\n\t$ echo off\nend\n",
+	)]);
+	let o = p.run(&["f", "--force"]);
+	assert!(err(&o).is_empty(), "{}", err(&o));
+}

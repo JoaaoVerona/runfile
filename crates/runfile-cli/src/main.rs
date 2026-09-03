@@ -141,7 +141,9 @@ fn real_main() -> Result<ExitCode, String> {
 	}
 
 	let ask = prompt::confirmer();
+	let warn = |m: &str| eprintln!("warning: {m}");
 	let mut host = Host::new(&cat);
+	host.warn = Some(&warn);
 	host.assume_yes = flags.assume_yes || ci_detect::is_ci();
 	if !host.assume_yes {
 		host.prompt = Some(&ask);

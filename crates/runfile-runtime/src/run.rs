@@ -223,11 +223,8 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			}
 		}
 		Statement::Run { target, args, .. } => {
-			let t = interpolate_shell(target, &mut r.scope)?;
-			let a: Vec<String> = args
-				.iter()
-				.map(|w| interpolate_shell(w, &mut r.scope))
-				.collect::<Result<_, _>>()?;
+			let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
+			let a = run_args(args, &mut r.scope)?;
 			// Splice the dependency's trace in where the call appeared.
 			let child = r.dispatch.run(&t, &a, &r.chain)?;
 			r.trace.extend(child);
@@ -275,6 +272,28 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		dry_run: r.dry_run,
 	})?;
 	Ok(Value::Str(out))
+}
+
+/// Arguments for a `run` statement.
+///
+/// They are values handed to an in-process target, not text handed to a shell,
+/// so nothing is quoted -- quoting here reached the callee as literal quotes,
+/// which its own shell lines then quoted again. A word that is one
+/// interpolation of a list becomes one argument per item, the way it would on
+/// a shell line; each expression is evaluated exactly once.
+fn run_args(words: &[Vec<InterpPart>], sc: &mut Scope) -> Result<Vec<String>, RunError> {
+	let mut out = Vec::new();
+	for w in words {
+		if let [InterpPart::Expr(e)] = &w[..] {
+			match eval_boundary(e, sc)? {
+				Value::List(items) => out.extend(items.iter().map(Value::to_string)),
+				v => out.push(v.to_string()),
+			}
+		} else {
+			out.push(runfile_lang::eval::interpolate_plain(w, sc)?);
+		}
+	}
+	Ok(out)
 }
 
 fn render(
@@ -343,11 +362,8 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 				});
 			}
 			Statement::Run { target, args, .. } => {
-				let t = interpolate_shell(target, &mut r.scope)?;
-				let a = args
-					.iter()
-					.map(|w| interpolate_shell(w, &mut r.scope))
-					.collect::<Result<Vec<_>, _>>()?;
+				let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
+				let a = run_args(args, &mut r.scope)?;
 				out.push(Leaf::Run { target: t, args: a });
 			}
 			// Control flow is expanded here so its leaves join the same batch.
