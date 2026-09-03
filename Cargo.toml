@@ -30,6 +30,7 @@ runfile-env = { path = "crates/runfile-env" }
 runfile-executor = { path = "crates/runfile-executor" }
 runfile-generators = { path = "crates/runfile-generators" }
 runfile-lang = { path = "crates/runfile-lang" }
+runfile-runtime = { path = "crates/runfile-runtime" }
 runfile-parser = { path = "crates/runfile-parser" }
 runfile-settings = { path = "crates/runfile-settings" }
 runfile-shell = { path = "crates/runfile-shell" }
