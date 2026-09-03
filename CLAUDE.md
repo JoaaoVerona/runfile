@@ -296,7 +296,9 @@ tests that assert the mechanism rather than the symptom.
    matter on Windows, where the Known Folder API ignores `HOME` and `APPDATA`; the CLI reads `HOME` before
    asking the platform for exactly this reason.
 4. LSP behaviour is tested by scripting a whole client conversation through the real transport
-   (`crates/runfile-lsp/tests/protocol.rs`).
+   (`crates/runfile-lsp/tests/protocol.rs`), and the compiled binary is started as a subprocess
+   (`tests/binary.rs`) — nothing in the former would notice a broken `main.rs` or a renamed binary, and it
+   is what ships.
 5. Tests that need an external tool (shellcheck) skip cleanly when it is absent, so a contributor without it
    does not see a broken build.
 6. Watch tests poll rather than sleep; a fixed sleep is either flaky or slow.
