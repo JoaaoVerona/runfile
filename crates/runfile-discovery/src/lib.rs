@@ -55,6 +55,65 @@ pub enum DiscoverError {
 	NotFound(PathBuf),
 	#[error("target `{name}` is defined twice: {a} and {b}")]
 	Duplicate { name: String, a: PathBuf, b: PathBuf },
+	#[error("alias `{alias}` is claimed by both `{a}` and `{b}`")]
+	DuplicateAlias { alias: String, a: String, b: String },
+}
+
+/// Read the declaration-region values of a property from a `_shared.run`.
+/// Only literal strings are read: this runs before any target is chosen, so
+/// there are no arguments to substitute.
+fn shared_strings(path: &Path, name: &str) -> Vec<String> {
+	let Ok(src) = std::fs::read_to_string(path) else {
+		return Vec::new();
+	};
+	let Ok(ast) = runfile_lang::parse(&src) else {
+		return Vec::new();
+	};
+	ast.body
+		.properties
+		.iter()
+		.filter(|p| p.path.first().is_some_and(|h| h == name))
+		.filter_map(|p| match &p.value {
+			Some(runfile_lang::Expr::Str(parts, _)) => Some(parts),
+			_ => None,
+		})
+		.filter_map(|parts| match parts.first() {
+			Some(runfile_lang::InterpPart::Literal(t)) => Some(t.clone()),
+			_ => None,
+		})
+		.collect()
+}
+
+/// Whether a directory-scoped source applies where we are standing.
+///
+/// Entries anchor to the source's own directory, absolute paths pass through,
+/// both sides canonicalize with a raw-path fallback, and the comparison is on
+/// path components so a name that merely shares a prefix does not match.
+/// `~` expands, which the old field silently did not.
+fn covers_cwd(anchor: &Path, dirs: &[String], cwd: &Path) -> bool {
+	if dirs.is_empty() {
+		return true;
+	}
+	let here = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+	dirs.iter().any(|d| {
+		let expanded = match d.strip_prefix("~/") {
+			Some(rest) => dirs_home().map(|h| h.join(rest)).unwrap_or_else(|| PathBuf::from(d)),
+			None => PathBuf::from(d),
+		};
+		let allowed = if expanded.is_absolute() {
+			expanded
+		} else {
+			anchor.join(expanded)
+		};
+		let allowed = std::fs::canonicalize(&allowed).unwrap_or(allowed);
+		here.starts_with(&allowed)
+	})
+}
+
+fn dirs_home() -> Option<PathBuf> {
+	std::env::var_os("HOME")
+		.or_else(|| std::env::var_os("USERPROFILE"))
+		.map(PathBuf::from)
 }
 
 /// Walk up for the nearest `runfiles/`, then down for `*/runfiles/`.
@@ -71,9 +130,10 @@ pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverErr
 
 	if let Some(h) = home {
 		let g = h.join(".runfiles");
-		if g.is_dir() {
-			let anchor = h.to_path_buf();
-			collect(&g, &anchor, "", Origin::Global, &mut cat)?;
+		// A machine-wide directory can scope itself: registered everywhere,
+		// active only inside the directories it names.
+		if g.is_dir() && covers_cwd(h, &shared_strings(&g.join(SHARED), "only-in-directories"), from) {
+			collect(&g, h, "", Origin::Global, &mut cat)?;
 		}
 	}
 
@@ -180,11 +240,36 @@ fn walk_runs(
 	Ok(())
 }
 
+/// The aliases a target declares.
+pub fn aliases_of(t: &Target) -> Vec<String> {
+	shared_strings(&t.path, "alias")
+}
+
 impl Catalog {
 	/// Resolve by file name first; only scan aliases on a miss, so the common
-	/// path costs one lookup.
+	/// path costs one lookup and nothing is read from disk.
 	pub fn resolve(&self, name: &str) -> Option<&Target> {
-		self.targets.get(name)
+		self.targets.get(name).or_else(|| self.by_alias(name).ok().flatten())
+	}
+
+	/// Scan every target's declaration region for `.alias = "<name>"`. Only
+	/// reached on a miss, which is why aliases cost nothing in the common case.
+	pub fn by_alias(&self, name: &str) -> Result<Option<&Target>, DiscoverError> {
+		let mut found: Option<&Target> = None;
+		for t in self.targets.values() {
+			if !aliases_of(t).iter().any(|a| a == name) {
+				continue;
+			}
+			if let Some(prev) = found {
+				return Err(DiscoverError::DuplicateAlias {
+					alias: name.to_string(),
+					a: prev.name.clone(),
+					b: t.name.clone(),
+				});
+			}
+			found = Some(t);
+		}
+		Ok(found)
 	}
 
 	/// The `_shared.run` that applies to a target, if any.

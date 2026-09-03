@@ -97,12 +97,13 @@ impl<'a> Host<'a> {
 		self.run_inner(target, args, next)
 	}
 
-	fn run_inner(
+	/// Everything both `run_inner` and `header_props` need: a scope with the
+	/// run context and arguments in place, plus `_shared.run` already folded in.
+	fn prepare(
 		&self,
 		target: &runfile_discovery::Target,
 		args: &[String],
-		chain: Vec<String>,
-	) -> Result<(), RunError> {
+	) -> Result<(runfile_lang::Target, Scope, Props), RunError> {
 		let ast = parse_file(&target.path)?;
 		let mut scope = Scope::new();
 		populate_run_context(&mut scope, target, self.catalog);
@@ -117,13 +118,31 @@ impl<'a> Host<'a> {
 		let shared_props = match self.catalog.shared_for(target) {
 			Some(p) if p.is_file() => {
 				let shared = parse_file(&p)?;
-				let base = Props::default();
-				let props = base.extend(&shared.body, &mut scope, false)?;
+				let props = Props::default().extend(&shared.body, &mut scope, false)?;
 				crate::run::run_block_bindings(&shared.body, &mut scope)?;
 				props
 			}
 			_ => Props::default(),
 		};
+		Ok((ast, scope, shared_props))
+	}
+
+	/// Resolve a target's declaration-region properties without running it.
+	///
+	/// Watch mode needs `.watch` before the first execution, and the patterns
+	/// interpolate, so reading them off the source text would not do.
+	pub fn header_props(&self, target: &runfile_discovery::Target, args: &[String]) -> Result<Props, RunError> {
+		let (ast, mut scope, shared) = self.prepare(target, args)?;
+		Ok(shared.extend(&ast.body, &mut scope, false)?)
+	}
+
+	fn run_inner(
+		&self,
+		target: &runfile_discovery::Target,
+		args: &[String],
+		chain: Vec<String>,
+	) -> Result<(), RunError> {
+		let (ast, scope, shared_props) = self.prepare(target, args)?;
 
 		let adapter = HostDispatch { host: self };
 		let mut r = Runner {

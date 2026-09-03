@@ -111,3 +111,78 @@ fn nothing_anywhere_is_an_error_that_names_the_directory() {
 	let e = discover(d.path(), None).unwrap_err();
 	assert!(e.to_string().contains("no runfiles/"), "{e}");
 }
+
+// ---- aliases and directory scoping
+
+#[test]
+fn an_alias_resolves_only_when_the_file_name_misses() {
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
+	std::fs::write(d.path().join("runfiles/build.run"), ".alias = \"b\"\n$ true\n").unwrap();
+	let c = discover(d.path(), None).unwrap();
+	assert_eq!(c.resolve("build").unwrap().name, "build", "the exact name never scans");
+	assert_eq!(c.resolve("b").unwrap().name, "build", "the alias is found on a miss");
+	assert!(c.resolve("nope").is_none());
+}
+
+#[test]
+fn two_targets_claiming_one_alias_is_an_error() {
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
+	std::fs::write(d.path().join("runfiles/one.run"), ".alias = \"x\"\n$ true\n").unwrap();
+	std::fs::write(d.path().join("runfiles/two.run"), ".alias = \"x\"\n$ true\n").unwrap();
+	let c = discover(d.path(), None).unwrap();
+	let e = c.by_alias("x").unwrap_err();
+	assert!(e.to_string().contains("claimed by both"), "{e}");
+}
+
+#[test]
+fn a_scoped_global_appears_only_inside_the_directories_it_names() {
+	let home = TempDir::new().unwrap();
+	let g = home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
+
+	let inside = home.path().join("work/acme");
+	std::fs::create_dir_all(inside.join("runfiles")).unwrap();
+	std::fs::write(inside.join("runfiles/build.run"), "$ true\n").unwrap();
+	let outside = TempDir::new().unwrap();
+	std::fs::create_dir_all(outside.path().join("runfiles")).unwrap();
+	std::fs::write(outside.path().join("runfiles/build.run"), "$ true\n").unwrap();
+
+	std::fs::write(g.join(SHARED), ".only-in-directories = \"work/acme\"\n").unwrap();
+
+	let here = discover(&inside, Some(home.path())).unwrap();
+	assert!(here.resolve("deploy").is_some(), "active inside the named directory");
+	let there = discover(outside.path(), Some(home.path())).unwrap();
+	assert!(there.resolve("deploy").is_none(), "registered, but not active here");
+}
+
+#[test]
+fn an_unscoped_global_is_active_everywhere() {
+	let home = TempDir::new().unwrap();
+	let g = home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
+	let elsewhere = TempDir::new().unwrap();
+	std::fs::create_dir_all(elsewhere.path().join("runfiles")).unwrap();
+	std::fs::write(elsewhere.path().join("runfiles/x.run"), "$ true\n").unwrap();
+	let c = discover(elsewhere.path(), Some(home.path())).unwrap();
+	assert!(c.resolve("deploy").is_some());
+}
+
+#[test]
+fn scoping_matches_whole_path_components_not_string_prefixes() {
+	// `work/acme` must not admit `work/acme-other`.
+	let home = TempDir::new().unwrap();
+	let g = home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
+	std::fs::write(g.join(SHARED), ".only-in-directories = \"work/acme\"\n").unwrap();
+
+	let sibling = home.path().join("work/acme-other");
+	std::fs::create_dir_all(sibling.join("runfiles")).unwrap();
+	std::fs::write(sibling.join("runfiles/x.run"), "$ true\n").unwrap();
+	let c = discover(&sibling, Some(home.path())).unwrap();
+	assert!(c.resolve("deploy").is_none(), "acme-other is not inside acme");
+}

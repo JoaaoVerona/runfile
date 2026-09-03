@@ -11,6 +11,7 @@ mod cmd_update;
 mod list;
 mod prepare;
 mod prompt;
+mod watch;
 
 use runfile_discovery::{Catalog, discover};
 use runfile_runtime::dispatch::Host;
@@ -114,6 +115,23 @@ fn real_main() -> Result<ExitCode, String> {
 	}
 	host.dry_run = flags.dry_run;
 	host.keys = runfile_settings::keyring_keys::all_private_keys;
+
+	// A target that declares `.watch` enters watch mode with no flag: the file
+	// already said what it wants. `--dry-run` opts out, since printing the same
+	// commands forever is not a preview.
+	let watching = if flags.dry_run {
+		Vec::new()
+	} else {
+		host.header_props(target, &args).map_err(|e| e.to_string())?.watch
+	};
+	if !watching.is_empty() {
+		let anchor = target.anchor.clone();
+		return watch::watch(&anchor, &watching, || match host.run(&first, &args) {
+			Ok(()) => prepare::record(&cat, target),
+			Err(e) => eprintln!("[runfile] {e}"),
+		})
+		.map(|()| ExitCode::SUCCESS);
+	}
 
 	match host.run(&first, &args) {
 		Ok(()) => {
