@@ -7,6 +7,7 @@
 
 mod ci_detect;
 mod cmd_env;
+mod cmd_generate;
 mod cmd_update;
 mod completions;
 mod init;
@@ -26,6 +27,7 @@ run :list                     list every target
 run :init                     create runfiles/ with an example target
 run :env <subcommand>         manage .env files
 run :completions <shell>      print a completion script
+run :generate <editor>        write task files for zed, jetbrains or vscode
 run :update                   update the runfile binary
 run :version                  print the version
 
@@ -89,6 +91,10 @@ fn real_main() -> Result<ExitCode, String> {
 
 	match first.as_str() {
 		":env" => return cmd_env::dispatch(&args),
+		":generate" => {
+			let cat = catalog(&flags)?;
+			return cmd_generate::dispatch(&cat, &args);
+		}
 		":update" => {
 			cmd_update::cmd_update(args.first().map(String::as_str));
 			return Ok(ExitCode::SUCCESS);

@@ -47,6 +47,9 @@ pub struct Catalog {
 	/// Directories whose `_shared.run` applies, keyed by the namespace prefix
 	/// its targets carry.
 	pub shared: BTreeMap<String, PathBuf>,
+	/// The parent of the nearest `runfiles/`: where a project-level file such
+	/// as `.zed/tasks.json` belongs.
+	pub root: PathBuf,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -123,6 +126,7 @@ pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverErr
 
 	if let Some(dir) = &local {
 		let anchor = dir.parent().unwrap_or(dir).to_path_buf();
+		cat.root = anchor.clone();
 		collect(dir, &anchor, "", Origin::Local, &mut cat)?;
 		// Sibling projects: a depth-1 `runfiles/` is a namespace, no declaration.
 		scan_subprojects(&anchor, 1, &mut cat)?;

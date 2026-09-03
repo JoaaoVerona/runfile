@@ -7,25 +7,33 @@ use runfile_discovery::{Catalog, Origin, Target};
 ///
 /// One read and one parse per target -- descriptions and `.hide` used to cost
 /// two of each.
-struct Facts {
-	description: String,
-	hidden: bool,
+pub(crate) struct Facts {
+	pub(crate) description: String,
+	pub(crate) hidden: bool,
+	/// Whether the target reads its command line, so a generated editor task
+	/// knows to offer an argument prompt.
+	pub(crate) uses_args: bool,
 }
 
-fn facts(t: &Target) -> Facts {
-	let Ok(src) = std::fs::read_to_string(&t.path) else {
-		return Facts {
+impl Facts {
+	fn none() -> Self {
+		Facts {
 			description: String::new(),
 			hidden: false,
-		};
+			uses_args: false,
+		}
+	}
+}
+
+pub(crate) fn facts(t: &Target) -> Facts {
+	let Ok(src) = std::fs::read_to_string(&t.path) else {
+		return Facts::none();
 	};
 	let Ok(ast) = runfile_lang::parse(&src) else {
-		return Facts {
-			description: String::new(),
-			hidden: false,
-		};
+		return Facts::none();
 	};
 	Facts {
+		uses_args: src.contains("ARGS") || src.contains("ARG."),
 		description: ast
 			.description
 			.as_deref()

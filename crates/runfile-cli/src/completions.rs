@@ -20,6 +20,8 @@ pub const ENV_SUBS: &[&str] = &[
 	"inject",
 	"secret-keys",
 ];
+/// `:generate` editors, the other nested level.
+pub const GENERATE_SUBS: &[&str] = crate::cmd_generate::SUBS;
 
 pub fn script(shell: &str) -> Result<String, String> {
 	let s = match shell {
@@ -35,7 +37,8 @@ pub fn script(shell: &str) -> Result<String, String> {
 	};
 	Ok(s.replace("@COMMANDS@", &COMMANDS.join(" "))
 		.replace("@FLAGS@", &FLAGS.join(" "))
-		.replace("@ENV_SUBS@", &ENV_SUBS.join(" ")))
+		.replace("@ENV_SUBS@", &ENV_SUBS.join(" "))
+		.replace("@GENERATE_SUBS@", &GENERATE_SUBS.join(" ")))
 }
 
 const BASH: &str = r#"# run(1) completion. Install: eval "$(run :completions bash)"
@@ -60,10 +63,15 @@ _run() {
 		esac
 	done
 
-	if [[ "$first" == ":env" ]]; then
-		# One nested level, then file names for the rest.
-		if [[ "${COMP_WORDS[i+1]}" == "" || $(( COMP_CWORD - i )) -eq 1 ]]; then
-			COMPREPLY=( $(compgen -W "@ENV_SUBS@" -- "$cur") )
+	# Two commands take a subcommand: one nested level, then file names.
+	local subs=""
+	case "$first" in
+		:env) subs="@ENV_SUBS@" ;;
+		:generate) subs="@GENERATE_SUBS@" ;;
+	esac
+	if [[ -n "$subs" ]]; then
+		if [[ $(( COMP_CWORD - i )) -eq 1 ]]; then
+			COMPREPLY=( $(compgen -W "$subs" -- "$cur") )
 		else
 			COMPREPLY=( $(compgen -f -- "$cur") )
 		fi
@@ -105,9 +113,14 @@ _run() {
 		return
 	fi
 
-	if [[ "$first" == ":env" ]]; then
+	local subs=""
+	case "$first" in
+		:env) subs="@ENV_SUBS@" ;;
+		:generate) subs="@GENERATE_SUBS@" ;;
+	esac
+	if [[ -n "$subs" ]]; then
 		if (( CURRENT - i == 1 )); then
-			compadd -- @ENV_SUBS@
+			compadd -- ${=subs}
 		else
 			_files
 		fi
@@ -156,13 +169,18 @@ function __run_env_sub
 	test (__run_first_word) = ":env"; and test (count (commandline -opc)) -eq 2
 end
 
+function __run_generate_sub
+	test (__run_first_word) = ":generate"; and test (count (commandline -opc)) -eq 2
+end
+
 # No target chosen yet: names, commands and flags.
 complete -c run -f -n __run_no_target -a "(run :list --names 2>/dev/null)"
 complete -c run -f -n __run_no_target -a "@COMMANDS@"
 complete -c run -f -n __run_no_target -a "@FLAGS@"
 complete -c run -f -n __run_env_sub -a "@ENV_SUBS@"
+complete -c run -f -n __run_generate_sub -a "@GENERATE_SUBS@"
 # Past the target name, arguments are its own business: offer files.
-complete -c run -F -n 'not __run_no_target; and not __run_env_sub'
+complete -c run -F -n 'not __run_no_target; and not __run_env_sub; and not __run_generate_sub'
 complete -c run -r -n '__fish_seen_argument -l dir' -a "(__fish_complete_directories)"
 "#;
 
@@ -189,6 +207,7 @@ Register-ArgumentCompleter -Native -CommandName run -ScriptBlock {
 	}
 
 	if ($first -eq ':env' -and $words.Count -le 2) { return & $emit @('@ENV_SUBS@'.Split(' ')) }
+	if ($first -eq ':generate' -and $words.Count -le 2) { return & $emit @('@GENERATE_SUBS@'.Split(' ')) }
 	if ($first) { return [System.Management.Automation.CompletionCompleters]::CompleteFilename($wordToComplete) }
 	if ($wordToComplete.StartsWith(':')) { return & $emit @('@COMMANDS@'.Split(' ')) }
 	if ($wordToComplete.StartsWith('-')) { return & $emit @('@FLAGS@'.Split(' ')) }
@@ -207,7 +226,7 @@ mod tests {
 			assert!(s.contains("run :list --names"), "{sh} must ask the binary for names");
 			// `@` alone is legal PowerShell array syntax, so check the actual
 			// placeholder spellings.
-			for ph in ["@COMMANDS@", "@FLAGS@", "@ENV_SUBS@"] {
+			for ph in ["@COMMANDS@", "@FLAGS@", "@ENV_SUBS@", "@GENERATE_SUBS@"] {
 				assert!(!s.contains(ph), "{sh} left {ph} unsubstituted");
 			}
 		}

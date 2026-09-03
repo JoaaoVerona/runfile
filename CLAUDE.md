@@ -249,6 +249,11 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   being read off the source text. A failing run is reported and watching continues.
 - Completion scripts are hand-written per shell and ask the binary itself for names, so they can never drift
   from the language. The bash one is tested by sourcing it and driving `_run` the way the shell does.
+- `:generate zed|jetbrains|vscode` is a lean port of the old generators: an entry is recognised as ours by its
+  shape (command `run`, label `run <target>`), so a rerun replaces exactly those and keeps a person's own; a
+  file is rewritten with the indentation it already uses. The 661-line `.editorconfig` reader did not come
+  back. Global targets are left out unless `--include-global`, since a task file is committed and
+  `~/.runfiles/` is one person's. `Catalog.root` (the parent of the nearest `runfiles/`) is where the files go.
 
 ## Properties
 

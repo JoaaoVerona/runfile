@@ -880,3 +880,178 @@ fn a_crlf_file_runs_the_same_as_an_lf_one() {
 	assert!(o.status.success(), "{}", err(&o));
 	assert_eq!(out(&o), "hi\nafter\n");
 }
+
+// --------------------------------------------------------------- generate
+
+const GEN: &[(&str, &str)] = &[
+	("runfiles/build.run", "# Builds it\n$ true\n"),
+	("runfiles/deploy.run", "# Ships it\n$ echo {{ ARG.env }}\n"),
+	("runfiles/secret.run", ".hide = true\n$ true\n"),
+	("web/runfiles/dev.run", "$ true\n"),
+];
+
+fn json_file(p: &Project, rel: &str) -> serde_json::Value {
+	let text = std::fs::read_to_string(p.dir.path().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+	serde_json::from_str(&text).unwrap_or_else(|e| panic!("{rel} is not JSON: {e}\n{text}"))
+}
+
+#[test]
+fn generate_zed_writes_one_task_per_visible_target() {
+	let p = project(GEN);
+	let o = p.run(&[":generate", "zed"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains(".zed/tasks.json: 3 added"), "{}", out(&o));
+	let tasks = json_file(&p, ".zed/tasks.json");
+	let labels: Vec<&str> = tasks
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|t| t["label"].as_str().unwrap())
+		.collect();
+	assert_eq!(
+		labels,
+		["run build", "run deploy", "run web:dev"],
+		"hidden left out, subproject in"
+	);
+	assert_eq!(tasks[0]["args"], serde_json::json!(["--stdin-args", "build"]));
+	assert_eq!(tasks[0]["cwd"], "$ZED_WORKTREE_ROOT");
+	assert_eq!(
+		tasks[1]["args"][2], "$ZED_CUSTOM_ARGS",
+		"a target that reads arguments offers a prompt"
+	);
+	assert_eq!(tasks[1]["allow_concurrent_runs"], true);
+}
+
+#[test]
+fn generate_merges_into_an_existing_file_and_keeps_its_indentation() {
+	let mut files = GEN.to_vec();
+	// A person's own task, a stale one of ours, and tabs.
+	files.push((
+		".zed/tasks.json",
+		"[\n\t{\n\t\t\"label\": \"lint everything\",\n\t\t\"command\": \"make\"\n\t},\n\t{\n\t\t\"label\": \"run gone\",\n\t\t\"command\": \"run\",\n\t\t\"args\": [\"--stdin-args\", \"gone\"]\n\t}\n]\n",
+	));
+	let p = project(&files);
+	let o = p.run(&[":generate", "zed"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("3 added, 0 updated, 1 removed"), "{}", out(&o));
+	let text = std::fs::read_to_string(p.dir.path().join(".zed/tasks.json")).unwrap();
+	assert!(text.contains("\n\t{\n\t\t\"label\""), "tabs kept:\n{text}");
+	let tasks: serde_json::Value = serde_json::from_str(&text).unwrap();
+	let labels: Vec<&str> = tasks
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|t| t["label"].as_str().unwrap())
+		.collect();
+	assert_eq!(labels, ["lint everything", "run build", "run deploy", "run web:dev"]);
+}
+
+#[test]
+fn generate_refuses_to_touch_a_file_it_cannot_parse() {
+	let mut files = GEN.to_vec();
+	files.push((".zed/tasks.json", "[ not json"));
+	let p = project(&files);
+	let o = p.run(&[":generate", "zed"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("not valid JSON"), "{}", err(&o));
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join(".zed/tasks.json")).unwrap(),
+		"[ not json"
+	);
+}
+
+#[test]
+fn generate_leaves_global_targets_out_unless_asked() {
+	let p = project(GEN);
+	std::fs::create_dir_all(p.home.path().join(".runfiles")).unwrap();
+	std::fs::write(p.home.path().join(".runfiles/mine.run"), "$ true\n").unwrap();
+	p.run(&[":generate", "zed"]);
+	assert!(
+		!json_file(&p, ".zed/tasks.json").to_string().contains("run mine"),
+		"a task file is committed; ~/.runfiles is one person's"
+	);
+	p.run(&[":generate", "zed", "--include-global"]);
+	assert!(json_file(&p, ".zed/tasks.json").to_string().contains("run mine"));
+}
+
+#[test]
+fn generate_stdout_prints_instead_of_writing() {
+	let p = project(GEN);
+	let o = p.run(&[":generate", "zed", "--stdout"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let v: serde_json::Value = serde_json::from_str(&out(&o)).expect("JSON on stdout");
+	assert_eq!(v.as_array().unwrap().len(), 3);
+	assert!(!p.dir.path().join(".zed").exists());
+}
+
+#[test]
+fn generate_vscode_declares_the_argument_prompt_it_uses() {
+	let p = project(GEN);
+	let o = p.run(&[":generate", "vscode"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let file = json_file(&p, ".vscode/tasks.json");
+	assert_eq!(file["version"], "2.0.0");
+	let deploy = &file["tasks"][1];
+	assert_eq!(deploy["type"], "shell");
+	assert_eq!(deploy["detail"], "Ships it");
+	assert_eq!(deploy["args"][2], "${input:args}");
+	assert_eq!(file["inputs"][0]["id"], "args", "the prompt it references is declared");
+	// Running again neither duplicates the input nor counts anything as changed.
+	let o = p.run(&[":generate", "vscode"]);
+	assert!(out(&o).contains("0 added, 3 updated, 0 removed"), "{}", out(&o));
+	assert_eq!(
+		json_file(&p, ".vscode/tasks.json")["inputs"].as_array().unwrap().len(),
+		1
+	);
+}
+
+#[test]
+fn generate_jetbrains_writes_one_configuration_per_target_and_respects_foreign_files() {
+	let mut files = GEN.to_vec();
+	files.push((
+		".idea/runConfigurations/Runfile_build.run.xml",
+		"<component>someone else's</component>\n",
+	));
+	files.push((".idea/runConfigurations/Runfile_gone.run.xml", "<component name=\"ProjectRunConfigurationManager\">\n  <configuration default=\"false\" name=\"Gone\" type=\"ShConfigurationType\">\n    <option name=\"SCRIPT_TEXT\" value=\"run --stdin-args gone\" />\n    <option name=\"SCRIPT_WORKING_DIRECTORY\" value=\"$PROJECT_DIR$\" />\n  </configuration>\n</component>\n"));
+	let p = project(&files);
+	let o = p.run(&[":generate", "jetbrains"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("2 added, 0 updated, 1 removed"), "{}", out(&o));
+	assert!(
+		out(&o).contains("skipped .idea/runConfigurations/Runfile_build.run.xml"),
+		"{}",
+		out(&o)
+	);
+	let dir = p.dir.path().join(".idea/runConfigurations");
+	assert_eq!(
+		std::fs::read_to_string(dir.join("Runfile_build.run.xml")).unwrap(),
+		"<component>someone else's</component>\n",
+		"not ours, not touched"
+	);
+	assert!(
+		!dir.join("Runfile_gone.run.xml").exists(),
+		"stale configuration of ours removed"
+	);
+	let deploy = std::fs::read_to_string(dir.join("Runfile_web_dev.run.xml")).unwrap();
+	assert!(deploy.contains(r#"name="Web Dev""#), "{deploy}");
+	assert!(deploy.contains(r#"value="run --stdin-args web:dev""#), "{deploy}");
+}
+
+#[test]
+fn generate_needs_an_editor_it_knows() {
+	let p = project(GEN);
+	assert!(err(&p.run(&[":generate"])).contains("usage:"));
+	let o = p.run(&[":generate", "emacs"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("zed, jetbrains, vscode"), "{}", err(&o));
+	assert!(err(&p.run(&[":generate", "zed", "--bogus"])).contains("unknown option"));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_generate_editors() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let mut got = complete_bash(&p, "run :generate ");
+	got.sort();
+	assert_eq!(got, ["jetbrains", "vscode", "zed"]);
+}

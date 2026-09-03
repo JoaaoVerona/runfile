@@ -233,6 +233,7 @@ exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
 | `run :init` | Create `runfiles/` with an example |
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
 | `run :completions <shell>` | A completion script for bash, zsh, fish or powershell |
+| `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
 | `run :update` | Update the binary |
 | `run :version` | Print the version |
 
@@ -291,7 +292,8 @@ with what will actually happen. It also hands `$` lines and shell `exec` bodies 
 directory from a checkout, and `.run` files highlight.
 
 **Zed, Neovim and Helix** use the tree-sitter grammar in `editors/tree-sitter`, with highlight queries
-included.
+included. `run :generate zed` writes every target into `.zed/tasks.json`, and `run :generate jetbrains` into
+`.idea/runConfigurations/`; both leave entries you wrote yourself alone and replace only their own.
 
 ## Platform support
 
