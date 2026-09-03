@@ -21,7 +21,9 @@ fn editor_directives_are_not_description() {
 fn consecutive_shell_lines_are_one_process() {
 	let x = t("$ cd web\n$ pnpm install\n");
 	assert_eq!(x.body.statements.len(), 1);
-	let Statement::Exec { command, body, .. } = &x.body.statements[0] else { panic!() };
+	let Statement::Exec { command, body, .. } = &x.body.statements[0] else {
+		panic!()
+	};
 	assert!(command.is_none(), "default shell");
 	assert_eq!(body.len(), 2, "both lines share one shell, so cd persists");
 }
@@ -42,7 +44,9 @@ fn a_statement_does_split_a_shell_run() {
 #[test]
 fn backslash_continues_a_shell_line() {
 	let x = t("$ tar -c f \\\n    | docker run x\n$ echo done\n");
-	let Statement::Exec { body, .. } = &x.body.statements[0] else { panic!() };
+	let Statement::Exec { body, .. } = &x.body.statements[0] else {
+		panic!()
+	};
 	assert_eq!(body.len(), 2, "the continuation is part of the first line");
 }
 
@@ -50,7 +54,9 @@ fn backslash_continues_a_shell_line() {
 fn properties_attach_to_their_block() {
 	let x = t(".parallel\nfor c in glob(\"*\")\n\t.ignore-errors\n\t$ echo {{ c }}\nend\n");
 	assert_eq!(x.body.properties.len(), 1);
-	let Statement::For { body, .. } = &x.body.statements[0] else { panic!() };
+	let Statement::For { body, .. } = &x.body.statements[0] else {
+		panic!()
+	};
 	assert_eq!(body.properties.len(), 1, "block-scoped, not hoisted");
 }
 
@@ -77,14 +83,22 @@ fn assignment_is_distinguished_from_comparison_and_calls() {
 #[test]
 fn lists_may_span_lines() {
 	let x = t("for s in [\n\t\"a\",\n\t\"b\",\n]\n\t$ echo {{ s }}\nend\n");
-	let Statement::For { iter: Expr::List(items, _), .. } = &x.body.statements[0] else { panic!() };
+	let Statement::For {
+		iter: Expr::List(items, _),
+		..
+	} = &x.body.statements[0]
+	else {
+		panic!()
+	};
 	assert_eq!(items.len(), 2);
 }
 
 #[test]
 fn run_is_in_process_dispatch_with_interpolated_target() {
 	let x = t("run {{ ns }}:build --flag {{ v }}\n");
-	let Statement::Run { target, args, .. } = &x.body.statements[0] else { panic!() };
+	let Statement::Run { target, args, .. } = &x.body.statements[0] else {
+		panic!()
+	};
 	assert_eq!(args.len(), 2);
 	assert!(matches!(target[0], InterpPart::Expr(_)));
 }
@@ -98,7 +112,10 @@ fn unclosed_block_names_the_opening_line() {
 #[test]
 fn dollar_in_value_position_captures_stdout() {
 	let x = t("let v = $ git rev-parse HEAD\n$ echo {{ v }}\n");
-	let Statement::Let { value: Expr::Capture { command, body, .. }, .. } = &x.body.statements[0]
+	let Statement::Let {
+		value: Expr::Capture { command, body, .. },
+		..
+	} = &x.body.statements[0]
 	else {
 		panic!("not a capture")
 	};
@@ -109,8 +126,12 @@ fn dollar_in_value_position_captures_stdout() {
 #[test]
 fn exec_in_value_position_captures_a_block() {
 	let x = t("let v = exec node\n\tconsole.log(1)\nend\n$ echo {{ v }}\n");
-	let Statement::Let { value: Expr::Capture { command: Some(_), body, .. }, .. } =
-		&x.body.statements[0]
+	let Statement::Let {
+		value: Expr::Capture {
+			command: Some(_), body, ..
+		},
+		..
+	} = &x.body.statements[0]
 	else {
 		panic!("not a capture")
 	};

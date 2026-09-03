@@ -50,8 +50,7 @@ pub struct Spanned {
 }
 
 const PUNCT: &[&str] = &[
-	"==", "!=", "<=", ">=", "&&", "||", "+", "-", "*", "/", "%", "<", ">", "!", "?", "[", "]", "(",
-	")", ",", ".",
+	"==", "!=", "<=", ">=", "&&", "||", "+", "-", "*", "/", "%", "<", ">", "!", "?", "[", "]", "(", ")", ",", ".",
 ];
 
 /// Index just past the `}}` matching the `{{` at `i`. Nested blocks are opaque:
@@ -94,7 +93,10 @@ pub fn split_interp(text: &str, base: usize, line: usize) -> Result<Vec<RawPart>
 			}
 			// trim the delimiters, then the single space the syntax requires
 			let inner = text[i + 2..end - 2].trim().to_string();
-			parts.push(RawPart::Expr { text: inner, span: Span::new(base + i, base + end, line) });
+			parts.push(RawPart::Expr {
+				text: inner,
+				span: Span::new(base + i, base + end, line),
+			});
 			i = end;
 			continue;
 		}
@@ -109,12 +111,7 @@ pub fn split_interp(text: &str, base: usize, line: usize) -> Result<Vec<RawPart>
 
 /// Scan a `"…"` or `r"…"` literal starting at `i`. Returns the parts and the
 /// index just past the closing quote.
-fn scan_string(
-	s: &str,
-	i: usize,
-	line: usize,
-	raw: bool,
-) -> Result<(Vec<RawPart>, usize), LexError> {
+fn scan_string(s: &str, i: usize, line: usize, raw: bool) -> Result<(Vec<RawPart>, usize), LexError> {
 	let b = s.as_bytes();
 	let open = if raw { i + 2 } else { i + 1 };
 	let mut j = open;
@@ -202,8 +199,9 @@ pub fn tokenize(s: &str, base: usize, line: usize) -> Result<Vec<Spanned>, LexEr
 			while j < b.len() && (b[j].is_ascii_digit() || b[j] == b'.') {
 				j += 1;
 			}
-			let n: f64 =
-				s[i..j].parse().map_err(|_| LexError::UnexpectedChar { ch: c as char, line })?;
+			let n: f64 = s[i..j]
+				.parse()
+				.map_err(|_| LexError::UnexpectedChar { ch: c as char, line })?;
 			out.push(sp(Token::Number(n), base, start, j, line));
 			i = j;
 			continue;
@@ -228,5 +226,8 @@ pub fn tokenize(s: &str, base: usize, line: usize) -> Result<Vec<Spanned>, LexEr
 }
 
 fn sp(token: Token, base: usize, start: usize, end: usize, line: usize) -> Spanned {
-	Spanned { token, span: Span::new(base + start, base + end, line) }
+	Spanned {
+		token,
+		span: Span::new(base + start, base + end, line),
+	}
 }

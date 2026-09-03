@@ -39,18 +39,41 @@ pub enum Statement {
 	/// A bare call evaluated for its effect, e.g. `decrypt(a, b)`.
 	Call { expr: Expr, span: Span },
 	/// `if cond … else … end`
-	If { cond: Expr, then: Block, otherwise: Option<Block>, span: Span },
+	If {
+		cond: Expr,
+		then: Block,
+		otherwise: Option<Block>,
+		span: Span,
+	},
 	/// `for name in iter … end`
-	For { name: String, iter: Expr, body: Block, span: Span },
+	For {
+		name: String,
+		iter: Expr,
+		body: Block,
+		span: Span,
+	},
 	/// `match subject … case … default … end`
-	Match { subject: Expr, cases: Vec<MatchCase>, default: Option<Block>, span: Span },
+	Match {
+		subject: Expr,
+		cases: Vec<MatchCase>,
+		default: Option<Block>,
+		span: Span,
+	},
 	/// `run target args…` — dispatched in-process. Writing `$ run target`
 	/// instead re-execs the binary, which is a Shell statement, not this.
-	Run { target: Vec<InterpPart>, args: Vec<Vec<InterpPart>>, span: Span },
+	Run {
+		target: Vec<InterpPart>,
+		args: Vec<Vec<InterpPart>>,
+		span: Span,
+	},
 	/// A `$` run or an `exec` block. Both are one process; a `$` run is sugar
 	/// for `exec <default shell>` over its contiguous lines, where blank lines
 	/// and comments are transparent rather than terminating.
-	Exec { command: Option<Vec<InterpPart>>, body: Vec<Vec<InterpPart>>, span: Span },
+	Exec {
+		command: Option<Vec<InterpPart>>,
+		body: Vec<Vec<InterpPart>>,
+		span: Span,
+	},
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,17 +100,46 @@ pub enum Expr {
 	/// A `let` binding or loop variable.
 	Ident(String, Span),
 	/// `ARG.x`, `ENV.X`, `FLAG.x`, `RUN.x`, or bare `ARGS`.
-	Source { kind: SourceKind, key: Option<String>, span: Span },
-	Unary { op: UnaryOp, rhs: Box<Expr>, span: Span },
-	Binary { op: BinaryOp, lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
+	Source {
+		kind: SourceKind,
+		key: Option<String>,
+		span: Span,
+	},
+	Unary {
+		op: UnaryOp,
+		rhs: Box<Expr>,
+		span: Span,
+	},
+	Binary {
+		op: BinaryOp,
+		lhs: Box<Expr>,
+		rhs: Box<Expr>,
+		span: Span,
+	},
 	/// `a ? b` — take `a`, or `b` if `a` does not resolve.
-	Chain { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
-	Index { base: Box<Expr>, index: Box<Expr>, span: Span },
-	Call { name: String, args: Vec<Expr>, span: Span },
+	Chain {
+		lhs: Box<Expr>,
+		rhs: Box<Expr>,
+		span: Span,
+	},
+	Index {
+		base: Box<Expr>,
+		index: Box<Expr>,
+		span: Span,
+	},
+	Call {
+		name: String,
+		args: Vec<Expr>,
+		span: Span,
+	},
 	/// `$ cmd` or `exec cmd … end` in value position: run it, take stdout with
 	/// one trailing newline stripped. Replaces the old `capture()` function --
 	/// `$` and `exec` are now the only way to invoke anything external.
-	Capture { command: Option<Vec<InterpPart>>, body: Vec<Vec<InterpPart>>, span: Span },
+	Capture {
+		command: Option<Vec<InterpPart>>,
+		body: Vec<Vec<InterpPart>>,
+		span: Span,
+	},
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

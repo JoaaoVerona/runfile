@@ -7,13 +7,18 @@
 //! a statement. Language is the default; shell is explicitly marked.
 
 pub mod ast;
+pub mod eval;
+pub mod functions;
 pub mod lexer;
 pub mod parser;
 pub mod span;
+pub mod value;
 
 pub use ast::{Block, Expr, InterpPart, Property, SourceKind, Statement, Target};
-pub use parser::{parse, ParseError};
+pub use eval::{EvalError, Scope, eval};
+pub use parser::{ParseError, parse};
 pub use span::Span;
+pub use value::{TypeError, Value};
 
 #[cfg(test)]
 mod tests;

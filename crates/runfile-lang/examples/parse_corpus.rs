@@ -1,6 +1,9 @@
 //! Parse every `.run` file under the given roots. The converted corpus is the
 //! acceptance test for the grammar.
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+	env, fs,
+	path::{Path, PathBuf},
+};
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 	let Ok(rd) = fs::read_dir(dir) else { return };

@@ -16,6 +16,10 @@ impl Span {
 
 	/// A span covering both ends, for a node built from several tokens.
 	pub fn to(self, other: Span) -> Self {
-		Self { start: self.start, end: other.end, line: self.line }
+		Self {
+			start: self.start,
+			end: other.end,
+			line: self.line,
+		}
 	}
 }

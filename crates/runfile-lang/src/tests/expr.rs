@@ -7,7 +7,12 @@ fn p(s: &str) -> Expr {
 
 #[test]
 fn precedence_is_c_like() {
-	let Expr::Binary { op: BinaryOp::Add, rhs, .. } = p("1 + 2 * 3") else { panic!() };
+	let Expr::Binary {
+		op: BinaryOp::Add, rhs, ..
+	} = p("1 + 2 * 3")
+	else {
+		panic!()
+	};
 	assert!(matches!(*rhs, Expr::Binary { op: BinaryOp::Mul, .. }));
 }
 
@@ -35,29 +40,50 @@ fn quotes_inside_an_interpolation_do_not_end_the_string() {
 fn raw_strings_keep_the_backslash_but_still_terminate_on_a_bare_quote() {
 	// Python's rule. Fully inert backslashes would make a quote impossible in a
 	// regex, which the release target needs.
-	let Expr::Str(parts, _) = p(r#"r"(?m)^version = \"([^\"]+)\"""#) else { panic!() };
+	let Expr::Str(parts, _) = p(r#"r"(?m)^version = \"([^\"]+)\"""#) else {
+		panic!()
+	};
 	let InterpPart::Literal(t) = &parts[0] else { panic!() };
 	assert!(t.contains(r#"\""#), "backslash retained in value: {t:?}");
 }
 
 #[test]
 fn escapes_are_processed_in_normal_strings() {
-	let Expr::Str(parts, _) = p(r#""a\"b\nc""#) else { panic!() };
+	let Expr::Str(parts, _) = p(r#""a\"b\nc""#) else {
+		panic!()
+	};
 	let InterpPart::Literal(t) = &parts[0] else { panic!() };
 	assert_eq!(t, "a\"b\nc");
 }
 
 #[test]
 fn sources_and_lists() {
-	assert!(matches!(p("ARGS"), Expr::Source { kind: SourceKind::Args, .. }));
-	assert!(matches!(p("RUN.namespaces"), Expr::Source { kind: SourceKind::Run, .. }));
-	let Expr::List(items, _) = p(r#"["a", ["b"], 1.5, true]"#) else { panic!() };
+	assert!(matches!(
+		p("ARGS"),
+		Expr::Source {
+			kind: SourceKind::Args,
+			..
+		}
+	));
+	assert!(matches!(
+		p("RUN.namespaces"),
+		Expr::Source {
+			kind: SourceKind::Run,
+			..
+		}
+	));
+	let Expr::List(items, _) = p(r#"["a", ["b"], 1.5, true]"#) else {
+		panic!()
+	};
 	assert_eq!(items.len(), 4);
 }
 
 #[test]
 fn index_and_call_bind_tightest() {
-	assert!(matches!(p("number(parts[0]) + 1"), Expr::Binary { op: BinaryOp::Add, .. }));
+	assert!(matches!(
+		p("number(parts[0]) + 1"),
+		Expr::Binary { op: BinaryOp::Add, .. }
+	));
 }
 
 #[test]

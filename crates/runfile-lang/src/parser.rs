@@ -32,7 +32,13 @@ fn scan_lines(src: &str) -> Vec<Line<'_>> {
 	for (i, raw) in src.split('\n').enumerate() {
 		let trimmed = raw.trim();
 		let indent = &raw[..raw.len() - raw.trim_start().len()];
-		out.push(Line { raw, trimmed, indent, offset, no: i + 1 });
+		out.push(Line {
+			raw,
+			trimmed,
+			indent,
+			offset,
+			no: i + 1,
+		});
 		offset += raw.len() + 1;
 	}
 	out
@@ -67,10 +73,7 @@ impl<'a> P<'a> {
 			let t = self.lines[self.i].trimmed;
 			let Some(rest) = t.strip_prefix('#') else { break };
 			let rest = rest.trim();
-			if !rest.starts_with("shellcheck")
-				&& !rest.starts_with("vim:")
-				&& !rest.starts_with("-*-")
-			{
+			if !rest.starts_with("shellcheck") && !rest.starts_with("vim:") && !rest.starts_with("-*-") {
 				out.push(rest.to_string());
 			}
 			self.i += 1;
@@ -136,7 +139,11 @@ impl<'a> P<'a> {
 				Some(parse_expr(r, base, line.no)?)
 			}
 		};
-		Ok(Property { path, value, span: Span::new(line.offset, line.offset + t.len(), line.no) })
+		Ok(Property {
+			path,
+			value,
+			span: Span::new(line.offset, line.offset + t.len(), line.no),
+		})
 	}
 
 	/// Gather a logical line, continuing while `[` are unbalanced so a list may
@@ -173,7 +180,9 @@ impl<'a> P<'a> {
 		match head {
 			"let" => {
 				let rest = text[3..].trim_start();
-				let Some(eq) = rest.find('=') else { return err(no, "`let` needs `= value`") };
+				let Some(eq) = rest.find('=') else {
+					return err(no, "`let` needs `= value`");
+				};
 				let name = rest[..eq].trim().to_string();
 				let base = offset + (text.len() - rest.len()) + eq + 1;
 				let raw_rhs = rest[eq + 1..].trim();
@@ -193,11 +202,18 @@ impl<'a> P<'a> {
 					None
 				};
 				self.expect_end(no)?;
-				Ok(Statement::If { cond, then, otherwise, span })
+				Ok(Statement::If {
+					cond,
+					then,
+					otherwise,
+					span,
+				})
 			}
 			"for" => {
 				let rest = text[3..].trim();
-				let Some(k) = rest.find(" in ") else { return err(no, "`for` needs `in`") };
+				let Some(k) = rest.find(" in ") else {
+					return err(no, "`for` needs `in`");
+				};
 				let name = rest[..k].trim().to_string();
 				let iter = parse_expr(rest[k + 4..].trim(), offset, no)?;
 				let body = self.block(Some("for"))?;
@@ -214,7 +230,11 @@ impl<'a> P<'a> {
 							let label = l.trimmed[4..].trim().trim_matches('"').to_string();
 							let cs = Span::new(l.offset, l.offset + l.trimmed.len(), l.no);
 							self.i += 1;
-							cases.push(MatchCase { label, body: self.block(Some("match"))?, span: cs });
+							cases.push(MatchCase {
+								label,
+								body: self.block(Some("match"))?,
+								span: cs,
+							});
 						}
 						Some("default") => {
 							self.i += 1;
@@ -224,7 +244,12 @@ impl<'a> P<'a> {
 					}
 				}
 				self.expect_end(no)?;
-				Ok(Statement::Match { subject, cases, default, span })
+				Ok(Statement::Match {
+					subject,
+					cases,
+					default,
+					span,
+				})
 			}
 			"run" => {
 				let rest = text[3..].trim();
@@ -237,7 +262,11 @@ impl<'a> P<'a> {
 					.iter()
 					.map(|w| lexer::split_interp(w, offset, no))
 					.collect::<Result<_, _>>()?;
-				Ok(Statement::Run { target: to_parts(target, no)?, args: to_args(args, no)?, span })
+				Ok(Statement::Run {
+					target: to_parts(target, no)?,
+					args: to_args(args, no)?,
+					span,
+				})
 			}
 			_ => {
 				if let Some(eq) = assignment_split(&text) {
@@ -249,7 +278,10 @@ impl<'a> P<'a> {
 					};
 					return Ok(Statement::Assign { name, value, span });
 				}
-				Ok(Statement::Call { expr: parse_expr(&text, offset, no)?, span })
+				Ok(Statement::Call {
+					expr: parse_expr(&text, offset, no)?,
+					span,
+				})
 			}
 		}
 	}
@@ -299,7 +331,11 @@ impl<'a> P<'a> {
 		}
 		self.i = last + 1;
 		let end = self.lines[last].offset + self.lines[last].raw.len();
-		Ok(Statement::Exec { command: None, body, span: Span::new(offset, end, no) })
+		Ok(Statement::Exec {
+			command: None,
+			body,
+			span: Span::new(offset, end, no),
+		})
 	}
 
 	/// Read an `exec` body: lines until an `end` at `indent`, dedented by their
@@ -318,8 +354,12 @@ impl<'a> P<'a> {
 			raw.push(l);
 			j += 1;
 		}
-		let base =
-			raw.iter().filter(|l| !l.trimmed.is_empty()).map(|l| l.indent.len()).min().unwrap_or(0);
+		let base = raw
+			.iter()
+			.filter(|l| !l.trimmed.is_empty())
+			.map(|l| l.indent.len())
+			.min()
+			.unwrap_or(0);
 		let body = raw
 			.iter()
 			.map(|l| {
@@ -337,13 +377,21 @@ impl<'a> P<'a> {
 		if let Some(cmd) = rhs.strip_prefix("$ ") {
 			let parts = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
 			let span = Span::new(offset, offset + rhs.len(), no);
-			return Ok(Some(Expr::Capture { command: None, body: vec![parts], span }));
+			return Ok(Some(Expr::Capture {
+				command: None,
+				body: vec![parts],
+				span,
+			}));
 		}
 		if let Some(cmd) = rhs.strip_prefix("exec ") {
 			let command = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
 			let (body, end) = self.exec_body(indent, no)?;
 			let span = Span::new(offset, end, no);
-			return Ok(Some(Expr::Capture { command: Some(command), body, span }));
+			return Ok(Some(Expr::Capture {
+				command: Some(command),
+				body,
+				span,
+			}));
 		}
 		Ok(None)
 	}
@@ -360,7 +408,11 @@ impl<'a> P<'a> {
 		self.i += 1;
 		let indent = indent.to_string();
 		let (body, end) = self.exec_body(&indent, no)?;
-		Ok(Statement::Exec { command: Some(command), body, span: Span::new(offset, end, no) })
+		Ok(Statement::Exec {
+			command: Some(command),
+			body,
+			span: Span::new(offset, end, no),
+		})
 	}
 }
 
@@ -369,12 +421,12 @@ fn split_words(s: &str) -> Vec<String> {
 	let b = s.as_bytes();
 	let (mut out, mut cur, mut i) = (Vec::new(), String::new(), 0usize);
 	while i < b.len() {
-		if b[i..].starts_with(b"{{") {
-			if let Ok(end) = lexer::skip_interp(b, i, 0) {
-				cur.push_str(&s[i..end]);
-				i = end;
-				continue;
-			}
+		if b[i..].starts_with(b"{{")
+			&& let Ok(end) = lexer::skip_interp(b, i, 0)
+		{
+			cur.push_str(&s[i..end]);
+			i = end;
+			continue;
 		}
 		if b[i].is_ascii_whitespace() {
 			if !cur.is_empty() {
@@ -413,9 +465,7 @@ fn to_parts(raw: Vec<RawPart>, line: usize) -> Result<Vec<InterpPart>, ParseErro
 	raw.into_iter()
 		.map(|p| match p {
 			RawPart::Literal(t) => Ok(InterpPart::Literal(t)),
-			RawPart::Expr { text, span } => {
-				Ok(InterpPart::Expr(parse_expr(&text, span.start, line)?))
-			}
+			RawPart::Expr { text, span } => Ok(InterpPart::Expr(parse_expr(&text, span.start, line)?)),
 		})
 		.collect()
 }
@@ -434,7 +484,10 @@ pub fn parse_expr(s: &str, base: usize, line: usize) -> Result<Expr, ParseError>
 	let mut e = E { t: &toks, i: 0, line };
 	let out = e.chain()?;
 	if e.i != e.t.len() {
-		return err(line, format!("trailing tokens after expression: `{}`", &s[..s.len().min(60)]));
+		return err(
+			line,
+			format!("trailing tokens after expression: `{}`", &s[..s.len().min(60)]),
+		);
 	}
 	Ok(out)
 }
@@ -467,7 +520,11 @@ impl<'a> E<'a> {
 		let mut lhs = self.or()?;
 		while self.eat("?") {
 			let rhs = self.or()?;
-			lhs = Expr::Chain { lhs: Box::new(lhs), rhs: Box::new(rhs), span: self.span(from) };
+			lhs = Expr::Chain {
+				lhs: Box::new(lhs),
+				rhs: Box::new(rhs),
+				span: self.span(from),
+			};
 		}
 		Ok(lhs)
 	}
@@ -585,7 +642,11 @@ impl<'a> E<'a> {
 						return err(self.line, "expected `,` or `)` in argument list");
 					}
 				}
-				e = Expr::Call { name, args, span: self.span(from) };
+				e = Expr::Call {
+					name,
+					args,
+					span: self.span(from),
+				};
 			} else {
 				return Ok(e);
 			}
@@ -593,7 +654,9 @@ impl<'a> E<'a> {
 	}
 	fn primary(&mut self) -> Result<Expr, ParseError> {
 		let from = self.i;
-		let Some(tok) = self.peek().cloned() else { return err(self.line, "expected a value") };
+		let Some(tok) = self.peek().cloned() else {
+			return err(self.line, "expected a value");
+		};
 		match tok {
 			Token::Number(n) => {
 				self.i += 1;
@@ -649,7 +712,11 @@ impl<'a> E<'a> {
 						return err(self.line, format!("`{name}.` needs a key"));
 					};
 					self.i += 1;
-					return Ok(Expr::Source { kind, key: Some(key), span: self.span(from) });
+					return Ok(Expr::Source {
+						kind,
+						key: Some(key),
+						span: self.span(from),
+					});
 				}
 				match name.as_str() {
 					"ARGS" => Ok(Expr::Source {
@@ -668,5 +735,10 @@ impl<'a> E<'a> {
 }
 
 fn bin(op: BinaryOp, lhs: Expr, rhs: Expr, span: Span) -> Expr {
-	Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs), span }
+	Expr::Binary {
+		op,
+		lhs: Box::new(lhs),
+		rhs: Box::new(rhs),
+		span,
+	}
 }
