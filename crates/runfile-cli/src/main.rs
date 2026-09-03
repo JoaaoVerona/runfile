@@ -1,585 +1,138 @@
-use clap::{Parser, Subcommand};
-use std::path::PathBuf;
-use std::process;
+//! The `run` command.
+//!
+//! Invocation is exactly `run <target> [args…]` -- one target, trailing args.
+//! Concurrency is `.parallel` on a block, so there is no flag for it and no
+//! target globs, which also means no wildcard that can match the target doing
+//! the fanning out.
 
 mod ci_detect;
-mod cmd_config;
 mod cmd_env;
-mod cmd_mcp;
-mod cmd_run;
 mod cmd_update;
-mod cmd_utilities;
-mod completions;
-mod runfile_helpers;
-mod shell;
-#[cfg(test)]
-mod tests;
+mod list;
+mod prepare;
+mod prompt;
 
-#[derive(Parser)]
-#[command(
-	name = "run",
-	about = "Runfile — a modern, cross-platform command runner",
-	version,
-	disable_help_subcommand = true
-)]
-pub struct Cli {
-	/// Show what would be executed without running anything
-	#[arg(long = "dry-run")]
-	dry_run: bool,
+use runfile_discovery::{Catalog, discover};
+use runfile_runtime::dispatch::Host;
+use std::path::PathBuf;
+use std::process::ExitCode;
 
-	/// Prompt for any missing {{ ARG.x }} / {{ ENV.X }} / {{ FLAG.x }} values via stdin
-	/// instead of failing
-	#[arg(long = "stdin-args")]
+const USAGE: &str = "\
+run <target> [args...]        run a target
+run :list                     list every target
+run :env <subcommand>         manage .env files
+run :update                   update the runfile binary
+
+  -y, --yes          skip confirmation prompts
+      --stdin-args   prompt for inputs a target needs but was not given
+      --dry-run      print what would run, without running it
+      --dir <path>   start discovery here instead of the working directory
+";
+
+fn main() -> ExitCode {
+	match real_main() {
+		Ok(code) => code,
+		Err(msg) => {
+			eprintln!("error: {msg}");
+			ExitCode::FAILURE
+		}
+	}
+}
+
+struct Flags {
+	assume_yes: bool,
 	stdin_args: bool,
-
-	/// Path to a specific Runfile to use instead of auto-discovery
-	#[arg(short = 'f', long = "file")]
-	file: Option<PathBuf>,
-
-	/// Print execution time for each command and target
-	#[arg(long = "timings")]
-	timings: bool,
-
-	/// Auto-confirm all prompts (skip interactive confirmation)
-	#[arg(short = 'y', long = "yes")]
-	yes: bool,
-
-	/// List target names for shell completion (one per line)
-	#[arg(long = "list-targets", hide = true)]
-	list_targets: bool,
-
-	/// List subcommand names for shell completion (one per line, tab-separated with description).
-	/// Accepts a dot-separated path to navigate the subcommand tree (e.g. "config.shell").
-	#[arg(long = "list-subcommands", hide = true, default_missing_value = "", num_args = 0..=1)]
-	list_subcommands: Option<String>,
-
-	#[command(subcommand)]
-	subcommand: Option<Commands>,
-
-	/// The target name to run from Runfile.json, followed by arguments
-	#[arg(trailing_var_arg = true)]
-	args: Vec<String>,
+	dry_run: bool,
+	dir: Option<PathBuf>,
 }
 
-#[derive(Subcommand)]
-enum Commands {
-	/// Shell completion scripts
-	#[command(name = ":completions")]
-	Completions {
-		#[command(subcommand)]
-		action: CompletionsAction,
-	},
-	/// Manage Runfile local settings
-	#[command(name = ":config")]
-	Config {
-		/// Print the path to the settings file and exit
-		#[arg(long)]
-		path: bool,
-
-		#[command(subcommand)]
-		action: Option<ConfigAction>,
-	},
-	/// Convert external task definitions into Runfile targets
-	#[command(name = ":convert")]
-	Convert {
-		#[command(subcommand)]
-		action: ConvertAction,
-	},
-	/// Manage encrypted environment variables and secret keys
-	#[command(name = ":env")]
-	Env {
-		#[command(subcommand)]
-		action: EnvAction,
-	},
-	/// Generate editor integration files from Runfile targets
-	#[command(name = ":generate")]
-	Generate {
-		#[command(subcommand)]
-		action: GenerateAction,
-	},
-	/// Create a default Runfile.json in the current directory
-	#[command(name = ":init")]
-	Init {
-		/// Path to write the Runfile.json (defaults to ./Runfile.json)
-		#[arg(short = 'p', long = "path")]
-		path: Option<PathBuf>,
-	},
-	/// List all available targets in the current Runfile.json
-	#[command(name = ":list")]
-	List {
-		/// Path to a specific Runfile to use instead of auto-discovery
-		#[arg(short = 'f', long = "file")]
-		file: Option<PathBuf>,
-	},
-	/// MCP (Model Context Protocol) server for exposing Runfile targets as tools
-	#[command(name = ":mcp")]
-	Mcp {
-		/// Path to a specific Runfile to use instead of auto-discovery
-		#[arg(short = 'f', long = "file")]
-		file: Option<PathBuf>,
-
-		#[command(subcommand)]
-		action: Option<McpAction>,
-	},
-	/// Update the runfile binary in place by re-running the install script
-	#[command(name = ":update")]
-	Update {
-		/// Release tag to install (e.g. v0.19.0). Defaults to the latest release.
-		#[arg(long = "version")]
-		version: Option<String>,
-	},
-}
-
-#[derive(Subcommand)]
-#[command(disable_help_subcommand = true)]
-enum McpAction {
-	/// Output the tool definitions as JSON and exit
-	Inspect,
-	/// Install the MCP server configuration for an agent
-	Install {
-		/// Agent name (claude-code, cursor, claude-desktop, codex, junie)
-		#[arg(default_value = "")]
-		agent: String,
-	},
-	/// Start the MCP server on stdio
-	Server,
-}
-
-#[derive(Subcommand)]
-#[command(disable_help_subcommand = true)]
-enum CompletionsAction {
-	/// Install completion scripts for a shell
-	Install {
-		/// Shell to install completions for (bash, zsh, fish, powershell)
-		shell: String,
-	},
-	/// Output completion script to stdout (for eval or manual installation)
-	Output {
-		/// Shell to generate completions for (bash, zsh, fish, powershell)
-		shell: String,
-	},
-	/// Remove previously installed completion scripts
-	Uninstall {
-		/// Shell to uninstall completions for (bash, zsh, fish, powershell)
-		shell: String,
-	},
-}
-
-#[derive(Subcommand)]
-#[command(disable_help_subcommand = true)]
-enum GenerateAction {
-	/// Generate JetBrains (IntelliJ, CLion, etc.) run configurations from Runfile targets
-	JetbrainsRunConfigurations {
-		/// Path to the Runfile.json (defaults to auto-discovery)
-		#[arg(short = 'f', long = "file")]
-		file: Option<PathBuf>,
-		/// Directory to write .xml run configurations to (defaults to .run)
-		#[arg(short = 'o', long = "output-dir")]
-		output_dir: Option<PathBuf>,
-		/// Also generate configurations for targets pulled in via `includes` (namespaced targets
-		/// carry their `namespace:` prefixes, just like `run :list`)
-		#[arg(long = "include-namespaces")]
-		include_namespaces: bool,
-		/// Also generate configurations for targets contributed by the global Runfile.json files
-		/// registered via `run :config global-files` (the same ones `run :list` merges in)
-		#[arg(long = "include-globals")]
-		include_globals: bool,
-	},
-	/// Generate VS Code tasks from Runfile targets
-	VscodeTasks {
-		/// Path to the Runfile.json (defaults to auto-discovery)
-		#[arg(short = 'f', long = "file")]
-		file: Option<PathBuf>,
-		/// Also generate tasks for targets pulled in via `includes` (namespaced targets carry
-		/// their `namespace:` prefixes, just like `run :list`)
-		#[arg(long = "include-namespaces")]
-		include_namespaces: bool,
-		/// Also generate tasks for targets contributed by the global Runfile.json files registered
-		/// via `run :config global-files` (the same ones `run :list` merges in)
-		#[arg(long = "include-globals")]
-		include_globals: bool,
-	},
-	/// Generate Zed editor tasks from Runfile targets
-	ZedTasks {
-		/// Path to the Runfile.json (defaults to auto-discovery)
-		#[arg(short = 'f', long = "file")]
-		file: Option<PathBuf>,
-		/// Also generate tasks for targets pulled in via `includes` (namespaced targets carry
-		/// their `namespace:` prefixes, just like `run :list`)
-		#[arg(long = "include-namespaces")]
-		include_namespaces: bool,
-		/// Also generate tasks for targets contributed by the global Runfile.json files registered
-		/// via `run :config global-files` (the same ones `run :list` merges in)
-		#[arg(long = "include-globals")]
-		include_globals: bool,
-	},
-	/// Emit an editor-agnostic JSON description of every runnable target to stdout.
-	///
-	/// Always resolves `includes` (namespaces) and merges registered global files, and
-	/// carries per-target provenance (local / included / global) plus the source file
-	/// each came from. Intended for external tooling like the Runfile VS Code extension,
-	/// which builds its own editor integration from this — so there is nothing to write
-	/// to disk and no `--include-*` flags to toggle.
-	TaskDescriptors {
-		/// Path to the Runfile.json (defaults to auto-discovery)
-		#[arg(short = 'f', long = "file")]
-		file: Option<PathBuf>,
-	},
-}
-
-#[derive(Subcommand)]
-#[command(disable_help_subcommand = true)]
-enum ConvertAction {
-	/// Convert targets from a Makefile into Runfile targets
-	Makefile {
-		/// Path to the Makefile (defaults to ./Makefile)
-		#[arg(short = 'p', long = "path")]
-		path: Option<PathBuf>,
-	},
-	/// Convert scripts from a package.json into Runfile targets
-	PackageJson {
-		/// Path to the package.json file (defaults to ./package.json)
-		#[arg(short = 'p', long = "path")]
-		path: Option<PathBuf>,
-	},
-}
-
-#[derive(Subcommand)]
-#[command(disable_help_subcommand = true)]
-enum ConfigAction {
-	/// Manage global Runfile.json files that are always merged with the local Runfile
-	GlobalFiles {
-		#[command(subcommand)]
-		action: GlobalFilesAction,
-	},
-	/// Manage path aliases for -f/--file
-	PathAlias {
-		#[command(subcommand)]
-		action: PathAliasAction,
-	},
-	/// Delete the settings file, resetting all configuration to defaults
-	Reset,
-	/// Manage custom shell paths
-	Shell {
-		#[command(subcommand)]
-		action: ShellAction,
-	},
-}
-
-#[derive(Subcommand)]
-enum GlobalFilesAction {
-	/// Register a Runfile.json as a global file
-	Add {
-		/// Path to the Runfile.json to register
-		path: PathBuf,
-	},
-	/// List all registered global files
-	List,
-	/// Unregister a global file (supports partial match)
-	Remove {
-		/// Path (or unique substring) of the global file to remove
-		path: String,
-	},
-}
-
-#[derive(Subcommand)]
-enum ShellAction {
-	/// List all shells with their resolved paths and availability
-	List,
-	/// Set a custom shell path in local settings
-	Set {
-		/// Shell name (bash, zsh, sh, fish, powershell, cmd)
-		name: String,
-		/// Path to the shell executable
-		path: PathBuf,
-	},
-}
-
-#[derive(Subcommand)]
-#[command(disable_help_subcommand = true)]
-enum EnvAction {
-	/// Decrypt an encrypted env file (prints to stdout if no output path is given).
-	/// `source` may be omitted when RUNFILE_ENV_FILE_TARGET is set (e.g. via the
-	/// setup action's `env-file-source` input).
-	Decrypt {
-		/// Source encrypted .env file (uses RUNFILE_ENV_FILE_TARGET when absent)
-		source: Option<String>,
-		/// Output plaintext .env file (omit to print to stdout)
-		output: Option<String>,
-	},
-	/// Encrypt a plaintext env file into a new encrypted file
-	Encrypt {
-		/// Source plaintext .env file
-		source: String,
-		/// Output encrypted .env file
-		output: String,
-		/// Public key (or prefix) to identify which key to encrypt with
-		#[arg(name = "PUBLIC_KEY")]
-		secret_key: String,
-	},
-	/// Read a variable from an env file (auto-decrypts if encrypted)
-	Get {
-		/// Path to the .env file
-		file: String,
-		/// Variable name to read
-		var: String,
-	},
-	/// Run a command with environment variables loaded from one or more .env files.
-	/// Files are passed as positional paths before `--`; with none and
-	/// RUNFILE_ENV_FILE_TARGET set, that env var supplies the file. There is no
-	/// implicit `.env` fallback.
-	Inject {
-		/// Paths to .env files (zero or more, before `--`). Merged in order; later
-		/// files override earlier ones. When absent, falls back to
-		/// RUNFILE_ENV_FILE_TARGET (set by the setup action's `env-file-source`).
-		file: Vec<String>,
-
-		/// The command to run, followed by its arguments. Must be preceded by `--`.
-		#[arg(last = true, required = true, allow_hyphen_values = true)]
-		command: Vec<String>,
-	},
-	/// Create a new .env file, optionally encrypted
-	Init {
-		/// Path to the .env file (defaults to .env)
-		#[arg(default_value = ".env")]
-		path: String,
-
-		/// Create a plaintext .env file (no encryption)
-		#[arg(long = "plain")]
-		plain: bool,
-
-		/// Public key (or prefix) to identify which key to encrypt with.
-		/// If omitted and encryption is enabled, a new key is generated automatically.
-		#[arg(long = "key")]
-		key: Option<String>,
-	},
-	/// Rotate the encryption key for an encrypted env file
-	Rotate {
-		/// Path to the encrypted .env file
-		file: String,
-		/// Also delete the old private key from the OS credential store
-		#[arg(long = "delete-current-key")]
-		delete_current_key: bool,
-	},
-	/// Manage private encryption keys stored in user settings
-	SecretKeys {
-		#[command(subcommand)]
-		action: SecretKeysAction,
-	},
-	/// Set a variable in an env file (auto-encrypts if file is encrypted).
-	/// If VALUE is omitted, the value is read from stdin (until EOF) — useful
-	/// for keeping secrets out of shell history and for passing values that
-	/// contain shell-special characters like `$` or `!` without escaping.
-	Set {
-		/// Path to the .env file
-		file: String,
-		/// Variable name
-		var: String,
-		/// Value to set (omit to read from stdin)
-		value: Option<String>,
-		/// Store the value as plaintext even if the file is encrypted
-		#[arg(long = "plain")]
-		plain: bool,
-	},
-}
-
-#[derive(Subcommand)]
-#[command(disable_help_subcommand = true)]
-enum SecretKeysAction {
-	/// Generate a new key or import an existing private encryption key (interactive,
-	/// unless `--key` is given for non-interactive CI use).
-	Add {
-		/// Add a known private key non-interactively. CI-only — refused on dev machines
-		/// to avoid leaking the key into shell history. Detection uses standard CI env
-		/// vars (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, etc.).
-		#[arg(long = "key")]
-		key: Option<String>,
-	},
-	/// Print the full private key for a given public key prefix (for sharing with teammates)
-	GetPrivate {
-		/// Public key hex prefix (partial match)
-		partial: String,
-	},
-	/// List all stored private keys with their public key fingerprints
-	List,
-	/// Remove a key by public key prefix
-	Remove {
-		/// Public key hex prefix (partial match)
-		partial: String,
-	},
-}
-
-#[derive(Subcommand)]
-enum PathAliasAction {
-	/// Add a path alias for use with -f/--file
-	Add {
-		/// Alias name (e.g. "root", "globals")
-		alias: String,
-		/// Path to the Runfile
-		path: PathBuf,
-	},
-	/// List all saved path aliases
-	List,
-	/// Remove a path alias (supports partial match)
-	Remove {
-		/// Alias name (or unique substring) to remove
-		alias: String,
-	},
-}
-
-fn main() {
-	let cli = Cli::parse();
-
-	// Hidden flag for shell completion scripts — must be handled before subcommands
-	if cli.list_targets {
-		completions::cmd_list_targets(cli.file.as_deref());
-		return;
-	}
-
-	if let Some(path) = &cli.list_subcommands {
-		completions::cmd_list_subcommands(path);
-		return;
-	}
-
-	match cli.subcommand {
-		Some(Commands::List { file }) => cmd_run::cmd_list(file.as_deref().or(cli.file.as_deref())),
-		Some(Commands::Config { path, action }) => {
-			if path {
-				cmd_config::cmd_config_path();
-				return;
-			}
-			match action {
-				Some(ConfigAction::Shell { action }) => match action {
-					ShellAction::Set { name, path } => cmd_config::cmd_set_shell(&name, path),
-					ShellAction::List => cmd_config::cmd_list_shells(),
-				},
-				Some(ConfigAction::PathAlias { action }) => match action {
-					PathAliasAction::Add { alias, path } => cmd_config::cmd_add_path_alias(&alias, path),
-					PathAliasAction::Remove { alias } => cmd_config::cmd_remove_path_alias(&alias),
-					PathAliasAction::List => cmd_config::cmd_list_path_aliases(),
-				},
-				Some(ConfigAction::Reset) => cmd_config::cmd_reset(),
-				Some(ConfigAction::GlobalFiles { action }) => match action {
-					GlobalFilesAction::Add { path } => cmd_config::cmd_add_global_file(path),
-					GlobalFilesAction::Remove { path } => cmd_config::cmd_remove_global_file(&path),
-					GlobalFilesAction::List => cmd_config::cmd_list_global_files(),
-				},
-				None => {
-					use clap::CommandFactory;
-					let mut cmd = Cli::command();
-					for sub in cmd.get_subcommands_mut() {
-						if sub.get_name() == ":config" {
-							sub.print_help().ok();
-							println!();
-							process::exit(0);
-						}
-					}
-				}
-			}
-		}
-		Some(Commands::Mcp { file, action }) => {
-			let file = file.as_deref().or(cli.file.as_deref());
-			match action {
-				Some(McpAction::Install { agent }) => cmd_mcp::cmd_mcp_install(file, &agent),
-				Some(McpAction::Inspect) => cmd_mcp::cmd_mcp_inspect(file),
-				Some(McpAction::Server) => cmd_mcp::cmd_mcp_server(file),
-				None => {
-					use clap::CommandFactory;
-					let mut cmd = Cli::command();
-					for sub in cmd.get_subcommands_mut() {
-						if sub.get_name() == ":mcp" {
-							sub.print_help().ok();
-							println!();
-							process::exit(0);
-						}
-					}
-				}
-			}
-		}
-		Some(Commands::Completions { action }) => match action {
-			CompletionsAction::Install { shell } => completions::cmd_completions_install(&shell),
-			CompletionsAction::Uninstall { shell } => completions::cmd_completions_uninstall(&shell),
-			CompletionsAction::Output { shell } => completions::cmd_completions_output(&shell),
-		},
-		Some(Commands::Generate { action }) => match action {
-			GenerateAction::ZedTasks {
-				file,
-				include_namespaces,
-				include_globals,
-			} => cmd_utilities::cmd_generate_zed_tasks(file.as_deref(), include_namespaces, include_globals),
-			GenerateAction::JetbrainsRunConfigurations {
-				file,
-				output_dir,
-				include_namespaces,
-				include_globals,
-			} => cmd_utilities::cmd_generate_jetbrains_run_configs(
-				file.as_deref(),
-				output_dir.as_deref(),
-				include_namespaces,
-				include_globals,
-			),
-			GenerateAction::VscodeTasks {
-				file,
-				include_namespaces,
-				include_globals,
-			} => cmd_utilities::cmd_generate_vscode_tasks(file.as_deref(), include_namespaces, include_globals),
-			GenerateAction::TaskDescriptors { file } => cmd_utilities::cmd_generate_task_descriptors(file.as_deref()),
-		},
-		Some(Commands::Convert { action }) => match action {
-			ConvertAction::Makefile { path } => cmd_utilities::cmd_convert_makefile(path),
-			ConvertAction::PackageJson { path } => cmd_utilities::cmd_convert_package_json(path),
-		},
-		Some(Commands::Env { action }) => match action {
-			EnvAction::Init { path, plain, key } => cmd_env::cmd_init(&path, plain, key.as_deref()),
-			EnvAction::Inject { file, command } => cmd_env::cmd_inject(&file, &command),
-			EnvAction::SecretKeys { action } => match action {
-				SecretKeysAction::Add { key } => cmd_env::cmd_secret_keys_add(key.as_deref()),
-				SecretKeysAction::List => cmd_env::cmd_secret_keys_list(),
-				SecretKeysAction::GetPrivate { partial } => cmd_env::cmd_get_private_key(&partial),
-				SecretKeysAction::Remove { partial } => cmd_env::cmd_secret_keys_remove(&partial),
-			},
-			EnvAction::Get { file, var } => cmd_env::cmd_get(&file, &var),
-			EnvAction::Set {
-				file,
-				var,
-				value,
-				plain,
-			} => cmd_env::cmd_set(&file, &var, value.as_deref(), plain),
-			EnvAction::Decrypt { source, output } => cmd_env::cmd_decrypt_file(source.as_deref(), output.as_deref()),
-			EnvAction::Encrypt {
-				source,
-				output,
-				secret_key,
-			} => cmd_env::cmd_encrypt_file(&source, &output, &secret_key),
-			EnvAction::Rotate {
-				file,
-				delete_current_key,
-			} => cmd_env::cmd_rotate(&file, delete_current_key),
-		},
-		Some(Commands::Update { version }) => cmd_update::cmd_update(version.as_deref()),
-		Some(Commands::Init { path }) => cmd_utilities::cmd_init(path),
-		None => {
-			if cli.args.is_empty() {
-				use clap::CommandFactory;
-				Cli::command().print_help().unwrap();
-				println!();
-				process::exit(0);
-			} else {
-				let target_name = &cli.args[0];
-				let extra_args: Vec<String> = cli.args[1..].to_vec();
-				if cli.dry_run {
-					cmd_run::cmd_dry_run(target_name, &extra_args, cli.file.as_deref(), cli.stdin_args);
-				} else {
-					cmd_run::cmd_run(
-						target_name,
-						&extra_args,
-						cli.file.as_deref(),
-						cli.timings,
-						cli.yes,
-						cli.stdin_args,
-					);
-				}
+/// Runner flags are recognised only before the target name; everything after
+/// it belongs to the target, so `run build --dry-run` passes the flag through.
+fn split_flags(argv: Vec<String>) -> (Flags, Vec<String>) {
+	let mut f = Flags {
+		assume_yes: false,
+		stdin_args: false,
+		dry_run: false,
+		dir: None,
+	};
+	let mut rest = Vec::new();
+	let mut it = argv.into_iter();
+	while let Some(a) = it.next() {
+		match a.as_str() {
+			"-y" | "--yes" => f.assume_yes = true,
+			"--stdin-args" => f.stdin_args = true,
+			"--dry-run" => f.dry_run = true,
+			"--dir" => f.dir = it.next().map(PathBuf::from),
+			_ => {
+				rest.push(a);
+				rest.extend(it);
+				break;
 			}
 		}
 	}
+	(f, rest)
+}
+
+fn real_main() -> Result<ExitCode, String> {
+	let (flags, rest) = split_flags(std::env::args().skip(1).collect());
+	let Some(first) = rest.first().cloned() else {
+		print!("{USAGE}");
+		return Ok(ExitCode::SUCCESS);
+	};
+	let args: Vec<String> = rest[1..].to_vec();
+
+	match first.as_str() {
+		":env" => return cmd_env::dispatch(&args),
+		":update" => {
+			cmd_update::cmd_update(args.first().map(String::as_str));
+			return Ok(ExitCode::SUCCESS);
+		}
+		":list" => {
+			let cat = catalog(&flags)?;
+			list::print(&cat);
+			return Ok(ExitCode::SUCCESS);
+		}
+		t if t.starts_with(':') => return Err(format!("unknown command `{t}`\n\n{USAGE}")),
+		_ => {}
+	}
+
+	let cat = catalog(&flags)?;
+	let target = cat.resolve(&first).ok_or_else(|| list::unknown(&cat, &first))?;
+
+	// The gate runs before anything else, so a target cannot half-run and then
+	// be told its setup was missing.
+	prepare::enforce(&cat, target)?;
+
+	let ask = prompt::confirmer();
+	let mut host = Host::new(&cat);
+	host.assume_yes = flags.assume_yes || ci_detect::is_ci();
+	if !host.assume_yes {
+		host.prompt = Some(&ask);
+	}
+	if flags.stdin_args {
+		host.ask = Some(prompt::ask_value);
+	}
+	host.dry_run = flags.dry_run;
+	host.keys = runfile_settings::keyring_keys::all_private_keys;
+
+	match host.run(&first, &args) {
+		Ok(()) => {
+			if flags.dry_run {
+				for line in host.trace.lock().expect("trace").iter() {
+					println!("{line}");
+				}
+			}
+			prepare::record(&cat, target);
+			Ok(ExitCode::SUCCESS)
+		}
+		Err(e) => Err(e.to_string()),
+	}
+}
+
+fn catalog(flags: &Flags) -> Result<Catalog, String> {
+	let from = match &flags.dir {
+		Some(d) => d.clone(),
+		None => std::env::current_dir().map_err(|e| e.to_string())?,
+	};
+	discover(&from, dirs::home_dir().as_deref()).map_err(|e| e.to_string())
 }

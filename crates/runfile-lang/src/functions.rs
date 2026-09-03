@@ -243,12 +243,17 @@ pub fn call(name: &str, args: &[Expr], sc: &mut Scope, sp: Span) -> Result<Value
 				line: sp.line,
 			});
 		}
-		_ => {
-			return Err(EvalError::UnknownFunction {
-				name: name.into(),
-				line: sp.line,
-			});
-		}
+		// Filesystem and regex functions live apart because they need the scope's
+		// anchor and key pool; everything else above is pure.
+		_ => match call_io(name, &v, sc, sp) {
+			Some(r) => return r,
+			None => {
+				return Err(EvalError::UnknownFunction {
+					name: name.into(),
+					line: sp.line,
+				});
+			}
+		},
 	})
 }
 
@@ -273,4 +278,168 @@ fn path_part(p: &str, which: PathPart) -> String {
 		PathPart::Stem => path.file_stem(),
 	};
 	pick.map(|x| x.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+// ------------------------------------------------------- filesystem and regex
+
+use crate::value::Value as V;
+use std::path::{Path, PathBuf};
+
+/// Relative paths anchor to the target's directory, the same rule cwd and
+/// `.env-file` follow, so one anchor explains all of them.
+fn resolve(base: &Path, p: &str) -> PathBuf {
+	let path = Path::new(p);
+	if path.is_absolute() {
+		path.to_path_buf()
+	} else {
+		base.join(path)
+	}
+}
+
+pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<Result<Value, EvalError>> {
+	let s = |i: usize| -> Result<&str, EvalError> { v[i].as_str().map_err(|e| ty(sp, e)) };
+	let other = |m: String| EvalError::Other { msg: m, line: sp.line };
+	let n = v.len();
+
+	Some(match name {
+		"glob" if n == 1 => (|| {
+			let pat = s(0)?;
+			// `*` does not cross a directory boundary and `**` does, which is
+			// what people expect from a shell glob -- globset defaults the
+			// other way.
+			let g = globset::GlobBuilder::new(pat)
+				.literal_separator(true)
+				.build()
+				.map_err(|e| other(format!("bad glob `{pat}`: {e}")))?
+				.compile_matcher();
+			let mut hits = Vec::new();
+			walk(&sc.base_dir, &sc.base_dir, &g, &mut hits);
+			hits.sort();
+			Ok(V::List(hits.into_iter().map(V::Str).collect()))
+		})(),
+		"read_file" if n == 1 => (|| {
+			let p = resolve(&sc.base_dir, s(0)?);
+			std::fs::read_to_string(&p)
+				.map(V::Str)
+				.map_err(|e| other(format!("could not read {}: {e}", p.display())))
+		})(),
+		"write_file" if n == 2 => (|| {
+			let p = resolve(&sc.base_dir, s(0)?);
+			if let Some(d) = p.parent() {
+				let _ = std::fs::create_dir_all(d);
+			}
+			std::fs::write(&p, s(1)?)
+				.map(|()| V::Str(String::new()))
+				.map_err(|e| other(format!("could not write {}: {e}", p.display())))
+		})(),
+		"file_exists" if n == 1 => s(0).map(|p| V::Bool(resolve(&sc.base_dir, p).exists())),
+		"base64_encode" if n == 1 => s(0).map(|x| {
+			use base64::Engine;
+			V::Str(base64::engine::general_purpose::STANDARD.encode(x))
+		}),
+		"base64_decode" if n == 1 => (|| {
+			use base64::Engine;
+			let raw = base64::engine::general_purpose::STANDARD
+				.decode(s(0)?)
+				.map_err(|e| other(format!("invalid base64: {e}")))?;
+			String::from_utf8(raw)
+				.map(V::Str)
+				.map_err(|_| other("decoded bytes are not UTF-8".into()))
+		})(),
+		"regex_matches" if n == 2 => (|| {
+			let re = compile(s(1)?, sp)?;
+			Ok(V::Bool(re.is_match(s(0)?)))
+		})(),
+		"regex_replace" if n == 3 => (|| {
+			let re = compile(s(1)?, sp)?;
+			Ok(V::Str(re.replace_all(s(0)?, s(2)?).into_owned()))
+		})(),
+		"regex_remove" if n == 2 => (|| {
+			let re = compile(s(1)?, sp)?;
+			Ok(V::Str(re.replace_all(s(0)?, "").into_owned()))
+		})(),
+		"regex_capture" if n == 3 => (|| {
+			let re = compile(s(1)?, sp)?;
+			let idx = v[2].as_index().map_err(|e| ty(sp, e))?;
+			Ok(V::Str(
+				re.captures(s(0)?)
+					.and_then(|c| c.get(idx))
+					.map(|m| m.as_str().to_string())
+					.unwrap_or_default(),
+			))
+		})(),
+		// Returns a list, which is what `for image in regex_capture_all(...)`
+		// iterates -- the old form joined with a separator and needed splitting.
+		"regex_capture_all" if n == 3 => (|| {
+			let re = compile(s(1)?, sp)?;
+			let idx = v[2].as_index().map_err(|e| ty(sp, e))?;
+			Ok(V::List(
+				re.captures_iter(s(0)?)
+					.map(|c| V::Str(c.get(idx).map(|m| m.as_str().to_string()).unwrap_or_default()))
+					.collect(),
+			))
+		})(),
+		"decrypt" if n == 2 => (|| {
+			let src = resolve(&sc.base_dir, s(0)?);
+			let dst = resolve(&sc.base_dir, s(1)?);
+			decrypt_file(&src, &dst, &sc.private_keys)
+				.map(|()| V::Str(String::new()))
+				.map_err(other)
+		})(),
+		_ => return None,
+	})
+}
+
+fn compile(pattern: &str, sp: Span) -> Result<regex::Regex, EvalError> {
+	regex::Regex::new(pattern).map_err(|e| EvalError::Other {
+		msg: format!("bad regex `{pattern}`: {e}"),
+		line: sp.line,
+	})
+}
+
+fn walk(root: &Path, dir: &Path, g: &globset::GlobMatcher, out: &mut Vec<String>) {
+	let Ok(rd) = std::fs::read_dir(dir) else { return };
+	for e in rd.flatten() {
+		let p = e.path();
+		let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+		if p.is_dir() {
+			if name == "node_modules" || name == ".git" || name == "target" {
+				continue;
+			}
+			walk(root, &p, g, out);
+			continue;
+		}
+		if let Ok(rel) = p.strip_prefix(root) {
+			// Matching is on forward-slash relative paths, so a pattern reads
+			// the same on every platform.
+			let s = rel.to_string_lossy().replace('\\', "/");
+			if g.is_match(&s) {
+				out.push(s);
+			}
+		}
+	}
+}
+
+/// Rewrite an encrypted env file as a plain one, preserving comments and
+/// already-plain lines verbatim.
+fn decrypt_file(src: &Path, dst: &Path, keys: &[String]) -> Result<(), String> {
+	let text = std::fs::read_to_string(src).map_err(|e| format!("could not read {}: {e}", src.display()))?;
+	let mut out = String::with_capacity(text.len());
+	for line in text.lines() {
+		match line.split_once('=') {
+			Some((k, val)) if runfile_crypto::is_encrypted(val.trim()) => {
+				let plain = keys
+					.iter()
+					.find_map(|key| runfile_crypto::decrypt(val.trim(), key).ok())
+					.ok_or_else(|| format!("no key can decrypt {k}"))?;
+				out.push_str(k);
+				out.push('=');
+				out.push_str(&plain);
+			}
+			_ if line.starts_with("RUNFILE_ENCRYPTION_PUBLIC_KEY=") => continue,
+			_ => out.push_str(line),
+		}
+		out.push('\n');
+	}
+	std::fs::write(dst, out).map_err(|e| format!("could not write {}: {e}", dst.display()))
 }

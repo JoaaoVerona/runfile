@@ -3,11 +3,12 @@
 //! `settings.json`) because it is ephemeral machine state, not user
 //! configuration — the two shouldn't drift or share a schema.
 //!
-//! The file maps an absolute Runfile path to a map of prepare-invocation string
-//! (`"setup"`, `"setup-tests --fast"`) → the hash recorded when that invocation
-//! last completed successfully. The runner compares the current hash (from
-//! [`runfile_parser::Runfile::prepare_command_hash`]) against the recorded one
-//! to decide whether a preparation target still counts as satisfied.
+//! The file maps the absolute path of a `setup` target to the fingerprint of
+//! its text when it last succeeded. There is no invocation key: a directory has
+//! exactly one gate, named `setup`, so the path identifies it. The runner
+//! compares the current fingerprint against the recorded one to decide whether
+//! the gate is still satisfied -- editing what setup *does* re-triggers it,
+//! while runtime values never do.
 
 use crate::paths;
 use serde::{Deserialize, Serialize};
@@ -33,9 +34,11 @@ pub enum PrepareStateError {
 /// Persisted record of completed preparation runs.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct PrepareState {
-	/// Absolute Runfile path → (prepare invocation → recorded command hash).
+	/// Absolute path of a `setup` target → the fingerprint of its text when it
+	/// last succeeded. There is no invocation key any more: a directory has one
+	/// gate, named `setup`, so the path identifies it.
 	#[serde(default, skip_serializing_if = "HashMap::is_empty")]
-	pub prepared: HashMap<String, HashMap<String, String>>,
+	pub prepared: HashMap<String, String>,
 }
 
 impl PrepareState {
@@ -53,7 +56,7 @@ impl PrepareState {
 			return Ok(Self::default());
 		}
 		let content = std::fs::read_to_string(path)?;
-		let state: PrepareState = runfile_parser::from_json_str(&content)?;
+		let state: PrepareState = serde_json::from_str(&content)?;
 		Ok(state)
 	}
 
@@ -73,20 +76,14 @@ impl PrepareState {
 		Ok(())
 	}
 
-	/// The hash recorded for a given (Runfile, invocation), if any.
-	pub fn recorded_hash(&self, runfile_path: &Path, invocation: &str) -> Option<&str> {
-		self.prepared
-			.get(&path_key(runfile_path))
-			.and_then(|m| m.get(invocation))
-			.map(String::as_str)
+	/// The fingerprint recorded for a gate, if it has ever succeeded.
+	pub fn recorded_hash(&self, gate_path: &Path) -> Option<&str> {
+		self.prepared.get(&path_key(gate_path)).map(String::as_str)
 	}
 
-	/// Record (or overwrite) the hash for a completed prepare invocation.
-	pub fn record(&mut self, runfile_path: &Path, invocation: impl Into<String>, hash: impl Into<String>) {
-		self.prepared
-			.entry(path_key(runfile_path))
-			.or_default()
-			.insert(invocation.into(), hash.into());
+	/// Record (or overwrite) the fingerprint for a gate that just succeeded.
+	pub fn record(&mut self, gate_path: &Path, hash: impl Into<String>) {
+		self.prepared.insert(path_key(gate_path), hash.into());
 	}
 }
 

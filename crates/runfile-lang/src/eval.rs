@@ -57,6 +57,17 @@ pub struct Scope {
 	pub run: HashMap<String, Value>,
 	/// Set while a `try(…)` is being evaluated so a failure can be caught.
 	pub(crate) in_try: bool,
+	/// Asked for an input the target needs but was not given, under
+	/// `--stdin-args`. Only genuinely-missing values reach it: a chain that
+	/// finds a default resolves without ever asking, because the chain catches
+	/// the error before it surfaces here.
+	pub ask: Option<fn(&str, &str) -> Option<String>>,
+	/// The anchor: relative paths in `glob`, `read_file` and friends resolve
+	/// against it, the same rule cwd and `.env-file` follow.
+	pub base_dir: std::path::PathBuf,
+	/// Private keys `decrypt` may try. Supplied by the host so the language
+	/// crate never has to know about credential stores.
+	pub private_keys: Vec<String>,
 }
 
 impl Scope {
@@ -69,6 +80,9 @@ impl Scope {
 			env: HashMap::new(),
 			run: HashMap::new(),
 			in_try: false,
+			ask: None,
+			base_dir: std::path::PathBuf::from("."),
+			private_keys: Vec::new(),
 		}
 	}
 
@@ -111,7 +125,30 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 			name: name.clone(),
 			line,
 		}),
-		Expr::Source { kind, key, .. } => source(*kind, key.as_deref(), sc, line),
+		Expr::Source { kind, key, .. } => match source(*kind, key.as_deref(), sc, line) {
+			// A missing input is offered to the prompter before it becomes an
+			// error, but never inside a `try` or a chain that has a fallback.
+			Err(e @ (EvalError::MissingArg { .. } | EvalError::MissingEnv { .. })) if !sc.in_try => {
+				let (kind_name, name) = match &e {
+					EvalError::MissingArg { name, .. } => ("argument --", name.clone()),
+					EvalError::MissingEnv { name, .. } => ("environment ", name.clone()),
+					_ => unreachable!(),
+				};
+				match sc.ask.and_then(|f| f(kind_name, &name)) {
+					Some(v) => {
+						let store = matches!(kind, SourceKind::Arg);
+						if store {
+							sc.args.insert(name, v.clone());
+						} else {
+							sc.env.insert(name, v.clone());
+						}
+						Ok(Value::Str(v))
+					}
+					None => Err(e),
+				}
+			}
+			other => other,
+		},
 		Expr::Unary { op, rhs, .. } => {
 			let v = eval(rhs, sc)?;
 			match op {
@@ -120,10 +157,17 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 			}
 		}
 		Expr::Binary { op, lhs, rhs, .. } => binary(*op, lhs, rhs, sc, line),
-		Expr::Chain { lhs, rhs, .. } => match eval(lhs, sc) {
-			Ok(v) => Ok(v),
-			Err(_) => eval(rhs, sc),
-		},
+		Expr::Chain { lhs, rhs, .. } => {
+			// Suppress prompting while trying the left side: a chain that
+			// reaches a literal default must resolve without asking anyone.
+			let was = std::mem::replace(&mut sc.in_try, true);
+			let left = eval(lhs, sc);
+			sc.in_try = was;
+			match left {
+				Ok(v) => Ok(v),
+				Err(_) => eval(rhs, sc),
+			}
+		}
 		Expr::Index { base, index, .. } => {
 			let b = eval(base, sc)?;
 			let i = eval(index, sc)?.as_index().map_err(|e| EvalError::ty(line, e))?;

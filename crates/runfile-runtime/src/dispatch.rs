@@ -31,6 +31,14 @@ pub enum HostError {
 pub struct Host<'a> {
 	pub catalog: &'a Catalog,
 	pub assume_yes: bool,
+	pub dry_run: bool,
+	/// Asked for an input a target needs but was not given, under
+	/// `--stdin-args`. A function pointer rather than a closure so it can cross
+	/// a `.parallel` fan-out.
+	pub ask: Option<fn(&str, &str) -> Option<String>>,
+	/// Where `decrypt` gets its keys. Injected so the runtime never reaches
+	/// into a credential store itself.
+	pub keys: fn() -> Vec<String>,
 	/// `Sync` so a `.parallel` fan-out can ask; a prompt during one is the
 	/// caller's problem to serialise.
 	pub prompt: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
@@ -44,6 +52,9 @@ impl<'a> Host<'a> {
 		Self {
 			catalog,
 			assume_yes: false,
+			dry_run: false,
+			ask: None,
+			keys: Vec::new,
 			prompt: None,
 			trace: Mutex::new(Vec::new()),
 		}
@@ -96,6 +107,9 @@ impl<'a> Host<'a> {
 		let mut scope = Scope::new();
 		populate_run_context(&mut scope, target, self.catalog);
 		parse_args(&mut scope, args);
+		scope.ask = self.ask;
+		scope.base_dir = target.anchor.clone();
+		scope.private_keys = (self.keys)();
 
 		// `_shared.run` is the globals analog: its properties and bindings apply
 		// to every target in the directory, so it is evaluated first into the
@@ -118,6 +132,7 @@ impl<'a> Host<'a> {
 			env: Vec::new(),
 			anchor: target.anchor.clone(),
 			dispatch: &adapter,
+			dry_run: self.dry_run,
 			assume_yes: self.assume_yes,
 			prompt: self.prompt,
 			trace: Vec::new(),

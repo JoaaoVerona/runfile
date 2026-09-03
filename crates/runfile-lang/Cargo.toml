@@ -5,4 +5,11 @@ name = "runfile-lang"
 version.workspace = true
 
 [dependencies]
+base64.workspace = true
+globset.workspace = true
+regex.workspace = true
+runfile-crypto.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

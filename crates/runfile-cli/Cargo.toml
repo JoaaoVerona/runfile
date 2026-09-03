@@ -21,12 +21,10 @@ hex.workspace = true
 notify.workspace = true
 runfile-crypto.workspace = true
 runfile-env.workspace = true
-runfile-executor.workspace = true
-runfile-generators.workspace = true
+runfile-discovery.workspace = true
 runfile-lang.workspace = true
-runfile-parser.workspace = true
+runfile-runtime.workspace = true
 runfile-settings.workspace = true
-runfile-shell.workspace = true
 serde_json.workspace = true
 which.workspace = true
 

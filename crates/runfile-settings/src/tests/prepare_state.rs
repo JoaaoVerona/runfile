@@ -1,70 +1,51 @@
 use super::*;
 
 #[test]
-fn default_state_is_empty() {
+fn a_fresh_state_is_empty() {
 	assert!(PrepareState::default().prepared.is_empty());
 }
 
 #[test]
-fn load_nonexistent_returns_default() {
+fn a_missing_file_loads_as_empty_rather_than_failing() {
 	let dir = TempDir::new().unwrap();
-	let path = dir.path().join("nonexistent.json");
+	let path = dir.path().join("state.json");
 	assert_eq!(PrepareState::load_from(&path).unwrap(), PrepareState::default());
 }
 
 #[test]
-fn record_and_read_back() {
+fn a_recorded_gate_round_trips_through_the_file() {
 	let dir = TempDir::new().unwrap();
-	let runfile = dir.path().join("Runfile.json");
-	std::fs::write(&runfile, "{}").unwrap();
+	let gate = dir.path().join("runfiles/setup.run");
+	std::fs::create_dir_all(gate.parent().unwrap()).unwrap();
+	std::fs::write(&gate, "$ true\n").unwrap();
+	let path = dir.path().join("state.json");
 
 	let mut state = PrepareState::default();
-	state.record(&runfile, "setup", "hash-abc");
-	state.record(&runfile, "setup-tests --fast", "hash-def");
+	state.record(&gate, "fingerprint-abc");
+	state.save_to(&path).unwrap();
 
-	assert_eq!(state.recorded_hash(&runfile, "setup"), Some("hash-abc"));
-	assert_eq!(state.recorded_hash(&runfile, "setup-tests --fast"), Some("hash-def"));
-	assert_eq!(state.recorded_hash(&runfile, "unknown"), None);
+	let loaded = PrepareState::load_from(&path).unwrap();
+	assert_eq!(loaded.recorded_hash(&gate), Some("fingerprint-abc"));
 }
 
 #[test]
-fn save_and_load_roundtrip() {
+fn recording_again_replaces_the_previous_fingerprint() {
+	// One gate per directory, so a second record is an update, not an addition.
 	let dir = TempDir::new().unwrap();
-	let runfile = dir.path().join("Runfile.json");
-	std::fs::write(&runfile, "{}").unwrap();
-	let state_path = dir.path().join("state.json");
-
+	let gate = dir.path().join("setup.run");
+	std::fs::write(&gate, "$ true\n").unwrap();
 	let mut state = PrepareState::default();
-	state.record(&runfile, "setup", "deadbeef");
-	state.save_to(&state_path).unwrap();
-
-	let loaded = PrepareState::load_from(&state_path).unwrap();
-	assert_eq!(state, loaded);
-	assert_eq!(loaded.recorded_hash(&runfile, "setup"), Some("deadbeef"));
+	state.record(&gate, "one");
+	state.record(&gate, "two");
+	assert_eq!(state.prepared.len(), 1);
+	assert_eq!(state.recorded_hash(&gate), Some("two"));
 }
 
 #[test]
-fn record_overwrites_existing_hash() {
+fn an_unrecorded_gate_has_no_fingerprint() {
 	let dir = TempDir::new().unwrap();
-	let runfile = dir.path().join("Runfile.json");
-	std::fs::write(&runfile, "{}").unwrap();
-
-	let mut state = PrepareState::default();
-	state.record(&runfile, "setup", "old");
-	state.record(&runfile, "setup", "new");
-	assert_eq!(state.recorded_hash(&runfile, "setup"), Some("new"));
-}
-
-#[test]
-fn path_key_canonicalizes_relative_and_absolute() {
-	let dir = TempDir::new().unwrap();
-	let runfile = dir.path().join("Runfile.json");
-	std::fs::write(&runfile, "{}").unwrap();
-
-	// A record keyed by the absolute path is found again via a
-	// non-canonical spelling of the same file (trailing "./").
-	let mut state = PrepareState::default();
-	state.record(&runfile, "setup", "h");
-	let dotted = dir.path().join(".").join("Runfile.json");
-	assert_eq!(state.recorded_hash(&dotted, "setup"), Some("h"));
+	assert_eq!(
+		PrepareState::default().recorded_hash(&dir.path().join("setup.run")),
+		None
+	);
 }

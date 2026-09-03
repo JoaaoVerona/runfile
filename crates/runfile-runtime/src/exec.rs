@@ -28,6 +28,10 @@ pub struct Spawn<'a> {
 	pub cwd: &'a Path,
 	pub env: &'a [(String, String)],
 	pub capture: bool,
+	/// Print what would run instead of running it. An `exec` body is literal
+	/// text, so dry-run shows exactly what the command would receive -- more
+	/// faithful than it could ever be over an opaque script file.
+	pub dry_run: bool,
 }
 
 /// Split a command line into program and arguments, respecting quotes so
@@ -85,6 +89,11 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		.map(str::to_string)
 		.unwrap_or_else(|| program.display().to_string());
 
+	if s.dry_run {
+		// A capture still has to yield something; an empty string keeps the
+		// rest of the target evaluable so dry-run reaches every statement.
+		return Ok(String::new());
+	}
 	let mut c = Command::new(&program);
 	c.args(&args).current_dir(s.cwd).stdin(Stdio::piped());
 	for (k, v) in s.env {

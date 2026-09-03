@@ -4,4 +4,5 @@
 mod eval;
 mod exec;
 mod expr;
+mod io;
 mod lines;

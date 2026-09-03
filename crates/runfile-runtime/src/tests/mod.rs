@@ -46,6 +46,7 @@ pub fn run_src(src: &str, d: &dyn Dispatch) -> Result<Vec<String>, RunError> {
 		dispatch: d,
 		assume_yes: true,
 		prompt: None,
+		dry_run: false,
 		trace: Vec::new(),
 	};
 	crate::run::run_target(&target, &mut r)?;

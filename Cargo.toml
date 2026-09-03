@@ -28,13 +28,9 @@ regex = "=1.12.3"
 runfile-crypto = { path = "crates/runfile-crypto" }
 runfile-discovery = { path = "crates/runfile-discovery" }
 runfile-env = { path = "crates/runfile-env" }
-runfile-executor = { path = "crates/runfile-executor" }
-runfile-generators = { path = "crates/runfile-generators" }
 runfile-lang = { path = "crates/runfile-lang" }
 runfile-runtime = { path = "crates/runfile-runtime" }
-runfile-parser = { path = "crates/runfile-parser" }
 runfile-settings = { path = "crates/runfile-settings" }
-runfile-shell = { path = "crates/runfile-shell" }
 secret-service = { default-features = false, features = ["rt-async-io-crypto-rust"], version = "=5.1.0" }
 serde = { features = ["derive"], version = "=1.0.228" }
 serde_json = "=1.0.149"

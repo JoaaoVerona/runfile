@@ -13,7 +13,6 @@ dirs.workspace = true
 json5.workspace = true
 keyring-core.workspace = true
 runfile-crypto.workspace = true
-runfile-parser.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

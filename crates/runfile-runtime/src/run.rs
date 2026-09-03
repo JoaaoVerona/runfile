@@ -81,6 +81,7 @@ pub struct Runner<'a> {
 	/// which is what CI detection and `-y` reduce to.
 	pub prompt: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
 	/// Collected so a caller can show what ran without re-deriving it.
+	pub dry_run: bool,
 	pub trace: Vec<String>,
 }
 
@@ -230,6 +231,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				cwd: &dir,
 				env: &env,
 				capture: false,
+				dry_run: r.dry_run,
 			})?;
 			Ok(())
 		}
@@ -257,6 +259,7 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		cwd: &dir,
 		env: &env,
 		capture: true,
+		dry_run: r.dry_run,
 	})?;
 	Ok(Value::Str(out))
 }
@@ -396,6 +399,7 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
 	let dispatch = r.dispatch;
 	let chain = r.chain.clone();
+	let dry_run = r.dry_run;
 	let results: Vec<Result<Option<String>, RunError>> = std::thread::scope(|s| {
 		let handles: Vec<_> = leaves
 			.iter()
@@ -408,6 +412,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 						cwd: dir,
 						env,
 						capture: false,
+						dry_run,
 					})
 					.map(|_| Some(body.clone()))
 					.map_err(RunError::from),

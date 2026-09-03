@@ -98,6 +98,7 @@ fn an_env_file_is_loaded_before_the_body_is_evaluated() {
 		dispatch: &d,
 		assume_yes: true,
 		prompt: None,
+		dry_run: false,
 		trace: Vec::new(),
 	};
 	crate::run::run_target(&target, &mut r).expect("env file value is visible to {{ ENV.x }}");
@@ -116,6 +117,7 @@ fn confirm_cancels_when_there_is_nobody_to_ask() {
 		dispatch: &d,
 		assume_yes: false,
 		prompt: None,
+		dry_run: false,
 		trace: Vec::new(),
 	};
 	assert!(
@@ -143,6 +145,7 @@ fn confirm_interpolates_its_message() {
 		dispatch: &d,
 		assume_yes: false,
 		prompt: Some(&ask),
+		dry_run: false,
 		trace: Vec::new(),
 	};
 	crate::run::run_target(&target, &mut r).expect("consent given");
@@ -167,6 +170,7 @@ fn a_header_property_cannot_see_a_body_binding() {
 		dispatch: &d,
 		assume_yes: true,
 		prompt: None,
+		dry_run: false,
 		trace: Vec::new(),
 	};
 	let e = crate::run::run_target(&target, &mut r).unwrap_err();
