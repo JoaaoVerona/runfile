@@ -167,7 +167,8 @@ fn every_exported_function_name_is_actually_dispatched() {
 	// The exported list drives editor completion. A name here that `call` does
 	// not know would be offered and then fail, so the list is checked against
 	// the dispatcher rather than trusted.
-	for name in crate::functions::FUNCTIONS {
+	for f in crate::functions::FUNCTIONS {
+		let name = f.name;
 		// Filesystem functions are matched on name *and* arity, so a name is
 		// only unknown if every plausible arity rejects it. Any other outcome
 		// -- a type complaint, a missing file -- means it was recognised.
@@ -225,7 +226,7 @@ fn every_dispatched_function_name_is_also_exported() {
 			continue;
 		}
 		seen += 1;
-		if !crate::functions::FUNCTIONS.contains(&name) && !missing.iter().any(|m| m == name) {
+		if !crate::functions::FUNCTIONS.iter().any(|f| f.name == name) && !missing.iter().any(|m| m == name) {
 			missing.push(name.to_string());
 		}
 	}

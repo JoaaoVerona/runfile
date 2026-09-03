@@ -92,7 +92,7 @@ pub fn diagnose(src: &str, known_targets: &[String]) -> Vec<Diagnostic> {
 fn check_properties(block: &runfile_lang::Block, nested: bool, out: &mut Vec<Diagnostic>, src: &str) {
 	for p in &block.properties {
 		let Some(head) = p.path.first() else { continue };
-		let Some((_, block_ok)) = PROPERTIES.iter().find(|(n, _)| n == head) else {
+		let Some(known) = PROPERTIES.iter().find(|p| p.name == head) else {
 			out.push(Diagnostic {
 				range: whole_line(src, p.span.line),
 				message: format!("unknown property `.{head}`{}", nearest(head)),
@@ -100,7 +100,7 @@ fn check_properties(block: &runfile_lang::Block, nested: bool, out: &mut Vec<Dia
 			});
 			continue;
 		};
-		if nested && !block_ok {
+		if nested && !known.block_scoped {
 			out.push(Diagnostic {
 				range: whole_line(src, p.span.line),
 				message: format!("`.{head}` is header-only and cannot be set inside a block"),
@@ -158,7 +158,7 @@ fn sub_blocks(st: &Statement) -> Vec<&runfile_lang::Block> {
 fn nearest(name: &str) -> String {
 	let best = PROPERTIES
 		.iter()
-		.map(|(n, _)| (edits(name, n), *n))
+		.map(|p| (edits(name, p.name), p.name))
 		.filter(|(d, _)| *d <= 2)
 		.min_by_key(|(d, _)| *d);
 	match best {
@@ -184,13 +184,56 @@ fn edits(a: &str, b: &str) -> usize {
 
 /// What to offer at `position`. The prefix already typed is matched by the
 /// client, so everything applicable is returned.
+/// One offered completion: what to insert, and what to show beside it.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Item {
+	pub label: String,
+	pub detail: String,
+	pub doc: String,
+}
+
+impl Item {
+	fn new(label: &str, detail: &str, doc: &str) -> Self {
+		Self {
+			label: label.into(),
+			detail: detail.into(),
+			doc: doc.into(),
+		}
+	}
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Completions {
-	Properties(Vec<String>),
-	Functions(Vec<String>),
+	Properties(Vec<Item>),
+	Functions(Vec<Item>),
+	/// The keys of one source, e.g. everything after `RUN.`.
+	Sources(Vec<Item>),
 	Targets,
 	None,
 }
+
+/// What `RUN.` offers, and what each one means. The only source with a fixed
+/// set of keys: `ARG`, `ENV` and `FLAG` are whatever the caller passed.
+pub const RUN_KEYS: &[(&str, &str)] = &[
+	("os", "`linux`, `mac` or `windows`."),
+	("arch", "The CPU architecture, normalised."),
+	("cwd", "The directory `run` was invoked from."),
+	("file", "This target's own file."),
+	(
+		"parent",
+		"The parent of `runfiles/`: the anchor every relative path resolves against.",
+	),
+	("namespaces", "The subproject namespaces in this project, as a list."),
+];
+
+/// The five roots a value can come from.
+pub const SOURCES: &[(&str, &str)] = &[
+	("ARG", "A `--name=value` argument."),
+	("ENV", "An environment variable."),
+	("FLAG", "Whether `--name` was passed, as a bool."),
+	("RUN", "Context about this run."),
+	("ARGS", "The positional arguments, as a list."),
+];
 
 /// Completion depends only on the line so far, which is what makes it usable
 /// on a document that does not currently parse.
@@ -199,7 +242,30 @@ pub fn complete(line_prefix: &str) -> Completions {
 	if let Some(rest) = t.strip_prefix('.')
 		&& !rest.contains('=')
 	{
-		return Completions::Properties(PROPERTIES.iter().map(|(n, _)| (*n).to_string()).collect());
+		return Completions::Properties(
+			PROPERTIES
+				.iter()
+				.map(|p| {
+					Item::new(
+						p.name,
+						if p.block_scoped {
+							"property"
+						} else {
+							"property, header-only"
+						},
+						p.doc,
+					)
+				})
+				.collect(),
+		);
+	}
+	// `RUN.` is the one source whose keys are known ahead of time.
+	if t.ends_with("RUN.")
+		|| t.rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+			.next()
+			.is_some_and(|w| w.starts_with("RUN."))
+	{
+		return Completions::Sources(RUN_KEYS.iter().map(|(k, d)| Item::new(k, "run context", d)).collect());
 	}
 	// `run ` wants a target name; `run x ` is already past it.
 	if let Some(rest) = t.strip_prefix("run ")
@@ -211,12 +277,75 @@ pub fn complete(line_prefix: &str) -> Completions {
 	if t.starts_with("$ ") || t == "$" {
 		return Completions::None;
 	}
-	Completions::Functions(
-		runfile_lang::functions::FUNCTIONS
-			.iter()
-			.map(|s| s.to_string())
-			.collect(),
-	)
+	// Functions and the source roots share the same position: both are things
+	// an expression can start with.
+	let mut items: Vec<Item> = runfile_lang::functions::FUNCTIONS
+		.iter()
+		.map(|f| Item::new(f.name, f.signature, f.doc))
+		.collect();
+	items.extend(SOURCES.iter().map(|(n, d)| Item::new(n, "source", d)));
+	Completions::Functions(items)
+}
+
+/// What to show when the pointer rests on `col` of `line`.
+///
+/// Everything a person can hover has a fixed meaning -- a property, a function,
+/// a source -- so this reads the word under the cursor rather than the tree,
+/// and keeps working while the document does not parse.
+pub fn hover(line: &str, col: usize) -> Option<String> {
+	let word = word_at(line, col)?;
+	// `.name`, possibly dotted: `.env.PORT` is the `env` property.
+	if let Some(rest) = word.strip_prefix('.') {
+		let head = rest.split('.').next().unwrap_or(rest);
+		let p = PROPERTIES.iter().find(|p| p.name == head)?;
+		let scope = if p.block_scoped {
+			"May be set inside an `if` / `for` / `match` block."
+		} else {
+			"Header-only: it belongs at the top of the file."
+		};
+		return Some(format!("`.{}`\n\n{}\n\n{scope}", p.name, p.doc));
+	}
+	// `ARG.name`, or a bare source root.
+	if let Some((root, key)) = word.split_once('.')
+		&& let Some((_, doc)) = SOURCES.iter().find(|(n, _)| *n == root)
+	{
+		if root == "RUN"
+			&& let Some((k, d)) = RUN_KEYS.iter().find(|(k, _)| *k == key)
+		{
+			return Some(format!("`RUN.{k}`\n\n{d}"));
+		}
+		return Some(format!("`{root}.{key}`\n\n{doc}"));
+	}
+	if let Some((n, doc)) = SOURCES.iter().find(|(n, _)| *n == word) {
+		return Some(format!("`{n}`\n\n{doc}"));
+	}
+	let f = runfile_lang::functions::FUNCTIONS.iter().find(|f| f.name == word)?;
+	Some(format!("`{}`\n\n{}", f.signature, f.doc))
+}
+
+/// The identifier-ish word around `col`, including a leading `.` and any dots
+/// inside it, so `.env.PORT` and `RUN.os` each come back whole.
+fn word_at(line: &str, col: usize) -> Option<&str> {
+	let part = |c: char| c.is_alphanumeric() || c == '_' || c == '-' || c == '.';
+	let chars: Vec<(usize, char)> = line.char_indices().collect();
+	if chars.is_empty() {
+		return None;
+	}
+	// Resting just past the end of a word still hovers it.
+	let at = col.min(chars.len() - 1);
+	if !part(chars[at].1) {
+		return None;
+	}
+	let mut start = at;
+	while start > 0 && part(chars[start - 1].1) {
+		start -= 1;
+	}
+	let mut end = at;
+	while end + 1 < chars.len() && part(chars[end + 1].1) {
+		end += 1;
+	}
+	let (from, to) = (chars[start].0, chars[end].0 + chars[end].1.len_utf8());
+	Some(line[from..to].trim_end_matches('.'))
 }
 
 #[cfg(test)]
@@ -301,7 +430,9 @@ mod tests {
 		let Completions::Properties(p) = complete("  .wa") else {
 			panic!("expected properties")
 		};
-		assert!(p.contains(&"watch".to_string()));
+		let watch = p.iter().find(|i| i.label == "watch").expect("watch is offered");
+		assert_eq!(watch.detail, "property, header-only");
+		assert!(!watch.doc.is_empty(), "and says what it does");
 	}
 
 	#[test]
@@ -325,6 +456,79 @@ mod tests {
 		let Completions::Functions(f) = complete("let x = to_") else {
 			panic!("expected functions")
 		};
-		assert!(f.contains(&"to_upper".to_string()));
+		let upper = f.iter().find(|i| i.label == "to_upper").expect("to_upper is offered");
+		assert_eq!(upper.detail, "to_upper(s)", "the signature is the detail");
+		assert!(!upper.doc.is_empty());
+	}
+
+	// ---- sources and hover
+
+	#[test]
+	fn an_expression_offers_the_source_roots_too() {
+		let Completions::Functions(f) = complete("let x = AR") else {
+			panic!("expected functions")
+		};
+		assert!(f.iter().any(|i| i.label == "ARGS"), "a source can start an expression");
+		assert!(f.iter().any(|i| i.label == "ARG"));
+	}
+
+	#[test]
+	fn run_dot_offers_the_keys_it_actually_has() {
+		// The one source whose keys are fixed; `ARG` and `ENV` are whatever the
+		// caller passed, so there is nothing to offer.
+		let Completions::Sources(s) = complete("$ echo {{ RUN.") else {
+			panic!("expected sources")
+		};
+		let labels: Vec<&str> = s.iter().map(|i| i.label.as_str()).collect();
+		assert!(labels.contains(&"os"), "{labels:?}");
+		assert!(labels.contains(&"namespaces"), "{labels:?}");
+		assert!(!labels.contains(&"nonsense"));
+	}
+
+	#[test]
+	fn hover_explains_a_property_and_says_where_it_may_go() {
+		let h = hover(".watch = \"src/**\"", 3).expect("hovers");
+		assert!(h.contains("`.watch`"), "{h}");
+		assert!(h.contains("Header-only"), "{h}");
+		let h = hover(".shell = \"bash\"", 3).expect("hovers");
+		assert!(h.contains("May be set inside"), "{h}");
+	}
+
+	#[test]
+	fn hover_reads_a_dotted_property_as_its_head() {
+		// `.env.PORT` is the `env` property with a sub-key.
+		let h = hover(".env.PORT = \"3000\"", 6).expect("hovers");
+		assert!(h.contains("`.env`"), "{h}");
+	}
+
+	#[test]
+	fn hover_explains_a_function_by_its_signature() {
+		let h = hover("let x = substring(s, 1)", 12).expect("hovers");
+		assert!(h.contains("substring(s, start"), "{h}");
+	}
+
+	#[test]
+	fn hover_explains_a_source_and_its_key() {
+		let h = hover("$ echo {{ RUN.os }}", 15).expect("hovers");
+		assert!(h.contains("`RUN.os`") && h.contains("linux"), "{h}");
+		let h = hover("let e = ARG.env", 10).expect("hovers");
+		assert!(h.contains("`ARG.env`") && h.contains("--name=value"), "{h}");
+		let h = hover("let a = ARGS", 10).expect("hovers");
+		assert!(h.contains("positional"), "{h}");
+	}
+
+	#[test]
+	fn hover_on_nothing_in_particular_says_nothing() {
+		assert!(hover("$ echo hello", 6).is_none(), "an unknown word");
+		assert!(hover("   ", 1).is_none(), "whitespace");
+		assert!(hover("", 0).is_none(), "an empty line");
+		assert!(hover("let x = 1", 40).is_none(), "past the end");
+	}
+
+	#[test]
+	fn hover_finds_the_whole_word_from_anywhere_inside_it() {
+		for col in 9..=13 {
+			assert!(hover("let x = to_upper(s)", col).is_some(), "at {col}");
+		}
 	}
 }

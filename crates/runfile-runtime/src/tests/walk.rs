@@ -129,9 +129,10 @@ fn namespaces_come_from_discovered_subprojects() {
 fn every_exported_property_name_is_actually_known() {
 	// The exported list drives editor completion; a name here that `extend`
 	// rejects would be offered and then fail.
-	for (name, block_ok) in crate::props::PROPERTIES {
+	for p in crate::props::PROPERTIES {
+		let (name, block_ok) = (p.name, &p.block_scoped);
 		// `.env` is the one property addressed by sub-key rather than set whole.
-		let lhs = if *name == "env" {
+		let lhs = if name == "env" {
 			"env.SOME_KEY".to_string()
 		} else {
 			(*name).to_string()

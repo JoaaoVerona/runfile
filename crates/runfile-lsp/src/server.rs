@@ -95,6 +95,7 @@ impl Server {
 				vec![publish(&uri, Vec::new())]
 			}
 			"textDocument/completion" => vec![reply(id, self.completion(&msg["params"]))],
+			"textDocument/hover" => vec![reply(id, self.hover(&msg["params"]))],
 			"textDocument/definition" => vec![reply(id, self.definition(&msg["params"]))],
 			// Anything else: an unanswered request hangs the client, so refuse
 			// rather than ignore.
@@ -141,20 +142,53 @@ impl Server {
 		let src = self.docs.get(&uri).map(String::as_str).unwrap_or_default();
 		let prefix = line_prefix(src, line, col);
 
-		// Property = 10, Function = 3, Value = 12, in LSP's CompletionItemKind.
-		let (items, kind): (Vec<String>, u8) = match analysis::complete(prefix) {
+		// Property = 10, Function = 3, Value = 12, Variable = 6, in LSP's
+		// CompletionItemKind.
+		let (items, kind): (Vec<analysis::Item>, u8) = match analysis::complete(prefix) {
 			Completions::Properties(p) => (p, 10),
 			Completions::Functions(f) => (f, 3),
+			Completions::Sources(s) => (s, 6),
 			Completions::Targets => {
-				let t = uri_to_path(&uri).map(|p| target_names(&p)).unwrap_or_default();
-				(t, 12)
+				let names = uri_to_path(&uri).map(|p| target_names(&p)).unwrap_or_default();
+				let items = names
+					.into_iter()
+					.map(|n| analysis::Item {
+						label: n,
+						detail: "target".into(),
+						doc: String::new(),
+					})
+					.collect();
+				(items, 12)
 			}
 			Completions::None => return json!({"isIncomplete": false, "items": []}),
 		};
 		json!({
 			"isIncomplete": false,
-			"items": items.iter().map(|l| json!({"label": l, "kind": kind})).collect::<Vec<_>>(),
+			"items": items
+				.iter()
+				.map(|i| json!({
+					"label": i.label,
+					"kind": kind,
+					"detail": i.detail,
+					"documentation": {"kind": "markdown", "value": i.doc},
+				}))
+				.collect::<Vec<_>>(),
 		})
+	}
+
+	/// What the word under the pointer means.
+	fn hover(&self, params: &Value) -> Value {
+		let uri = uri_of(&params["textDocument"]);
+		let line = params["position"]["line"].as_u64().unwrap_or(0) as usize;
+		let col = params["position"]["character"].as_u64().unwrap_or(0) as usize;
+		let src = self.docs.get(&uri).map(String::as_str).unwrap_or_default();
+		let Some(text) = src.lines().nth(line) else {
+			return Value::Null;
+		};
+		match analysis::hover(text, col) {
+			Some(md) => json!({"contents": {"kind": "markdown", "value": md}}),
+			None => Value::Null,
+		}
 	}
 
 	/// `run <target>` jumps to that target's file. Targets are files, so
@@ -211,6 +245,7 @@ fn capabilities() -> Value {
 			// a source of drift for no measurable gain.
 			"textDocumentSync": 1,
 			"completionProvider": {"triggerCharacters": [".", " "]},
+			"hoverProvider": true,
 			"definitionProvider": true,
 		},
 		"serverInfo": {"name": "runfile-lsp", "version": env!("CARGO_PKG_VERSION")},

@@ -674,68 +674,322 @@ fn resolve(base: &Path, p: &str) -> PathBuf {
 /// Exported so tooling (completion, the language server) offers exactly what
 /// exists, and cannot drift from what `call` accepts -- a test below walks this
 /// list and rejects any name the dispatcher does not recognise.
-pub const FUNCTIONS: &[&str] = &[
-	"abs",
-	"base64_decode",
-	"base64_encode",
-	"basename",
-	"capitalize",
-	"ceil",
-	"concat",
-	"contains",
-	"decrypt",
-	"dirname",
-	"ends_with",
-	"error",
-	"escape",
-	"extname",
-	"file_exists",
-	"first",
-	"floor",
-	"glob",
-	"is_number",
-	"join",
-	"join_path",
-	"json_get",
-	"json_set",
-	"last",
-	"length",
-	"lines",
-	"max",
-	"md5",
-	"min",
-	"now",
-	"number",
-	"one_of",
-	"power",
-	"read_file",
-	"regex_capture",
-	"regex_capture_all",
-	"regex_matches",
-	"regex_remove",
-	"regex_replace",
-	"remove_all",
-	"remove_prefix",
-	"remove_suffix",
-	"repeat",
-	"replace_all",
-	"round",
-	"sha256",
-	"split",
-	"starts_with",
-	"stem",
-	"substring",
-	"temp_dir",
-	"temp_file",
-	"to_lower",
-	"to_upper",
-	"trim",
-	"trim_end",
-	"trim_start",
-	"url_decode",
-	"url_encode",
-	"uuid",
-	"write_file",
+/// One entry in the standard library, as editor tooling sees it.
+pub struct Function {
+	pub name: &'static str,
+	/// How it is called, for a completion detail and a hover heading.
+	pub signature: &'static str,
+	/// One sentence. Long enough to answer "what does this do", short enough
+	/// to sit in a popup.
+	pub doc: &'static str,
+}
+
+pub const FUNCTIONS: &[Function] = &[
+	Function {
+		name: "abs",
+		signature: "abs(n)",
+		doc: "Magnitude, without the sign.",
+	},
+	Function {
+		name: "base64_decode",
+		signature: "base64_decode(s)",
+		doc: "Decode standard base64 to text.",
+	},
+	Function {
+		name: "base64_encode",
+		signature: "base64_encode(s)",
+		doc: "Encode text as standard base64.",
+	},
+	Function {
+		name: "basename",
+		signature: "basename(path)",
+		doc: "The final component of a path.",
+	},
+	Function {
+		name: "capitalize",
+		signature: "capitalize(s)",
+		doc: "Upper-case the first letter of every word.",
+	},
+	Function {
+		name: "ceil",
+		signature: "ceil(n)",
+		doc: "Round up to a whole number.",
+	},
+	Function {
+		name: "concat",
+		signature: "concat(a, b, …)",
+		doc: "Join values into one string. Strings do not add with `+`.",
+	},
+	Function {
+		name: "contains",
+		signature: "contains(s, needle)",
+		doc: "Whether `needle` appears in `s`.",
+	},
+	Function {
+		name: "decrypt",
+		signature: "decrypt(source, dest)",
+		doc: "Decrypt an encrypted `.env` file. Does nothing under `--dry-run`.",
+	},
+	Function {
+		name: "dirname",
+		signature: "dirname(path)",
+		doc: "Everything before the final component.",
+	},
+	Function {
+		name: "ends_with",
+		signature: "ends_with(s, suffix)",
+		doc: "Whether `s` ends with `suffix`.",
+	},
+	Function {
+		name: "error",
+		signature: "error(message)",
+		doc: "Fail the target with this message.",
+	},
+	Function {
+		name: "escape",
+		signature: "escape(s)",
+		doc: "Render control characters and quotes as backslash escapes. Not shell quoting: interpolation already does that.",
+	},
+	Function {
+		name: "extname",
+		signature: "extname(path)",
+		doc: "The extension, including its dot.",
+	},
+	Function {
+		name: "file_exists",
+		signature: "file_exists(path)",
+		doc: "Whether the path exists, relative to the runfiles parent.",
+	},
+	Function {
+		name: "first",
+		signature: "first(list)",
+		doc: "The first item, or an empty string.",
+	},
+	Function {
+		name: "floor",
+		signature: "floor(n)",
+		doc: "Round down to a whole number.",
+	},
+	Function {
+		name: "glob",
+		signature: "glob(pattern)",
+		doc: "Matching paths as a list. `*` does not cross a directory separator.",
+	},
+	Function {
+		name: "is_number",
+		signature: "is_number(s)",
+		doc: "Whether the string parses as a number.",
+	},
+	Function {
+		name: "join",
+		signature: "join(separator, list)",
+		doc: "Join a list into one string.",
+	},
+	Function {
+		name: "join_path",
+		signature: "join_path(a, b, …)",
+		doc: "Join path segments with this platform's separator.",
+	},
+	Function {
+		name: "json_get",
+		signature: "json_get(json, path)",
+		doc: "Read a dotted path. A numeric segment indexes an array.",
+	},
+	Function {
+		name: "json_set",
+		signature: "json_set(json, path, value)",
+		doc: "Set a dotted path and return the document. Containers are created as needed.",
+	},
+	Function {
+		name: "last",
+		signature: "last(list)",
+		doc: "The final item, or an empty string.",
+	},
+	Function {
+		name: "length",
+		signature: "length(value)",
+		doc: "Item count for a list, character count for a string.",
+	},
+	Function {
+		name: "lines",
+		signature: "lines(s)",
+		doc: "Split into a list on line endings.",
+	},
+	Function {
+		name: "max",
+		signature: "max(a, b, …)",
+		doc: "The largest number given.",
+	},
+	Function {
+		name: "md5",
+		signature: "md5(s)",
+		doc: "Hex MD5. A fingerprint, not a secure hash.",
+	},
+	Function {
+		name: "min",
+		signature: "min(a, b, …)",
+		doc: "The smallest number given.",
+	},
+	Function {
+		name: "now",
+		signature: "now([format])",
+		doc: "The current UTC time. One of `unix`, `unix-ms`, `iso`, `iso-date`, `iso-time`, `year`, `month`, `day`, `hour`, `minute`, `second`.",
+	},
+	Function {
+		name: "number",
+		signature: "number(value)",
+		doc: "Parse a string as a number. Required before arithmetic.",
+	},
+	Function {
+		name: "one_of",
+		signature: "one_of(value, a, b, …)",
+		doc: "`value` if it is one of the options, else an error naming them.",
+	},
+	Function {
+		name: "power",
+		signature: "power(base, exponent)",
+		doc: "`base` raised to `exponent`.",
+	},
+	Function {
+		name: "read_file",
+		signature: "read_file(path)",
+		doc: "The file's contents, relative to the runfiles parent.",
+	},
+	Function {
+		name: "regex_capture",
+		signature: "regex_capture(s, pattern, group)",
+		doc: "One capture group of the first match.",
+	},
+	Function {
+		name: "regex_capture_all",
+		signature: "regex_capture_all(s, pattern, group)",
+		doc: "That group from every match, as a list.",
+	},
+	Function {
+		name: "regex_matches",
+		signature: "regex_matches(s, pattern)",
+		doc: "Whether the pattern matches anywhere.",
+	},
+	Function {
+		name: "regex_remove",
+		signature: "regex_remove(s, pattern)",
+		doc: "Delete every match.",
+	},
+	Function {
+		name: "regex_replace",
+		signature: "regex_replace(s, pattern, replacement)",
+		doc: "Replace every match.",
+	},
+	Function {
+		name: "remove_all",
+		signature: "remove_all(s, needle)",
+		doc: "Delete every occurrence.",
+	},
+	Function {
+		name: "remove_prefix",
+		signature: "remove_prefix(s, prefix)",
+		doc: "Drop `prefix` if present.",
+	},
+	Function {
+		name: "remove_suffix",
+		signature: "remove_suffix(s, suffix)",
+		doc: "Drop `suffix` if present.",
+	},
+	Function {
+		name: "repeat",
+		signature: "repeat(s, count)",
+		doc: "`s` repeated `count` times.",
+	},
+	Function {
+		name: "replace_all",
+		signature: "replace_all(s, from, to)",
+		doc: "Replace every occurrence.",
+	},
+	Function {
+		name: "round",
+		signature: "round(n)",
+		doc: "Round to the nearest whole number.",
+	},
+	Function {
+		name: "sha256",
+		signature: "sha256(s)",
+		doc: "Hex SHA-256.",
+	},
+	Function {
+		name: "split",
+		signature: "split(s, separator)",
+		doc: "Split into a list.",
+	},
+	Function {
+		name: "starts_with",
+		signature: "starts_with(s, prefix)",
+		doc: "Whether `s` starts with `prefix`.",
+	},
+	Function {
+		name: "stem",
+		signature: "stem(path)",
+		doc: "The final component without its extension.",
+	},
+	Function {
+		name: "substring",
+		signature: "substring(s, start[, length])",
+		doc: "A slice, counted in characters.",
+	},
+	Function {
+		name: "temp_dir",
+		signature: "temp_dir()",
+		doc: "A fresh directory in the OS temp directory, removed when the run ends.",
+	},
+	Function {
+		name: "temp_file",
+		signature: "temp_file([content][, extension])",
+		doc: "A fresh file in the OS temp directory, removed when the run ends however it ends.",
+	},
+	Function {
+		name: "to_lower",
+		signature: "to_lower(s)",
+		doc: "Lower-case.",
+	},
+	Function {
+		name: "to_upper",
+		signature: "to_upper(s)",
+		doc: "Upper-case.",
+	},
+	Function {
+		name: "trim",
+		signature: "trim(s)",
+		doc: "Drop whitespace from both ends.",
+	},
+	Function {
+		name: "trim_end",
+		signature: "trim_end(s)",
+		doc: "Drop trailing whitespace.",
+	},
+	Function {
+		name: "trim_start",
+		signature: "trim_start(s)",
+		doc: "Drop leading whitespace.",
+	},
+	Function {
+		name: "url_decode",
+		signature: "url_decode(s)",
+		doc: "Decode percent-encoding.",
+	},
+	Function {
+		name: "url_encode",
+		signature: "url_encode(s)",
+		doc: "Percent-encode for a URL.",
+	},
+	Function {
+		name: "uuid",
+		signature: "uuid()",
+		doc: "A fresh version 4 UUID.",
+	},
+	Function {
+		name: "write_file",
+		signature: "write_file(path, content)",
+		doc: "Write a file. Does nothing under `--dry-run`.",
+	},
 ];
 
 pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<Result<Value, EvalError>> {

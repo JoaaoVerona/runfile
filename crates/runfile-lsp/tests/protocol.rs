@@ -268,3 +268,62 @@ fn a_syntax_error_suppresses_shell_diagnostics() {
 	assert_eq!(d.len(), 1, "{d:?}");
 	assert!(d[0]["message"].as_str().unwrap().contains("watch"), "{d:?}");
 }
+
+// ---- hover
+
+#[test]
+fn hover_is_advertised_and_answered() {
+	let uri = "file:///x/runfiles/a.run";
+	let out = converse(&[
+		json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+		did_open(uri, ".watch = \"src/**\"\n$ echo {{ RUN.os }}\n"),
+		json!({
+			"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
+			"params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 3}},
+		}),
+		json!({
+			"jsonrpc": "2.0", "id": 3, "method": "textDocument/hover",
+			"params": {"textDocument": {"uri": uri}, "position": {"line": 1, "character": 15}},
+		}),
+	]);
+	assert_eq!(out[0]["result"]["capabilities"]["hoverProvider"], true);
+	let property = out[2]["result"]["contents"]["value"].as_str().expect("markdown");
+	assert!(property.contains("`.watch`"), "{property}");
+	let source = out[3]["result"]["contents"]["value"].as_str().expect("markdown");
+	assert!(source.contains("`RUN.os`"), "{source}");
+}
+
+#[test]
+fn hovering_nothing_in_particular_returns_null() {
+	// A hover with no answer must still be answered, or the client waits.
+	let uri = "file:///x/runfiles/a.run";
+	let out = converse(&[
+		did_open(uri, "$ echo plain\n"),
+		json!({
+			"jsonrpc": "2.0", "id": 5, "method": "textDocument/hover",
+			"params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 8}},
+		}),
+	]);
+	assert_eq!(out[1]["id"], 5);
+	assert!(out[1]["result"].is_null());
+}
+
+#[test]
+fn completion_carries_a_signature_and_documentation() {
+	let uri = "file:///x/runfiles/a.run";
+	let out = converse(&[
+		did_open(uri, "let x = sub\n"),
+		json!({
+			"jsonrpc": "2.0", "id": 4, "method": "textDocument/completion",
+			"params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 11}},
+		}),
+	]);
+	let items = out[1]["result"]["items"].as_array().expect("items");
+	let sub = items
+		.iter()
+		.find(|i| i["label"] == "substring")
+		.expect("substring is offered");
+	assert!(sub["detail"].as_str().unwrap().starts_with("substring("), "{sub}");
+	assert_eq!(sub["documentation"]["kind"], "markdown");
+	assert!(!sub["documentation"]["value"].as_str().unwrap().is_empty());
+}

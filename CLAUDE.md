@@ -229,6 +229,10 @@ segments. `$HOME/.runfiles/` is machine-wide, at a **fixed path with no setting 
   async runtime this rewrite removed, for a server that answers one client, one message at a time.
 - Full document sync, deliberately: these files are small, and an incremental applier is a source of drift.
 - Every request is answered — an unanswered one hangs the client — and every notification is silent.
+- `FUNCTIONS` and `PROPERTIES` carry a signature and a one-sentence doc, so completion shows detail and
+  hover has something to say. Hover reads the word under the cursor rather than the tree, so it keeps working
+  while the document does not parse. `RUN.` is the only source whose keys are known ahead of time; `ARG`,
+  `ENV` and `FLAG` are whatever the caller passed, so there is nothing to offer for them.
 - **Shellcheck delegation**: `$` runs and `exec sh|bash|dash|ash|ksh` bodies are handed to shellcheck. An
   interpolation renders as one quoted placeholder, because it resolves to exactly one shell word; leaving the
   braces in would have shellcheck reporting on a command nobody wrote. Since a placeholder is a different width

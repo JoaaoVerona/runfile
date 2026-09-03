@@ -35,19 +35,77 @@ const BLOCK_SCOPED: &[&str] = &["shell", "parallel", "ignore-errors", "workdir",
 ///
 /// Exported so tooling offers exactly what exists. A test walks this list and
 /// rejects any name `extend` would call unknown.
-pub const PROPERTIES: &[(&str, bool)] = &[
-	("add-path", false),
-	("alias", false),
-	("confirm", false),
-	("env", true),
-	("env-file", false),
-	("hide", false),
-	("ignore-errors", true),
-	("only-in-directories", false),
-	("parallel", true),
-	("shell", true),
-	("watch", false),
-	("workdir", true),
+/// One property name, as editor tooling sees it. Named apart from the AST's
+/// `Property`, which is an occurrence of one in a file.
+pub struct KnownProperty {
+	pub name: &'static str,
+	/// Whether it may appear inside an `if` / `for` / `match` block, rather
+	/// than only at the top of a file.
+	pub block_scoped: bool,
+	pub doc: &'static str,
+}
+
+pub const PROPERTIES: &[KnownProperty] = &[
+	KnownProperty {
+		name: "add-path",
+		block_scoped: false,
+		doc: "Prepend a directory to `PATH`, relative to the runfiles parent.",
+	},
+	KnownProperty {
+		name: "alias",
+		block_scoped: false,
+		doc: "Another name this target answers to. Carries the target's namespace.",
+	},
+	KnownProperty {
+		name: "confirm",
+		block_scoped: false,
+		doc: "Ask before running. Skipped by `-y` and in CI.",
+	},
+	KnownProperty {
+		name: "env",
+		block_scoped: true,
+		doc: "Set an environment variable, addressed by sub-key: `.env.NAME = \"value\"`.",
+	},
+	KnownProperty {
+		name: "env-file",
+		block_scoped: false,
+		doc: "Load a `.env` file. Encrypted values are decrypted in memory.",
+	},
+	KnownProperty {
+		name: "hide",
+		block_scoped: false,
+		doc: "Keep this target out of `run :list`. It still runs.",
+	},
+	KnownProperty {
+		name: "ignore-errors",
+		block_scoped: true,
+		doc: "Keep going when a command fails.",
+	},
+	KnownProperty {
+		name: "only-in-directories",
+		block_scoped: false,
+		doc: "For `~/.runfiles/`: offer these targets only inside these directories.",
+	},
+	KnownProperty {
+		name: "parallel",
+		block_scoped: true,
+		doc: "Run this block's commands at once, each branch labelled in the output.",
+	},
+	KnownProperty {
+		name: "shell",
+		block_scoped: true,
+		doc: "Which shell `$` lines use.",
+	},
+	KnownProperty {
+		name: "watch",
+		block_scoped: false,
+		doc: "Re-run whenever a matching file changes. A `!` prefix excludes.",
+	},
+	KnownProperty {
+		name: "workdir",
+		block_scoped: true,
+		doc: "Where commands run, relative to the runfiles parent.",
+	},
 ];
 
 #[derive(Debug, thiserror::Error)]

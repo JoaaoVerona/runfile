@@ -322,7 +322,7 @@ Shell is still there. It is just marked.
 The VS Code extension gives you a Run button on every target, a task provider, a sidebar tree, and syntax
 highlighting. Install the `.vsix` from the [latest release](https://github.com/JoaaoVerona/runfile/releases).
 
-`runfile-lsp` provides diagnostics as you type — from the same parser `run` itself uses, so it never disagrees
+`runfile-lsp` provides diagnostics, completion, hover and go-to-target as you type — from the same parser `run` itself uses, so it never disagrees
 with what will actually happen. It also hands `$` lines and shell `exec` bodies to
 [shellcheck](https://www.shellcheck.net) when it is installed, mapping findings back to the lines you wrote.
 
