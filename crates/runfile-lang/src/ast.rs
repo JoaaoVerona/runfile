@@ -84,6 +84,10 @@ pub enum Expr {
 	Chain { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
 	Index { base: Box<Expr>, index: Box<Expr>, span: Span },
 	Call { name: String, args: Vec<Expr>, span: Span },
+	/// `$ cmd` or `exec cmd … end` in value position: run it, take stdout with
+	/// one trailing newline stripped. Replaces the old `capture()` function --
+	/// `$` and `exec` are now the only way to invoke anything external.
+	Capture { command: Option<Vec<InterpPart>>, body: Vec<Vec<InterpPart>>, span: Span },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +136,8 @@ impl Expr {
 			| Expr::Binary { span: s, .. }
 			| Expr::Chain { span: s, .. }
 			| Expr::Index { span: s, .. }
-			| Expr::Call { span: s, .. } => *s,
+			| Expr::Call { span: s, .. }
+			| Expr::Capture { span: s, .. } => *s,
 		}
 	}
 }

@@ -157,6 +157,7 @@ impl<'a> P<'a> {
 	fn statement(&mut self) -> Result<Statement, ParseError> {
 		let line = &self.lines[self.i];
 		let no = line.no;
+		let indent = line.indent;
 
 		if line.trimmed == "$" || line.trimmed.starts_with("$ ") {
 			return self.shell_run();
@@ -175,7 +176,11 @@ impl<'a> P<'a> {
 				let Some(eq) = rest.find('=') else { return err(no, "`let` needs `= value`") };
 				let name = rest[..eq].trim().to_string();
 				let base = offset + (text.len() - rest.len()) + eq + 1;
-				let value = parse_expr(rest[eq + 1..].trim(), base, no)?;
+				let raw_rhs = rest[eq + 1..].trim();
+				let value = match self.capture_rhs(raw_rhs, indent, base, no)? {
+					Some(e) => e,
+					None => parse_expr(raw_rhs, base, no)?,
+				};
 				Ok(Statement::Let { name, value, span })
 			}
 			"if" => {
@@ -237,7 +242,11 @@ impl<'a> P<'a> {
 			_ => {
 				if let Some(eq) = assignment_split(&text) {
 					let name = text[..eq].trim().to_string();
-					let value = parse_expr(text[eq + 1..].trim(), offset + eq + 1, no)?;
+					let raw_rhs = text[eq + 1..].trim();
+					let value = match self.capture_rhs(raw_rhs, indent, offset + eq + 1, no)? {
+						Some(e) => e,
+						None => parse_expr(raw_rhs, offset + eq + 1, no)?,
+					};
 					return Ok(Statement::Assign { name, value, span });
 				}
 				Ok(Statement::Call { expr: parse_expr(&text, offset, no)?, span })
@@ -293,16 +302,10 @@ impl<'a> P<'a> {
 		Ok(Statement::Exec { command: None, body, span: Span::new(offset, end, no) })
 	}
 
-	/// `exec <command…>` … `end`, where the terminator must sit at the opener's
-	/// indentation: a body containing its own `end` (ruby, lua) would otherwise
-	/// close the block early. The body is dedented by its own base indentation,
-	/// so `exec sudo tee file` writes a file without leading tabs.
-	fn exec_block(&mut self) -> Result<Statement, ParseError> {
-		let open = &self.lines[self.i];
-		let (no, offset, indent) = (open.no, open.offset, open.indent);
-		let cmd_text = open.trimmed.strip_prefix("exec ").unwrap().trim();
-		let command = to_parts(lexer::split_interp(cmd_text, offset, no)?, no)?;
-		let mut j = self.i + 1;
+	/// Read an `exec` body: lines until an `end` at `indent`, dedented by their
+	/// own base indentation.
+	fn exec_body(&mut self, indent: &str, no: usize) -> Result<(Vec<Vec<InterpPart>>, usize), ParseError> {
+		let mut j = self.i;
 		let mut raw: Vec<&Line> = Vec::new();
 		loop {
 			if j >= self.lines.len() {
@@ -315,12 +318,8 @@ impl<'a> P<'a> {
 			raw.push(l);
 			j += 1;
 		}
-		let base = raw
-			.iter()
-			.filter(|l| !l.trimmed.is_empty())
-			.map(|l| l.indent.len())
-			.min()
-			.unwrap_or(0);
+		let base =
+			raw.iter().filter(|l| !l.trimmed.is_empty()).map(|l| l.indent.len()).min().unwrap_or(0);
 		let body = raw
 			.iter()
 			.map(|l| {
@@ -330,6 +329,37 @@ impl<'a> P<'a> {
 			.collect::<Result<_, _>>()?;
 		let end = self.lines[j].offset + self.lines[j].raw.len();
 		self.i = j + 1;
+		Ok((body, end))
+	}
+
+	/// A `$ cmd` or `exec cmd … end` used as a value.
+	fn capture_rhs(&mut self, rhs: &str, indent: &str, offset: usize, no: usize) -> Result<Option<Expr>, ParseError> {
+		if let Some(cmd) = rhs.strip_prefix("$ ") {
+			let parts = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
+			let span = Span::new(offset, offset + rhs.len(), no);
+			return Ok(Some(Expr::Capture { command: None, body: vec![parts], span }));
+		}
+		if let Some(cmd) = rhs.strip_prefix("exec ") {
+			let command = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
+			let (body, end) = self.exec_body(indent, no)?;
+			let span = Span::new(offset, end, no);
+			return Ok(Some(Expr::Capture { command: Some(command), body, span }));
+		}
+		Ok(None)
+	}
+
+	/// `exec <command…>` … `end`, where the terminator must sit at the opener's
+	/// indentation: a body containing its own `end` (ruby, lua) would otherwise
+	/// close the block early. The body is dedented by its own base indentation,
+	/// so `exec sudo tee file` writes a file without leading tabs.
+	fn exec_block(&mut self) -> Result<Statement, ParseError> {
+		let open = &self.lines[self.i];
+		let (no, offset, indent) = (open.no, open.offset, open.indent);
+		let cmd_text = open.trimmed.strip_prefix("exec ").unwrap().trim();
+		let command = to_parts(lexer::split_interp(cmd_text, offset, no)?, no)?;
+		self.i += 1;
+		let indent = indent.to_string();
+		let (body, end) = self.exec_body(&indent, no)?;
 		Ok(Statement::Exec { command: Some(command), body, span: Span::new(offset, end, no) })
 	}
 }

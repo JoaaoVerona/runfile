@@ -94,3 +94,25 @@ fn unclosed_block_names_the_opening_line() {
 	let e = parse("for x in [1]\n\t$ echo hi\n").unwrap_err();
 	assert!(e.to_string().contains("line 1"), "{e}");
 }
+
+#[test]
+fn dollar_in_value_position_captures_stdout() {
+	let x = t("let v = $ git rev-parse HEAD\n$ echo {{ v }}\n");
+	let Statement::Let { value: Expr::Capture { command, body, .. }, .. } = &x.body.statements[0]
+	else {
+		panic!("not a capture")
+	};
+	assert!(command.is_none(), "default shell");
+	assert_eq!(body.len(), 1);
+}
+
+#[test]
+fn exec_in_value_position_captures_a_block() {
+	let x = t("let v = exec node\n\tconsole.log(1)\nend\n$ echo {{ v }}\n");
+	let Statement::Let { value: Expr::Capture { command: Some(_), body, .. }, .. } =
+		&x.body.statements[0]
+	else {
+		panic!("not a capture")
+	};
+	assert_eq!(body.len(), 1);
+}
