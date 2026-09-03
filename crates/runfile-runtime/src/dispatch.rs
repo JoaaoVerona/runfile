@@ -110,7 +110,7 @@ impl<'a> Host<'a> {
 		parse_args(&mut scope, args);
 		scope.ask = self.ask;
 		scope.base_dir = target.anchor.clone();
-		scope.private_keys = (self.keys)();
+		scope.private_keys = runfile_lang::Keys::new(self.keys);
 
 		// `_shared.run` is the globals analog: its properties and bindings apply
 		// to every target in the directory, so it is evaluated first into the

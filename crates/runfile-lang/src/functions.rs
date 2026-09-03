@@ -382,7 +382,7 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		"decrypt" if n == 2 => (|| {
 			let src = resolve(&sc.base_dir, s(0)?);
 			let dst = resolve(&sc.base_dir, s(1)?);
-			decrypt_file(&src, &dst, &sc.private_keys)
+			decrypt_file(&src, &dst, sc.private_keys.get())
 				.map(|()| V::Str(String::new()))
 				.map_err(other)
 		})(),

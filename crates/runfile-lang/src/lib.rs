@@ -15,7 +15,7 @@ pub mod span;
 pub mod value;
 
 pub use ast::{Block, Expr, InterpPart, Property, SourceKind, Statement, Target};
-pub use eval::{EvalError, Scope, eval};
+pub use eval::{EvalError, Keys, Scope, eval};
 pub use parser::{ParseError, parse};
 pub use span::Span;
 pub use value::{TypeError, Value};

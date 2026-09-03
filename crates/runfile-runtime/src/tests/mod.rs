@@ -2,6 +2,7 @@
 //! model, so a mock shell would test nothing.
 
 mod exec;
+mod keys;
 mod parallel;
 mod walk;
 

@@ -16,6 +16,16 @@ pub enum EnvError {
 	Build(String),
 }
 
+/// Adapts the language crate's deferred key pool to the env crate's provider
+/// trait. Neither crate depends on the other, so the bridge lives here.
+pub struct Provider(pub runfile_lang::Keys);
+
+impl PrivateKeyProvider for Provider {
+	fn keys(&self) -> &[String] {
+		self.0.get()
+	}
+}
+
 /// Merge process env, the declared env files and `.env` into one map, with
 /// `.add-path` entries prepended to PATH.
 pub fn build(

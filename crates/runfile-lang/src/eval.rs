@@ -18,6 +18,11 @@ pub enum EvalError {
 	Unbound { name: String, line: usize },
 	#[error("line {line}: no argument `--{name}` was given")]
 	MissingArg { name: String, line: usize },
+	#[error(
+		"line {line}: no argument `--{name}` was given; \
+		 it was passed as a flag -- arguments take a value, as `--{name}=<value>`"
+	)]
+	MissingArgSawFlag { name: String, line: usize },
 	#[error("line {line}: `{name}` is not set in the environment")]
 	MissingEnv { name: String, line: usize },
 	#[error("line {line}: unknown `RUN.{0}`", .name)]
@@ -67,7 +72,48 @@ pub struct Scope {
 	pub base_dir: std::path::PathBuf,
 	/// Private keys `decrypt` may try. Supplied by the host so the language
 	/// crate never has to know about credential stores.
-	pub private_keys: Vec<String>,
+	pub private_keys: Keys,
+}
+
+/// A deferred, memoized key pool.
+///
+/// Loading is deferred because the pool comes from an OS credential store: a
+/// locked keyring blocks on an unlock prompt, so a target that decrypts nothing
+/// must never ask for it. Memoized because a run that decrypts twice should
+/// still prompt at most once.
+#[derive(Clone)]
+pub struct Keys {
+	loader: fn() -> Vec<String>,
+	cache: std::sync::Arc<std::sync::OnceLock<Vec<String>>>,
+}
+
+impl Keys {
+	pub fn new(loader: fn() -> Vec<String>) -> Self {
+		Self {
+			loader,
+			cache: std::sync::Arc::new(std::sync::OnceLock::new()),
+		}
+	}
+
+	/// Load on first call, then hand back the same pool forever.
+	pub fn get(&self) -> &[String] {
+		self.cache.get_or_init(self.loader)
+	}
+}
+
+impl Default for Keys {
+	fn default() -> Self {
+		Self::new(Vec::new)
+	}
+}
+
+impl std::fmt::Debug for Keys {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		// Never print the pool itself.
+		f.debug_struct("Keys")
+			.field("loaded", &self.cache.get().is_some())
+			.finish()
+	}
 }
 
 impl Scope {
@@ -82,7 +128,7 @@ impl Scope {
 			in_try: false,
 			ask: None,
 			base_dir: std::path::PathBuf::from("."),
-			private_keys: Vec::new(),
+			private_keys: Keys::default(),
 		}
 	}
 
@@ -195,14 +241,22 @@ fn source(kind: SourceKind, key: Option<&str>, sc: &Scope, line: usize) -> Resul
 		SourceKind::Args => Ok(Value::List(sc.positional.iter().cloned().map(Value::Str).collect())),
 		SourceKind::Arg => {
 			let k = key.unwrap_or_default();
-			sc.args
-				.get(k)
-				.cloned()
-				.map(Value::Str)
-				.ok_or_else(|| EvalError::MissingArg {
-					name: k.to_string(),
-					line,
-				})
+			sc.args.get(k).cloned().map(Value::Str).ok_or_else(|| {
+				// `--x value` parses as a flag plus a positional, since nothing
+				// declares which names take values. It cannot be guessed, but it
+				// can be explained at the point it goes wrong.
+				if sc.flags.iter().any(|f| f == k) {
+					EvalError::MissingArgSawFlag {
+						name: k.to_string(),
+						line,
+					}
+				} else {
+					EvalError::MissingArg {
+						name: k.to_string(),
+						line,
+					}
+				}
+			})
 		}
 		SourceKind::Env => {
 			let k = key.unwrap_or_default();

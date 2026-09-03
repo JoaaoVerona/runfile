@@ -52,7 +52,11 @@ impl Project {
 			.env("XDG_STATE_HOME", self.home.path())
 			.env("APPDATA", self.home.path())
 			.env_remove("CI")
-			.env_remove("GITHUB_ACTIONS");
+			.env_remove("GITHUB_ACTIONS")
+			// A developer bypassing the gate in their own shell must not
+			// silently disable the tests that check the gate.
+			.env_remove("RUNFILE_SKIP_PREPARE")
+			.env_remove("RUNFILE_PRIVATE_KEYS");
 		c
 	}
 }
@@ -458,4 +462,189 @@ fn add_path_anchors_to_the_runfiles_parent_not_the_workdir() {
 		std::fs::read_to_string(p.dir.path().join("sub/out.txt")).unwrap(),
 		"found"
 	);
+}
+
+// ------------------------------------------------------------ init and names
+
+#[test]
+fn init_creates_a_target_that_immediately_runs() {
+	// The starter file is only worth shipping if `run :init && run hello`
+	// works, so the test does exactly that.
+	let p = project(&[]);
+	let o = p.run(&[":init"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("run hello"), "{}", out(&o));
+
+	let o = p.run(&["-y", "hello"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("hello, world"), "{}", out(&o));
+
+	let o = p.run(&["-y", "hello", "--name=you"]);
+	assert!(out(&o).contains("hello, you"), "{}", out(&o));
+}
+
+#[test]
+fn init_refuses_when_a_target_is_already_there() {
+	let p = project(&[(MARK, &marker("out.txt"))]);
+	p.run(&[":init"]);
+	let o = p.run(&[":init"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("already exists"), "{}", err(&o));
+}
+
+#[test]
+fn list_names_prints_one_bare_name_per_line() {
+	let p = project(&[
+		("runfiles/a.run", "# A\n$ true\n"),
+		("runfiles/b.run", "# B\n$ true\n"),
+		("runfiles/c.run", ".hide = true\n$ true\n"),
+	]);
+	let o = p.run(&[":list", "--names"]);
+	let text = out(&o);
+	let mut names: Vec<&str> = text.lines().collect();
+	names.sort_unstable();
+	assert_eq!(names, ["a", "b"], "hidden targets stay out of completion too");
+}
+
+// ------------------------------------------------------------- completions
+
+#[test]
+fn completions_are_produced_for_each_supported_shell() {
+	let p = project(&[]);
+	for sh in ["bash", "zsh", "fish", "powershell"] {
+		let o = p.run(&[":completions", sh]);
+		assert!(o.status.success(), "{sh}: {}", err(&o));
+		assert!(out(&o).contains("run :list --names"), "{sh} must ask for names");
+	}
+}
+
+#[test]
+fn an_unknown_shell_is_rejected() {
+	let p = project(&[]);
+	let o = p.run(&[":completions", "nushell"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("bash, zsh, fish"), "{}", err(&o));
+}
+
+#[test]
+fn completions_with_no_shell_prints_usage() {
+	let p = project(&[]);
+	let o = p.run(&[":completions"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("usage:"), "{}", err(&o));
+}
+
+/// Source the generated bash script and ask it to complete, the way the shell
+/// would. Without this the scripts are only ever eyeballed.
+#[cfg(unix)]
+fn complete_bash(p: &Project, line: &str) -> Vec<String> {
+	let script = out(&p.run(&[":completions", "bash"]));
+	let path = p.dir.path().join("comp.bash");
+	std::fs::write(&path, &script).unwrap();
+	// COMP_WORDS/COMP_CWORD are what bash-completion sets before calling the
+	// function. Splitting on a space already yields an empty final word for a
+	// line ending in one, which is exactly the "fresh word" case.
+	let words: Vec<String> = line.split(' ').map(|w| format!("'{w}'")).collect();
+	let prog = format!(
+		"source {}\nCOMP_WORDS=({})\nCOMP_CWORD={}\n_run\nprintf '%s\\n' \"${{COMPREPLY[@]}}\"",
+		path.display(),
+		words.join(" "),
+		words.len() - 1,
+	);
+	let o = Command::new("bash")
+		.arg("-c")
+		.arg(&prog)
+		.current_dir(p.dir.path())
+		.env(
+			"PATH",
+			format!("{}:{}", bin_dir().display(), std::env::var("PATH").unwrap()),
+		)
+		.env("HOME", p.home.path())
+		.output()
+		.expect("bash");
+	String::from_utf8_lossy(&o.stdout)
+		.lines()
+		.filter(|l| !l.is_empty())
+		.map(String::from)
+		.collect()
+}
+
+#[cfg(unix)]
+fn bin_dir() -> &'static Path {
+	Path::new(env!("CARGO_BIN_EXE_run")).parent().unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_target_names() {
+	let p = project(&[("runfiles/deploy.run", "$ true\n"), ("runfiles/dev.run", "$ true\n")]);
+	let mut got = complete_bash(&p, "run de");
+	got.sort();
+	assert_eq!(got, ["deploy", "dev"], "names come from the binary");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_subcommands_after_a_colon() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let got = complete_bash(&p, "run :l");
+	assert_eq!(got, [":list"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_flags_after_a_dash() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let got = complete_bash(&p, "run --dry");
+	assert_eq!(got, ["--dry-run"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_env_subcommands() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let mut got = complete_bash(&p, "run :env in");
+	got.sort();
+	assert_eq!(got, ["init", "inject"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_offers_names_after_a_leading_flag() {
+	// A flag before the target must not make the completer think a target was
+	// already chosen.
+	let p = project(&[("runfiles/deploy.run", "$ true\n")]);
+	let got = complete_bash(&p, "run --dry-run dep");
+	assert_eq!(got, ["deploy"]);
+}
+
+#[test]
+fn passing_an_argument_with_a_space_explains_itself() {
+	// `--name you` is a flag plus a positional, because nothing declares which
+	// names take values. The error has to say so, or it reads as a bug.
+	let p = project(&[("runfiles/greet.run", "$ echo {{ ARG.name }}\n")]);
+	let o = p.run(&["greet", "--name", "you"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("--name=<value>"), "{}", err(&o));
+}
+
+#[test]
+fn a_genuinely_absent_argument_says_only_that() {
+	let p = project(&[("runfiles/greet.run", "$ echo {{ ARG.name }}\n")]);
+	let o = p.run(&["greet"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("no argument `--name`"), "{}", err(&o));
+	assert!(!err(&o).contains("passed as a flag"), "no flag was passed: {}", err(&o));
+}
+
+#[test]
+fn a_flag_used_as_a_flag_is_unaffected() {
+	// A flag is a bool, branched on with `if` -- `?` is the default operator,
+	// not a ternary.
+	let p = project(&[(
+		"runfiles/f.run",
+		"if FLAG.force\n\t$ echo on\nelse\n\t$ echo off\nend\n",
+	)]);
+	assert!(out(&p.run(&["f", "--force"])).contains("on"));
+	assert!(out(&p.run(&["f"])).contains("off"));
 }

@@ -106,7 +106,11 @@ pub fn run_target_with(target: &Target, base: Props, r: &mut Runner<'_>) -> Resu
 
 	// Env before the body: `.env-file` has to be readable by `{{ ENV.x }}`.
 	let workdir = cwd(&props, &r.anchor);
-	let built = crate::env::build(&props, &r.anchor, &workdir, None)?;
+	// The same deferred pool the `decrypt` function uses, so an encrypted
+	// `.env-file` value resolves -- and an unencrypted one still never touches
+	// the credential store.
+	let keys = crate::env::Provider(r.scope.private_keys.clone());
+	let built = crate::env::build(&props, &r.anchor, &workdir, Some(&keys))?;
 	r.scope.env = built.clone();
 	r.env = built.into_iter().collect();
 	r.env.sort();

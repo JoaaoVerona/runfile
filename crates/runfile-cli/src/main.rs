@@ -8,6 +8,8 @@
 mod ci_detect;
 mod cmd_env;
 mod cmd_update;
+mod completions;
+mod init;
 mod list;
 mod prepare;
 mod prompt;
@@ -21,7 +23,9 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 run <target> [args...]        run a target
 run :list                     list every target
+run :init                     create runfiles/ with an example target
 run :env <subcommand>         manage .env files
+run :completions <shell>      print a completion script
 run :update                   update the runfile binary
 
   -y, --yes          skip confirmation prompts
@@ -90,7 +94,27 @@ fn real_main() -> Result<ExitCode, String> {
 		}
 		":list" => {
 			let cat = catalog(&flags)?;
-			list::print(&cat);
+			// `--names` is the machine-readable form the completion scripts read.
+			if args.iter().any(|a| a == "--names") {
+				list::print_names(&cat);
+			} else {
+				list::print(&cat);
+			}
+			return Ok(ExitCode::SUCCESS);
+		}
+		":completions" => {
+			let shell = args
+				.first()
+				.ok_or("usage: run :completions <bash|zsh|fish|powershell>")?;
+			print!("{}", completions::script(shell)?);
+			return Ok(ExitCode::SUCCESS);
+		}
+		":init" => {
+			let dir = match &flags.dir {
+				Some(d) => d.clone(),
+				None => std::env::current_dir().map_err(|e| e.to_string())?,
+			};
+			print!("{}", init::init(&dir)?);
 			return Ok(ExitCode::SUCCESS);
 		}
 		t if t.starts_with(':') => return Err(format!("unknown command `{t}`\n\n{USAGE}")),
