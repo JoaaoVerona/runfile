@@ -53,19 +53,33 @@ fn split_command(cmd: &str) -> Vec<String> {
 	out
 }
 
+/// Shells that take `-e` and mean stop-on-failure by it.
+///
+/// `$ x` must behave exactly like `exec sh` with `x` as its body, so the
+/// runner's stop-on-failure default has to reach an explicitly named shell
+/// too. Detection is on the *first* word only, which is what keeps
+/// `exec docker run -i alpine sh` and `exec ssh host bash` out of it: there
+/// the program is docker and ssh, and the inner shell is not ours to flag.
+fn is_shell(program: &Path) -> bool {
+	let Some(name) = program.file_name().and_then(|n| n.to_str()) else {
+		return false;
+	};
+	let name = name.strip_suffix(".exe").unwrap_or(name);
+	matches!(name, "sh" | "bash" | "dash" | "ash" | "zsh" | "ksh" | "busybox")
+}
+
 pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
-	let (program, args): (PathBuf, Vec<String>) = match s.command {
+	let (program, mut args): (PathBuf, Vec<String>) = match s.command {
 		Some(cmd) => {
 			let parts = split_command(cmd);
 			let (head, rest) = parts.split_first().ok_or(ExecError::NoShell)?;
 			(PathBuf::from(head), rest.to_vec())
 		}
-		// `$` gets the runner's defaults, including stop-on-failure.
-		None => (
-			crate::shell::default_shell().ok_or(ExecError::NoShell)?,
-			vec!["-e".into()],
-		),
+		None => (crate::shell::default_shell().ok_or(ExecError::NoShell)?, Vec::new()),
 	};
+	if is_shell(&program) {
+		args.insert(0, "-e".into());
+	}
 	let label = s
 		.command
 		.map(str::to_string)

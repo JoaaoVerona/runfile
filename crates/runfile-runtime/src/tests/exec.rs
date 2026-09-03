@@ -53,3 +53,25 @@ fn interpolation_quotes_so_a_dollar_cannot_expand() {
 	let mut d = Recorder::default();
 	run_src("let v = \"$HOME\"\n$ test {{ v }} = '$HOME'\n", &mut d).expect("quoted, not expanded");
 }
+
+#[test]
+fn an_explicitly_named_shell_gets_the_same_stop_on_failure_as_dollar() {
+	// `$ x` must behave exactly like `exec sh` with x as its body.
+	let mut d = Recorder::default();
+	let a = run_src("$ false\n$ echo unreachable\n", &mut d).unwrap_err();
+	let b = run_src("exec sh\n\tfalse\n\techo unreachable\nend\n", &mut d).unwrap_err();
+	assert!(a.to_string().contains("status 1"), "{a}");
+	assert!(b.to_string().contains("status 1"), "{b}");
+}
+
+#[test]
+fn a_non_shell_command_is_spawned_verbatim() {
+	// The program here is tee, not a shell, so nothing is injected into its
+	// arguments -- the same reasoning keeps `exec ssh host bash` untouched.
+	let f = std::env::temp_dir().join("runfile-verbatim-test");
+	let _ = std::fs::remove_file(&f);
+	let mut d = Recorder::default();
+	run_src(&format!("exec tee {}\n\tline\nend\n", f.display()), &mut d).expect("tee runs");
+	assert_eq!(std::fs::read_to_string(&f).unwrap(), "line");
+	let _ = std::fs::remove_file(&f);
+}
