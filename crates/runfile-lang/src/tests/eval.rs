@@ -191,17 +191,26 @@ fn number_of_a_number_is_itself() {
 fn every_dispatched_function_name_is_also_exported() {
 	// The counterpart of the test above, and the one that was missing: `min`
 	// worked but was absent from the list, so completion never offered it and
-	// nothing noticed. Reads the dispatcher's own match arms.
-	let src = concat!(
-		include_str!("../functions.rs"),
-		// The list itself is in this file too; the regex below skips it by
-		// requiring the `=>` that only a match arm has.
-		""
-	);
+	// nothing noticed. Reads the dispatchers' own match arms.
+	//
+	// Bounded to `call` and `call_io`, because other functions in the file match
+	// on strings too -- `now_formatted` on its format names -- and those are not
+	// function names.
+	let src = include_str!("../functions.rs");
 	let mut missing: Vec<String> = Vec::new();
 	let mut seen = 0usize;
-	for line in src.lines().map(str::trim) {
-		let Some(rest) = line.strip_prefix('"') else { continue };
+	let mut inside = false;
+	for line in src.lines() {
+		if line.starts_with("fn ") || line.starts_with("pub fn ") || line.starts_with("pub(crate) fn ") {
+			inside = line.contains(" call(") || line.contains(" call_io(");
+			continue;
+		}
+		if !inside {
+			continue;
+		}
+		let Some(rest) = line.trim().strip_prefix('"') else {
+			continue;
+		};
 		let Some((name, after)) = rest.split_once('"') else {
 			continue;
 		};
@@ -244,4 +253,151 @@ fn join_path_uses_the_platform_separator() {
 	assert_eq!(joined, Value::Str(expected.to_string_lossy().into_owned()));
 	// An absolute later segment replaces what came before, as `Path::join` does.
 	assert_eq!(v("join_path(\"a\", \"/b\")"), Value::Str("/b".into()));
+}
+
+// ---- the functions that were missed, restored
+
+#[test]
+fn capitalize_titles_every_word() {
+	assert_eq!(
+		v("capitalize(\"hello wide world\")"),
+		Value::Str("Hello Wide World".into())
+	);
+	assert_eq!(v("capitalize(\"\")"), Value::Str(String::new()));
+	// Only the first character changes; the rest of a word is left alone.
+	assert_eq!(v("capitalize(\"iPhone x\")"), Value::Str("IPhone X".into()));
+}
+
+#[test]
+fn substring_counts_characters_not_bytes() {
+	assert_eq!(v("substring(\"hello\", 1)"), Value::Str("ello".into()));
+	assert_eq!(v("substring(\"hello\", 1, 3)"), Value::Str("ell".into()));
+	// A multi-byte character must not be cut in half.
+	assert_eq!(v("substring(\"héllo\", 1, 2)"), Value::Str("él".into()));
+	assert_eq!(v("substring(\"hi\", 9)"), Value::Str(String::new()));
+}
+
+#[test]
+fn escape_renders_a_string_on_one_line() {
+	assert_eq!(v("escape(\"a\\nb\")"), Value::Str("a\\nb".into()));
+	assert_eq!(v("escape(\"say \\\"hi\\\"\")"), Value::Str("say \\\"hi\\\"".into()));
+}
+
+#[test]
+fn repeat_refuses_an_absurd_count() {
+	assert_eq!(v("repeat(\"ab\", 3)"), Value::Str("ababab".into()));
+	assert_eq!(v("repeat(\"ab\", 0)"), Value::Str(String::new()));
+	assert!(boom("repeat(\"ab\", 100000000)").contains("more than"));
+	assert!(boom("repeat(\"ab\", -1)").contains("non-negative"));
+}
+
+#[test]
+fn url_encoding_round_trips() {
+	assert_eq!(v("url_encode(\"a b/c?d\")"), Value::Str("a%20b%2Fc%3Fd".into()));
+	assert_eq!(v("url_decode(\"a%20b%2Fc\")"), Value::Str("a b/c".into()));
+	assert_eq!(v("url_decode(url_encode(\"héllo &=\"))"), Value::Str("héllo &=".into()));
+	assert!(boom("url_decode(\"a%zz\")").contains("percent-encoding"));
+}
+
+#[test]
+fn the_hashes_match_their_published_vectors() {
+	assert_eq!(
+		v("sha256(\"abc\")"),
+		Value::Str("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into())
+	);
+	assert_eq!(v("md5(\"abc\")"), Value::Str("900150983cd24fb0d6963f7d28e17f72".into()));
+}
+
+#[test]
+fn a_uuid_looks_like_one_and_never_repeats() {
+	let Value::Str(a) = v("uuid()") else { panic!("a string") };
+	let Value::Str(b) = v("uuid()") else { panic!("a string") };
+	assert_ne!(a, b);
+	assert_eq!(a.len(), 36);
+	let parts: Vec<&str> = a.split('-').collect();
+	assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), [8, 4, 4, 4, 12]);
+	assert!(a.starts_with(|c: char| c.is_ascii_hexdigit()));
+	assert_eq!(&parts[2][..1], "4", "version 4");
+	assert!("89ab".contains(&parts[3][..1]), "variant 1: {a}");
+}
+
+#[test]
+fn now_formats_the_clock_without_a_date_library() {
+	let Value::Str(iso) = v("now()") else {
+		panic!("a string")
+	};
+	assert_eq!(iso.len(), 20, "{iso}");
+	assert!(iso.ends_with('Z') && iso.contains('T'), "{iso}");
+	let Value::Str(unix) = v("now(\"unix\")") else {
+		panic!("a string")
+	};
+	assert!(unix.parse::<u64>().unwrap() > 1_700_000_000, "{unix}");
+	assert_eq!(v("now(\"date\")").to_string().len(), 10);
+	assert!(boom("now(\"tuesday\")").contains("unknown time format"));
+}
+
+#[test]
+fn the_calendar_conversion_matches_known_dates() {
+	// The part of `now` worth pinning: the epoch, a leap day, and a year
+	// boundary, none of which a clock-reading test would ever exercise.
+	for (secs, expect) in [
+		(0i64, (1970, 1, 1, 0, 0, 0)),
+		(951_782_400, (2000, 2, 29, 0, 0, 0)),
+		(1_709_164_800, (2024, 2, 29, 0, 0, 0)),
+		(1_735_689_599, (2024, 12, 31, 23, 59, 59)),
+	] {
+		assert_eq!(crate::functions::civil_parts_for_test(secs), expect, "at {secs}");
+	}
+}
+
+#[test]
+fn json_get_reads_a_dotted_path() {
+	let doc = "{\"users\": [{\"name\": \"ana\", \"admin\": true}], \"n\": 2}";
+	assert_eq!(
+		v(&format!("json_get(\"{}\", \"users.0.name\")", doc.replace('"', "\\\""))),
+		Value::Str("ana".into())
+	);
+	let g = |p: &str| v(&format!("json_get(\"{}\", \"{p}\")", doc.replace('"', "\\\"")));
+	assert_eq!(g("n"), Value::Num(2.0), "a number comes back as one");
+	assert_eq!(g("users.0.admin"), Value::Bool(true));
+	assert!(boom(&format!("json_get(\"{}\", \"nope\")", doc.replace('"', "\\\""))).contains("no value at"));
+	assert!(boom("json_get(\"not json\", \"a\")").contains("json_get"));
+}
+
+#[test]
+fn json_set_writes_a_path_and_builds_what_is_missing() {
+	let set = |doc: &str, path: &str, val: &str| {
+		v(&format!(
+			"json_set(\"{}\", \"{path}\", \"{}\")",
+			doc.replace('"', "\\\""),
+			val.replace('"', "\\\"")
+		))
+	};
+	assert_eq!(
+		set("{\"a\":1}", "a", "2"),
+		Value::Str("{\"a\":2}".into()),
+		"a value that parses as JSON goes in as JSON"
+	);
+	assert_eq!(
+		set("{}", "name", "bob"),
+		Value::Str("{\"name\":\"bob\"}".into()),
+		"and anything else as a string"
+	);
+	assert_eq!(
+		set("{}", "a.b", "1"),
+		Value::Str("{\"a\":{\"b\":1}}".into()),
+		"objects are created on demand"
+	);
+	assert_eq!(
+		set("{}", "a.0", "1"),
+		Value::Str("{\"a\":[1]}".into()),
+		"a numeric segment makes an array"
+	);
+}
+
+#[test]
+fn power_rejects_a_result_that_is_not_a_number() {
+	assert_eq!(v("power(2, 10)"), Value::Num(1024.0));
+	assert_eq!(v("power(9, 0.5)"), Value::Num(3.0));
+	assert!(boom("power(0, -1)").contains("finite"));
 }

@@ -307,7 +307,7 @@ Shell is still there. It is just marked.
 | Watch mode, built-in | ✅ | ❌ | ❌ | ✅ |
 | Shell completions | ✅ | ❌ | ✅ | ✅ |
 | Hidden targets | ✅ | ❌ | ✅ | ✅ |
-| Built-in string functions (upper, replace, trim, regex, base64, …) | ✅ | ❌ | ✅ | ✅ |
+| Built-in functions (strings, regex, paths, JSON, hashes, time) | ✅ | ❌ | ✅ | ✅ |
 | Parallel execution | ✅ | ✅ | ❌ | ✅ |
 | Single static binary | ✅ | ✅ | ✅ | ✅ |
 | Native Windows binary (`$` lines use Git Bash) | ✅ | ❌ | ✅ | ✅ |

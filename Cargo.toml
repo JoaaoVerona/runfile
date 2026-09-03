@@ -23,6 +23,7 @@ keyring-core = "=1.0.0"
 libc = "=0.2.186"
 linux-keyutils-keyring-store = "=1.0.0"
 notify = { default-features = false, features = ["macos_fsevent"], version = "=8.2.0" }
+md-5 = "=0.11.0"
 regex = "=1.12.3"
 runfile-crypto = { path = "crates/runfile-crypto" }
 runfile-discovery = { path = "crates/runfile-discovery" }

@@ -294,9 +294,12 @@ functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKil
 `VAR.` (replaced by `let`), and `RUNFILE_TARGET`. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
 `shlex`.
 
-Deliberately **not** carried over, none of them used anywhere in the 1,005-target corpus: `capitalize`,
-`substring`, `escape`, `repeat`, `url_encode`, `url_decode`, `sha256`, `md5`, `uuid`, `now`, `json_get`,
-`json_set`, `power`. They can come back if anyone wants them; nothing about the design refuses them.
+Every other function from the old surface is present. Seventeen were missing at one point, dropped by
+oversight rather than decision, and all are back. `try` is the one exception, replaced by `a ? b`.
+
+`now` and `uuid` are read-only, so a preview shows a real value rather than a placeholder: `--dry-run` is
+about not changing anything. `json_get` returns a number, bool or string directly, and an object or array as
+its compact JSON text, since the language has no map type.
 
 ## Testing Requirements
 

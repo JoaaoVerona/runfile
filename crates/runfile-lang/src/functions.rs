@@ -52,6 +52,159 @@ pub fn call(name: &str, args: &[Expr], sc: &mut Scope, sp: Span) -> Result<Value
 
 	Ok(match name {
 		// ---- strings
+		"capitalize" => {
+			// The first character of every whitespace-separated word, the rest
+			// untouched: `"hello world"` becomes `"Hello World"`.
+			want!(1, "1 argument");
+			let mut out = String::with_capacity(s(0)?.len());
+			let mut at_start = true;
+			for c in s(0)?.chars() {
+				if c.is_whitespace() {
+					at_start = true;
+					out.push(c);
+				} else if at_start {
+					out.extend(c.to_uppercase());
+					at_start = false;
+				} else {
+					out.push(c);
+				}
+			}
+			Value::Str(out)
+		}
+		"substring" => {
+			// Indices count Unicode scalar values, not bytes, so a multi-byte
+			// character cannot be cut in half.
+			if n != 2 && n != 3 {
+				return Err(arity(name, "2 or 3 arguments", n, sp));
+			}
+			let start = count(num(1)?, name, "start", sp)?;
+			let it = s(0)?.chars().skip(start);
+			Value::Str(match n {
+				3 => it.take(count(num(2)?, name, "length", sp)?).collect(),
+				_ => it.collect(),
+			})
+		}
+		"escape" => {
+			// A printable, single-line rendering: control characters and
+			// double quotes become backslash escapes. Not shell quoting, which
+			// interpolation does for you, and not a JSON encoder.
+			want!(1, "1 argument");
+			let mut out = String::with_capacity(s(0)?.len());
+			for c in s(0)?.chars() {
+				match c {
+					'\\' => out.push_str("\\\\"),
+					'\n' => out.push_str("\\n"),
+					'\r' => out.push_str("\\r"),
+					'\t' => out.push_str("\\t"),
+					'\0' => out.push_str("\\0"),
+					'"' => out.push_str("\\\""),
+					c if (c as u32) < 0x20 => out.push_str(&format!("\\x{:02x}", c as u32)),
+					c => out.push(c),
+				}
+			}
+			Value::Str(out)
+		}
+		"repeat" => {
+			want!(2, "2 arguments");
+			let times = count(num(1)?, name, "count", sp)?;
+			// A bound, because `repeat(x, 1e9)` is a typo rather than a plan.
+			const MAX: usize = 8 * 1024 * 1024;
+			if s(0)?.len().checked_mul(times).is_none_or(|b| b > MAX) {
+				return Err(EvalError::Other {
+					msg: format!("`repeat` would build more than {MAX} bytes"),
+					line: sp.line,
+				});
+			}
+			Value::Str(s(0)?.repeat(times))
+		}
+		"url_encode" => {
+			want!(1, "1 argument");
+			let mut out = String::new();
+			for &b in s(0)?.as_bytes() {
+				match b {
+					b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+					_ => out.push_str(&format!("%{b:02X}")),
+				}
+			}
+			Value::Str(out)
+		}
+		"url_decode" => {
+			want!(1, "1 argument");
+			Value::Str(url_decode(s(0)?).ok_or_else(|| EvalError::Other {
+				msg: format!("`{}` is not valid percent-encoding", s(0).unwrap_or_default()),
+				line: sp.line,
+			})?)
+		}
+		"sha256" => {
+			want!(1, "1 argument");
+			use sha2::{Digest, Sha256};
+			Value::Str(hex::encode(Sha256::digest(s(0)?.as_bytes())))
+		}
+		"md5" => {
+			// Not secure, and not offered as though it were: it is here for
+			// tools that fingerprint content with it.
+			want!(1, "1 argument");
+			use md5::{Digest, Md5};
+			Value::Str(hex::encode(Md5::digest(s(0)?.as_bytes())))
+		}
+		"uuid" => {
+			want!(0, "no arguments");
+			Value::Str(uuid_v4())
+		}
+		"now" => {
+			// Read-only, so a preview shows the real time rather than a
+			// placeholder: `--dry-run` is about not changing anything.
+			if n > 1 {
+				return Err(arity(name, "0 or 1 arguments", n, sp));
+			}
+			let format = if n == 1 { s(0)? } else { "iso" };
+			Value::Str(now_formatted(format).ok_or_else(|| EvalError::Other {
+				msg: format!(
+					"unknown time format `{format}`; expected one of: unix, unix-ms, iso, \
+					 iso-date, iso-time, year, month, day, hour, minute, second"
+				),
+				line: sp.line,
+			})?)
+		}
+		"json_get" => {
+			want!(2, "2 arguments");
+			let doc: serde_json::Value = serde_json::from_str(s(0)?).map_err(|e| EvalError::Other {
+				msg: format!("`json_get`: {e}"),
+				line: sp.line,
+			})?;
+			let found = json_path(&doc, s(1)?).ok_or_else(|| EvalError::Other {
+				msg: format!("`json_get`: no value at `{}`", s(1).unwrap_or_default()),
+				line: sp.line,
+			})?;
+			json_to_value(found)
+		}
+		"json_set" => {
+			want!(3, "3 arguments");
+			let mut doc: serde_json::Value = serde_json::from_str(s(0)?).map_err(|e| EvalError::Other {
+				msg: format!("`json_set`: {e}"),
+				line: sp.line,
+			})?;
+			// A value that parses as JSON goes in as that; anything else is a
+			// string, so `json_set(d, "name", "bob")` does what it looks like.
+			let fresh = serde_json::from_str(s(2)?)
+				.unwrap_or_else(|_| serde_json::Value::String(s(2).unwrap_or_default().to_string()));
+			json_set_at(&mut doc, s(1)?, fresh).map_err(|m| EvalError::Other {
+				msg: format!("`json_set`: {m}"),
+				line: sp.line,
+			})?;
+			Value::Str(doc.to_string())
+		}
+		"power" => {
+			want!(2, "2 arguments");
+			let r = num(0)?.powf(num(1)?);
+			if !r.is_finite() {
+				return Err(EvalError::Other {
+					msg: "`power` result is not a finite number".into(),
+					line: sp.line,
+				});
+			}
+			Value::Num(r)
+		}
 		"to_upper" => {
 			want!(1, "1 argument");
 			Value::Str(s(0)?.to_uppercase())
@@ -301,6 +454,191 @@ use std::path::{Path, PathBuf};
 
 /// Relative paths anchor to the target's directory, the same rule cwd and
 /// `.env-file` follow, so one anchor explains all of them.
+/// A count argument: a whole number, not negative.
+fn count(x: f64, name: &str, arg: &str, sp: Span) -> Result<usize, EvalError> {
+	if x < 0.0 || x.fract() != 0.0 || x > usize::MAX as f64 {
+		return Err(EvalError::Other {
+			msg: format!("`{name}` needs a whole, non-negative `{arg}`, got {x}"),
+			line: sp.line,
+		});
+	}
+	Ok(x as usize)
+}
+
+fn url_decode(s: &str) -> Option<String> {
+	let b = s.as_bytes();
+	let mut out = Vec::with_capacity(b.len());
+	let mut i = 0;
+	while i < b.len() {
+		if b[i] == b'%' {
+			let hi = (*b.get(i + 1)? as char).to_digit(16)?;
+			let lo = (*b.get(i + 2)? as char).to_digit(16)?;
+			out.push((hi * 16 + lo) as u8);
+			i += 3;
+		} else {
+			out.push(b[i]);
+			i += 1;
+		}
+	}
+	String::from_utf8(out).ok()
+}
+
+/// A random-looking version 4 UUID without a dependency: SplitMix64 seeded from
+/// the clock, the process id and a counter, so two calls never collide and two
+/// processes starting together do not either.
+fn uuid_v4() -> String {
+	static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let nanos = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map(|d| d.as_nanos() as u64)
+		.unwrap_or(0);
+	let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	let mut state = nanos ^ (std::process::id() as u64).wrapping_shl(32) ^ count.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+	let mut next = || {
+		state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+		let mut z = state;
+		z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+		z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+		z ^ (z >> 31)
+	};
+	let mut b = [0u8; 16];
+	b[..8].copy_from_slice(&next().to_le_bytes());
+	b[8..].copy_from_slice(&next().to_le_bytes());
+	b[6] = (b[6] & 0x0f) | 0x40; // version 4
+	b[8] = (b[8] & 0x3f) | 0x80; // variant 1
+	let h = hex::encode(b);
+	format!(
+		"{}-{}-{}-{}-{}",
+		&h[0..8],
+		&h[8..12],
+		&h[12..16],
+		&h[16..20],
+		&h[20..32]
+	)
+}
+
+/// The current UTC time in a named format, or `None` for a name that is not one.
+fn now_formatted(format: &str) -> Option<String> {
+	let dur = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.ok()?;
+	match format {
+		"unix" | "unix-timestamp" => return Some(dur.as_secs().to_string()),
+		"unix-ms" | "unix-millis" => return Some(dur.as_millis().to_string()),
+		_ => {}
+	}
+	let (y, mo, d, h, mi, s) = civil_parts(dur.as_secs() as i64);
+	Some(match format {
+		"iso" | "iso-8601" | "rfc3339" => format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z"),
+		"iso-date" | "date" => format!("{y:04}-{mo:02}-{d:02}"),
+		"iso-time" | "time" => format!("{h:02}:{mi:02}:{s:02}"),
+		"year" => format!("{y:04}"),
+		"month" => format!("{mo:02}"),
+		"day" => format!("{d:02}"),
+		"hour" => format!("{h:02}"),
+		"minute" => format!("{mi:02}"),
+		"second" => format!("{s:02}"),
+		_ => return None,
+	})
+}
+
+/// The calendar conversion, for the test that pins it against known dates.
+#[cfg(test)]
+pub(crate) fn civil_parts_for_test(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+	civil_parts(secs)
+}
+
+/// Split a Unix timestamp into UTC calendar parts, by Howard Hinnant's
+/// `civil_from_days`, so no date library is needed for nine format strings.
+fn civil_parts(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+	let (days, tod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+	let z = days + 719_468;
+	let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+	let doe = z - era * 146_097;
+	let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+	let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	let mp = (5 * doy + 2) / 153;
+	let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+	let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+	let year = yoe + era * 400 + i64::from(month <= 2);
+	(
+		year,
+		month,
+		day,
+		(tod / 3600) as u32,
+		((tod % 3600) / 60) as u32,
+		(tod % 60) as u32,
+	)
+}
+
+/// Walk a dotted path. A numeric segment indexes an array, so `users.0.name`
+/// reads the first user's name. An empty path is the document itself.
+fn json_path<'a>(doc: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+	let mut cur = doc;
+	if path.is_empty() {
+		return Some(cur);
+	}
+	for seg in path.split('.') {
+		cur = match cur {
+			serde_json::Value::Array(a) => a.get(seg.parse::<usize>().ok()?)?,
+			other => other.get(seg)?,
+		};
+	}
+	Some(cur)
+}
+
+fn json_set_at(doc: &mut serde_json::Value, path: &str, fresh: serde_json::Value) -> Result<(), String> {
+	if path.is_empty() {
+		*doc = fresh;
+		return Ok(());
+	}
+	let segments: Vec<&str> = path.split('.').collect();
+	if segments.iter().any(|s| s.is_empty()) {
+		return Err(format!("`{path}` has an empty segment"));
+	}
+	let mut cur = doc;
+	for (i, seg) in segments.iter().enumerate() {
+		let last = i + 1 == segments.len();
+		// Containers are created on demand, and the next segment decides which
+		// kind: a number wants an array, a name wants an object.
+		if cur.is_null() {
+			*cur = match seg.parse::<usize>() {
+				Ok(_) => serde_json::Value::Array(Vec::new()),
+				Err(_) => serde_json::Value::Object(serde_json::Map::new()),
+			};
+		}
+		cur = match cur {
+			serde_json::Value::Array(a) => {
+				let idx: usize = seg.parse().map_err(|_| format!("`{seg}` is not an array index"))?;
+				if idx >= a.len() {
+					a.resize(idx + 1, serde_json::Value::Null);
+				}
+				&mut a[idx]
+			}
+			serde_json::Value::Object(o) => o.entry(seg.to_string()).or_insert(serde_json::Value::Null),
+			other => return Err(format!("cannot descend into {other} at `{seg}`")),
+		};
+		if last {
+			*cur = fresh;
+			return Ok(());
+		}
+	}
+	Ok(())
+}
+
+/// A JSON value as a runfile value. Objects and arrays come back as their
+/// compact JSON text, since the language has no map type and a nested array
+/// would lose its shape as a list of strings.
+fn json_to_value(v: &serde_json::Value) -> Value {
+	match v {
+		serde_json::Value::Null => Value::Str(String::new()),
+		serde_json::Value::Bool(b) => Value::Bool(*b),
+		serde_json::Value::Number(n) => n.as_f64().map(Value::Num).unwrap_or_else(|| Value::Str(n.to_string())),
+		serde_json::Value::String(s) => Value::Str(s.clone()),
+		other => Value::Str(other.to_string()),
+	}
+}
+
 /// A path in the OS temp directory that nothing else holds.
 ///
 /// The process id keeps two concurrent runs apart, the counter keeps two calls
@@ -344,26 +682,34 @@ pub const FUNCTIONS: &[&str] = &[
 	"ceil",
 	"concat",
 	"contains",
+	"capitalize",
 	"decrypt",
 	"dirname",
 	"ends_with",
 	"error",
+	"escape",
 	"extname",
 	"file_exists",
 	"first",
 	"floor",
 	"glob",
 	"is_number",
+	"json_get",
+	"json_set",
 	"join_path",
 	"join",
 	"last",
 	"length",
 	"lines",
 	"max",
+	"md5",
 	"min",
 	"number",
+	"now",
 	"one_of",
+	"power",
 	"read_file",
+	"repeat",
 	"regex_capture",
 	"regex_capture_all",
 	"regex_matches",
@@ -375,12 +721,17 @@ pub const FUNCTIONS: &[&str] = &[
 	"replace_all",
 	"round",
 	"split",
+	"sha256",
 	"starts_with",
+	"substring",
 	"stem",
 	"temp_dir",
 	"temp_file",
 	"to_lower",
 	"to_upper",
+	"url_decode",
+	"url_encode",
+	"uuid",
 	"trim",
 	"trim_end",
 	"trim_start",
