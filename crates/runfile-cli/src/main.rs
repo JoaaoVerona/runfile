@@ -94,9 +94,12 @@ fn real_main() -> Result<ExitCode, String> {
 		}
 		":list" => {
 			let cat = catalog(&flags)?;
-			// `--names` is the machine-readable form the completion scripts read.
+			// Two machine-readable forms: bare names for completion scripts,
+			// JSON for tooling that needs paths and descriptions too.
 			if args.iter().any(|a| a == "--names") {
 				list::print_names(&cat);
+			} else if args.iter().any(|a| a == "--json") {
+				list::print_json(&cat);
 			} else {
 				list::print(&cat);
 			}

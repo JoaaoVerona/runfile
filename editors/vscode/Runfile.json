@@ -35,6 +35,13 @@
 			],
 			"description": "Compile and package the extension into a .vsix (--out=<path> to override the file name)"
 		},
+		"test": {
+			"commands": [
+				"@compile",
+				"node --test out/pure.test.js"
+			],
+			"description": "Compile and run the extension's unit tests"
+		},
 		"uninstall": {
 			"commands": "code --uninstall-extension {{ VAR.extensionId }}",
 			"description": "Remove the extension from VS Code"

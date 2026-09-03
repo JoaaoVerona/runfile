@@ -648,3 +648,43 @@ fn a_flag_used_as_a_flag_is_unaffected() {
 	assert!(out(&p.run(&["f", "--force"])).contains("on"));
 	assert!(out(&p.run(&["f"])).contains("off"));
 }
+
+#[test]
+fn list_json_describes_every_visible_target() {
+	let p = project(&[
+		("runfiles/build.run", "# Builds it\n$ true\n"),
+		("runfiles/secret.run", ".hide = true\n$ true\n"),
+	]);
+	let o = p.run(&[":list", "--json"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	assert!(text.contains("\"formatVersion\": 1"), "{text}");
+	assert!(text.contains("\"name\": \"build\""), "{text}");
+	assert!(text.contains("\"description\": \"Builds it\""), "{text}");
+	assert!(text.contains("\"origin\": \"local\""), "{text}");
+	assert!(text.contains("build.run"), "the path lets tooling pin -f: {text}");
+	assert!(!text.contains("secret"), "hidden targets stay out: {text}");
+}
+
+#[test]
+fn list_json_escapes_text_that_would_break_the_document() {
+	// Descriptions are free text from a comment block; a quote or backslash in
+	// one must not produce unparseable JSON.
+	let p = project(&[("runfiles/odd.run", "# He said \"hi\" \\ bye\n$ true\n")]);
+	let o = p.run(&[":list", "--json"]);
+	let text = out(&o);
+	assert!(text.contains(r#"\"hi\""#), "{text}");
+	assert!(text.contains(r"\\"), "{text}");
+	// The real check: it round-trips through a parser.
+	let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+	assert_eq!(v["targets"][0]["description"], "He said \"hi\" \\ bye");
+}
+
+#[test]
+fn list_json_with_no_visible_targets_is_still_a_valid_document() {
+	// An empty array, not a truncated document: tooling parses this on every
+	// refresh and must not have to special-case "nothing to show".
+	let p = project(&[("runfiles/h.run", ".hide = true\n$ true\n")]);
+	let v: serde_json::Value = serde_json::from_str(&out(&p.run(&[":list", "--json"]))).expect("valid JSON");
+	assert_eq!(v["targets"].as_array().unwrap().len(), 0);
+}

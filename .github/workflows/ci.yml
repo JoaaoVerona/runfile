@@ -39,14 +39,14 @@ jobs:
       - name: Verify Cargo.lock is in sync
         run: git diff --exit-code Cargo.lock
 
-      # The VS Code extension parses the `task-descriptors` document this CLI emits.
-      # Both now live in this repo, so a bumped format version must not silently
-      # outrun the extension's parser.
-      - name: Verify task-descriptors format version matches the VS Code extension
+      # The VS Code extension reads the `run :list --json` document this CLI
+      # emits. Both live in this repo, so a bumped format version must not
+      # silently outrun the extension's parser.
+      - name: Verify catalog format version matches the VS Code extension
         run: |
           set -euo pipefail
-          emitted=$(run :generate task-descriptors | sed -n 's/.*"formatVersion": *\([0-9]*\).*/\1/p' | head -n1)
-          expected=$(sed -n 's/.*SUPPORTED_FORMAT_VERSION = \([0-9]*\).*/\1/p' editors/vscode/src/extension.ts | head -n1)
+          emitted=$(run :list --json | sed -n 's/.*"formatVersion": *\([0-9]*\).*/\1/p' | head -n1)
+          expected=$(sed -n 's/.*SUPPORTED_FORMAT_VERSION = \([0-9]*\).*/\1/p' editors/vscode/src/pure.ts | head -n1)
           echo "CLI emits formatVersion=$emitted; extension supports $expected"
           test -n "$emitted" && test -n "$expected" && test "$emitted" = "$expected"
 
@@ -134,6 +134,9 @@ jobs:
 
       - name: Install extension dependencies
         run: run vscode:deps
+
+      - name: Test the extension
+        run: run vscode:test
 
       - name: Compile and package extension
         run: run vscode:package

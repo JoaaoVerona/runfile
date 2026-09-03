@@ -42,6 +42,57 @@ fn facts(t: &Target) -> Facts {
 	}
 }
 
+/// The catalog as JSON, for tooling that needs more than names -- the editor
+/// extension builds its tree, its tasks and its run buttons from this.
+///
+/// Serialized by hand: the shape is four string fields, and a serde dependency
+/// in the CLI to emit them would not earn its keep.
+pub fn print_json(cat: &Catalog) {
+	println!("{{");
+	println!("  \"formatVersion\": {FORMAT_VERSION},");
+	println!("  \"targets\": [");
+	let rows: Vec<(&Target, Facts)> = cat
+		.targets
+		.values()
+		.map(|t| (t, facts(t)))
+		.filter(|(_, f)| !f.hidden)
+		.collect();
+	for (i, (t, f)) in rows.iter().enumerate() {
+		let comma = if i + 1 == rows.len() { "" } else { "," };
+		println!(
+			"    {{\"name\": {}, \"description\": {}, \"origin\": {}, \"path\": {}}}{comma}",
+			quote(&t.name),
+			quote(&f.description),
+			quote(label(t.origin)),
+			quote(&t.path.to_string_lossy()),
+		);
+	}
+	println!("  ]");
+	println!("}}");
+}
+
+/// Bumped when the shape changes incompatibly, so an old extension can say so
+/// rather than misread a new CLI.
+pub const FORMAT_VERSION: u32 = 1;
+
+fn quote(s: &str) -> String {
+	let mut out = String::with_capacity(s.len() + 2);
+	out.push('"');
+	for c in s.chars() {
+		match c {
+			'"' => out.push_str("\\\""),
+			'\\' => out.push_str("\\\\"),
+			'\n' => out.push_str("\\n"),
+			'\r' => out.push_str("\\r"),
+			'\t' => out.push_str("\\t"),
+			c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+			c => out.push(c),
+		}
+	}
+	out.push('"');
+	out
+}
+
 /// One name per line, for shell completion. Hidden targets are omitted, the
 /// same as the human listing.
 pub fn print_names(cat: &Catalog) {

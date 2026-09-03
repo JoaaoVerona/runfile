@@ -1,36 +1,18 @@
 import * as cp from "node:child_process"
-import * as path from "node:path"
 import * as vscode from "vscode"
-import { RunfileCodeLensProvider } from "./codeLens"
+import { type Target, load, namespaceOf } from "./catalog"
+import { RUNFILE_SELECTOR, RunfileCodeLensProvider } from "./codeLens"
+import { LanguageClient } from "./lsp"
 
 /** The task type we register a provider for and stamp on every generated task. */
 const TASK_TYPE = "runfile"
 
 /**
- * Runfiles are matched by file name, not language id, so the inline Run buttons appear
- * no matter which language the document ends up associated with (`json` and `jsonc` are
- * both common, and `.json5` often has no association at all).
- *
- * The suffix wildcard is deliberate. `Runfile.json` / `Runfile.json5` are the only names
- * the CLI *discovers*, but any file reachable through `includes` or `-f` is a real
- * Runfile — this repository's own `Runfile-ci.json` and `Runfile-wsl.json` among them —
- * and the buttons run `-f <that file>`, which works whatever the file is called. The
- * broad pattern costs nothing: a matched file with no top-level `targets` object simply
- * yields no buttons.
+ * Default command run in each workspace folder to list the targets on stdout.
+ * Discovery is the CLI's job: it walks up for the nearest `runfiles/`, down for
+ * subproject ones, and folds in the machine-wide directory, so this needs no flags.
  */
-const RUNFILE_SELECTOR: vscode.DocumentSelector = { scheme: "file", pattern: "**/[Rr]unfile*.{json,json5}" }
-
-/**
- * Default command run in each workspace folder to emit the target descriptors on
- * stdout. `task-descriptors` always resolves `includes` (namespaces) and merges the
- * machine-wide global files — it needs no flags — and its JSON carries per-target
- * provenance (`local` / `included` / `global`) so the sidebar can bucket targets
- * without re-deriving anything from their names.
- */
-const DEFAULT_COMMAND = "run :generate task-descriptors"
-
-/** The `task-descriptors` schema version this extension understands. */
-const SUPPORTED_FORMAT_VERSION = 1
+const DEFAULT_COMMAND = "run :list --json"
 
 /** `workspaceState` key holding the pinned targets (see [`PinStore`]). */
 const PINNED_STATE_KEY = "runfile.pinnedTargets"
@@ -55,8 +37,15 @@ export function activate(context: vscode.ExtensionContext): void {
 	const treeView = vscode.window.createTreeView("runfile.targets", { treeDataProvider: targets })
 	context.subscriptions.push(treeView)
 
-	const codeLens = new RunfileCodeLensProvider((message) => output.appendLine(message))
+	const codeLens = new RunfileCodeLensProvider()
 	context.subscriptions.push(codeLens, vscode.languages.registerCodeLensProvider(RUNFILE_SELECTOR, codeLens))
+
+	const config = vscode.workspace.getConfiguration("runfile")
+	if (config.get<boolean>("lsp", true)) {
+		const client = new LanguageClient(config.get<string>("lspPath", "runfile-lsp"), output)
+		client.start()
+		context.subscriptions.push(client)
+	}
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand("runfile.showLog", () => output.show()),
@@ -72,9 +61,9 @@ export function activate(context: vscode.ExtensionContext): void {
 				void vscode.tasks.executeTask(entry.task)
 			}
 		}),
-		vscode.commands.registerCommand("runfile.runTargetInFile", (uri?: vscode.Uri, name?: string) => {
-			if (uri && name) {
-				void vscode.tasks.executeTask(buildFileTargetTask(uri, name))
+		vscode.commands.registerCommand("runfile.runTargetInFile", (arg?: { name: string; anchor: string }) => {
+			if (arg) {
+				void vscode.tasks.executeTask(buildFileTargetTask(arg.name, arg.anchor))
 			}
 		}),
 		vscode.commands.registerCommand("runfile.pinTarget", (arg?: TargetNode | TargetEntry) =>
@@ -99,35 +88,15 @@ export function deactivate(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Descriptor document (the `run :generate task-descriptors` contract)
+// Targets
 // ---------------------------------------------------------------------------
 
-/** Where a group of targets came from. */
+/**
+ * Where a target came from. The CLI's own three buckets, renamed only where the
+ * tree reads better: `subprojects` is what `run :list` calls a nested
+ * `runfiles/` directory found below the root.
+ */
 type SourceKind = "local" | "included" | "global"
-
-interface TaskDescriptors {
-	formatVersion?: number
-	sources?: DescriptorSource[]
-}
-
-interface DescriptorSource {
-	filePath?: string
-	kind?: string
-	/**
-	 * The `globals.onlyInDirectories` restriction that gated this source, when it
-	 * had one. Only ever set on `global` sources. Absent from older CLIs.
-	 */
-	onlyInDirectories?: string[]
-	targets?: DescriptorTarget[]
-}
-
-interface DescriptorTarget {
-	/** Full canonical invocation name — what we pass to `run` (e.g. `api:build`). */
-	name?: string
-	/** The include-namespace this target belongs to, or absent when un-namespaced. */
-	namespace?: string
-	description?: string
-}
 
 // ---------------------------------------------------------------------------
 // Task provider
@@ -159,44 +128,38 @@ async function collectEntries(): Promise<TargetEntry[]> {
 	if (!isEnabled()) {
 		return []
 	}
-	const folders = vscode.workspace.workspaceFolders ?? []
 	const entries: TargetEntry[] = []
-	for (const folder of folders) {
-		for (const source of await loadDescriptors(folder)) {
-			const kind = normalizeKind(source)
-			for (const target of source.targets ?? []) {
-				if (!target.name) {
-					continue
-				}
-				entries.push({
-					task: buildRunTask(target, folder),
-					folder,
-					name: target.name,
-					label: `run ${target.name}`,
-					detail: target.description,
-					namespace: target.namespace || undefined,
-					kind
-				})
-			}
+	for (const folder of vscode.workspace.workspaceFolders ?? []) {
+		const catalog = await load(folder, commandFor(folder), output)
+		for (const target of catalog.targets) {
+			entries.push(entryFor(target, folder))
 		}
 	}
 	return entries
 }
 
-/**
- * Coerce a descriptor source's `kind` to a known [`SourceKind`], defaulting to `local`.
- *
- * A `global` source that carries `onlyInDirectories` is deliberately reported as
- * `local`. That restriction means the file merges in *only* while the working
- * directory sits inside one of those directories — so despite being registered
- * machine-wide it is, in practice, scoped to this project. Filing it under
- * **Globals** would misrepresent it and bury targets that belong in the main tree.
- */
-function normalizeKind(source: DescriptorSource): SourceKind {
-	if (source.kind === "global") {
-		return source.onlyInDirectories && source.onlyInDirectories.length > 0 ? "local" : "global"
+function entryFor(target: Target, folder: vscode.WorkspaceFolder): TargetEntry {
+	return {
+		task: buildRunTask(target, folder),
+		folder,
+		name: target.name,
+		label: `run ${target.name}`,
+		detail: target.description || undefined,
+		namespace: namespaceOf(target.name),
+		kind: kindOf(target)
 	}
-	return source.kind === "included" ? "included" : "local"
+}
+
+/** Map the CLI's origins onto the tree's buckets. */
+function kindOf(target: Target): SourceKind {
+	switch (target.origin) {
+		case "global":
+			return "global"
+		case "subprojects":
+			return "included"
+		default:
+			return "local"
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -287,23 +250,21 @@ async function provideRunfileTasks(): Promise<vscode.Task[]> {
 	return [...main, ...globals].map((e) => e.task)
 }
 
-/** Build the task that runs a descriptor target, from the workspace folder it came from. */
-function buildRunTask(target: DescriptorTarget, folder: vscode.WorkspaceFolder): vscode.Task {
-	return buildTask(target.name as string, folder, folder.uri.fsPath, undefined, target.description)
+/** Build the task that runs a listed target, from the folder it was listed in. */
+function buildRunTask(target: Target, folder: vscode.WorkspaceFolder): vscode.Task {
+	return buildTask(target.name, folder, folder.uri.fsPath, undefined, target.description)
 }
 
 /**
- * Build the task behind an inline **Run** button: the same invocation, pinned to the
- * Runfile the button was rendered in via `-f` and run from that file's directory.
+ * Build the task behind an inline **Run** button.
  *
- * Anchoring to the file is what makes the buttons correct inside an included Runfile.
- * A target written as `compile` in `editors/vscode/Runfile.json` is `vscode:compile`
- * from the repository root, so running the name exactly as the file spells it only
- * makes sense against the file that spells it that way.
+ * The button is anchored with `--dir` to the directory that owns the file's
+ * `runfiles/`, so a target inside a subproject runs under the name that
+ * directory gives it rather than the name the workspace root would.
  */
-function buildFileTargetTask(file: vscode.Uri, name: string): vscode.Task {
-	const scope = vscode.workspace.getWorkspaceFolder(file) ?? vscode.TaskScope.Workspace
-	return buildTask(name, scope, path.dirname(file.fsPath), file.fsPath)
+function buildFileTargetTask(name: string, anchor: string): vscode.Task {
+	const scope = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(anchor)) ?? vscode.TaskScope.Workspace
+	return buildTask(name, scope, anchor, anchor)
 }
 
 /**
@@ -317,20 +278,20 @@ function buildTask(
 	name: string,
 	scope: vscode.WorkspaceFolder | vscode.TaskScope,
 	cwd: string,
-	file?: string,
+	dir?: string,
 	description?: string
 ): vscode.Task {
 	// Every flag has to precede the target name: `run` collects the target and
 	// everything after it as trailing arguments to pass through to the target itself.
-	const args = ["--stdin-args", ...(file ? ["-f", file] : []), name]
+	const args = ["--stdin-args", ...(dir ? ["--dir", dir] : []), name]
 
 	const execution = isInteractive()
 		? new vscode.CustomExecution(async () => new RunfileInteractivePty("run", args, cwd))
 		: new vscode.ShellExecution("run", args, { cwd })
 
 	const definition: RunfileTaskDefinition = { type: TASK_TYPE, task: name }
-	if (file) {
-		definition.file = file
+	if (dir) {
+		definition.dir = dir
 	}
 	const task = new vscode.Task(definition, scope, `run ${name}`, TASK_TYPE, execution)
 	if (description) {
@@ -354,23 +315,17 @@ async function resolveRunfileTask(task: vscode.Task): Promise<vscode.Task | unde
 	if (typeof wanted !== "string") {
 		return undefined
 	}
-	// A `file` pins the invocation to one Runfile, so there is nothing to look up —
-	// `run -f` resolves the name against that file itself.
-	if (typeof definition.file === "string") {
-		return buildFileTargetTask(vscode.Uri.file(definition.file), wanted)
+	// A `dir` pins discovery, so there is nothing to look up.
+	if (typeof definition.dir === "string") {
+		return buildFileTargetTask(wanted, definition.dir)
 	}
 	const folder = folderOfScope(task.scope)
 	if (!folder) {
 		return undefined
 	}
-	for (const source of await loadDescriptors(folder)) {
-		for (const target of source.targets ?? []) {
-			if (target.name === wanted) {
-				return buildRunTask(target, folder)
-			}
-		}
-	}
-	return undefined
+	const catalog = await load(folder, commandFor(folder), output)
+	const target = catalog.targets.find((t) => t.name === wanted)
+	return target ? buildRunTask(target, folder) : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -558,66 +513,11 @@ function makeTargetNode(entry: TargetEntry, display: string, idPrefix: string): 
 }
 
 // ---------------------------------------------------------------------------
-// Generation
+// Configuration
 // ---------------------------------------------------------------------------
 
-/** Run the descriptor command in `folder` and return its `sources`, or `[]` on any failure. */
-async function loadDescriptors(folder: vscode.WorkspaceFolder): Promise<DescriptorSource[]> {
-	const command = commandFor(folder)
-	let stdout: string
-	try {
-		stdout = await runShell(command, folder.uri.fsPath)
-	} catch {
-		// runShell already logged the failure; treat as "no targets".
-		return []
-	}
-	const text = stdout.replace(/^﻿/, "").trim()
-	if (!text) {
-		return []
-	}
-	let doc: TaskDescriptors
-	try {
-		doc = JSON.parse(text) as TaskDescriptors
-	} catch (err) {
-		output.appendLine(`Could not parse task descriptors from \`${command}\`: ${(err as Error).message}`)
-		return []
-	}
-	if (!doc || typeof doc !== "object") {
-		return []
-	}
-	if (typeof doc.formatVersion === "number" && doc.formatVersion !== SUPPORTED_FORMAT_VERSION) {
-		output.appendLine(
-			`Runfile: task-descriptors formatVersion ${doc.formatVersion} differs from the supported ` +
-				`${SUPPORTED_FORMAT_VERSION}; parsing anyway. Update the extension or the \`run\` CLI if targets look wrong.`
-		)
-	}
-	return Array.isArray(doc.sources) ? doc.sources : []
-}
-
-function runShell(command: string, cwd: string): Promise<string> {
-	return new Promise((resolve, reject) => {
-		cp.exec(
-			command,
-			{ cwd, env: process.env, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
-			(err, stdout, stderr) => {
-				if (err) {
-					output.appendLine(`$ ${command}  (cwd: ${cwd})`)
-					output.appendLine(`  ✗ ${err.message}`)
-					const trimmed = stderr?.trim()
-					if (trimmed) {
-						output.appendLine(trimmed)
-					}
-					reject(err)
-					return
-				}
-				resolve(stdout)
-			}
-		)
-	})
-}
-
 function commandFor(folder: vscode.WorkspaceFolder): string {
-	return vscode.workspace.getConfiguration("runfile", folder.uri).get<string>("generateCommand", DEFAULT_COMMAND)
+	return vscode.workspace.getConfiguration("runfile", folder.uri).get<string>("catalogCommand", DEFAULT_COMMAND)
 }
 
 function folderOfScope(
@@ -772,6 +672,10 @@ function isInteractive(): boolean {
 
 interface RunfileTaskDefinition extends vscode.TaskDefinition {
 	task: string
-	/** Absolute path of the Runfile to resolve `task` against (`run -f`), when pinned. */
-	file?: string
+	/**
+	 * Directory discovery starts from (`run --dir`), when pinned. A target in a
+	 * subproject's `runfiles/` is named differently from the workspace root, so
+	 * the anchor is what makes the name mean what the file meant.
+	 */
+	dir?: string
 }

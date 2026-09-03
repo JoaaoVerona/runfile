@@ -44,11 +44,11 @@
 				"properties": {
 					"task": {
 						"type": "string",
-						"description": "The label of the generated task to run."
+						"description": "The name of the target to run."
 					},
-					"file": {
+					"dir": {
 						"type": "string",
-						"description": "Path to the Runfile the target is resolved against (passed as `run -f`). Omit to let `run` discover the Runfile from the workspace folder."
+						"description": "Directory `run` starts discovery from (passed as `run --dir`). Omit to discover from the workspace folder."
 					}
 				}
 			}
@@ -177,28 +177,62 @@
 		"configuration": {
 			"title": "Runfile",
 			"properties": {
-				"runfile.generateCommand": {
+				"runfile.catalogCommand": {
 					"type": "string",
-					"default": "run :generate task-descriptors",
-					"markdownDescription": "Shell command run in each workspace folder to produce the **task descriptors** JSON on **stdout** — the `{ \"formatVersion\": 1, \"sources\": [...] }` document emitted by `run :generate task-descriptors`. It always includes namespaced (`includes`) and machine-wide global targets. Anything written to stderr is ignored. The command is re-run every time VS Code fetches tasks — keep it cheap."
+					"default": "run :list --json",
+					"markdownDescription": "Shell command run in each workspace folder to list targets as JSON on **stdout** — the `{ \"formatVersion\": 1, \"targets\": [...] }` document emitted by `run :list --json`. Discovery is the CLI's job, so it needs no flags: it walks up for the nearest `runfiles/`, down for subproject ones, and folds in the machine-wide `~/.runfiles/`. Anything on stderr is ignored. Re-run every time VS Code fetches tasks — keep it cheap."
+				},
+				"runfile.codeLens": {
+					"type": "boolean",
+					"default": true,
+					"markdownDescription": "Show an inline **Run** button at the top of every `.run` file inside a `runfiles/` directory. One target is one file, so there is one button per file. It runs `run --stdin-args --dir <the runfiles parent> <target>`, so a target in a subproject runs under the name that directory gives it. `_shared.run` gets no button — it configures a directory rather than being a target."
 				},
 				"runfile.enabled": {
 					"type": "boolean",
 					"default": true,
 					"description": "Contribute dynamically generated tasks. Turn off to stop running the generate command entirely."
 				},
-				"runfile.codeLens": {
-					"type": "boolean",
-					"default": true,
-					"markdownDescription": "Show an inline **Run** button above every target in a Runfile — any `Runfile*.json` or `Runfile*.json5`, at any depth, so files reached through `includes` (`Runfile-ci.json`, `Runfile.dev.json5`, …) are covered too. Each button runs that target from the file that defines it (`run --stdin-args -f <that file> <target>`), so a target inside an included Runfile runs under the name the file spells it with. Internal (`_`-prefixed) targets and targets carrying `metadata.excludeFromGenerateCommand` get no button."
-				},
 				"runfile.interactive": {
 					"type": "boolean",
 					"default": true,
 					"markdownDescription": "Run tasks that pass `--stdin-args` inside an interactive pseudoterminal so `run` can prompt for missing arguments and read your answers from the terminal. Turn off to run them as plain shell tasks (stdin prompts will fail, matching VS Code's default task behaviour)."
+				},
+				"runfile.lsp": {
+					"type": "boolean",
+					"default": true,
+					"markdownDescription": "Report errors in `.run` files as you type, using the `runfile-lsp` language server. Diagnostics come from the same parser `run` itself uses, so the editor and the runner cannot disagree. Turn off if the server is not installed."
+				},
+				"runfile.lspPath": {
+					"type": "string",
+					"default": "runfile-lsp",
+					"description": "Path to the runfile-lsp executable. Looked up on PATH when left as a bare name."
 				}
 			}
-		}
+		},
+		"languages": [
+			{
+				"id": "runfile",
+				"aliases": [
+					"Runfile",
+					"run"
+				],
+				"extensions": [
+					".run"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "runfile",
+				"scopeName": "source.run",
+				"path": "./syntaxes/runfile.tmLanguage.json",
+				"embeddedLanguages": {
+					"meta.embedded.line.shell": "shellscript",
+					"meta.embedded.block.shell": "shellscript"
+				}
+			}
+		]
 	},
 	"devDependencies": {
 		"@types/node": "^20.0.0",

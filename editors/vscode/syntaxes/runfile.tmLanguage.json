@@ -1,0 +1,151 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Runfile",
+	"scopeName": "source.run",
+	"patterns": [
+		{ "include": "#comment" },
+		{ "include": "#property" },
+		{ "include": "#exec-block" },
+		{ "include": "#shell-line" },
+		{ "include": "#keyword" },
+		{ "include": "#expression" }
+	],
+	"repository": {
+		"comment": {
+			"match": "#.*$",
+			"name": "comment.line.number-sign.run"
+		},
+		"property": {
+			"comment": "A leading dot marks configuration: `.shell = \"bash\"`.",
+			"begin": "^\\s*(\\.)([A-Za-z][A-Za-z0-9-]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+			"beginCaptures": {
+				"1": { "name": "punctuation.definition.keyword.run" },
+				"2": { "name": "entity.other.attribute-name.run" }
+			},
+			"end": "$",
+			"patterns": [
+				{ "match": "=", "name": "keyword.operator.assignment.run" },
+				{ "include": "#comment" },
+				{ "include": "#expression" }
+			]
+		},
+		"shell-line": {
+			"comment": "`$ ` hands the rest of the line to a shell; only interpolation is ours.",
+			"begin": "^\\s*(\\$)(?=\\s|$)",
+			"beginCaptures": { "1": { "name": "keyword.control.shell.run" } },
+			"end": "$",
+			"contentName": "meta.embedded.line.shell",
+			"patterns": [{ "include": "#interpolation" }]
+		},
+		"exec-block": {
+			"comment": "`exec <command>` … `end` — the body is that command's input, not ours.",
+			"begin": "^(\\s*)(exec)\\b(.*)$",
+			"beginCaptures": {
+				"2": { "name": "keyword.control.exec.run" },
+				"3": { "patterns": [{ "include": "#interpolation" }] }
+			},
+			"end": "^\\s*(end)\\b",
+			"endCaptures": { "1": { "name": "keyword.control.exec.run" } },
+			"contentName": "meta.embedded.block.shell",
+			"patterns": [{ "include": "#interpolation" }]
+		},
+		"keyword": {
+			"patterns": [
+				{
+					"match": "^\\s*(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)",
+					"captures": {
+						"1": { "name": "keyword.other.let.run" },
+						"2": { "name": "variable.other.definition.run" }
+					}
+				},
+				{
+					"match": "^\\s*(run)\\s+([^\\s]+)",
+					"captures": {
+						"1": { "name": "keyword.control.run.run" },
+						"2": { "name": "entity.name.function.target.run" }
+					}
+				},
+				{
+					"match": "\\b(if|else|end|for|in|match|case|default)\\b",
+					"name": "keyword.control.run"
+				}
+			]
+		},
+		"expression": {
+			"patterns": [
+				{ "include": "#interpolation" },
+				{ "include": "#string" },
+				{ "include": "#raw-string" },
+				{ "include": "#number" },
+				{ "include": "#constant" },
+				{ "include": "#source" },
+				{ "include": "#function" },
+				{ "include": "#operator" }
+			]
+		},
+		"interpolation": {
+			"comment": "`{{ … }}` is language inside anything else, including strings.",
+			"begin": "\\{\\{",
+			"end": "\\}\\}",
+			"beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.run" } },
+			"endCaptures": { "0": { "name": "punctuation.section.embedded.end.run" } },
+			"name": "meta.embedded.expression.run",
+			"patterns": [
+				{ "include": "#string" },
+				{ "include": "#raw-string" },
+				{ "include": "#number" },
+				{ "include": "#constant" },
+				{ "include": "#source" },
+				{ "include": "#function" },
+				{ "include": "#operator" },
+				{ "include": "#identifier" }
+			]
+		},
+		"string": {
+			"begin": "\"",
+			"end": "\"",
+			"name": "string.quoted.double.run",
+			"patterns": [
+				{ "match": "\\\\.", "name": "constant.character.escape.run" },
+				{ "include": "#interpolation" }
+			]
+		},
+		"raw-string": {
+			"comment": "`r\"…\"` keeps backslashes, which is what regex patterns want.",
+			"begin": "r\"",
+			"end": "\"",
+			"name": "string.quoted.other.raw.run",
+			"patterns": [{ "include": "#interpolation" }]
+		},
+		"number": {
+			"match": "\\b-?[0-9]+(\\.[0-9]+)?\\b",
+			"name": "constant.numeric.run"
+		},
+		"constant": {
+			"match": "\\b(true|false)\\b",
+			"name": "constant.language.boolean.run"
+		},
+		"source": {
+			"comment": "The five roots a value can come from.",
+			"match": "\\b(ARG|ENV|FLAG|RUN)(\\.)([A-Za-z_][A-Za-z0-9_-]*)|\\b(ARGS)\\b",
+			"captures": {
+				"1": { "name": "support.constant.source.run" },
+				"2": { "name": "punctuation.accessor.run" },
+				"3": { "name": "variable.other.member.run" },
+				"4": { "name": "support.constant.source.run" }
+			}
+		},
+		"function": {
+			"match": "\\b([a-z_][a-z0-9_]*)\\s*(?=\\()",
+			"name": "support.function.run"
+		},
+		"operator": {
+			"match": "==|!=|<=|>=|&&|\\|\\||[+\\-*/<>!?=]",
+			"name": "keyword.operator.run"
+		},
+		"identifier": {
+			"match": "\\b[A-Za-z_][A-Za-z0-9_-]*\\b",
+			"name": "variable.other.run"
+		}
+	}
+}

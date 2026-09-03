@@ -7,3 +7,5 @@ tsconfig.json
 pnpm-lock.yaml
 *.vsix
 **/*.map
+out/**/*.test.js
+out/pure.js.map
