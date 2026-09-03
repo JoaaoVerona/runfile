@@ -10,3 +10,10 @@ pub mod ast;
 pub mod lexer;
 pub mod parser;
 pub mod span;
+
+pub use ast::{Block, Expr, InterpPart, Property, SourceKind, Statement, Target};
+pub use parser::{parse, ParseError};
+pub use span::Span;
+
+#[cfg(test)]
+mod tests;

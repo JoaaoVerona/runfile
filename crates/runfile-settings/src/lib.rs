@@ -1,14 +1,16 @@
+//! Machine-local state: OS credential-store access and the prepare gate's
+//! record. There is no user settings file and no `run :config` -- the one
+//! machine-wide directory is `$HOME/.runfiles/`, at a fixed path.
+
 pub mod keyring_keys;
 pub mod keyring_store;
 mod paths;
 mod prepare_state;
 #[cfg(target_os = "linux")]
 mod secret_service_store;
-mod settings;
 
 pub use paths::*;
 pub use prepare_state::*;
-pub use settings::*;
 
 #[cfg(test)]
 mod tests;
