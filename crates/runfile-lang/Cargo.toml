@@ -1,0 +1,8 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "runfile-lang"
+version.workspace = true
+
+[dependencies]
+thiserror.workspace = true

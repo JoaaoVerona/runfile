@@ -25,13 +25,11 @@ linux-keyutils-keyring-store = "=1.0.0"
 md-5 = "=0.11.0"
 notify = { default-features = false, features = ["macos_fsevent"], version = "=8.2.0" }
 regex = "=1.12.3"
-rmcp = { features = ["macros", "server", "transport-io"], version = "=1.6.0" }
-runfile-converters = { path = "crates/runfile-converters" }
 runfile-crypto = { path = "crates/runfile-crypto" }
 runfile-env = { path = "crates/runfile-env" }
 runfile-executor = { path = "crates/runfile-executor" }
 runfile-generators = { path = "crates/runfile-generators" }
-runfile-mcp = { path = "crates/runfile-mcp" }
+runfile-lang = { path = "crates/runfile-lang" }
 runfile-parser = { path = "crates/runfile-parser" }
 runfile-settings = { path = "crates/runfile-settings" }
 runfile-shell = { path = "crates/runfile-shell" }
@@ -43,7 +41,6 @@ shlex = "=1.3.0"
 subtle = "=2.6.1"
 tempfile = "=3.27.0"
 thiserror = "=2.0.18"
-tokio = { features = ["full"], version = "=1.52.2" }
 which = "=8.0.2"
 windows-native-keyring-store = "=1.0.0"
 windows-sys = { features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"], version = "=0.61.2" }

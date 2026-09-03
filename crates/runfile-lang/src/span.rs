@@ -1,0 +1,1 @@
+//! span — see GRAMMAR.ebnf

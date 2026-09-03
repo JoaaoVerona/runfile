@@ -1,0 +1,1 @@
+//! lexer — see GRAMMAR.ebnf

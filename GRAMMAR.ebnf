@@ -1,0 +1,61 @@
+(* Runfile .run — grammar v0 *)
+
+file        = { line } ;
+line        = blank | comment | property | exec_block | shell | statement ;
+
+blank       = WS , NEWLINE ;
+comment     = WS , "#" , { ANY - NEWLINE } , NEWLINE ;
+
+(* ---- properties ---- *)
+property    = WS , "." , ident , { "." , ident } , [ WS , "=" , WS , expr ] , NEWLINE ;
+
+(* ---- shell ---- *)
+shell       = WS , "$" , " " , shell_text , NEWLINE ;
+shell_text  = { ANY - NEWLINE | "\" , NEWLINE } ;          (* backslash continues *)
+
+exec_block  = WS , "exec" , " " , shell_text , NEWLINE ,
+              { ANY - ( WS , "end" , NEWLINE ) } ,
+              WS , "end" , NEWLINE ;
+
+(* ---- statements ---- *)
+statement   = let | assign | if | else | for | match | case | default
+            | run | end | call ;
+
+let         = "let" , ident , "=" , expr ;
+assign      = ident , "=" , expr ;
+if          = "if" , expr ;
+else        = "else" ;
+for         = "for" , ident , "in" , expr ;
+match       = "match" , expr ;
+case        = "case" , ( ident | string ) ;
+default     = "default" ;
+end         = "end" ;
+run         = "run" , target_ref , { WS , arg_word } ;
+call        = postfix ;                                     (* bare call, e.g. decrypt(a,b) *)
+
+target_ref  = { ident_char | ":" | interp } ;
+arg_word    = { ANY - WS - NEWLINE | interp } ;
+
+(* ---- expressions ---- *)
+expr        = chain ;
+chain       = or , { "?" , or } ;                           (* fallback *)
+or          = and , { "||" , and } ;
+and         = cmp , { "&&" , cmp } ;
+cmp         = add , { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) , add } ;
+add         = mul , { ( "+" | "-" ) , mul } ;
+mul         = unary , { ( "*" | "/" | "%" ) , unary } ;
+unary       = [ "!" | "-" ] , postfix ;
+postfix     = primary , { "[" , expr , "]" | "(" , [ arglist ] , ")" } ;
+arglist     = expr , { "," , expr } , [ "," ] ;
+primary     = number | string | rawstring | bool | list | source | ident
+            | "(" , expr , ")" ;
+
+list        = "[" , [ expr , { "," , expr } , [ "," ] ] , "]" ;   (* may span lines *)
+source      = ( "ARG" | "ENV" | "FLAG" | "RUN" ) , "." , ident | "ARGS" ;
+bool        = "true" | "false" ;
+number      = digit , { digit } , [ "." , digit , { digit } ] ;
+string      = '"' , { str_char | interp } , '"' ;
+rawstring   = 'r"' , { ANY - '"' | interp } , '"' ;
+str_char    = ( ANY - '"' - "\" ) | "\" , ( '"' | "\" | "n" | "t" | "r" | "{" ) ;
+interp      = "{{" , WS , expr , WS , "}}" ;
+ident       = letter , { letter | digit | "_" | "-" } ;

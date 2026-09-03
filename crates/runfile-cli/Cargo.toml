@@ -19,17 +19,15 @@ dirs.workspace = true
 globset.workspace = true
 hex.workspace = true
 notify.workspace = true
-runfile-converters.workspace = true
 runfile-crypto.workspace = true
 runfile-env.workspace = true
 runfile-executor.workspace = true
 runfile-generators.workspace = true
-runfile-mcp.workspace = true
+runfile-lang.workspace = true
 runfile-parser.workspace = true
 runfile-settings.workspace = true
 runfile-shell.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
 which.workspace = true
 
 [dev-dependencies]
