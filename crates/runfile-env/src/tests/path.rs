@@ -15,7 +15,6 @@ fn shell_path_beats_runfile_env_path_override() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env);
@@ -45,7 +44,6 @@ fn shell_path_beats_runfile_envfile_path_override() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env);
@@ -71,7 +69,6 @@ fn runfile_env_kept_for_keys_not_in_shell() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("RUNFILE_TEST_UNIQUE_KEY_42").unwrap(), "runfile_kept");
@@ -92,7 +89,6 @@ fn add_to_path_prepends_to_shell_path_after_overlay() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env).replace('\\', "/");
@@ -128,7 +124,6 @@ fn add_to_path_wins_even_when_runfile_env_tries_to_replace_path() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env).replace('\\', "/");
@@ -139,97 +134,6 @@ fn add_to_path_wins_even_when_runfile_env_tries_to_replace_path() {
 		!path.contains("/should/be/wiped"),
 		"the Runfile-set PATH should never reach the final env"
 	);
-}
-
-#[test]
-fn parent_add_to_path_chain_innermost_wins() {
-	// Simulates A → @B → @C: the chain handed to C is [A_addToPath, B_addToPath]
-	// (outermost first). C's own addToPath is the innermost. Final PATH order:
-	// [C_paths, B_paths, A_paths, shell PATH].
-	//
-	// Use TempDir-derived absolute paths so the test is portable: on Windows
-	// `/abs/...` isn't absolute (no drive letter) and would get resolved
-	// against the working_dir, mangling the prefix string.
-	let dir = TempDir::new().unwrap();
-	let grand_path = dir.path().join("grand_bin").to_string_lossy().to_string();
-	let parent_path = dir.path().join("parent_bin").to_string_lossy().to_string();
-	let dep_path = dir.path().join("dep_bin").to_string_lossy().to_string();
-
-	let parent_chain: Vec<Vec<String>> = vec![vec![grand_path.clone()], vec![parent_path.clone()]];
-	let dep_paths = vec![dep_path.clone()];
-
-	let params = EnvBuildParams {
-		env_files: None,
-		env: None,
-		add_to_path: Some(&dep_paths),
-		working_dir: dir.path(),
-		env_files_base_dir: dir.path(),
-		available_private_keys: None,
-		base_env: None,
-		parent_add_to_path_chain: Some(&parent_chain),
-	};
-	let env = build_env(&params, &no_substitute).unwrap();
-	let path = get_path_value(&env);
-	let separator = if cfg!(windows) { ";" } else { ":" };
-
-	let dep_idx = path.find(&dep_path).expect("dep entry missing");
-	let parent_idx = path.find(&parent_path).expect("parent entry missing");
-	let grand_idx = path.find(&grand_path).expect("grand entry missing");
-	assert!(
-		dep_idx < parent_idx && parent_idx < grand_idx,
-		"order must be dep < parent < grand (innermost first); got {path}"
-	);
-
-	let expected_prefix = format!("{dep_path}{separator}{parent_path}{separator}{grand_path}{separator}");
-	assert!(
-		path.starts_with(&expected_prefix),
-		"PATH should start with full chain in innermost-first order; got {path}"
-	);
-}
-
-#[test]
-fn parent_chain_re_prepended_after_shell_overlay_wipes_parent_resolved_path() {
-	// Realistic @dep flow: parent's resolved env (passed as base_env) carries
-	// a stale PATH that already had parent's addToPath baked in. The shell
-	// overlay wipes that, then we re-prepend the chain.
-	let dir = TempDir::new().unwrap();
-	let mut parent_resolved = HashMap::new();
-	parent_resolved.insert("PATH".to_string(), "/abs/parent/bin:/old/system/snapshot".to_string());
-	parent_resolved.insert("PARENT_KEPT".to_string(), "from_parent".to_string());
-
-	let parent_chain: Vec<Vec<String>> = vec![vec!["/abs/parent/bin".to_string()]];
-	let dep_paths = vec!["/abs/dep/bin".to_string()];
-
-	let params = EnvBuildParams {
-		env_files: None,
-		env: None,
-		add_to_path: Some(&dep_paths),
-		working_dir: dir.path(),
-		env_files_base_dir: dir.path(),
-		available_private_keys: None,
-		base_env: Some(&parent_resolved),
-		parent_add_to_path_chain: Some(&parent_chain),
-	};
-	let env = build_env(&params, &no_substitute).unwrap();
-	let path = get_path_value(&env).replace('\\', "/");
-	let shell_path = std::env::var("PATH").unwrap_or_default().replace('\\', "/");
-
-	assert!(
-		!path.contains("/old/system/snapshot"),
-		"stale parent-resolved PATH must be wiped by the shell overlay; got {path}"
-	);
-	assert!(path.contains("/abs/parent/bin"), "parent chain entry should be in PATH");
-	assert!(path.contains("/abs/dep/bin"), "dep addToPath should be in PATH");
-	assert!(
-		path.ends_with(&shell_path),
-		"shell PATH should be at the tail (after the chain); got {path}"
-	);
-	let dep_idx = path.find("/abs/dep/bin").unwrap();
-	let parent_idx = path.find("/abs/parent/bin").unwrap();
-	assert!(dep_idx < parent_idx, "dep should precede parent in PATH");
-
-	// Non-PATH parent contribution survives because shell doesn't define PARENT_KEPT.
-	assert_eq!(env.get("PARENT_KEPT").unwrap(), "from_parent");
 }
 
 #[test]
@@ -254,7 +158,6 @@ fn dep_runfile_env_beats_parent_runfile_env_when_shell_does_not_have_key() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: Some(&parent_resolved),
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(
@@ -283,7 +186,6 @@ fn shell_beats_dep_runfile_env_too_for_keys_in_shell() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: Some(&parent_resolved),
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env);
@@ -295,11 +197,10 @@ fn shell_beats_dep_runfile_env_too_for_keys_in_shell() {
 }
 
 #[test]
-fn empty_chain_with_no_local_add_to_path_leaves_path_untouched() {
-	// Sanity: when neither chain nor local target contributes anything, PATH
-	// equals shell PATH exactly (no separator/empty-entry edge cases).
+fn no_add_to_path_leaves_path_untouched() {
+	// Sanity: with nothing to prepend, PATH equals the shell's exactly -- no
+	// stray separator, no empty leading segment.
 	let dir = TempDir::new().unwrap();
-	let parent_chain: Vec<Vec<String>> = vec![];
 
 	let params = EnvBuildParams {
 		env_files: None,
@@ -309,34 +210,9 @@ fn empty_chain_with_no_local_add_to_path_leaves_path_untouched() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: Some(&parent_chain),
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env);
 	let shell_path = std::env::var("PATH").unwrap_or_default();
 	assert_eq!(path, shell_path);
-}
-
-#[test]
-fn empty_inner_chain_layer_does_not_emit_stray_separator() {
-	// Defensive: a chain entry that's an empty Vec (e.g. ancestor had
-	// `addToPath: []`) shouldn't add a stray separator that turns into an
-	// empty PATH segment.
-	let dir = TempDir::new().unwrap();
-	let parent_chain: Vec<Vec<String>> = vec![vec![]];
-
-	let params = EnvBuildParams {
-		env_files: None,
-		env: None,
-		add_to_path: None,
-		working_dir: dir.path(),
-		env_files_base_dir: dir.path(),
-		available_private_keys: None,
-		base_env: None,
-		parent_add_to_path_chain: Some(&parent_chain),
-	};
-	let env = build_env(&params, &no_substitute).unwrap();
-	let path = get_path_value(&env);
-	let shell_path = std::env::var("PATH").unwrap_or_default();
-	assert_eq!(path, shell_path, "empty chain layer should not perturb PATH");
 }

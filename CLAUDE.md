@@ -223,6 +223,8 @@ segments. `$HOME/.runfiles/` is machine-wide, at a **fixed path with no setting 
   the shell, or every `$` branch would be called `bash`. It is threaded through `Dispatch::run`, so a
   branch's dependencies carry the branch's name rather than their own. A sequential run inherits the
   terminal and adds no prefix: nothing to disambiguate, and a pipeline reading `run`'s output keeps working.
+- `.add-path` is this target's own. The ancestor chain the old model carried across a re-exec is gone with
+  the re-exec: dispatch is in-process, and every target builds PATH from its own properties.
 - `env::build` receives the same deferred key pool the `decrypt` function uses. It was previously passed `None`,
   which meant an encrypted `.env-file` value could never be decrypted at all.
 

@@ -21,7 +21,6 @@ fn build_env_decrypts_via_public_key_matching() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: Some(&private_keys),
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("DB_PASS").unwrap(), "secret_password");
@@ -46,7 +45,6 @@ fn build_env_encrypted_no_public_key_no_keys_errors() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let result = build_env(&params, &no_substitute);
 	assert!(result.is_err());
@@ -75,7 +73,6 @@ fn build_env_encrypted_no_matching_private_key_errors() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: Some(&wrong_keys),
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let result = build_env(&params, &no_substitute);
 	assert!(result.is_err());
@@ -108,7 +105,6 @@ fn build_env_decrypts_env_file_with_public_key() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: Some(&private_keys),
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("FILE_SECRET").unwrap(), "from_file_secret");
@@ -142,7 +138,6 @@ fn encrypted_value_without_public_key_header_errors() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: Some(&private_keys),
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let result = build_env(&params, &no_substitute);
 

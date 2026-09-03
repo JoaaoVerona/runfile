@@ -126,13 +126,6 @@ pub struct EnvBuildParams<'a> {
 	/// it layers its own `.env-file` / `.env`. When `None` (the default), the process's
 	/// environment is used.
 	pub base_env: Option<&'a HashMap<String, String>>,
-	/// Accumulated `.add-path` contributions from ancestor `run` callers,
-	/// in chain order (outermost first). The current target's own `add_to_path`
-	/// is appended internally, then the whole chain is prepended to PATH at the
-	/// end so the innermost (this target's) entries end up at the very front:
-	/// `[this..., parent..., grandparent..., shell PATH]`. None or empty for
-	/// top-level invocations.
-	pub parent_add_to_path_chain: Option<&'a [Vec<String>]>,
 }
 
 /// Load environment variables from env files, applying substitution to file paths.
@@ -206,7 +199,7 @@ pub fn load_env_files(
 /// and `{{ ENV.X }}` in the dep can reference them. Step 3 still re-overlays
 /// `std::env::vars()`, ensuring shell wins over both parent and dep
 /// contributions. Step 4 walks `parent_add_to_path_chain` plus this target's
-/// `.add-path` so the full chain is re-prepended after step 3 wiped PATH.
+/// `.add-path` is re-prepended after step 3 wiped PATH.
 ///
 /// The `substitute` function is called on env values and file paths, allowing
 /// `{{ ARG.* }}`, `{{ FLAG.* }}`, and `{{ ENV.* }}` expansion.
@@ -264,15 +257,9 @@ pub fn build_env(
 	// two case-different PATH keys.
 	overlay_shell_env(&mut env_map);
 
-	// Build the full `.add-path` chain (parent ancestors + this target) and
-	// prepend to PATH. After the shell-env overlay, PATH = shell's PATH (if
-	// any), so this re-prepends the entire chain on top.
-	apply_add_to_path_chain(
-		&mut env_map,
-		params.parent_add_to_path_chain,
-		params.add_to_path,
-		params.working_dir,
-	);
+	// Prepend this target's `.add-path` to PATH. After the shell-env overlay
+	// PATH is the shell's, so this re-prepends on top of it.
+	apply_add_to_path(&mut env_map, params.add_to_path, params.working_dir);
 
 	// Final decrypt pass: if the env block (or shell overlay) somehow
 	// introduced an `encrypted:...` value — uncommon but possible — make
@@ -305,15 +292,9 @@ fn overlay_shell_env(env_map: &mut HashMap<String, String>) {
 /// Prepend `parent_chain + [this target's add_to_path]` to PATH so the
 /// innermost (this target's) entries end up at the very front. Relative paths
 /// resolve against `working_dir`. No-op when both inputs are empty.
-fn apply_add_to_path_chain(
-	env_map: &mut HashMap<String, String>,
-	parent_chain: Option<&[Vec<String>]>,
-	this_target: Option<&[String]>,
-	working_dir: &Path,
-) {
-	let parent_layers = parent_chain.unwrap_or(&[]);
+fn apply_add_to_path(env_map: &mut HashMap<String, String>, this_target: Option<&[String]>, working_dir: &Path) {
 	let this_layer: &[String] = this_target.unwrap_or(&[]);
-	if parent_layers.iter().all(|l| l.is_empty()) && this_layer.is_empty() {
+	if this_layer.is_empty() {
 		return;
 	}
 
@@ -334,12 +315,8 @@ fn apply_add_to_path_chain(
 		}
 	};
 
-	// Innermost first (this target), then walk the parent chain in reverse so
-	// outer ancestors land further back, closer to shell PATH at the tail.
+	// This target's entries first, then whatever PATH already held.
 	let mut new_paths: Vec<String> = this_layer.iter().map(&resolve).collect();
-	for layer in parent_layers.iter().rev() {
-		new_paths.extend(layer.iter().map(&resolve));
-	}
 	if !current_path.is_empty() {
 		new_paths.push(current_path);
 	}

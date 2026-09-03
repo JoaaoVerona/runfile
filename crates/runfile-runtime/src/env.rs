@@ -60,7 +60,6 @@ pub fn build(
 		env_files_base_dir: anchor,
 		available_private_keys: keys,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	build_env(&params, &|s, _| Ok(s.to_string())).map_err(|e| EnvError::Build(e.to_string()))
 }

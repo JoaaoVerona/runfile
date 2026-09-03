@@ -11,7 +11,6 @@ fn build_env_with_no_extras() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	// Should contain system env vars
@@ -34,7 +33,6 @@ fn build_env_with_env() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("MY_GLOBAL").unwrap(), "global_value");
@@ -54,7 +52,6 @@ fn build_env_with_env_value() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("KEY").unwrap(), "command");
@@ -73,7 +70,6 @@ fn build_env_add_to_path() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env).replace('\\', "/");
@@ -94,7 +90,6 @@ fn build_env_add_to_path_multiple() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env).replace('\\', "/");
@@ -120,7 +115,6 @@ fn build_env_env_files_before_env() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	// env (inline) should override envFiles
 	let env = build_env(&params, &no_substitute).unwrap();
@@ -140,7 +134,6 @@ fn build_env_env_files_load() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("GLOBAL_KEY").unwrap(), "global_value");
@@ -159,7 +152,6 @@ fn build_env_env_files() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("KEY").unwrap(), "target");
@@ -184,7 +176,6 @@ fn build_env_substitution_in_env_values() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let env = build_env(&params, &substitute).unwrap();
 	assert_eq!(env.get("GREETING").unwrap(), "hello world");
@@ -212,7 +203,6 @@ fn build_env_substitution_error_propagated() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
-		parent_add_to_path_chain: None,
 	};
 	let result = build_env(&params, &substitute);
 	assert!(result.is_err());
