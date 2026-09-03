@@ -72,6 +72,14 @@ pub enum Statement {
 	Exec {
 		command: Option<Vec<InterpPart>>,
 		body: Vec<Vec<InterpPart>>,
+		/// Source line of each `body` entry, 1-based.
+		///
+		/// Kept because the two are not derivable from each other: a `$` run
+		/// skips blank and comment lines, and a backslash continuation folds
+		/// several source lines into one body entry. Tooling that reports on the
+		/// shell text -- shellcheck delegation -- needs to point back at the
+		/// line the author actually wrote.
+		lines: Vec<usize>,
 		span: Span,
 	},
 }

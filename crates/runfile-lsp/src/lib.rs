@@ -6,3 +6,4 @@
 pub mod analysis;
 pub mod rpc;
 pub mod server;
+pub mod shell;

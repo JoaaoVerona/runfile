@@ -192,3 +192,79 @@ fn a_uri_with_escapes_round_trips() {
 	assert!(uri.contains("%20"), "{uri}");
 	assert_eq!(runfile_lsp::server::uri_to_path(&uri).unwrap(), p);
 }
+
+// ---- shellcheck delegation
+//
+// Skipped where shellcheck is not installed: CI has it, a contributor's machine
+// might not, and a missing enhancement must not read as a broken build.
+
+fn have_shellcheck() -> bool {
+	std::process::Command::new("shellcheck")
+		.arg("--version")
+		.stdout(std::process::Stdio::null())
+		.stderr(std::process::Stdio::null())
+		.status()
+		.is_ok_and(|s| s.success())
+}
+
+#[test]
+fn a_real_shell_mistake_is_reported_on_its_own_line() {
+	if !have_shellcheck() {
+		eprintln!("skipped: shellcheck not installed");
+		return;
+	}
+	// SC2086: an unquoted expansion of something shellcheck cannot prove safe.
+	// Line 3 of the file is line 2 of the script, because the comment between
+	// them is transparent to the run -- the case a naive offset gets wrong.
+	let src = "$ echo start\n# a note\n$ echo $UNSET_VAR\n";
+	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
+	let d = diagnostics(&out[0]);
+	assert_eq!(d.len(), 1, "{d:?}");
+	assert_eq!(d[0]["range"]["start"]["line"], 2, "the line the author wrote");
+	assert!(d[0]["message"].as_str().unwrap().contains("SC2086"), "{d:?}");
+}
+
+#[test]
+fn clean_shell_produces_nothing() {
+	if !have_shellcheck() {
+		return;
+	}
+	let out = converse(&[did_open("file:///x/runfiles/a.run", "$ x=1\n$ echo \"$x\"\n")]);
+	assert!(diagnostics(&out[0]).is_empty(), "{:?}", diagnostics(&out[0]));
+}
+
+#[test]
+fn an_interpolation_does_not_itself_trip_shellcheck() {
+	if !have_shellcheck() {
+		return;
+	}
+	// It resolves to exactly one shell word, so a correct rendering produces no
+	// quoting complaint. Leaving the braces in would produce several.
+	let out = converse(&[did_open("file:///x/runfiles/a.run", "$ cp {{ ARG.src }} /tmp/\n")]);
+	assert!(diagnostics(&out[0]).is_empty(), "{:?}", diagnostics(&out[0]));
+}
+
+#[test]
+fn a_non_shell_exec_body_is_left_alone() {
+	if !have_shellcheck() {
+		return;
+	}
+	// Python that would be nonsense as shell must not be reported as such.
+	let src = "exec python3\nx = [1, 2]\nprint(x)\nend\n";
+	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
+	assert!(diagnostics(&out[0]).is_empty(), "{:?}", diagnostics(&out[0]));
+}
+
+#[test]
+fn a_syntax_error_suppresses_shell_diagnostics() {
+	if !have_shellcheck() {
+		return;
+	}
+	// The document does not parse, so the shell text the runner would assemble
+	// is not known; reporting on a guess would be noise on top of a real error.
+	let src = ".wach = \"y\"\n$ echo $UNSET_VAR\n";
+	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
+	let d = diagnostics(&out[0]);
+	assert_eq!(d.len(), 1, "{d:?}");
+	assert!(d[0]["message"].as_str().unwrap().contains("watch"), "{d:?}");
+}

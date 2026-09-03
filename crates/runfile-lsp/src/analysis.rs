@@ -27,6 +27,8 @@ pub struct Diagnostic {
 pub enum Severity {
 	Error,
 	Warning,
+	Information,
+	Hint,
 }
 
 /// The whole of a line, which is the granularity the parser reports at.

@@ -331,6 +331,7 @@ impl<'a> P<'a> {
 		let first = &self.lines[self.i];
 		let (no, offset) = (first.no, first.offset);
 		let mut body = Vec::new();
+		let mut lines = Vec::new();
 		let mut last = self.i;
 		let mut j = self.i;
 		while j < self.lines.len() {
@@ -346,6 +347,7 @@ impl<'a> P<'a> {
 					text.push_str(self.lines[j].raw);
 				}
 				body.push(to_parts(lexer::split_interp(&text, l.offset, l.no)?, l.no)?);
+				lines.push(l.no);
 				last = j;
 				j += 1;
 			} else if l.trimmed.is_empty() || l.trimmed.starts_with('#') {
@@ -359,13 +361,15 @@ impl<'a> P<'a> {
 		Ok(Statement::Exec {
 			command: None,
 			body,
+			lines,
 			span: Span::new(offset, end, no),
 		})
 	}
 
 	/// Read an `exec` body: lines until an `end` at `indent`, dedented by their
 	/// own base indentation.
-	fn exec_body(&mut self, indent: &str, no: usize) -> Result<(Vec<Vec<InterpPart>>, usize), ParseError> {
+	#[allow(clippy::type_complexity)]
+	fn exec_body(&mut self, indent: &str, no: usize) -> Result<(Vec<Vec<InterpPart>>, Vec<usize>, usize), ParseError> {
 		let mut j = self.i;
 		let mut raw: Vec<&Line> = Vec::new();
 		loop {
@@ -392,9 +396,10 @@ impl<'a> P<'a> {
 				to_parts(lexer::split_interp(text, l.offset + base, l.no)?, l.no)
 			})
 			.collect::<Result<_, _>>()?;
+		let lines = raw.iter().map(|l| l.no).collect();
 		let end = self.lines[j].offset + self.lines[j].raw.len();
 		self.i = j + 1;
-		Ok((body, end))
+		Ok((body, lines, end))
 	}
 
 	/// A `$ cmd` or `exec cmd … end` used as a value.
@@ -410,7 +415,9 @@ impl<'a> P<'a> {
 		}
 		if let Some(cmd) = rhs.strip_prefix("exec ") {
 			let command = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
-			let (body, end) = self.exec_body(indent, no)?;
+			// A capture is an expression: its value is what the command prints,
+			// so per-line positions have nothing to report against.
+			let (body, _, end) = self.exec_body(indent, no)?;
 			let span = Span::new(offset, end, no);
 			return Ok(Some(Expr::Capture {
 				command: Some(command),
@@ -432,10 +439,11 @@ impl<'a> P<'a> {
 		let command = to_parts(lexer::split_interp(cmd_text, offset, no)?, no)?;
 		self.i += 1;
 		let indent = indent.to_string();
-		let (body, end) = self.exec_body(&indent, no)?;
+		let (body, lines, end) = self.exec_body(&indent, no)?;
 		Ok(Statement::Exec {
 			command: Some(command),
 			body,
+			lines,
 			span: Span::new(offset, end, no),
 		})
 	}

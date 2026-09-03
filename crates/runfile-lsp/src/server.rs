@@ -11,6 +11,15 @@ use serde_json::{Value, json};
 use crate::analysis::{self, Completions, Severity};
 use crate::rpc::{ReadError, read_message, write_message};
 
+/// What the `$` shorthand runs, which is what its body must be checked as.
+/// The runner prefers bash and falls back to sh; sh is the stricter of the two,
+/// so checking against it never lets a real problem through.
+const DEFAULT_SHELL: &str = "sh";
+
+/// Looked up on PATH. Absent shellcheck means no shell diagnostics, silently:
+/// it is an enhancement, not a requirement.
+const SHELLCHECK: &str = "shellcheck";
+
 #[derive(Default)]
 pub struct Server {
 	/// Open documents, by URI. The client owns the text once a file is open, so
@@ -97,7 +106,13 @@ impl Server {
 	fn diagnostics_for(&self, uri: &str) -> Value {
 		let src = self.docs.get(uri).map(String::as_str).unwrap_or_default();
 		let targets = uri_to_path(uri).map(|p| target_names(&p)).unwrap_or_default();
-		let items: Vec<Value> = analysis::diagnose(src, &targets)
+		let mut all = analysis::diagnose(src, &targets);
+		// Only when the file itself is sound: shellcheck on a document that does
+		// not parse would report against text the runner never assembles.
+		if all.is_empty() {
+			all.extend(crate::shell::diagnose(src, DEFAULT_SHELL, SHELLCHECK));
+		}
+		let items: Vec<Value> = all
 			.into_iter()
 			.map(|d| {
 				json!({
@@ -105,7 +120,12 @@ impl Server {
 						"start": {"line": d.range.start_line, "character": d.range.start_col},
 						"end": {"line": d.range.end_line, "character": d.range.end_col},
 					},
-					"severity": match d.severity { Severity::Error => 1, Severity::Warning => 2 },
+					"severity": match d.severity {
+						Severity::Error => 1,
+						Severity::Warning => 2,
+						Severity::Information => 3,
+						Severity::Hint => 4,
+					},
 					"source": "runfile",
 					"message": d.message,
 				})
