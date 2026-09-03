@@ -95,3 +95,39 @@ fn sibling_branches_do_not_see_each_others_chains() {
 	]);
 	host_run(&d, "a").expect("the same target on two paths is not a cycle");
 }
+
+// ---- labelled output
+//
+// Several children write at once, so each line says which branch it came from.
+// The label comes from the target name or the `exec` header rather than from
+// shell text, which is what the old implementation had to guess from.
+
+#[test]
+fn a_branch_label_comes_from_the_exec_header() {
+	assert_eq!(
+		crate::run::exec_label_for_test(Some("python3 -c"), "print(1)"),
+		"python3"
+	);
+	assert_eq!(crate::run::exec_label_for_test(Some("docker compose"), "up"), "docker");
+}
+
+#[test]
+fn a_shell_header_is_never_the_label() {
+	// Every `$` branch runs the default shell, so naming them all `bash` would
+	// tell nobody anything. The command inside is the useful name.
+	assert_eq!(
+		crate::run::exec_label_for_test(Some("bash"), "cargo build\nmore"),
+		"cargo"
+	);
+	assert_eq!(crate::run::exec_label_for_test(None, "pnpm install"), "pnpm");
+}
+
+#[test]
+fn a_label_skips_blank_and_comment_lines() {
+	assert_eq!(crate::run::exec_label_for_test(None, "\n# why\ncargo test"), "cargo");
+}
+
+#[test]
+fn an_empty_body_still_has_a_label() {
+	assert_eq!(crate::run::exec_label_for_test(None, ""), "exec");
+}

@@ -312,7 +312,7 @@ Shell is still there. It is just marked.
 | Single static binary | ✅ | ✅ | ✅ | ✅ |
 | Native Windows binary (`$` lines use Git Bash) | ✅ | ❌ | ✅ | ✅ |
 | First-class PowerShell / cmd.exe | ❌ | ❌ | ✅ | ❌ |
-| Output prefixing in parallel mode | ❌ | ❌ | ❌ | ✅ |
+| Output prefixing in parallel mode | ✅ | ❌ | ❌ | ✅ |
 | Pattern rules (`%.o: %.c`) | ❌ | ✅ | ❌ | ❌ |
 | Preconditions / status checks | ❌ | ❌ | ❌ | ✅ |
 | Incremental builds (sources / timestamps / checksums) | ❌ | ✅ | ❌ | ✅ |

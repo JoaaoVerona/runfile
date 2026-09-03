@@ -201,10 +201,19 @@ segments. `$HOME/.runfiles/` is machine-wide, at a **fixed path with no setting 
 - `Host::header_props` **probes**: it evaluates the declaration region only to read `.watch`, so it neither
   warns about unread inputs nor lets a writing function write. Without the second half, `.env.X =
   temp_file(...)` made two files per run, one an orphan nothing referenced.
+- **Ctrl+C** is caught so the run can stop between statements, delete its temp files, and exit 130. The flag
+  is process-global because a signal handler has nowhere else to write, but the runtime reads an injected
+  predicate (`Host::interrupted`), so it reaches for no process state of its own and one test cannot
+  interrupt another. `.ignore-errors` does not apply to it.
 - `Dispatch` is `Sync` with `&self` and an explicit `chain: &[String]`. Per-path rather than shared, so
   parallel siblings are not mistaken for a cycle.
 - `.parallel`: bindings evaluate in source order, then executable leaves fan out via `std::thread::scope`.
   Control flow expands into the same batch, and every branch completes before a failure surfaces.
+- **Parallel output is labelled per line**, since several children write at once. The label is the target
+  name for a `run` leaf and the `exec` header otherwise, falling back to the first word of the body — never
+  the shell, or every `$` branch would be called `bash`. It is threaded through `Dispatch::run`, so a
+  branch's dependencies carry the branch's name rather than their own. A sequential run inherits the
+  terminal and adds no prefix: nothing to disambiguate, and a pipeline reading `run`'s output keeps working.
 - `env::build` receives the same deferred key pool the `decrypt` function uses. It was previously passed `None`,
   which meant an encrypted `.env-file` value could never be decrypted at all.
 

@@ -26,7 +26,13 @@ impl Recorder {
 }
 
 impl Dispatch for Recorder {
-	fn run(&self, target: &str, args: &[String], _chain: &[String]) -> Result<Vec<String>, RunError> {
+	fn run(
+		&self,
+		target: &str,
+		args: &[String],
+		_chain: &[String],
+		_label: Option<&str>,
+	) -> Result<Vec<String>, RunError> {
 		self.calls.lock().expect("calls").push(if args.is_empty() {
 			target.to_string()
 		} else {
@@ -51,6 +57,7 @@ pub fn run_src(src: &str, d: &dyn Dispatch) -> Result<Vec<String>, RunError> {
 		assume_yes: true,
 		prompt: None,
 		interrupted: None,
+		label: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};

@@ -99,6 +99,7 @@ fn an_env_file_is_loaded_before_the_body_is_evaluated() {
 		assume_yes: true,
 		prompt: None,
 		interrupted: None,
+		label: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};
@@ -119,6 +120,7 @@ fn confirm_cancels_when_there_is_nobody_to_ask() {
 		assume_yes: false,
 		prompt: None,
 		interrupted: None,
+		label: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};
@@ -148,6 +150,7 @@ fn confirm_interpolates_its_message() {
 		assume_yes: false,
 		prompt: Some(&ask),
 		interrupted: None,
+		label: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};
@@ -174,6 +177,7 @@ fn a_header_property_cannot_see_a_body_binding() {
 		assume_yes: true,
 		prompt: None,
 		interrupted: None,
+		label: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};

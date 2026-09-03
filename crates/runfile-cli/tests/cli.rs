@@ -1246,3 +1246,74 @@ fn dry_run_says_which_shell_a_dollar_line_uses() {
 	assert!(first.starts_with("# $ runs "), "{}", out(&o));
 	assert!(first.contains("sh"), "names a shell: {first}");
 }
+
+#[test]
+fn parallel_branches_prefix_every_line_they_print() {
+	// Several children write at once, so each line says which branch it came
+	// from. Sorted, because the interleaving is the point: order is not fixed.
+	let p = project(&[(
+		"runfiles/t.run",
+		".parallel = true\n\n$ printf 'a1\\na2\\n'\nlet x = \"1\"\n$ printf 'b1\\n'\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(lines, ["printf | a1", "printf | a2", "printf | b1"], "{text}");
+}
+
+#[test]
+fn a_sequential_run_prints_no_labels() {
+	// The prefix is for telling concurrent branches apart; one at a time needs
+	// none, and adding one would break every pipeline reading `run`'s output.
+	let p = project(&[("runfiles/t.run", "$ printf 'plain\\n'\n")]);
+	let o = p.run(&["t"]);
+	assert_eq!(out(&o), "plain\n", "{}", err(&o));
+}
+
+#[test]
+fn a_parallel_branch_labels_its_stderr_too() {
+	let p = project(&[(
+		"runfiles/t.run",
+		".parallel = true\n\n$ printf 'oops\\n' >&2\nlet x = \"1\"\n$ printf 'fine\\n'\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(err(&o).trim(), "printf | oops", "{}", err(&o));
+	assert_eq!(out(&o).trim(), "printf | fine");
+}
+
+#[test]
+fn a_dispatched_branch_is_labelled_with_its_target_name() {
+	let p = project(&[
+		("runfiles/all.run", ".parallel = true\n\nrun one\nrun two\n"),
+		("runfiles/one.run", "$ printf 'from-one\\n'\n"),
+		("runfiles/two.run", "$ printf 'from-two\\n'\n"),
+	]);
+	let o = p.run(&["all"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	// The target name, not the command it happens to run: that is what tells
+	// you which branch of the fan-out you are reading.
+	assert_eq!(lines, ["one | from-one", "two | from-two"], "{text}");
+}
+
+#[test]
+fn a_branch_label_reaches_the_whole_subtree() {
+	// A dependency of a branch is still that branch's output, so it carries the
+	// same name rather than its own.
+	let p = project(&[
+		("runfiles/all.run", ".parallel = true\n\nrun one\n"),
+		("runfiles/one.run", "run deep\n$ printf 'mine\\n'\n"),
+		("runfiles/deep.run", "$ printf 'nested\\n'\n"),
+	]);
+	let o = p.run(&["all"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(lines, ["one | mine", "one | nested"], "{text}");
+}

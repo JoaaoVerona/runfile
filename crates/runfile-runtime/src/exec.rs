@@ -32,6 +32,10 @@ pub struct Spawn<'a> {
 	/// text, so dry-run shows exactly what the command would receive -- more
 	/// faithful than it could ever be over an opaque script file.
 	pub dry_run: bool,
+	/// Prefix every output line with this, for a `.parallel` fan-out where
+	/// several children write at once. `None` inherits the terminal, which is
+	/// what a sequential run wants: no prefix, no extra pipe, colours intact.
+	pub label: Option<&'a str>,
 }
 
 /// Split a command line into program and arguments, respecting quotes so
@@ -99,8 +103,12 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 	for (k, v) in s.env {
 		c.env(k, v);
 	}
+	let labelled = s.label.is_some() && !s.capture;
 	if s.capture {
 		c.stdout(Stdio::piped());
+	} else if labelled {
+		c.stdout(Stdio::piped());
+		c.stderr(Stdio::piped());
 	}
 	let mut child = c.spawn().map_err(|e| ExecError::Spawn {
 		cmd: label.clone(),
@@ -112,6 +120,16 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 			cmd: label.clone(),
 			source: e,
 		})?;
+	}
+	if labelled {
+		let prefix = s.label.unwrap_or_default().to_string();
+		let (out, err) = (child.stdout.take(), child.stderr.take());
+		// One thread for the other stream, so neither can block the other by
+		// filling its pipe while we read only from this one.
+		let with = prefix.clone();
+		let pump_err = std::thread::spawn(move || relay(err, &with, true));
+		relay(out, &prefix, false);
+		let _ = pump_err.join();
 	}
 	let out = child.wait_with_output().map_err(|e| ExecError::Spawn {
 		cmd: label.clone(),
@@ -135,4 +153,33 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		}
 	}
 	Ok(text)
+}
+
+/// Copy one of a child's streams out, a line at a time, behind its label.
+///
+/// Whole lines, because `println!` locks once per call: two branches writing at
+/// the same moment interleave by line rather than mid-word. Invalid UTF-8 is
+/// replaced rather than dropped -- output is for a person to read, and a
+/// mangled byte should not lose the line around it.
+fn relay(stream: Option<impl std::io::Read>, label: &str, is_err: bool) {
+	let Some(stream) = stream else { return };
+	let reader = std::io::BufReader::new(stream);
+	let mut buf = Vec::new();
+	let mut r = reader;
+	loop {
+		buf.clear();
+		match std::io::BufRead::read_until(&mut r, b'\n', &mut buf) {
+			Ok(0) | Err(_) => return,
+			Ok(_) => {}
+		}
+		while matches!(buf.last(), Some(b'\n' | b'\r')) {
+			buf.pop();
+		}
+		let line = String::from_utf8_lossy(&buf);
+		if is_err {
+			eprintln!("{label} | {line}");
+		} else {
+			println!("{label} | {line}");
+		}
+	}
 }

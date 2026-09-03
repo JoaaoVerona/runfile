@@ -88,12 +88,18 @@ impl<'a> Host<'a> {
 	pub fn run(&self, name: &str, args: &[String]) -> Result<(), RunError> {
 		// Only the top-level call banks its trace; nested ones hand theirs back
 		// so the caller can splice them in where the call appeared.
-		let trace = self.run_with_chain(name, args, &[])?;
+		let trace = self.run_with_chain(name, args, &[], None)?;
 		self.trace.lock().expect("trace lock").extend(trace);
 		Ok(())
 	}
 
-	fn run_with_chain(&self, name: &str, args: &[String], chain: &[String]) -> Result<Vec<String>, RunError> {
+	fn run_with_chain(
+		&self,
+		name: &str,
+		args: &[String],
+		chain: &[String],
+		label: Option<&str>,
+	) -> Result<Vec<String>, RunError> {
 		// A subproject is self-contained: `run compile` inside `web/runfiles/`
 		// means that directory's `compile`, whatever the root calls it. Without
 		// this a file would have to spell its own siblings' names differently
@@ -134,7 +140,7 @@ impl<'a> Host<'a> {
 		}
 		let mut next = chain.to_vec();
 		next.push(name.to_string());
-		self.run_inner(target, args, next)
+		self.run_inner(target, args, next, label)
 	}
 
 	/// Everything both `run_inner` and `header_props` need: a scope with the
@@ -202,6 +208,7 @@ impl<'a> Host<'a> {
 		target: &runfile_discovery::Target,
 		args: &[String],
 		chain: Vec<String>,
+		label: Option<&str>,
 	) -> Result<Vec<String>, RunError> {
 		let (ast, scope, shared_props) = self.prepare(target, args, true)?;
 
@@ -216,6 +223,7 @@ impl<'a> Host<'a> {
 			assume_yes: self.assume_yes,
 			prompt: self.prompt,
 			interrupted: self.interrupted,
+			label: label.map(str::to_string),
 			trace: Vec::new(),
 		};
 		crate::run::run_target_with(&ast, shared_props, &mut r)?;
@@ -228,8 +236,14 @@ struct HostDispatch<'a, 'b> {
 }
 
 impl Dispatch for HostDispatch<'_, '_> {
-	fn run(&self, target: &str, args: &[String], chain: &[String]) -> Result<Vec<String>, RunError> {
-		self.host.run_with_chain(target, args, chain)
+	fn run(
+		&self,
+		target: &str,
+		args: &[String],
+		chain: &[String],
+		label: Option<&str>,
+	) -> Result<Vec<String>, RunError> {
+		self.host.run_with_chain(target, args, chain, label)
 	}
 }
 

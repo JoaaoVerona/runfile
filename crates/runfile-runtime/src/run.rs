@@ -45,16 +45,26 @@ pub enum RunError {
 pub trait Dispatch: Sync {
 	/// Run `target`, returning its dry-run trace.
 	///
+	/// `label` prefixes everything the target prints, when it is one branch of a
+	/// `.parallel` fan-out. It is inherited by whatever the target dispatches in
+	/// turn, so a whole subtree reads as one branch.
+	///
 	/// The trace comes back rather than being written to shared state so the
 	/// caller can splice it in where the call appeared. Writing it centrally
 	/// printed every dependency before the line that invoked it, because a
 	/// child finishes while its parent is still walking.
-	fn run(&self, target: &str, args: &[String], chain: &[String]) -> Result<Vec<String>, RunError>;
+	fn run(
+		&self,
+		target: &str,
+		args: &[String],
+		chain: &[String],
+		label: Option<&str>,
+	) -> Result<Vec<String>, RunError>;
 }
 
 pub struct NoDispatch;
 impl Dispatch for NoDispatch {
-	fn run(&self, _t: &str, _a: &[String], _c: &[String]) -> Result<Vec<String>, RunError> {
+	fn run(&self, _t: &str, _a: &[String], _c: &[String], _l: Option<&str>) -> Result<Vec<String>, RunError> {
 		Err(RunError::NoResolver { line: 0 })
 	}
 }
@@ -66,6 +76,8 @@ enum Leaf {
 		body: String,
 		env: Vec<(String, String)>,
 		dir: PathBuf,
+		/// What to prefix this branch's output with.
+		label: String,
 	},
 	Run {
 		target: String,
@@ -92,6 +104,8 @@ pub struct Runner<'a> {
 	/// global so the runtime reaches for no process state of its own, and so a
 	/// test can interrupt one run without touching another.
 	pub interrupted: Option<&'a (dyn Fn() -> bool + Sync)>,
+	/// Prefix for this target's output; see `Dispatch::run`.
+	pub label: Option<String>,
 	/// Collected so a caller can show what ran without re-deriving it.
 	pub dry_run: bool,
 	pub trace: Vec<String>,
@@ -239,7 +253,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
 			let a = run_args(args, &mut r.scope)?;
 			// Splice the dependency's trace in where the call appeared.
-			let child = r.dispatch.run(&t, &a, &r.chain)?;
+			let child = r.dispatch.run(&t, &a, &r.chain, r.label.as_deref())?;
 			r.trace.extend(child);
 			Ok(())
 		}
@@ -255,6 +269,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				env: &env,
 				capture: false,
 				dry_run: r.dry_run,
+				label: r.label.as_deref(),
 			})?;
 			Ok(())
 		}
@@ -283,6 +298,7 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		env: &env,
 		capture: true,
 		dry_run: r.dry_run,
+		label: r.label.as_deref(),
 	})?;
 	Ok(Value::Str(out))
 }
@@ -368,6 +384,7 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 			Statement::Exec { command, body, .. } => {
 				let (cmd, text) = render(command.as_deref(), body, r)?;
 				out.push(Leaf::Exec {
+					label: exec_label(cmd.as_deref(), &text),
 					cmd,
 					body: text,
 					env: merged_env(r, props),
@@ -438,6 +455,34 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 	Ok(())
 }
 
+/// What to call a branch in the output.
+///
+/// From the `exec` header when there is one, since `exec python3` names itself,
+/// and otherwise the first word of the body -- which for a `$` line is the
+/// command being run. The default shell is never the label: every `$` branch
+/// would be called `bash`.
+#[cfg(test)]
+pub(crate) fn exec_label_for_test(command: Option<&str>, body: &str) -> String {
+	exec_label(command, body)
+}
+
+fn exec_label(command: Option<&str>, body: &str) -> String {
+	let from_header = command.and_then(|c| c.split_whitespace().next());
+	let from_body = || {
+		body.lines()
+			.map(str::trim)
+			.find(|l| !l.is_empty() && !l.starts_with('#'))
+			.and_then(|l| l.split_whitespace().next())
+	};
+	// A shell is never the label: every `$` branch would be called `bash`.
+	const SHELLS: &[&str] = &["sh", "bash", "dash", "ash", "zsh", "ksh", "busybox"];
+	from_header
+		.filter(|c| !SHELLS.contains(c))
+		.or_else(from_body)
+		.unwrap_or("exec")
+		.to_string()
+}
+
 fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
 	let dispatch = r.dispatch;
 	let chain = r.chain.clone();
@@ -448,20 +493,31 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 			.map(|leaf| {
 				let chain = &chain;
 				s.spawn(move || match leaf {
-					Leaf::Exec { cmd, body, env, dir } => exec::spawn(Spawn {
+					Leaf::Exec {
+						cmd,
+						body,
+						env,
+						dir,
+						label,
+					} => exec::spawn(Spawn {
 						command: cmd.as_deref(),
 						body,
 						cwd: dir,
 						env,
 						capture: false,
 						dry_run,
+						label: Some(label),
 					})
 					.map(|_| Some(body.clone()))
 					.map_err(RunError::from),
 					// Branches finish in whatever order they finish, so a
 					// dispatched target's trace joins the parent's as one block
 					// rather than being interleaved line by line.
-					Leaf::Run { target, args } => dispatch.run(target, args, chain).map(|t| Some(t.join("\n"))),
+					// A dispatched target labels its own leaves, so nothing is
+					// added here; its trace joins the parent's as one block.
+					Leaf::Run { target, args } => dispatch
+						.run(target, args, chain, Some(target))
+						.map(|t| Some(t.join("\n"))),
 				})
 			})
 			.collect();
