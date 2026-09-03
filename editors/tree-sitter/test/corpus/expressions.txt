@@ -1,0 +1,108 @@
+================================================================================
+Precedence
+================================================================================
+let a = 1 + 2 * 3 - -4
+let b = x < 2 || y >= 3 && !z
+let c = ARG.a ? ENV.B ? "d"
+let d = parts[0]
+let e = f(1, g(2), "s")
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (number)
+        (binary_expression
+          (number)
+          (number)))
+      (unary_expression
+        (number))))
+  (let_statement
+    (identifier)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (number))
+      (binary_expression
+        (binary_expression
+          (identifier)
+          (number))
+        (unary_expression
+          (identifier)))))
+  (let_statement
+    (identifier)
+    (chain_expression
+      (chain_expression
+        (source
+          (identifier))
+        (source
+          (identifier)))
+      (string
+        (string_content))))
+  (let_statement
+    (identifier)
+    (index_expression
+      (identifier)
+      (number)))
+  (let_statement
+    (identifier)
+    (call_expression
+      (identifier)
+      (arguments
+        (number)
+        (call_expression
+          (identifier)
+          (arguments
+            (number)))
+        (string
+          (string_content))))))
+
+================================================================================
+Strings: escapes, an interpolation holding a quoted string, and a raw string
+================================================================================
+let s = "say \"hi\"\n{{ ARG.name ? "world" }}"
+let r = r"(?m)^version = \"(.+)\""
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (string
+      (string_content)
+      (escape_sequence)
+      (string_content)
+      (escape_sequence)
+      (escape_sequence)
+      (interpolation
+        (chain_expression
+          (source
+            (identifier))
+          (string
+            (string_content))))))
+  (let_statement
+    (identifier)
+    (raw_string
+      (string_content)
+      (string_content)
+      (string_content)
+      (string_content))))
+
+================================================================================
+A list may span lines
+================================================================================
+let xs = [
+	"a",
+	"b",
+]
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (list
+      (string
+        (string_content))
+      (string
+        (string_content)))))

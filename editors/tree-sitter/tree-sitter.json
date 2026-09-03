@@ -1,0 +1,22 @@
+{
+	"grammars": [
+		{
+			"name": "runfile",
+			"camelcase": "Runfile",
+			"title": "Runfile",
+			"scope": "source.run",
+			"path": ".",
+			"file-types": ["run"],
+			"highlights": "queries/highlights.scm",
+			"injections": "queries/injections.scm"
+		}
+	],
+	"metadata": {
+		"version": "0.1.0",
+		"license": "MIT",
+		"description": "Runfile grammar for tree-sitter",
+		"authors": [{ "name": "João Vitor Verona Biazibetti" }],
+		"links": { "repository": "https://github.com/JoaaoVerona/runfile" }
+	},
+	"bindings": { "c": false, "go": false, "node": false, "python": false, "rust": false, "swift": false }
+}

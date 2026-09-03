@@ -1,0 +1,54 @@
+================================================================================
+Bare, valued, and nested properties
+================================================================================
+.parallel
+.shell = "bash"
+.env.PORT = ARG.port ? "3000"
+.env-file = ".env"
+--------------------------------------------------------------------------------
+
+(source_file
+  (property
+    (property_name
+      (identifier)))
+  (property
+    (property_name
+      (identifier))
+    (string
+      (string_content)))
+  (property
+    (property_name
+      (identifier)
+      (identifier))
+    (chain_expression
+      (source
+        (identifier))
+      (string
+        (string_content))))
+  (property
+    (property_name
+      (identifier))
+    (string
+      (string_content))))
+
+================================================================================
+A property inside a block
+================================================================================
+if FLAG.x
+	.shell = "bash"
+	$ true
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    (source
+      (identifier))
+    (property
+      (property_name
+        (identifier))
+      (string
+        (string_content)))
+    (shell_line
+      (shell_text
+        (shell_content)))))

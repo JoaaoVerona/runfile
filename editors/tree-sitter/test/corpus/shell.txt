@@ -1,0 +1,39 @@
+================================================================================
+Shell lines with interpolation, a lone brace, and a continuation
+================================================================================
+$ cp {{ ARG.src }} /tmp/{a,b}
+$ echo one \
+	two
+$
+--------------------------------------------------------------------------------
+
+(source_file
+  (shell_line
+    (shell_text
+      (shell_content)
+      (interpolation
+        (source
+          (identifier)))
+      (shell_content)
+      (shell_content)
+      (shell_content)))
+  (shell_line
+    (shell_text
+      (shell_content)
+      (line_continuation)
+      (shell_content)))
+  (shell_line))
+
+================================================================================
+A shell capture
+================================================================================
+let staged = $ git diff --name-only
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (capture
+      (shell_capture
+        (shell_text
+          (shell_content))))))

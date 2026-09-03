@@ -23,6 +23,9 @@ run vscode:setup           # One-time: pnpm install for the VS Code extension. G
 run vscode:compile         # Type-check and compile the extension
 run vscode:test            # Compile and run the extension's unit tests
 run vscode:package         # Build editors/vscode/runfile-vscode.vsix
+
+run tree-sitter:setup      # One-time: pnpm install for the tree-sitter CLI. Gates its other targets.
+run tree-sitter:test       # Regenerate the parser, run the corpus, parse every .run file in the repo
 ```
 
 `run setup` is a **preparation target** (see below): every other target in `runfiles/` refuses to run until it
@@ -115,7 +118,9 @@ the rest.
 ```
 GRAMMAR.ebnf                   # Normative grammar reference
 runfiles/                      # This project's own targets (self-hosting)
+ci-runfiles/                   # CI-only targets, installed into $HOME/.runfiles/ by the setup action
 editors/vscode/                # The VS Code extension (TypeScript) + its own runfiles/
+editors/tree-sitter/   # The tree-sitter grammar (Zed, Neovim, Helix) + its own runfiles/
 
 crates/
   runfile-lang/                # Lexer, parser, evaluator, values, the function library
@@ -207,6 +212,25 @@ segments. `$HOME/.runfiles/` is machine-wide, at a **fixed path with no setting 
   from what it stands for, a line containing one is reported **whole** rather than with a confidently wrong
   column. Shellcheck's four levels map onto LSP's four. Checking is skipped when the document does not parse,
   and a missing shellcheck is silent.
+
+### editors/tree-sitter
+
+`grammar.js` mirrors `GRAMMAR.ebnf`. Newlines are tokens rather than extras, so every line form ends in one;
+a file without a trailing newline gets a zero-width one from the scanner, exactly once.
+
+- `src/scanner.c` carries the rules an EBNF cannot: an `exec` body closes only on an `end` at the opener's
+  indentation, a `$` or `exec` body stops at `{{` so an interpolation is a node the grammar parses, and a
+  `run` argument is one whitespace-delimited word with its interpolations kept whole. The string rule needs no
+  scanner: the interpolation's expression is parsed as an expression, quotes and all.
+- **Scanner state is carried forward only by a successful token**; what a false return records is discarded.
+  The indentation a capture `exec` needs is therefore recorded on the newline token that precedes its line, by
+  looking past the token's marked end — not in the column-0 check, which says no to every non-`exec` line.
+- `conflicts: [[list]]`: a newline between the last element and `]` can belong to the separator or the closer.
+  Both readings produce the same tree, since newlines are hidden, so GLR may pick either.
+- Tested by `test/corpus/` (tree shapes) and a sweep that parses every `.run` file in the repository — the
+  check that the grammar accepts what the runner accepts.
+- pnpm 11 blocks tree-sitter-cli's install script, which downloads the binary; `pnpm-workspace.yaml`
+  (`allowBuilds`) approves it. The old `pnpm` field in `package.json` is no longer read.
 
 ### runfile-cli
 

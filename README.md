@@ -287,6 +287,12 @@ highlighting. Install the `.vsix` from the [latest release](https://github.com/J
 with what will actually happen. It also hands `$` lines and shell `exec` bodies to
 [shellcheck](https://www.shellcheck.net) when it is installed, mapping findings back to the lines you wrote.
 
+**JetBrains IDEs** read the same grammar: *Settings → Editor → TextMate Bundles*, add the `editors/vscode`
+directory from a checkout, and `.run` files highlight.
+
+**Zed, Neovim and Helix** use the tree-sitter grammar in `editors/tree-sitter`, with highlight queries
+included.
+
 ## Platform support
 
 | | |

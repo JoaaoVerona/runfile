@@ -1,0 +1,75 @@
+================================================================================
+An exec block with an interpolation in its body
+================================================================================
+exec python3
+	import sys
+	print({{ ARG.n }})
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (exec_block
+    (command
+      (shell_content))
+    (exec_body
+      (exec_content)
+      (interpolation
+        (source
+          (identifier)))
+      (exec_content))))
+
+================================================================================
+A deeper end is body text; only the opener's indentation closes
+================================================================================
+if FLAG.x
+	exec bash
+		if true; then
+		end
+	end
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    (source
+      (identifier))
+    (exec_block
+      (command
+        (shell_content))
+      (exec_body
+        (exec_content)))))
+
+================================================================================
+An empty exec body
+================================================================================
+exec cat
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (exec_block
+    (command
+      (shell_content))))
+
+================================================================================
+An exec capture closes at the indentation of its own line
+================================================================================
+if FLAG.x
+	let out = exec sh
+		echo hi
+	end
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    (source
+      (identifier))
+    (let_statement
+      (identifier)
+      (capture
+        (exec_capture
+          (command
+            (shell_content))
+          (exec_body
+            (exec_content)))))))

@@ -138,6 +138,14 @@ jobs:
       - name: Test the extension
         run: run vscode:test
 
+      # The grammar's tests compile the generated parser with the system C
+      # compiler, then parse every target in this repository.
+      - name: Set up the tree-sitter grammar
+        run: run tree-sitter:setup
+
+      - name: Test the tree-sitter grammar
+        run: run tree-sitter:test
+
       - name: Compile and package extension
         run: run vscode:package
 

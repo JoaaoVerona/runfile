@@ -1,0 +1,119 @@
+================================================================================
+Bindings and control flow
+================================================================================
+let n = 1
+n = n + 1
+if n == 2 && !FLAG.quiet
+	$ echo two
+else
+	$ echo other
+end
+for f in ["a", "b"]
+	$ echo {{ f }}
+end
+match ARG.kind
+case major
+	$ echo major
+case "minor"
+	$ echo minor
+default
+	error("unknown")
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (number))
+  (assignment
+    (identifier)
+    (binary_expression
+      (identifier)
+      (number)))
+  (if_statement
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (number))
+      (unary_expression
+        (source
+          (identifier))))
+    (shell_line
+      (shell_text
+        (shell_content)))
+    (shell_line
+      (shell_text
+        (shell_content))))
+  (for_statement
+    (identifier)
+    (list
+      (string
+        (string_content))
+      (string
+        (string_content)))
+    (shell_line
+      (shell_text
+        (shell_content)
+        (interpolation
+          (identifier)))))
+  (match_statement
+    (source
+      (identifier))
+    (match_case
+      (identifier)
+      (shell_line
+        (shell_text
+          (shell_content))))
+    (match_case
+      (string
+        (string_content))
+      (shell_line
+        (shell_text
+          (shell_content))))
+    (match_default
+      (expression_statement
+        (call_expression
+          (identifier)
+          (arguments
+            (string
+              (string_content))))))))
+
+================================================================================
+Run with arguments, a passthrough separator, and an interpolated word
+================================================================================
+run build --env=prod -- --release {{ ARGS }}
+run web:{{ target }} "quoted {{ "}}" }}"
+--------------------------------------------------------------------------------
+
+(source_file
+  (run_statement
+    (target)
+    (argument)
+    (argument)
+    (argument)
+    (argument))
+  (run_statement
+    (target)
+    (argument)
+    (argument)))
+
+================================================================================
+A bare call is a statement
+================================================================================
+write_file("out.txt", concat("a", "b"))
+--------------------------------------------------------------------------------
+
+(source_file
+  (expression_statement
+    (call_expression
+      (identifier)
+      (arguments
+        (string
+          (string_content))
+        (call_expression
+          (identifier)
+          (arguments
+            (string
+              (string_content))
+            (string
+              (string_content))))))))

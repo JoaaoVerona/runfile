@@ -1,0 +1,8 @@
+# Regenerate the parser, run the corpus tests, and parse every real .run file
+#
+# The corpus pins tree shapes; the sweep over every target in the repository
+# is the check that the grammar accepts what the runner accepts.
+
+run generate
+$ tree-sitter test
+$ find ../../runfiles ../../ci-runfiles ../../editors/vscode/runfiles runfiles -name '*.run' -exec tree-sitter parse --quiet {} +

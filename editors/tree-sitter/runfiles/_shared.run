@@ -1,0 +1,3 @@
+# Settings every grammar target inherits.
+
+.add-path = "node_modules/.bin"

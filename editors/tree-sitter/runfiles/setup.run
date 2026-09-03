@@ -1,0 +1,5 @@
+# Install the tree-sitter CLI exactly as pinned in pnpm-lock.yaml
+#
+# Named `setup`, so every other target here is gated until it has run.
+
+$ pnpm install --frozen-lockfile
