@@ -1087,3 +1087,34 @@ fn a_binding_in_a_nested_shared_file_is_visible_to_its_targets() {
 	assert!(o.status.success(), "{}", err(&o));
 	assert_eq!(out(&o).trim(), "eu");
 }
+
+#[test]
+fn a_temp_file_is_gone_once_the_binary_exits() {
+	// End to end: the registry is only useful if the process that owns it
+	// actually drains it, on both the succeeding and the failing path.
+	let p = project(&[
+		(
+			"runfiles/ok.run",
+			"let f = temp_file(\"secret\", \"json\")\n$ echo {{ f }}\n",
+		),
+		(
+			"runfiles/bad.run",
+			"let f = temp_file(\"secret\")\n$ echo {{ f }}\n$ false\n",
+		),
+	]);
+	for (target, should_succeed) in [("ok", true), ("bad", false)] {
+		let o = p.run(&[target]);
+		assert_eq!(o.status.success(), should_succeed, "{target}: {}", err(&o));
+		let path = out(&o).trim().to_string();
+		assert!(!path.is_empty(), "{target} printed no path");
+		assert!(!Path::new(&path).exists(), "{target} left {path} behind");
+	}
+}
+
+#[test]
+fn dry_run_reports_the_temp_file_it_would_have_made() {
+	let p = project(&[("runfiles/t.run", "let f = temp_file(\"x\")\n$ echo {{ f }}\n")]);
+	let o = p.run(&["--dry-run", "t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("would create a temp file"), "{}", out(&o));
+}

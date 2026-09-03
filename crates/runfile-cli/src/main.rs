@@ -170,14 +170,23 @@ fn real_main() -> Result<ExitCode, String> {
 	};
 	if !watching.is_empty() {
 		let anchor = target.anchor.clone();
-		return watch::watch(&anchor, &watching, || match host.run(&first, &args) {
-			Ok(()) => prepare::record(&cat, target),
-			Err(e) => eprintln!("[runfile] {e}"),
+		return watch::watch(&anchor, &watching, || {
+			match host.run(&first, &args) {
+				Ok(()) => prepare::record(&cat, target),
+				Err(e) => eprintln!("[runfile] {e}"),
+			}
+			// Between iterations, not just at the end: watch mode never reaches
+			// one, and each run makes its own temp files.
+			host.cleanup_temps();
 		})
 		.map(|()| ExitCode::SUCCESS);
 	}
 
-	match host.run(&first, &args) {
+	let outcome = host.run(&first, &args);
+	// However it ended. A target that fails half-way is exactly when a decoded
+	// credential must not be left in the temp directory.
+	host.cleanup_temps();
+	match outcome {
 		Ok(()) => {
 			if flags.dry_run {
 				for line in host.trace.lock().expect("trace").iter() {

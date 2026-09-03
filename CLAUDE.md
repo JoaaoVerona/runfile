@@ -147,8 +147,13 @@ quoting.
   turned every `run <target>` into a hang. Memoized so a run that decrypts twice still prompts once.
 - `Scope.dry_run` exists so `write_file` and `decrypt` can refuse to write. A preview that edits the working
   tree is worse than no preview.
-- `FUNCTIONS` is exported and driven into editor completion, with a test walking the list against the
-  dispatcher — a name offered but not implemented would otherwise be found by users.
+- `FUNCTIONS` is exported and driven into editor completion, with tests in **both** directions: every listed
+  name must dispatch, and every dispatch arm must be listed. Only the first existed at one point, and `min`
+  sat implemented but unlisted, so completion never offered it.
+- `Scope.temps` is a `TempFiles`: a shared handle, not a process-global, holding what `temp_file` and
+  `temp_dir` made. `Host::cleanup_temps` drains it however the run ended, which is the point — a target that
+  fails half-way is exactly when a decoded credential must not be left in the temp directory. Watch mode
+  drains after every iteration.
 - Binding names are validated in both `let` and reassignment; a block closer (`end`/`else`/`case`/`default`)
   with nothing open is a parse error rather than an expression statement.
 - `Statement::Exec` carries `lines: Vec<usize>`, the source line of each body line. The two are not derivable
@@ -193,6 +198,9 @@ segments. `$HOME/.runfiles/` is machine-wide, at a **fixed path with no setting 
 - **A subproject calls its own siblings.** `run compile` inside `web/runfiles/` resolves `web:compile` first,
   falling through to a root `compile` when there is no sibling — so a file spells its neighbours the same way
   wherever `run` was invoked from.
+- `Host::header_props` **probes**: it evaluates the declaration region only to read `.watch`, so it neither
+  warns about unread inputs nor lets a writing function write. Without the second half, `.env.X =
+  temp_file(...)` made two files per run, one an orphan nothing referenced.
 - `Dispatch` is `Sync` with `&self` and an explicit `chain: &[String]`. Per-path rather than shared, so
   parallel siblings are not mistaken for a cycle.
 - `.parallel`: bindings evaluate in source order, then executable leaves fan out via `std::thread::scope`.
@@ -279,9 +287,16 @@ settings file: global registrations, path aliases and custom shell paths were al
 
 ## Removed, and not coming back
 
-MCP server, `:convert`, `:config` (all subcommands), the user settings file, `-p` / target globs, `capture()`,
-`shell_quote()`, `set_cwd()`, `sameShell`, `extendStdio`, `forceKillOnSigInt`, the JSON schema, `VAR.`
-(replaced by `let`), and `RUNFILE_TARGET`. Dropped dependencies: `rmcp`, `tokio`, `json5`.
+MCP server, `:convert`, `:config` (all subcommands), the user settings file, `-p` / target globs, `capture()`
+(now `$` in value position), `shell_quote()` (interpolation self-quotes), `set_cwd()` (now `.workdir`),
+`define()` (now `let`), `nth()` / `count_parts()` (now `split()` and indexing), the arithmetic and comparison
+functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKillOnSigInt`, the JSON schema,
+`VAR.` (replaced by `let`), and `RUNFILE_TARGET`. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
+`shlex`.
+
+Deliberately **not** carried over, none of them used anywhere in the 1,005-target corpus: `capitalize`,
+`substring`, `escape`, `repeat`, `url_encode`, `url_decode`, `sha256`, `md5`, `uuid`, `now`, `json_get`,
+`json_set`, `power`. They can come back if anyone wants them; nothing about the design refuses them.
 
 ## Testing Requirements
 

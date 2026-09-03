@@ -76,6 +76,38 @@ pub struct Scope {
 	/// When set, functions that write must not. Reads still happen, since a
 	/// preview that cannot read a file cannot say what would run.
 	pub dry_run: bool,
+	/// What `temp_file` and `temp_dir` created, for the caller to delete when
+	/// the run ends.
+	pub temps: TempFiles,
+}
+
+/// Paths created by `temp_file` / `temp_dir`, shared by every scope in a run.
+///
+/// A handle rather than a process-global: a run owns its temp files, and
+/// `.parallel` hands the same handle to each branch. The host drains it on the
+/// way out, whether the run succeeded, failed, or is a watch iteration about to
+/// start another.
+#[derive(Clone, Default)]
+pub struct TempFiles(std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>);
+
+impl TempFiles {
+	pub fn track(&self, path: std::path::PathBuf) {
+		if let Ok(mut g) = self.0.lock() {
+			g.push(path);
+		}
+	}
+
+	/// Hand back everything created so far and forget it.
+	pub fn take(&self) -> Vec<std::path::PathBuf> {
+		self.0.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default()
+	}
+}
+
+impl std::fmt::Debug for TempFiles {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let n = self.0.lock().map(|g| g.len()).unwrap_or(0);
+		f.debug_struct("TempFiles").field("tracked", &n).finish()
+	}
 }
 
 /// A deferred, memoized key pool.
@@ -133,6 +165,7 @@ impl Scope {
 			base_dir: std::path::PathBuf::from("."),
 			private_keys: Keys::default(),
 			dry_run: false,
+			temps: TempFiles::default(),
 		}
 	}
 

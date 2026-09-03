@@ -143,6 +143,17 @@ $ cp {{ ARG.src }} {{ ARG.dest }}
 **Never wrap an interpolation in shell quotes.** There is no `shell_quote` function because there is nothing to
 quote: the substitution already did it.
 
+### Temporary files
+
+`temp_file` and `temp_dir` make something in the OS temp directory and hand back the path. Both are deleted
+when the run ends, however it ends, so a target that fails half-way does not leave a decoded secret behind:
+
+```sh
+.env.GOOGLE_APPLICATION_CREDENTIALS = temp_file(base64_decode(ENV.SERVICE_ACCOUNT_B64), "json")
+
+$ fastlane upload
+```
+
 ### Capturing output
 
 ```sh

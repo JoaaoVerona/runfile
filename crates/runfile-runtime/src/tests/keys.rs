@@ -78,3 +78,138 @@ fn keys_are_loaded_at_most_once_per_run() {
 		"asked {loads} times; an unlock prompt must appear at most once"
 	);
 }
+
+// ---- temp files
+//
+// They live here because, like the key pool, what matters is the mechanism
+// around them rather than the value they return.
+
+#[test]
+fn a_temp_file_is_created_with_its_content_and_removed_after_the_run() {
+	let d = project(&[(
+		"runfiles/t.run",
+		"let f = temp_file(\"secret\", \"json\")\n$ cp {{ f }} copied.txt\n$ echo {{ f }} > path.txt\n",
+	)]);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	h.run("t", &[]).unwrap();
+
+	let path = std::fs::read_to_string(d.path().join("path.txt"))
+		.unwrap()
+		.trim()
+		.to_string();
+	assert!(path.ends_with(".json"), "the extension is honoured: {path}");
+	assert_eq!(
+		std::fs::read_to_string(d.path().join("copied.txt")).unwrap(),
+		"secret",
+		"the content was written"
+	);
+	assert!(
+		std::path::Path::new(&path).exists(),
+		"still there until the caller cleans up"
+	);
+	h.cleanup_temps();
+	assert!(!std::path::Path::new(&path).exists(), "and gone afterwards");
+}
+
+#[test]
+fn a_temp_file_is_removed_even_when_the_target_fails() {
+	// The case the whole registry exists for: a half-way failure must not leave
+	// a decoded credential in the temp directory.
+	let files = &[(
+		"runfiles/t.run",
+		"let f = temp_file(\"secret\")\n$ echo {{ f }} > path.txt\n$ false\n",
+	)];
+	let d = project(files);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	assert!(h.run("t", &[]).is_err(), "the target fails");
+
+	let path = std::fs::read_to_string(d.path().join("path.txt"))
+		.unwrap()
+		.trim()
+		.to_string();
+	assert!(std::path::Path::new(&path).exists());
+	h.cleanup_temps();
+	assert!(!std::path::Path::new(&path).exists(), "cleaned up despite the failure");
+}
+
+#[test]
+fn a_temp_dir_is_removed_with_what_is_inside_it() {
+	let d = project(&[(
+		"runfiles/t.run",
+		"let dir = temp_dir()\n$ echo {{ dir }} > path.txt\n$ touch {{ dir }}/inside\n",
+	)]);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	h.run("t", &[]).unwrap();
+
+	let path = std::fs::read_to_string(d.path().join("path.txt"))
+		.unwrap()
+		.trim()
+		.to_string();
+	assert!(std::path::Path::new(&path).join("inside").exists());
+	h.cleanup_temps();
+	assert!(!std::path::Path::new(&path).exists(), "removed recursively");
+}
+
+#[test]
+fn a_preview_creates_no_temp_file() {
+	let d = project(&[(
+		"runfiles/t.run",
+		"let f = temp_file(\"x\")\n$ echo {{ f }} > path.txt\n",
+	)]);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	h.dry_run = true;
+	h.run("t", &[]).unwrap();
+	assert!(h.temps.take().is_empty(), "a preview must not touch the filesystem");
+}
+
+#[test]
+fn two_temp_files_in_one_run_are_different() {
+	let d = project(&[(
+		"runfiles/t.run",
+		"let a = temp_file()\nlet b = temp_file()\n$ echo {{ a }} {{ b }} > paths.txt\n",
+	)]);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	h.run("t", &[]).unwrap();
+	let line = std::fs::read_to_string(d.path().join("paths.txt")).unwrap();
+	let paths: Vec<&str> = line.split_whitespace().collect();
+	assert_eq!(paths.len(), 2);
+	assert_ne!(paths[0], paths[1]);
+	h.cleanup_temps();
+}
+
+#[test]
+fn a_writing_function_in_a_property_runs_once_per_run() {
+	// The declaration region is evaluated twice: once to read `.watch` before
+	// the run, once during it. A side effect there must not happen twice --
+	// the second file would be an orphan nothing referenced.
+	let d = project(&[(
+		"runfiles/t.run",
+		".watch = \"src/**\"\n.env.CREDS = temp_file(\"secret\")\n$ true\n",
+	)]);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	let target = cat.resolve("t").unwrap();
+
+	// Exactly what the CLI does before running a target that declares `.watch`.
+	let props = h.header_props(target, &[]).unwrap();
+	assert_eq!(props.watch, vec!["src/**".to_string()], "the probe still reads it");
+	assert!(h.temps.take().is_empty(), "and creates nothing");
+
+	h.run("t", &[]).unwrap();
+	let made = h.temps.take();
+	assert_eq!(made.len(), 1, "one call, one file: {made:?}");
+	for p in made {
+		let _ = std::fs::remove_file(p);
+	}
+}

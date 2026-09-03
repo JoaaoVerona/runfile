@@ -48,6 +48,8 @@ pub struct Host<'a> {
 	/// Every shell body that ran. Order is arrival order, which under
 	/// `.parallel` is completion order rather than source order.
 	pub trace: Mutex<Vec<String>>,
+	/// What `temp_file` and `temp_dir` created during this run.
+	pub temps: runfile_lang::TempFiles,
 }
 
 impl<'a> Host<'a> {
@@ -61,6 +63,22 @@ impl<'a> Host<'a> {
 			prompt: None,
 			warn: None,
 			trace: Mutex::new(Vec::new()),
+			temps: runfile_lang::TempFiles::default(),
+		}
+	}
+
+	/// Delete everything `temp_file` and `temp_dir` made, and forget it.
+	///
+	/// Best effort, and called however the run ended: a target that fails
+	/// half-way is exactly when a decoded credential must not be left behind.
+	/// Idempotent, so watch mode can call it after every iteration.
+	pub fn cleanup_temps(&self) {
+		for p in self.temps.take() {
+			let _ = if p.is_dir() {
+				std::fs::remove_dir_all(&p)
+			} else {
+				std::fs::remove_file(&p)
+			};
 		}
 	}
 
@@ -119,14 +137,17 @@ impl<'a> Host<'a> {
 	/// Everything both `run_inner` and `header_props` need: a scope with the
 	/// run context and arguments in place, plus `_shared.run` already folded in.
 	///
-	/// `advise` emits the unread-input warning. Only a real run wants it --
-	/// `header_props` is called ahead of one, and warning twice would teach
-	/// people to ignore it.
+	/// `real` separates an actual run from a probe. `header_props` probes: it
+	/// evaluates the declaration region only to read `.watch`, so it must
+	/// neither warn about unread inputs (warning twice teaches people to
+	/// ignore it) nor let a writing function write. Without the second half,
+	/// `.env.X = temp_file(...)` created two files per run, one of them an
+	/// orphan nothing referenced.
 	fn prepare(
 		&self,
 		target: &runfile_discovery::Target,
 		args: &[String],
-		advise: bool,
+		real: bool,
 	) -> Result<(runfile_lang::Target, Scope, Props), RunError> {
 		let (ast, mut text) = parse_file(&target.path)?;
 		let mut scope = Scope::new();
@@ -134,7 +155,8 @@ impl<'a> Host<'a> {
 		parse_args(&mut scope, args);
 		scope.ask = self.ask;
 		scope.base_dir = target.anchor.clone();
-		scope.dry_run = self.dry_run;
+		scope.dry_run = self.dry_run || !real;
+		scope.temps = self.temps.clone();
 		scope.private_keys = runfile_lang::Keys::new(self.keys);
 
 		// `_shared.run` is the globals analog: its properties and bindings apply
@@ -150,7 +172,7 @@ impl<'a> Host<'a> {
 			text.push_str(&shared_text);
 		}
 
-		if advise && let Some(warn) = self.warn {
+		if real && let Some(warn) = self.warn {
 			for unread in unread_inputs(&scope, &text) {
 				let (_, key) = unread.split_at(2);
 				warn(&format!(

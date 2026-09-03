@@ -186,3 +186,62 @@ fn number_of_a_number_is_itself() {
 	assert_eq!(v("number(length([1, 2]))"), Value::Num(2.0));
 	assert_eq!(v("number(\"4.5\")"), Value::Num(4.5));
 }
+
+#[test]
+fn every_dispatched_function_name_is_also_exported() {
+	// The counterpart of the test above, and the one that was missing: `min`
+	// worked but was absent from the list, so completion never offered it and
+	// nothing noticed. Reads the dispatcher's own match arms.
+	let src = concat!(
+		include_str!("../functions.rs"),
+		// The list itself is in this file too; the regex below skips it by
+		// requiring the `=>` that only a match arm has.
+		""
+	);
+	let mut missing: Vec<String> = Vec::new();
+	let mut seen = 0usize;
+	for line in src.lines().map(str::trim) {
+		let Some(rest) = line.strip_prefix('"') else { continue };
+		let Some((name, after)) = rest.split_once('"') else {
+			continue;
+		};
+		// A dispatch arm: `"name" => …` or `"name" if … => …`.
+		if !after.contains("=>") {
+			continue;
+		}
+		if !name
+			.chars()
+			.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+		{
+			continue;
+		}
+		seen += 1;
+		if !crate::functions::FUNCTIONS.contains(&name) && !missing.iter().any(|m| m == name) {
+			missing.push(name.to_string());
+		}
+	}
+	// A scan that stops matching would pass by finding nothing at all.
+	assert!(
+		seen > 40,
+		"the scan found only {seen} dispatch arms; it has stopped working"
+	);
+	assert!(
+		missing.is_empty(),
+		"dispatched but not exported for completion: {missing:?}"
+	);
+}
+
+#[test]
+fn min_and_max_both_exist() {
+	assert_eq!(v("min(3, 1, 2)"), Value::Num(1.0));
+	assert_eq!(v("max(3, 1, 2)"), Value::Num(3.0));
+}
+
+#[test]
+fn join_path_uses_the_platform_separator() {
+	let joined = v("join_path(\"a\", \"b\", \"c\")");
+	let expected = std::path::Path::new("a").join("b").join("c");
+	assert_eq!(joined, Value::Str(expected.to_string_lossy().into_owned()));
+	// An absolute later segment replaces what came before, as `Path::join` does.
+	assert_eq!(v("join_path(\"a\", \"/b\")"), Value::Str("/b".into()));
+}

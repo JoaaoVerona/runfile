@@ -301,6 +301,27 @@ use std::path::{Path, PathBuf};
 
 /// Relative paths anchor to the target's directory, the same rule cwd and
 /// `.env-file` follow, so one anchor explains all of them.
+/// A path in the OS temp directory that nothing else holds.
+///
+/// The process id keeps two concurrent runs apart, the counter keeps two calls
+/// in one run apart, and the clock keeps a reused process id apart from an
+/// earlier run's leftovers. Creation is still exclusive, so a collision fails
+/// loudly rather than clobbering.
+fn unique_temp_path(ext: Option<&str>) -> PathBuf {
+	static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	let nanos = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map(|d| d.subsec_nanos())
+		.unwrap_or(0);
+	let mut name = format!("runfile-{}-{n}-{nanos}", std::process::id());
+	if let Some(e) = ext {
+		name.push('.');
+		name.push_str(e);
+	}
+	std::env::temp_dir().join(name)
+}
+
 fn resolve(base: &Path, p: &str) -> PathBuf {
 	let path = Path::new(p);
 	if path.is_absolute() {
@@ -333,11 +354,13 @@ pub const FUNCTIONS: &[&str] = &[
 	"floor",
 	"glob",
 	"is_number",
+	"join_path",
 	"join",
 	"last",
 	"length",
 	"lines",
 	"max",
+	"min",
 	"number",
 	"one_of",
 	"read_file",
@@ -354,6 +377,8 @@ pub const FUNCTIONS: &[&str] = &[
 	"split",
 	"starts_with",
 	"stem",
+	"temp_dir",
+	"temp_file",
 	"to_lower",
 	"to_upper",
 	"trim",
@@ -403,6 +428,56 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 				.map_err(|e| other(format!("could not write {}: {e}", p.display())))
 		})(),
 		"file_exists" if n == 1 => s(0).map(|p| V::Bool(resolve(&sc.base_dir, p).exists())),
+		// Joins with this platform's separator, and lets an absolute later
+		// segment replace what came before, the way `Path::join` does.
+		"join_path" if n >= 1 => (|| {
+			let mut out = PathBuf::from(s(0)?);
+			for i in 1..n {
+				out.push(s(i)?);
+			}
+			Ok(V::Str(out.to_string_lossy().into_owned()))
+		})(),
+		// `temp_file([content], [extension])` and `temp_dir()`: a fresh path in
+		// the OS temp directory, deleted when the run ends. Writing, so a
+		// preview must not create one.
+		"temp_file" if n <= 2 => (|| {
+			if sc.dry_run {
+				return Ok(V::Str("<would create a temp file>".into()));
+			}
+			let ext = match n {
+				2 => Some(s(1)?.trim_start_matches('.')).filter(|e| !e.is_empty()),
+				_ => None,
+			};
+			let path = unique_temp_path(ext);
+			// Exclusive creation: in a world-writable directory this refuses to
+			// follow a planted symlink or to truncate an existing file.
+			let mut file = std::fs::OpenOptions::new()
+				.write(true)
+				.create_new(true)
+				.open(&path)
+				.map_err(|e| other(format!("could not create a temp file: {e}")))?;
+			if n >= 1 {
+				use std::io::Write as _;
+				file.write_all(s(0)?.as_bytes())
+					.map_err(|e| other(format!("could not write the temp file: {e}")))?;
+			}
+			sc.temps.track(path.clone());
+			Ok(V::Str(path.to_string_lossy().into_owned()))
+		})(),
+		"temp_dir" if n == 0 => {
+			if sc.dry_run {
+				Ok(V::Str("<would create a temp directory>".into()))
+			} else {
+				let path = unique_temp_path(None);
+				match std::fs::create_dir(&path) {
+					Ok(()) => {
+						sc.temps.track(path.clone());
+						Ok(V::Str(path.to_string_lossy().into_owned()))
+					}
+					Err(e) => Err(other(format!("could not create a temp directory: {e}"))),
+				}
+			}
+		}
 		"base64_encode" if n == 1 => s(0).map(|x| {
 			use base64::Engine;
 			V::Str(base64::engine::general_purpose::STANDARD.encode(x))
