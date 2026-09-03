@@ -94,20 +94,20 @@ pub struct EnvBuildParams<'a> {
 	/// Env vars to set (applied after env files).
 	pub env: Option<&'a HashMap<String, String>>,
 	/// Directories to prepend to PATH. Entries should already be absolute —
-	/// the parser bakes target-level relative `addToPath` entries against the
+	/// the runtime resolves relative `.add-path` entries against the
 	/// source Runfile's directory in `merge.rs`, mirroring how globals are
 	/// baked. The `working_dir` fallback in `apply_add_to_path_chain` only
 	/// kicks in for any stray relative entry that bypassed baking.
 	pub add_to_path: Option<&'a [String]>,
 	/// Working directory the spawned command will run in (= the resolved
-	/// `workingDirectory`). Used as a fallback for any relative `addToPath`
-	/// entry that wasn't baked at parse time; not used for `envFiles`.
+	/// `.workdir`). Used as a fallback for any relative `.add-path`
+	/// entry that wasn't baked at parse time; not used for `.env-file`.
 	pub working_dir: &'a Path,
-	/// Base directory for resolving relative `envFiles` paths. Always the
+	/// Base directory for resolving relative `.env-file` paths. Always the
 	/// source Runfile's parent directory (`{{ RUN.parent }}`), regardless of
-	/// `workingDirectory` — env files are configuration files co-located with
+	/// `.workdir` — env files are configuration files co-located with
 	/// the Runfile, so anchoring them to the Runfile dir is what users expect
-	/// when they tweak `workingDirectory` for command execution.
+	/// when they tweak `.workdir` for command execution.
 	pub env_files_base_dir: &'a Path,
 	/// Available private keys for decrypting `encrypted:` prefixed values.
 	/// After merging, if encrypted values are detected, `RUNFILE_ENCRYPTION_PUBLIC_KEY`
@@ -123,10 +123,10 @@ pub struct EnvBuildParams<'a> {
 	/// the default `std::env::vars()` snapshot as the starting layer of the
 	/// merged env. Used to pass a parent target's already-resolved env into a
 	/// dependency invocation, so `@dep` sees the parent's env on top of which
-	/// it layers its own envFiles/env. When `None` (the default), the process's
+	/// it layers its own `.env-file` / `.env`. When `None` (the default), the process's
 	/// environment is used.
 	pub base_env: Option<&'a HashMap<String, String>>,
-	/// Accumulated `addToPath` contributions from ancestor `@target` callers,
+	/// Accumulated `.add-path` contributions from ancestor `run` callers,
 	/// in chain order (outermost first). The current target's own `add_to_path`
 	/// is appended internally, then the whole chain is prepended to PATH at the
 	/// end so the innermost (this target's) entries end up at the very front:
@@ -186,12 +186,12 @@ pub fn load_env_files(
 /// Build the complete environment variable map for a command execution.
 ///
 /// Merge order (lowest → highest priority for non-PATH vars):
-/// 1. `envFiles` — loaded left-to-right, later files override earlier
-/// 2. `env` — with substitution; overrides envFiles per key
+/// 1. `.env-file` — loaded left-to-right, later files override earlier
+/// 2. `env` — with substitution; overrides `.env-file` per key
 /// 3. **Current shell env** — `std::env::vars()` re-overlaid; the inherited shell
-///    value ALWAYS beats whatever the Runfile's `envFiles` / `env` set
-/// 4. `addToPath` chain — for PATH only, prepended in innermost-first order
-///    (`[this target's addToPath..., parent's..., grandparent's..., shell PATH]`)
+///    value ALWAYS beats whatever the Runfile's `.env-file` / `env` set
+/// 4. `.add-path` chain — for PATH only, prepended in innermost-first order
+///    (`[this target's `.add-path`..., parent's..., grandparent's..., shell PATH]`)
 /// 5. Decryption — `encrypted:` values rewritten in place
 ///
 /// For top-level invocations (`base_env: None`), step 1 starts from
@@ -206,7 +206,7 @@ pub fn load_env_files(
 /// and `{{ ENV.X }}` in the dep can reference them. Step 3 still re-overlays
 /// `std::env::vars()`, ensuring shell wins over both parent and dep
 /// contributions. Step 4 walks `parent_add_to_path_chain` plus this target's
-/// `addToPath` so the full chain is re-prepended after step 3 wiped PATH.
+/// `.add-path` so the full chain is re-prepended after step 3 wiped PATH.
 ///
 /// The `substitute` function is called on env values and file paths, allowing
 /// `{{ ARG.* }}`, `{{ FLAG.* }}`, and `{{ ENV.* }}` expansion.
@@ -220,9 +220,9 @@ pub fn build_env(
 		None => env::vars().collect(),
 	};
 
-	// Layer envFiles (substitution sees the env_map built so far). Relative
-	// envFiles paths resolve against `env_files_base_dir` — the source
-	// Runfile's parent — NOT the resolved `workingDirectory`. Env files are
+	// Layer `.env-file`s (substitution sees the env_map built so far). Relative
+	// `.env-file` paths resolve against `env_files_base_dir` — the
+	// anchor: the parent of `runfiles/` — NOT the resolved `.workdir`. Env files are
 	// configuration co-located with the Runfile.
 	if let Some(env_files) = params.env_files {
 		let file_vars = load_env_files(env_files, params.env_files_base_dir, substitute, &env_map)?;
@@ -259,12 +259,12 @@ pub fn build_env(
 	}
 
 	// Re-overlay the current shell env. Any key the shell defines now beats
-	// whatever envFiles/env set, restoring the inherited value. PATH is
+	// whatever `.env-file` / `.env` set, restoring the inherited value. PATH is
 	// case-aware (Windows uses "Path", Unix "PATH") so we don't end up with
 	// two case-different PATH keys.
 	overlay_shell_env(&mut env_map);
 
-	// Build the full addToPath chain (parent ancestors + this target) and
+	// Build the full `.add-path` chain (parent ancestors + this target) and
 	// prepend to PATH. After the shell-env overlay, PATH = shell's PATH (if
 	// any), so this re-prepends the entire chain on top.
 	apply_add_to_path_chain(
