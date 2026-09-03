@@ -61,10 +61,25 @@ impl<'a> Host<'a> {
 	}
 
 	pub fn run(&self, name: &str, args: &[String]) -> Result<(), RunError> {
-		self.run_with_chain(name, args, &[])
+		// Only the top-level call banks its trace; nested ones hand theirs back
+		// so the caller can splice them in where the call appeared.
+		let trace = self.run_with_chain(name, args, &[])?;
+		self.trace.lock().expect("trace lock").extend(trace);
+		Ok(())
 	}
 
-	fn run_with_chain(&self, name: &str, args: &[String], chain: &[String]) -> Result<(), RunError> {
+	fn run_with_chain(&self, name: &str, args: &[String], chain: &[String]) -> Result<Vec<String>, RunError> {
+		// A subproject is self-contained: `run compile` inside `web/runfiles/`
+		// means that directory's `compile`, whatever the root calls it. Without
+		// this a file would have to spell its own siblings' names differently
+		// depending on where `run` was invoked from.
+		let qualified = chain
+			.last()
+			.and_then(|caller| caller.rsplit_once(':'))
+			.map(|(prefix, _)| format!("{prefix}:{name}"))
+			.filter(|q| self.catalog.resolve(q).is_some());
+		let name = qualified.as_deref().unwrap_or(name);
+
 		let target = self.catalog.resolve(name).ok_or_else(|| {
 			let near: Vec<&str> = self
 				.catalog
@@ -110,6 +125,7 @@ impl<'a> Host<'a> {
 		parse_args(&mut scope, args);
 		scope.ask = self.ask;
 		scope.base_dir = target.anchor.clone();
+		scope.dry_run = self.dry_run;
 		scope.private_keys = runfile_lang::Keys::new(self.keys);
 
 		// `_shared.run` is the globals analog: its properties and bindings apply
@@ -141,7 +157,7 @@ impl<'a> Host<'a> {
 		target: &runfile_discovery::Target,
 		args: &[String],
 		chain: Vec<String>,
-	) -> Result<(), RunError> {
+	) -> Result<Vec<String>, RunError> {
 		let (ast, scope, shared_props) = self.prepare(target, args)?;
 
 		let adapter = HostDispatch { host: self };
@@ -156,9 +172,8 @@ impl<'a> Host<'a> {
 			prompt: self.prompt,
 			trace: Vec::new(),
 		};
-		let out = crate::run::run_target_with(&ast, shared_props, &mut r);
-		self.trace.lock().expect("trace lock").extend(r.trace);
-		out
+		crate::run::run_target_with(&ast, shared_props, &mut r)?;
+		Ok(r.trace)
 	}
 }
 
@@ -167,7 +182,7 @@ struct HostDispatch<'a, 'b> {
 }
 
 impl Dispatch for HostDispatch<'_, '_> {
-	fn run(&self, target: &str, args: &[String], chain: &[String]) -> Result<(), RunError> {
+	fn run(&self, target: &str, args: &[String], chain: &[String]) -> Result<Vec<String>, RunError> {
 		self.host.run_with_chain(target, args, chain)
 	}
 }

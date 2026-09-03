@@ -73,6 +73,9 @@ pub struct Scope {
 	/// Private keys `decrypt` may try. Supplied by the host so the language
 	/// crate never has to know about credential stores.
 	pub private_keys: Keys,
+	/// When set, functions that write must not. Reads still happen, since a
+	/// preview that cannot read a file cannot say what would run.
+	pub dry_run: bool,
 }
 
 /// A deferred, memoized key pool.
@@ -129,6 +132,7 @@ impl Scope {
 			ask: None,
 			base_dir: std::path::PathBuf::from("."),
 			private_keys: Keys::default(),
+			dry_run: false,
 		}
 	}
 

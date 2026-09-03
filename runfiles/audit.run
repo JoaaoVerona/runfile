@@ -1,0 +1,3 @@
+# Fail on RustSec advisories in the dependency tree
+
+$ cargo audit

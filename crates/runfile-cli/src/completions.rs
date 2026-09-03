@@ -6,7 +6,7 @@
 //! flags are fixed, so they are baked into each script.
 
 /// Subcommands offered when the current word starts with `:`.
-pub const COMMANDS: &[&str] = &[":list", ":env", ":update", ":completions", ":init"];
+pub const COMMANDS: &[&str] = &[":list", ":env", ":update", ":completions", ":init", ":version"];
 /// Flags offered before the target name.
 pub const FLAGS: &[&str] = &["-y", "--yes", "--stdin-args", "--dry-run", "--dir"];
 /// `:env` subcommands, the one nested level that exists.

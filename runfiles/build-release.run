@@ -1,0 +1,5 @@
+# Optimized release build of the whole workspace
+
+.alias = "build:release"
+
+$ cargo build --locked --release {{ ARGS }}

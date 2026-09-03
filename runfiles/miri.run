@@ -1,0 +1,5 @@
+# Run Miri (UB checker) on the pure-logic crates (no FFI, no process spawning)
+
+for crate in ["runfile-crypto", "runfile-env", "runfile-lang"]
+	$ cargo +nightly miri test -p {{ crate }}
+end

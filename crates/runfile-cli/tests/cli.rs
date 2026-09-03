@@ -688,3 +688,147 @@ fn list_json_with_no_visible_targets_is_still_a_valid_document() {
 	let v: serde_json::Value = serde_json::from_str(&out(&p.run(&[":list", "--json"]))).expect("valid JSON");
 	assert_eq!(v["targets"].as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn dry_run_prints_a_dependency_where_it_is_called() {
+	// The child finishes while the parent is still walking, so a shared trace
+	// buffer put every dependency first -- ahead of the line that invoked it.
+	let p = project(&[
+		("runfiles/main.run", "$ echo one\nrun dep\n$ echo three\n"),
+		("runfiles/dep.run", "$ echo two\n"),
+	]);
+	let o = p.run(&["--dry-run", "main"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let lines: Vec<&str> = text.lines().collect();
+	assert_eq!(lines, ["echo one", "echo two", "echo three"]);
+}
+
+#[test]
+fn dry_run_order_matches_execution_order() {
+	// The preview is only worth having if it says what will actually happen.
+	let files = &[
+		("runfiles/main.run", "$ echo one\nrun dep\n$ echo three\n"),
+		("runfiles/dep.run", "$ echo two\n"),
+	];
+	let p = project(files);
+	let previewed: Vec<String> = out(&p.run(&["--dry-run", "main"]))
+		.lines()
+		.map(|l| l.to_string())
+		.collect();
+	let actual: Vec<String> = out(&p.run(&["main"])).lines().map(|l| format!("echo {l}")).collect();
+	assert_eq!(previewed, actual);
+}
+
+#[test]
+fn dry_run_expands_nested_dependencies_in_order() {
+	let p = project(&[
+		("runfiles/a.run", "$ echo a1\nrun b\n$ echo a2\n"),
+		("runfiles/b.run", "$ echo b1\nrun c\n$ echo b2\n"),
+		("runfiles/c.run", "$ echo c1\n"),
+	]);
+	let lines: Vec<String> = out(&p.run(&["--dry-run", "a"]))
+		.lines()
+		.map(|l| l.to_string())
+		.collect();
+	assert_eq!(lines, ["echo a1", "echo b1", "echo c1", "echo b2", "echo a2"]);
+}
+
+#[test]
+fn dry_run_does_not_write_files() {
+	// A preview that edits the working tree is worse than no preview: this
+	// exact call bumped a real Cargo.toml before it was caught.
+	let p = project(&[("runfiles/w.run", "write_file(\"out.txt\", \"changed\")\n$ true\n")]);
+	let o = p.run(&["--dry-run", "w"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(!p.dir.path().join("out.txt").exists(), "dry-run must not write");
+}
+
+#[test]
+fn write_file_still_writes_when_actually_running() {
+	let p = project(&[("runfiles/w.run", "write_file(\"out.txt\", \"changed\")\n$ true\n")]);
+	assert!(p.run(&["w"]).status.success());
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("out.txt")).unwrap(),
+		"changed"
+	);
+}
+
+#[test]
+fn dry_run_says_what_it_would_have_written() {
+	let p = project(&[(
+		"runfiles/w.run",
+		"let r = write_file(\"out.txt\", \"x\")\n$ echo {{ r }}\n",
+	)]);
+	assert!(out(&p.run(&["--dry-run", "w"])).contains("would write out.txt"));
+}
+
+#[test]
+fn dry_run_is_not_blocked_by_the_prepare_gate() {
+	// A preview changes nothing, and reading what a target would do is a
+	// reasonable thing to want before deciding to set the project up.
+	let p = project(&[
+		("runfiles/setup.run", "$ true\n"),
+		("runfiles/build.run", "$ echo built\n"),
+	]);
+	assert!(!p.run(&["build"]).status.success(), "running is still gated");
+	let o = p.run(&["--dry-run", "build"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("echo built"), "{}", out(&o));
+}
+
+#[test]
+fn a_subproject_target_calls_its_own_siblings() {
+	// `run compile` inside web/runfiles/ means that directory's `compile`,
+	// whatever the root calls it -- otherwise a subproject would have to spell
+	// its siblings differently depending on where `run` was invoked.
+	let p = project(&[
+		("runfiles/root.run", "$ echo root\n"),
+		("web/runfiles/compile.run", "$ echo web-compile\n"),
+		("web/runfiles/build.run", "run compile\n$ echo web-build\n"),
+	]);
+	let o = p.run(&["web:build"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("web-compile"), "{}", out(&o));
+
+	// And the same file works when invoked from inside the subproject.
+	let o = p.run_in(&p.dir.path().join("web"), &["build"]);
+	assert!(out(&o).contains("web-compile"), "{}", err(&o));
+}
+
+#[test]
+fn a_subproject_can_still_reach_a_root_target() {
+	// Only siblings take precedence; a name with no sibling falls through.
+	let p = project(&[
+		("runfiles/shared.run", "$ echo from-root\n"),
+		("web/runfiles/build.run", "run shared\n"),
+	]);
+	let o = p.run(&["web:build"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("from-root"), "{}", out(&o));
+}
+
+#[test]
+fn a_sibling_wins_over_a_root_target_with_the_same_name() {
+	let p = project(&[
+		("runfiles/build.run", "$ echo root-build\n"),
+		("web/runfiles/build.run", "$ echo web-build\n"),
+		("web/runfiles/all.run", "run build\n"),
+	]);
+	let o = p.run(&["web:all"]);
+	assert!(out(&o).contains("web-build"), "{}", out(&o));
+	assert!(!out(&o).contains("root-build"), "{}", out(&o));
+}
+
+#[test]
+fn the_version_is_printed_by_every_spelling() {
+	// `--version` and `-V` are what people type; `:version` is the form that
+	// matches every other built-in.
+	let p = project(&[(MARK, &marker("o"))]);
+	for form in [":version", "--version", "-V"] {
+		let o = p.run(&[form]);
+		assert!(o.status.success(), "{form}: {}", err(&o));
+		assert!(out(&o).starts_with("run "), "{form}: {}", out(&o));
+		assert!(out(&o).contains(env!("CARGO_PKG_VERSION")), "{form}: {}", out(&o));
+	}
+}

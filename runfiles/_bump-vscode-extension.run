@@ -1,0 +1,10 @@
+# Stamp a version into the VS Code extension's package.json (used by `release`)
+#
+# `--no-git-checks` is load-bearing: unlike npm's, `pnpm version` refuses to run
+# in a dirty tree even with `--no-git-tag-version`, and by the time `release`
+# calls this the tree is always dirty.
+
+.hide = true
+.workdir = "editors/vscode"
+
+$ pnpm version --no-git-tag-version --allow-same-version --no-git-checks {{ ARGS }}

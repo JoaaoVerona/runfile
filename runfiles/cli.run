@@ -1,0 +1,3 @@
+# Run the working-tree run CLI, forwarding arguments
+
+$ cargo run --locked --quiet -p runfile-cli -- {{ ARGS }}

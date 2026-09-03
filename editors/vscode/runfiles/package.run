@@ -1,0 +1,7 @@
+# Compile and package the extension into a .vsix
+#
+# `--out=<path>` overrides the file name, which the release workflow uses to
+# stamp the version in.
+
+run compile
+$ pnpm dlx @vscode/vsce package --no-dependencies --out {{ ARG.out ? "runfile-vscode.vsix" }}

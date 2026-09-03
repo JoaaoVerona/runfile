@@ -41,12 +41,18 @@ pub enum RunError {
 /// The call chain is passed rather than held: parallel branches have separate
 /// paths, so a shared stack would make one branch look like a cycle to another.
 pub trait Dispatch: Sync {
-	fn run(&self, target: &str, args: &[String], chain: &[String]) -> Result<(), RunError>;
+	/// Run `target`, returning its dry-run trace.
+	///
+	/// The trace comes back rather than being written to shared state so the
+	/// caller can splice it in where the call appeared. Writing it centrally
+	/// printed every dependency before the line that invoked it, because a
+	/// child finishes while its parent is still walking.
+	fn run(&self, target: &str, args: &[String], chain: &[String]) -> Result<Vec<String>, RunError>;
 }
 
 pub struct NoDispatch;
 impl Dispatch for NoDispatch {
-	fn run(&self, _t: &str, _a: &[String], _c: &[String]) -> Result<(), RunError> {
+	fn run(&self, _t: &str, _a: &[String], _c: &[String]) -> Result<Vec<String>, RunError> {
 		Err(RunError::NoResolver { line: 0 })
 	}
 }
@@ -222,7 +228,10 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				.iter()
 				.map(|w| interpolate_shell(w, &mut r.scope))
 				.collect::<Result<_, _>>()?;
-			r.dispatch.run(&t, &a, &r.chain)
+			// Splice the dependency's trace in where the call appeared.
+			let child = r.dispatch.run(&t, &a, &r.chain)?;
+			r.trace.extend(child);
+			Ok(())
 		}
 		Statement::Exec { command, body, .. } => {
 			let (cmd, text) = render(command.as_deref(), body, r)?;
@@ -420,9 +429,10 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 					})
 					.map(|_| Some(body.clone()))
 					.map_err(RunError::from),
-					// A dispatched target contributes its own bodies to the
-					// trace, so nothing is recorded for the call itself.
-					Leaf::Run { target, args } => dispatch.run(target, args, chain).map(|()| None),
+					// Branches finish in whatever order they finish, so a
+					// dispatched target's trace joins the parent's as one block
+					// rather than being interleaved line by line.
+					Leaf::Run { target, args } => dispatch.run(target, args, chain).map(|t| Some(t.join("\n"))),
 				})
 			})
 			.collect();

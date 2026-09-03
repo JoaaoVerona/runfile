@@ -229,9 +229,18 @@ pub fn call(name: &str, args: &[Expr], sc: &mut Scope, sp: Span) -> Result<Value
 			if options.contains(&subject) {
 				subject.clone()
 			} else {
+				// Naming the type matters here: `one_of(ARGS, "patch")` compares a
+				// one-element list against a string, and both print as `patch`, so
+				// without it the message reads as a contradiction.
+				let mismatched = options.iter().any(|o| o.type_name() != subject.type_name());
+				let shown = if mismatched {
+					format!("{subject} ({})", subject.type_name())
+				} else {
+					subject.to_string()
+				};
 				let opts: Vec<String> = options.iter().map(|o| o.to_string()).collect();
 				return Err(EvalError::Other {
-					msg: format!("`{subject}` is not one of: {}", opts.join(", ")),
+					msg: format!("`{shown}` is not one of: {}", opts.join(", ")),
 					line: sp.line,
 				});
 			}
@@ -375,6 +384,10 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 				.map(V::Str)
 				.map_err(|e| other(format!("could not read {}: {e}", p.display())))
 		})(),
+		// Writing functions are the one place a preview could change the world,
+		// so they report the path they would have touched and do nothing.
+		"write_file" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would write {}>", s(0)?))))(),
+		"decrypt" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would decrypt to {}>", s(1)?))))(),
 		"write_file" if n == 2 => (|| {
 			let p = resolve(&sc.base_dir, s(0)?);
 			if let Some(d) = p.parent() {

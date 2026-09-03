@@ -1,0 +1,5 @@
+# Remove build artifacts
+
+for dir in ["", "-linux", "-mac", "-windows"]
+	$ cargo clean --target-dir target{{ dir }}
+end

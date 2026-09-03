@@ -1,0 +1,36 @@
+# Bump the workspace version, tag the commit, and push so CI runs the release
+#
+# Takes one of major / minor / patch.
+
+let part = one_of(first(ARGS), "major", "minor", "patch")
+let cargo = read_file("Cargo.toml")
+
+# A normal string, not a raw one: the pattern has no backslashes to preserve,
+# and a raw string would be terminated by the first quote inside it.
+let cur = regex_capture(cargo, "(?m)^version = \"([^\"]+)\"", 1)
+let parts = split(cur, ".")
+let major = number(parts[0])
+let minor = number(parts[1])
+let patch = number(parts[2])
+
+let next = ""
+match part
+case "major"
+	next = concat(major + 1, ".0.0")
+case "minor"
+	next = concat(major, ".", minor + 1, ".0")
+case "patch"
+	next = concat(major, ".", minor, ".", patch + 1)
+end
+
+write_file("Cargo.toml", regex_replace(cargo, "(?m)^version = \"[^\"]+\"", concat("version = \"", next, "\"")))
+
+$ cargo update --workspace
+run _bump-vscode-extension {{ next }}
+
+let tag = concat("v", next)
+$ echo "Bumped: {{ cur }} -> {{ next }}, tagging {{ tag }}"
+$ git commit Cargo.toml Cargo.lock editors/vscode/package.json -m "bump to {{ next }}"
+$ git tag {{ tag }}
+$ git push
+$ git push --tags

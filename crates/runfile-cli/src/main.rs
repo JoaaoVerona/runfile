@@ -27,6 +27,7 @@ run :init                     create runfiles/ with an example target
 run :env <subcommand>         manage .env files
 run :completions <shell>      print a completion script
 run :update                   update the runfile binary
+run :version                  print the version
 
   -y, --yes          skip confirmation prompts
       --stdin-args   prompt for inputs a target needs but was not given
@@ -92,6 +93,10 @@ fn real_main() -> Result<ExitCode, String> {
 			cmd_update::cmd_update(args.first().map(String::as_str));
 			return Ok(ExitCode::SUCCESS);
 		}
+		":version" | "--version" | "-V" => {
+			println!("run {}", env!("CARGO_PKG_VERSION"));
+			return Ok(ExitCode::SUCCESS);
+		}
 		":list" => {
 			let cat = catalog(&flags)?;
 			// Two machine-readable forms: bare names for completion scripts,
@@ -128,8 +133,12 @@ fn real_main() -> Result<ExitCode, String> {
 	let target = cat.resolve(&first).ok_or_else(|| list::unknown(&cat, &first))?;
 
 	// The gate runs before anything else, so a target cannot half-run and then
-	// be told its setup was missing.
-	prepare::enforce(&cat, target)?;
+	// be told its setup was missing. A preview is exempt: it changes nothing,
+	// and reading what a target would do is a reasonable thing to want before
+	// deciding to set the project up at all.
+	if !flags.dry_run {
+		prepare::enforce(&cat, target)?;
+	}
 
 	let ask = prompt::confirmer();
 	let mut host = Host::new(&cat);

@@ -1,0 +1,4 @@
+# Settings every target in this directory inherits.
+
+.env.CARGO_TARGET_DIR = "target-{{ RUN.os }}"
+.env.CARGO_TERM_COLOR = "always"

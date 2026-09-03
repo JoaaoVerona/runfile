@@ -1,0 +1,5 @@
+# Recompile the extension whenever a source file changes
+
+.watch = "src/**/*.ts"
+
+run compile

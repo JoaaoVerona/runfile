@@ -24,13 +24,14 @@ impl Recorder {
 }
 
 impl Dispatch for Recorder {
-	fn run(&self, target: &str, args: &[String], _chain: &[String]) -> Result<(), RunError> {
+	fn run(&self, target: &str, args: &[String], _chain: &[String]) -> Result<Vec<String>, RunError> {
 		self.calls.lock().expect("calls").push(if args.is_empty() {
 			target.to_string()
 		} else {
 			format!("{target} {}", args.join(" "))
 		});
-		Ok(())
+		// A recorder runs nothing, so it has no trace to contribute.
+		Ok(Vec::new())
 	}
 }
 

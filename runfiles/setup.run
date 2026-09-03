@@ -1,0 +1,6 @@
+# One-time setup: activate the committed git hooks
+#
+# Named `setup`, so it gates every other target in this directory until it has
+# been run -- and again whenever its own commands change.
+
+$ git config core.hooksPath .githooks

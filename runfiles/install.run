@@ -1,0 +1,8 @@
+# Copy the built binary to ~/.local/bin as "rund"
+
+let ext = ""
+if RUN.os == "windows"
+	ext = ".exe"
+end
+
+$ cp {{ ENV.CARGO_TARGET_DIR }}/debug/run{{ ext }} ~/.local/bin/rund{{ ext }}

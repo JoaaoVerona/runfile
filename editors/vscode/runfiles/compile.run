@@ -1,0 +1,3 @@
+# Type-check and compile the extension to ./out
+
+$ tsc -p ./

@@ -1,0 +1,3 @@
+# Run all workspace tests
+
+$ cargo test --workspace --all-features --locked {{ ARGS }}

@@ -1,0 +1,5 @@
+# Package and (re)install the extension into VS Code, replacing any existing copy
+
+run package
+$ code --install-extension runfile-vscode.vsix --force
+$ echo 'Installed — run "Developer: Reload Window" in VS Code to activate.'

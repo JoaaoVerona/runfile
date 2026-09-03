@@ -1,0 +1,9 @@
+# Format staged Rust files with rustfmt and re-stage them (pre-commit hook body)
+
+let staged = $ git diff --cached --name-only --diff-filter=ACMR -- "*.rs"
+let files = lines(staged)
+
+if length(files) != 0
+	$ rustfmt {{ files }}
+	$ git add {{ files }}
+end

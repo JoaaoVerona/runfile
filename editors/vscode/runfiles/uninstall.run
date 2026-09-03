@@ -1,0 +1,3 @@
+# Remove the extension from VS Code
+
+$ code --uninstall-extension joaaoverona.runfile

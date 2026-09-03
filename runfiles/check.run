@@ -1,0 +1,4 @@
+# Non-mutating gate: format check + Clippy (deny warnings; also type/borrow-checks)
+
+$ cargo fmt --all -- --check
+$ cargo clippy --all-targets --all-features --locked -- -D warnings
