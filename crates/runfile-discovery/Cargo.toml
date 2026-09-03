@@ -1,11 +1,12 @@
 [package]
 edition.workspace = true
 license.workspace = true
-name = "runfile-runtime"
+name = "runfile-discovery"
 version.workspace = true
 
 [dependencies]
-runfile-env.workspace = true
 runfile-lang.workspace = true
 thiserror.workspace = true
-which.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

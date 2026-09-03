@@ -32,9 +32,11 @@ pub fn run_src(src: &str, d: &mut dyn Dispatch) -> Result<Vec<String>, RunError>
 	let dir = std::env::temp_dir();
 	let mut r = Runner {
 		scope,
+		env: Vec::new(),
 		anchor: dir,
 		dispatch: d,
 		assume_yes: true,
+		prompt: None,
 		trace: Vec::new(),
 	};
 	crate::run::run_target(&target, &mut r)?;

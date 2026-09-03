@@ -15,6 +15,8 @@ pub enum RunError {
 	Prop(#[from] PropError),
 	#[error(transparent)]
 	Exec(#[from] ExecError),
+	#[error(transparent)]
+	Env(#[from] crate::env::EnvError),
 	#[error("line {line}: `for` needs a list, got {actual}")]
 	ForNeedsList { actual: &'static str, line: usize },
 	#[error("line {line}: no case matched `{subject}`; valid cases: {cases}")]
@@ -46,11 +48,17 @@ impl Dispatch for NoDispatch {
 
 pub struct Runner<'a> {
 	pub scope: Scope,
+	/// Built once from the header properties, before the body is evaluated, so
+	/// `{{ ENV.x }}` can see what `.env-file` brought in.
+	pub env: Vec<(String, String)>,
 	/// The anchor: the directory containing `runfiles/`. Everything relative
 	/// resolves against it.
 	pub anchor: PathBuf,
 	pub dispatch: &'a mut dyn Dispatch,
 	pub assume_yes: bool,
+	/// Asked when a target declares `.confirm`. `None` means never prompt,
+	/// which is what CI detection and `-y` reduce to.
+	pub prompt: Option<&'a dyn Fn(&str) -> bool>,
 	/// Collected so a caller can show what ran without re-deriving it.
 	pub trace: Vec<String>,
 }
@@ -58,9 +66,22 @@ pub struct Runner<'a> {
 pub fn run_target(target: &Target, r: &mut Runner<'_>) -> Result<(), RunError> {
 	let base = Props::default();
 	let props = base.extend(&target.body, &mut r.scope, false)?;
-	if let Some(msg) = props.confirm.clone().filter(|_| !r.assume_yes) {
-		r.trace.push(format!("confirm: {msg}"));
-		return Err(RunError::Cancelled);
+
+	// Env before the body: `.env-file` has to be readable by `{{ ENV.x }}`.
+	let workdir = cwd(&props, &r.anchor);
+	let built = crate::env::build(&props, &r.anchor, &workdir, None)?;
+	r.scope.env = built.clone();
+	r.env = built.into_iter().collect();
+	r.env.sort();
+
+	// After the env exists, so the message can interpolate, and after argument
+	// validation, so nobody confirms and is then asked for a missing argument.
+	if let Some(msg) = props.confirm.clone() {
+		let allowed = r.assume_yes || r.prompt.map(|p| p(&msg)).unwrap_or(false);
+		if !allowed {
+			r.trace.push(format!("confirm: {msg}"));
+			return Err(RunError::Cancelled);
+		}
 	}
 	walk(&target.body, &props, r)
 }
@@ -162,11 +183,13 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 		Statement::Exec { command, body, .. } => {
 			let (cmd, text) = render(command.as_deref(), body, r)?;
 			r.trace.push(text.clone());
+			let env = merged_env(r, props);
+			let dir = cwd(props, &r.anchor);
 			exec::spawn(Spawn {
 				command: cmd.as_deref(),
 				body: &text,
-				cwd: &cwd(props, &r.anchor),
-				env: &env_pairs(props),
+				cwd: &dir,
+				env: &env,
 				capture: false,
 			})?;
 			Ok(())
@@ -187,11 +210,13 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		return Ok(eval_boundary(e, &mut r.scope)?);
 	};
 	let (cmd, text) = render(command.as_deref(), body, r)?;
+	let env = merged_env(r, props);
+	let dir = cwd(props, &r.anchor);
 	let out = exec::spawn(Spawn {
 		command: cmd.as_deref(),
 		body: &text,
-		cwd: &cwd(props, &r.anchor),
-		env: &env_pairs(props),
+		cwd: &dir,
+		env: &env,
 		capture: true,
 	})?;
 	Ok(Value::Str(out))
@@ -220,6 +245,14 @@ fn cwd(props: &Props, anchor: &Path) -> PathBuf {
 	}
 }
 
-fn env_pairs(props: &Props) -> Vec<(String, String)> {
-	props.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+/// The target's env, with any block-scoped `.env` layered on top.
+fn merged_env(r: &Runner<'_>, props: &Props) -> Vec<(String, String)> {
+	let mut out = r.env.clone();
+	for (k, v) in &props.env {
+		match out.iter_mut().find(|(ek, _)| ek == k) {
+			Some(slot) => slot.1 = v.clone(),
+			None => out.push((k.clone(), v.clone())),
+		}
+	}
+	out
 }

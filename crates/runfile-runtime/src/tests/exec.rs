@@ -75,3 +75,96 @@ fn a_non_shell_command_is_spawned_verbatim() {
 	assert_eq!(std::fs::read_to_string(&f).unwrap(), "line");
 	let _ = std::fs::remove_file(&f);
 }
+
+#[test]
+fn env_properties_reach_the_process() {
+	let mut d = Recorder::default();
+	run_src(".env.GREETING = \"hi\"\n$ test \"$GREETING\" = hi\n", &mut d).expect("env is set");
+}
+
+#[test]
+fn an_env_file_is_loaded_before_the_body_is_evaluated() {
+	// This is why `.env-file` is header-only: {{ ENV.x }} has to see it.
+	let dir = std::env::temp_dir().join("runfile-envfile-test");
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(dir.join("vals.env"), "FROM_FILE=loaded\n").unwrap();
+	let mut d = Recorder::default();
+	let target = runfile_lang::parse(".env-file = \"vals.env\"\n$ test {{ ENV.FROM_FILE }} = loaded\n").expect("parse");
+	let mut r = crate::run::Runner {
+		scope: runfile_lang::eval::Scope::new(),
+		env: Vec::new(),
+		anchor: dir.clone(),
+		dispatch: &mut d,
+		assume_yes: true,
+		prompt: None,
+		trace: Vec::new(),
+	};
+	crate::run::run_target(&target, &mut r).expect("env file value is visible to {{ ENV.x }}");
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn confirm_cancels_when_there_is_nobody_to_ask() {
+	let target = runfile_lang::parse(".confirm = \"proceed?\"\n$ true\n").unwrap();
+	let mut d = Recorder::default();
+	let mut r = crate::run::Runner {
+		scope: runfile_lang::eval::Scope::new(),
+		env: Vec::new(),
+		anchor: std::env::temp_dir(),
+		dispatch: &mut d,
+		assume_yes: false,
+		prompt: None,
+		trace: Vec::new(),
+	};
+	assert!(
+		crate::run::run_target(&target, &mut r).is_err(),
+		"no prompt, no consent"
+	);
+}
+
+#[test]
+fn confirm_interpolates_its_message() {
+	let asked = std::cell::RefCell::new(String::new());
+	let ask = |m: &str| {
+		*asked.borrow_mut() = m.to_string();
+		true
+	};
+	let target = runfile_lang::parse(".confirm = \"wipe {{ ARG.env }}?\"\n$ true\n").unwrap();
+	let mut d = Recorder::default();
+	let mut scope = runfile_lang::eval::Scope::new();
+	scope.args.insert("env".into(), "production".into());
+	let mut r = crate::run::Runner {
+		scope,
+		env: Vec::new(),
+		anchor: std::env::temp_dir(),
+		dispatch: &mut d,
+		assume_yes: false,
+		prompt: Some(&ask),
+		trace: Vec::new(),
+	};
+	crate::run::run_target(&target, &mut r).expect("consent given");
+	assert_eq!(
+		*asked.borrow(),
+		"wipe production?",
+		"the field could not interpolate before"
+	);
+}
+
+#[test]
+fn a_header_property_cannot_see_a_body_binding() {
+	// Header properties resolve before any statement runs -- that ordering is
+	// what lets `.env-file` feed `{{ ENV.x }}` -- so they see sources, not lets.
+	let target = runfile_lang::parse("let e = \"x\"\n.confirm = \"{{ e }}?\"\n$ true\n").unwrap();
+	let mut d = Recorder::default();
+	let mut r = crate::run::Runner {
+		scope: runfile_lang::eval::Scope::new(),
+		env: Vec::new(),
+		anchor: std::env::temp_dir(),
+		dispatch: &mut d,
+		assume_yes: true,
+		prompt: None,
+		trace: Vec::new(),
+	};
+	let e = crate::run::run_target(&target, &mut r).unwrap_err();
+	assert!(e.to_string().contains("not defined"), "{e}");
+}

@@ -1299,6 +1299,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runfile-discovery"
+version = "0.47.0"
+dependencies = [
+ "runfile-lang",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "runfile-env"
 version = "0.47.0"
 dependencies = [
@@ -1364,6 +1373,7 @@ dependencies = [
 name = "runfile-runtime"
 version = "0.47.0"
 dependencies = [
+ "runfile-env",
  "runfile-lang",
  "thiserror",
  "which",
