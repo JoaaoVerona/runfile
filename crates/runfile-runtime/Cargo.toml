@@ -5,7 +5,11 @@ name = "runfile-runtime"
 version.workspace = true
 
 [dependencies]
+runfile-discovery.workspace = true
 runfile-env.workspace = true
 runfile-lang.workspace = true
 thiserror.workspace = true
 which.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1373,8 +1373,10 @@ dependencies = [
 name = "runfile-runtime"
 version = "0.47.0"
 dependencies = [
+ "runfile-discovery",
  "runfile-env",
  "runfile-lang",
+ "tempfile",
  "thiserror",
  "which",
 ]

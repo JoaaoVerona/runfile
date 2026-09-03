@@ -81,3 +81,73 @@ fn an_unknown_property_names_itself() {
 	let e = run_src(".nonsense = 1\n$ true\n", &mut d).unwrap_err();
 	assert!(e.to_string().contains("nonsense"), "{e}");
 }
+
+// ---- host dispatch, cycle detection and _shared.run
+
+fn project(files: &[(&str, &str)]) -> tempfile::TempDir {
+	let d = tempfile::TempDir::new().unwrap();
+	for (p, body) in files {
+		let full = d.path().join(p);
+		std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+		std::fs::write(full, body).unwrap();
+	}
+	d
+}
+
+fn host_run(d: &tempfile::TempDir, target: &str) -> Result<Vec<String>, crate::RunError> {
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	h.run(target, &[])?;
+	let t = h.trace.borrow().clone();
+	Ok(t)
+}
+
+#[test]
+fn a_cycle_is_reported_with_the_chain_that_caused_it() {
+	let d = project(&[("runfiles/a.run", "run b\n"), ("runfiles/b.run", "run a\n")]);
+	let e = host_run(&d, "a").unwrap_err();
+	assert!(e.to_string().contains("a -> b -> a"), "{e}");
+}
+
+#[test]
+fn shared_bindings_and_properties_reach_every_target() {
+	let d = project(&[
+		("runfiles/_shared.run", ".env.SHARED = \"yes\"\nlet who = \"world\"\n"),
+		(
+			"runfiles/greet.run",
+			"$ test \"$SHARED\" = yes\n$ test {{ who }} = world\n",
+		),
+	]);
+	host_run(&d, "greet").expect("_shared.run is the globals analog");
+}
+
+#[test]
+fn an_unknown_target_suggests_near_matches() {
+	let d = project(&[("runfiles/build.run", "$ true\n")]);
+	let e = host_run(&d, "buil").unwrap_err();
+	assert!(e.to_string().contains("build"), "{e}");
+}
+
+#[test]
+fn run_context_is_populated_from_the_environment() {
+	let d = project(&[(
+		"runfiles/ctx.run",
+		"$ test {{ RUN.os }} != \"\"\n$ test {{ RUN.parent }} != \"\"\n",
+	)]);
+	host_run(&d, "ctx").expect("RUN.* resolves");
+}
+
+#[test]
+fn namespaces_come_from_discovered_subprojects() {
+	let d = project(&[
+		(
+			"runfiles/all.run",
+			"for n in RUN.namespaces\n\trun {{ n }}:build\nend\n",
+		),
+		("api/runfiles/build.run", "$ true\n"),
+		("web/runfiles/build.run", "$ true\n"),
+	]);
+	let trace = host_run(&d, "all").expect("fans out over discovered namespaces");
+	assert_eq!(trace.len(), 2, "one per subproject, no declaration anywhere");
+}

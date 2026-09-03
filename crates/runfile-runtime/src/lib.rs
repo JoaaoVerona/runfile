@@ -2,6 +2,7 @@
 //! the statement walker. Kept out of `runfile-lang` so the LSP can parse and
 //! evaluate without linking process-spawning.
 
+pub mod dispatch;
 pub mod env;
 pub mod exec;
 pub mod props;

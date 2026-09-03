@@ -29,6 +29,8 @@ pub enum RunError {
 	Cancelled,
 	#[error("line {line}: `run` is not wired to a target resolver here")]
 	NoResolver { line: usize },
+	#[error(transparent)]
+	Host(Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// How a nested `run <target>` is dispatched. In-process, so cycle detection
@@ -64,7 +66,22 @@ pub struct Runner<'a> {
 }
 
 pub fn run_target(target: &Target, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let base = Props::default();
+	run_target_with(target, Props::default(), r)
+}
+
+/// Evaluate only the `let` bindings of a block, used to fold `_shared.run`
+/// values into a target's scope without running its statements.
+pub fn run_block_bindings(block: &Block, sc: &mut Scope) -> Result<(), RunError> {
+	for st in &block.statements {
+		if let Statement::Let { name, value, .. } = st {
+			let v = eval_boundary(value, sc)?;
+			sc.bind(name, v);
+		}
+	}
+	Ok(())
+}
+
+pub fn run_target_with(target: &Target, base: Props, r: &mut Runner<'_>) -> Result<(), RunError> {
 	let props = base.extend(&target.body, &mut r.scope, false)?;
 
 	// Env before the body: `.env-file` has to be readable by `{{ ENV.x }}`.
