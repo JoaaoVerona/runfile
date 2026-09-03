@@ -1,0 +1,12 @@
+# Settings for the CI-only targets.
+#
+# Installed into $HOME/.runfiles/ by the setup action's `global-targets` input,
+# so they are available machine-wide for the job. They use the default target
+# directory rather than the per-OS one the project's own targets use, because a
+# CI runner builds once and throws the machine away.
+#
+# No `.add-path`: a machine-wide file anchors to $HOME, not the checkout, so
+# `target/debug` here would point at the wrong place. The setup action already
+# puts the built binary on PATH via $GITHUB_PATH.
+
+.env.CARGO_TERM_COLOR = "always"

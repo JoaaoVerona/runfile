@@ -31,7 +31,7 @@ jobs:
         uses: ./.github/actions/setup
         with:
           from-source: true
-          global-files: Runfile-ci.json
+          global-targets: ci-runfiles
 
       - name: Check (format + clippy + type-check)
         run: run ci:check
@@ -87,7 +87,7 @@ jobs:
         uses: ./.github/actions/setup
         with:
           from-source: true
-          global-files: Runfile-ci.json
+          global-targets: ci-runfiles
 
       - name: Test
         run: run ci:test

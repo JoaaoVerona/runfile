@@ -61,7 +61,7 @@ jobs:
       - name: Setup Runfile
         uses: ./.github/actions/setup
         with:
-          global-files: Runfile-ci.json
+          global-targets: ci-runfiles
 
       - name: Build release binary
         run: run ci:build
