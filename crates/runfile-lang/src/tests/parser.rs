@@ -108,3 +108,43 @@ fn a_crlf_file_still_reports_the_right_line_numbers() {
 	let e = crate::parse("$ ok\r\nlet = 3\r\n").unwrap_err().to_string();
 	assert!(e.starts_with("line 2:"), "{e}");
 }
+
+#[test]
+fn a_comment_does_not_change_what_a_target_fingerprints_as() {
+	// The prepare gate re-triggers on a change to its setup target. Reflowing a
+	// comment is not one, and hashing the file text said it was.
+	let a = crate::parse("# Sets up\n$ install\n").unwrap();
+	let b = crate::parse("# Sets up, at length\n#\n# Really.\n\n$ install\n").unwrap();
+	assert_eq!(crate::fingerprint(&a), crate::fingerprint(&b));
+}
+
+#[test]
+fn changing_what_a_target_does_changes_its_fingerprint() {
+	let a = crate::parse("$ install\n").unwrap();
+	for other in [
+		"$ install --force\n",
+		"$ uninstall\n",
+		"$ install\n$ verify\n",
+		"let x = 1\n$ install\n",
+	] {
+		let b = crate::parse(other).unwrap();
+		assert_ne!(crate::fingerprint(&a), crate::fingerprint(&b), "{other:?}");
+	}
+}
+
+#[test]
+fn a_comment_inside_a_shell_body_does_change_it() {
+	// It is part of the text handed to the interpreter, not a note about it.
+	let a = crate::parse("exec bash\n\techo hi\nend\n").unwrap();
+	let b = crate::parse("exec bash\n\t# why\n\techo hi\nend\n").unwrap();
+	assert_ne!(crate::fingerprint(&a), crate::fingerprint(&b));
+}
+
+#[test]
+fn a_comment_shifts_every_position_after_it_and_none_of_them_count() {
+	// Two kinds of positional detail live in the tree: spans, and the source
+	// line of each `exec` body line. A comment moves both.
+	let a = crate::parse("$ one\nexec sh\n\ttwo\nend\n").unwrap();
+	let b = crate::parse("# note\n#\n$ one\nexec sh\n\ttwo\nend\n").unwrap();
+	assert_eq!(crate::fingerprint(&a), crate::fingerprint(&b));
+}

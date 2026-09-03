@@ -42,6 +42,8 @@ pub struct Host<'a> {
 	/// `Sync` so a `.parallel` fan-out can ask; a prompt during one is the
 	/// caller's problem to serialise.
 	pub prompt: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
+	/// Whether the run has been interrupted; see `Runner::interrupted`.
+	pub interrupted: Option<&'a (dyn Fn() -> bool + Sync)>,
 	/// Where non-fatal advice goes. The runtime never prints, so the CLI
 	/// decides what a warning looks like and tests can capture it.
 	pub warn: Option<&'a (dyn Fn(&str) + Sync)>,
@@ -61,6 +63,7 @@ impl<'a> Host<'a> {
 			ask: None,
 			keys: Vec::new,
 			prompt: None,
+			interrupted: None,
 			warn: None,
 			trace: Mutex::new(Vec::new()),
 			temps: runfile_lang::TempFiles::default(),
@@ -212,6 +215,7 @@ impl<'a> Host<'a> {
 			dry_run: self.dry_run,
 			assume_yes: self.assume_yes,
 			prompt: self.prompt,
+			interrupted: self.interrupted,
 			trace: Vec::new(),
 		};
 		crate::run::run_target_with(&ast, shared_props, &mut r)?;

@@ -5,6 +5,7 @@
 pub mod dispatch;
 pub mod env;
 pub mod exec;
+pub mod interrupt;
 pub mod props;
 pub mod run;
 pub mod shell;

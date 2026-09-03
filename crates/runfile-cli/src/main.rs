@@ -38,9 +38,16 @@ run :version                  print the version
 ";
 
 fn main() -> ExitCode {
+	runfile_runtime::interrupt::install();
 	match real_main() {
 		Ok(code) => code,
 		Err(msg) => {
+			// 130 is what a shell reports for SIGINT, so a caller can tell an
+			// interrupt from a failure. `run` prints nothing extra: the
+			// terminal already echoed `^C`.
+			if runfile_runtime::interrupt::interrupted() {
+				return ExitCode::from(runfile_runtime::interrupt::EXIT_CODE as u8);
+			}
 			eprintln!("error: {msg}");
 			ExitCode::FAILURE
 		}
@@ -148,8 +155,10 @@ fn real_main() -> Result<ExitCode, String> {
 
 	let ask = prompt::confirmer();
 	let warn = |m: &str| eprintln!("warning: {m}");
+	let interrupted = || runfile_runtime::interrupt::interrupted();
 	let mut host = Host::new(&cat);
 	host.warn = Some(&warn);
+	host.interrupted = Some(&interrupted);
 	host.assume_yes = flags.assume_yes || ci_detect::is_ci();
 	if !host.assume_yes {
 		host.prompt = Some(&ask);
@@ -175,6 +184,9 @@ fn real_main() -> Result<ExitCode, String> {
 				Ok(()) => prepare::record(&cat, target),
 				Err(e) => eprintln!("[runfile] {e}"),
 			}
+			// Each iteration starts clean; Ctrl+C ends the session rather than
+			// poisoning every run after it.
+			runfile_runtime::interrupt::clear();
 			// Between iterations, not just at the end: watch mode never reaches
 			// one, and each run makes its own temp files.
 			host.cleanup_temps();
@@ -189,6 +201,12 @@ fn real_main() -> Result<ExitCode, String> {
 	match outcome {
 		Ok(()) => {
 			if flags.dry_run {
+				// Which shell `$` resolved to, so "bash here, sh there" is
+				// visible rather than discovered.
+				match runfile_runtime::shell::default_shell() {
+					Some(p) => println!("# $ runs {}", p.display()),
+					None => println!("# $ has no shell available"),
+				}
 				for line in host.trace.lock().expect("trace").iter() {
 					println!("{line}");
 				}

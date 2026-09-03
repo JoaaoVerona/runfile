@@ -27,6 +27,8 @@ pub enum RunError {
 	},
 	#[error("cancelled")]
 	Cancelled,
+	#[error("interrupted")]
+	Interrupted,
 	#[error("line {line}: `run` is not wired to a target resolver here")]
 	NoResolver { line: usize },
 	#[error(transparent)]
@@ -86,6 +88,10 @@ pub struct Runner<'a> {
 	/// Asked when a target declares `.confirm`. `None` means never prompt,
 	/// which is what CI detection and `-y` reduce to.
 	pub prompt: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
+	/// Whether the run has been interrupted. Injected rather than read from a
+	/// global so the runtime reaches for no process state of its own, and so a
+	/// test can interrupt one run without touching another.
+	pub interrupted: Option<&'a (dyn Fn() -> bool + Sync)>,
 	/// Collected so a caller can show what ran without re-deriving it.
 	pub dry_run: bool,
 	pub trace: Vec<String>,
@@ -138,6 +144,13 @@ fn walk(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError
 		return walk_parallel(block, props, r);
 	}
 	for st in &block.statements {
+		// Between statements, not inside one: a child already took the same
+		// SIGINT and is gone, so there is nothing to wait for and nothing to
+		// kill. `.ignore-errors` does not apply -- an interrupt is not a
+		// failure the target gets to shrug off.
+		if r.interrupted.is_some_and(|f| f()) {
+			return Err(RunError::Interrupted);
+		}
 		if let Err(e) = statement(st, props, r)
 			&& !props.ignore_errors
 		{

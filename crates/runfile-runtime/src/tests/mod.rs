@@ -3,6 +3,7 @@
 
 mod args;
 mod exec;
+mod interrupt;
 mod keys;
 mod parallel;
 mod walk;
@@ -49,6 +50,7 @@ pub fn run_src(src: &str, d: &dyn Dispatch) -> Result<Vec<String>, RunError> {
 		dispatch: d,
 		assume_yes: true,
 		prompt: None,
+		interrupted: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};

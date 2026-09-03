@@ -25,18 +25,10 @@ fn gate_for<'a>(cat: &'a Catalog, t: &Target) -> Option<&'a Target> {
 
 fn digest(t: &Target) -> Option<String> {
 	let src = std::fs::read_to_string(&t.path).ok()?;
-	Some(format!("{:x}", md5_like(&src)))
-}
-
-/// A short content fingerprint. Collisions only cost a spurious re-run of a
-/// setup target, so this does not need to be cryptographic.
-fn md5_like(s: &str) -> u64 {
-	let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-	for b in s.bytes() {
-		h ^= b as u64;
-		h = h.wrapping_mul(0x1000_0000_01b3);
-	}
-	h
+	// The parsed tree, not the text: reflowing a comment in a setup target is
+	// not a change to what it does, and used to re-trigger the gate.
+	let ast = runfile_lang::parse(&src).ok()?;
+	Some(format!("{:x}", runfile_lang::fingerprint(&ast)))
 }
 
 pub fn enforce(cat: &Catalog, t: &Target) -> Result<(), String> {

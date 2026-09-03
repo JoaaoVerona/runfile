@@ -86,6 +86,15 @@ fn err(o: &Output) -> String {
 	String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
+/// The commands a `--dry-run` printed, without its `#` header lines.
+fn dry_commands(o: &Output) -> Vec<String> {
+	out(o)
+		.lines()
+		.filter(|l| !l.starts_with('#'))
+		.map(str::to_string)
+		.collect()
+}
+
 const MARK: &str = "runfiles/mark.run";
 fn marker(path: &str) -> String {
 	format!("# Writes a marker\n$ printf done > {path}\n")
@@ -704,9 +713,7 @@ fn dry_run_prints_a_dependency_where_it_is_called() {
 	]);
 	let o = p.run(&["--dry-run", "main"]);
 	assert!(o.status.success(), "{}", err(&o));
-	let text = out(&o);
-	let lines: Vec<&str> = text.lines().collect();
-	assert_eq!(lines, ["echo one", "echo two", "echo three"]);
+	assert_eq!(dry_commands(&o), ["echo one", "echo two", "echo three"]);
 }
 
 #[test]
@@ -717,10 +724,7 @@ fn dry_run_order_matches_execution_order() {
 		("runfiles/dep.run", "$ echo two\n"),
 	];
 	let p = project(files);
-	let previewed: Vec<String> = out(&p.run(&["--dry-run", "main"]))
-		.lines()
-		.map(|l| l.to_string())
-		.collect();
+	let previewed = dry_commands(&p.run(&["--dry-run", "main"]));
 	let actual: Vec<String> = out(&p.run(&["main"])).lines().map(|l| format!("echo {l}")).collect();
 	assert_eq!(previewed, actual);
 }
@@ -732,11 +736,10 @@ fn dry_run_expands_nested_dependencies_in_order() {
 		("runfiles/b.run", "$ echo b1\nrun c\n$ echo b2\n"),
 		("runfiles/c.run", "$ echo c1\n"),
 	]);
-	let lines: Vec<String> = out(&p.run(&["--dry-run", "a"]))
-		.lines()
-		.map(|l| l.to_string())
-		.collect();
-	assert_eq!(lines, ["echo a1", "echo b1", "echo c1", "echo b2", "echo a2"]);
+	assert_eq!(
+		dry_commands(&p.run(&["--dry-run", "a"])),
+		["echo a1", "echo b1", "echo c1", "echo b2", "echo a2"]
+	);
 }
 
 #[test]
@@ -1117,4 +1120,129 @@ fn dry_run_reports_the_temp_file_it_would_have_made() {
 	let o = p.run(&["--dry-run", "t"]);
 	assert!(o.status.success(), "{}", err(&o));
 	assert!(out(&o).contains("would create a temp file"), "{}", out(&o));
+}
+
+// ------------------------------------------------------------- interrupt
+//
+// A real SIGINT, to the child's own process group, which is what a terminal
+// does on Ctrl+C. The group matters: without it the signal would reach the
+// test runner too.
+
+#[cfg(unix)]
+fn spawn_in_own_group(p: &Project, args: &[&str]) -> Child {
+	use std::os::unix::process::CommandExt;
+	let mut c = p.command(p.dir.path(), args);
+	c.stdout(Stdio::piped()).stderr(Stdio::null());
+	c.process_group(0);
+	c.spawn().expect("spawn run")
+}
+
+#[cfg(unix)]
+fn interrupt_group(child: &Child) {
+	// Negative pid means the group, exactly as `kill %1` and Ctrl+C do.
+	unsafe { libc::kill(-(child.id() as i32), libc::SIGINT) };
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_stops_the_run_and_exits_130() {
+	let p = project(&[(
+		"runfiles/slow.run",
+		"$ echo started > started.txt\n$ sleep 30\nlet x = \"1\"\n$ echo after > after.txt\n",
+	)]);
+	let mut child = spawn_in_own_group(&p, &["slow"]);
+	until("the run to start", || p.dir.path().join("started.txt").exists());
+	interrupt_group(&child);
+
+	let status = until_exit(&mut child);
+	assert_eq!(status.code(), Some(130), "a shell reports 130 for SIGINT");
+	assert!(
+		!p.dir.path().join("after.txt").exists(),
+		"it stopped rather than carrying on"
+	);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_run_that_is_not_interrupted_still_exits_normally() {
+	// The control: the handler is installed for every run, so it has to be
+	// invisible when no signal arrives.
+	let p = project(&[("runfiles/quick.run", "$ echo done > done.txt\n")]);
+	let mut child = spawn_in_own_group(&p, &["quick"]);
+	let status = until_exit(&mut child);
+	assert_eq!(status.code(), Some(0), "{status:?}");
+	assert!(p.dir.path().join("done.txt").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interrupt_removes_the_temp_files_the_run_made() {
+	// The reason it is caught rather than left to the OS.
+	let p = project(&[(
+		"runfiles/slow.run",
+		"let f = temp_file(\"secret\")\n$ echo {{ f }} > path.txt\n$ sleep 30\n",
+	)]);
+	let mut child = spawn_in_own_group(&p, &["slow"]);
+	until("the temp file", || p.dir.path().join("path.txt").exists());
+	let path = std::fs::read_to_string(p.dir.path().join("path.txt"))
+		.unwrap()
+		.trim()
+		.to_string();
+	assert!(Path::new(&path).exists(), "made: {path}");
+
+	interrupt_group(&child);
+	assert_eq!(until_exit(&mut child).code(), Some(130));
+	assert!(!Path::new(&path).exists(), "{path} survived the interrupt");
+}
+
+#[cfg(unix)]
+fn until_exit(child: &mut Child) -> std::process::ExitStatus {
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+	while std::time::Instant::now() < deadline {
+		if let Some(s) = child.try_wait().expect("try_wait") {
+			return s;
+		}
+		std::thread::sleep(std::time::Duration::from_millis(20));
+	}
+	let _ = child.kill();
+	panic!("the run never exited");
+}
+
+#[test]
+fn editing_a_comment_in_setup_does_not_re_trigger_the_gate() {
+	let p = project(&[
+		("runfiles/setup.run", "# Sets up\n$ true\n"),
+		("runfiles/build.run", "$ echo built\n"),
+	]);
+	assert!(p.run(&["setup"]).status.success());
+	assert!(p.run(&["build"]).status.success(), "gate satisfied");
+
+	std::fs::write(
+		p.dir.path().join("runfiles/setup.run"),
+		"# Sets up.\n#\n# At more length.\n$ true\n",
+	)
+	.unwrap();
+	let o = p.run(&["build"]);
+	assert!(
+		o.status.success(),
+		"a comment is not a change to what setup does: {}",
+		err(&o)
+	);
+
+	std::fs::write(
+		p.dir.path().join("runfiles/setup.run"),
+		"# Sets up\n$ true\n$ echo more\n",
+	)
+	.unwrap();
+	assert!(!p.run(&["build"]).status.success(), "but a new command is");
+}
+
+#[test]
+fn dry_run_says_which_shell_a_dollar_line_uses() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let o = p.run(&["--dry-run", "mark"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let first = out(&o).lines().next().unwrap_or_default().to_string();
+	assert!(first.starts_with("# $ runs "), "{}", out(&o));
+	assert!(first.contains("sh"), "names a shell: {first}");
 }

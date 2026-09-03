@@ -95,6 +95,10 @@ pub fn watch(anchor: &Path, patterns: &[String], mut once: impl FnMut()) -> Resu
 	once();
 	eprintln!("[runfile] watching for changes — Ctrl+C to stop");
 	while next_change(&rx, &pats, anchor).is_some() {
+		// The message says Ctrl+C stops it, so it has to.
+		if runfile_runtime::interrupt::interrupted() {
+			break;
+		}
 		once();
 		eprintln!("[runfile] watching for changes — Ctrl+C to stop");
 	}

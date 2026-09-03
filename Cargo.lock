@@ -1344,12 +1344,14 @@ dependencies = [
 name = "runfile-runtime"
 version = "0.47.0"
 dependencies = [
+ "libc",
  "runfile-discovery",
  "runfile-env",
  "runfile-lang",
  "tempfile",
  "thiserror",
  "which",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
