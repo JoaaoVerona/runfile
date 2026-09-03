@@ -1317,3 +1317,36 @@ fn a_branch_label_reaches_the_whole_subtree() {
 	lines.sort_unstable();
 	assert_eq!(lines, ["one | mine", "one | nested"], "{text}");
 }
+
+#[test]
+fn the_listing_shows_the_names_a_target_also_answers_to() {
+	// Without this an alias is undiscoverable: the listing reports the file
+	// name, and nothing tells you the other name works.
+	let p = project(&[
+		("runfiles/build.run", "# Builds it\n.alias = \"b\"\n$ true\n"),
+		("runfiles/plain.run", ".alias = \"p\"\n$ true\n"),
+	]);
+	let o = p.run(&[":list"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	assert!(text.contains("Builds it  (also `b`)"), "{text}");
+	assert!(
+		text.contains("also `p`"),
+		"a target with no description still shows it: {text}"
+	);
+}
+
+#[test]
+fn list_json_carries_the_aliases_too() {
+	let p = project(&[("runfiles/build.run", "# Builds it\n.alias = \"b\"\n$ true\n")]);
+	let v: serde_json::Value = serde_json::from_str(&out(&p.run(&[":list", "--json"]))).expect("JSON");
+	assert_eq!(v["targets"][0]["aliases"][0], "b");
+}
+
+#[test]
+fn a_target_with_no_alias_lists_exactly_as_before() {
+	let p = project(&[("runfiles/build.run", "# Builds it\n$ true\n")]);
+	let text = out(&p.run(&[":list"]));
+	assert!(text.contains("build  Builds it"), "{text}");
+	assert!(!text.contains("also"), "{text}");
+}

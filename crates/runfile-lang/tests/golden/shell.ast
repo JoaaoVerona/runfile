@@ -1,0 +1,44 @@
+Target {
+    description: Some(
+        "Shell lines coalesce, and a backslash continues one",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            Exec {
+                command: None,
+                body: [
+                    [
+                        Literal(
+                            "echo one",
+                        ),
+                    ],
+                    [
+                        Literal(
+                            "echo two \\\n\tstill-two",
+                        ),
+                    ],
+                    [
+                        Literal(
+                            "cp ",
+                        ),
+                        Expr(
+                            Source {
+                                kind: Arg,
+                                key: Some(
+                                    "src",
+                                ),
+                                span: Span,
+                            },
+                        ),
+                        Literal(
+                            " /tmp",
+                        ),
+                    ],
+                ],
+                lines,
+                span: Span,
+            },
+        ],
+    },
+}

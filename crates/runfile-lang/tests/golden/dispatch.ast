@@ -1,0 +1,73 @@
+Target {
+    description: Some(
+        "Calling other targets, with values and a passthrough separator",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            Run {
+                target: [
+                    Literal(
+                        "build",
+                    ),
+                ],
+                args: [],
+                span: Span,
+            },
+            Run {
+                target: [
+                    Literal(
+                        "web:",
+                    ),
+                    Expr(
+                        Ident(
+                            "target",
+                            Span,
+                        ),
+                    ),
+                ],
+                args: [
+                    [
+                        Literal(
+                            "--env=prod",
+                        ),
+                    ],
+                ],
+                span: Span,
+            },
+            Run {
+                target: [
+                    Literal(
+                        "_aws",
+                    ),
+                ],
+                args: [
+                    [
+                        Literal(
+                            "--",
+                        ),
+                    ],
+                    [
+                        Literal(
+                            "s3api",
+                        ),
+                    ],
+                    [
+                        Literal(
+                            "--bucket",
+                        ),
+                    ],
+                    [
+                        Expr(
+                            Ident(
+                                "name",
+                                Span,
+                            ),
+                        ),
+                    ],
+                ],
+                span: Span,
+            },
+        ],
+    },
+}

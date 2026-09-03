@@ -1,0 +1,8 @@
+# Binding, rebinding, and both capture forms
+
+let plain = 1
+plain = plain + 1
+let out = $ git rev-parse HEAD
+let block = exec sh
+	echo hi
+end

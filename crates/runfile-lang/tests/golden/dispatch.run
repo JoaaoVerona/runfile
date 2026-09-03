@@ -1,0 +1,5 @@
+# Calling other targets, with values and a passthrough separator
+
+run build
+run web:{{ target }} --env=prod
+run _aws -- s3api --bucket {{ name }}

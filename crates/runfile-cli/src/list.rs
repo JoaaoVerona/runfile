@@ -13,6 +13,9 @@ pub(crate) struct Facts {
 	/// Whether the target reads its command line, so a generated editor task
 	/// knows to offer an argument prompt.
 	pub(crate) uses_args: bool,
+	/// Other names this target answers to. Without showing them a documented
+	/// alias is undiscoverable: the listing reports the file name only.
+	pub(crate) aliases: Vec<String>,
 }
 
 impl Facts {
@@ -21,6 +24,7 @@ impl Facts {
 			description: String::new(),
 			hidden: false,
 			uses_args: false,
+			aliases: Vec::new(),
 		}
 	}
 }
@@ -34,6 +38,7 @@ pub(crate) fn facts(t: &Target) -> Facts {
 	};
 	Facts {
 		uses_args: src.contains("ARGS") || src.contains("ARG."),
+		aliases: runfile_discovery::aliases_of(t),
 		description: ast
 			.description
 			.as_deref()
@@ -68,11 +73,12 @@ pub fn print_json(cat: &Catalog) {
 	for (i, (t, f)) in rows.iter().enumerate() {
 		let comma = if i + 1 == rows.len() { "" } else { "," };
 		println!(
-			"    {{\"name\": {}, \"description\": {}, \"origin\": {}, \"path\": {}}}{comma}",
+			"    {{\"name\": {}, \"description\": {}, \"origin\": {}, \"path\": {}, \"aliases\": [{}]}}{comma}",
 			quote(&t.name),
 			quote(&f.description),
 			quote(label(t.origin)),
 			quote(&t.path.to_string_lossy()),
+			f.aliases.iter().map(|a| quote(a)).collect::<Vec<_>>().join(", "),
 		);
 	}
 	println!("  ]");
@@ -132,10 +138,17 @@ pub fn print(cat: &Catalog) {
 			println!("\n{}:", label(origin));
 		}
 		for (t, f) in group {
-			if f.description.is_empty() {
+			let also = format!("also `{}`", f.aliases.join("`, `"));
+			let described = match (f.description.is_empty(), f.aliases.is_empty()) {
+				(true, true) => String::new(),
+				(true, false) => also,
+				(false, true) => f.description.clone(),
+				(false, false) => format!("{}  ({also})", f.description),
+			};
+			if described.is_empty() {
 				println!("  {}", t.name);
 			} else {
-				println!("  {:<width$}  {}", t.name, f.description);
+				println!("  {:<width$}  {described}", t.name);
 			}
 		}
 	}

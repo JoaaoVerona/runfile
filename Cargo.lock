@@ -1275,7 +1275,7 @@ dependencies = [
  "runfile-env",
  "runfile-lang",
  "runfile-runtime",
- "runfile-settings",
+ "runfile-state",
  "serde_json",
  "tempfile",
  "which",
@@ -1355,7 +1355,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "runfile-settings"
+name = "runfile-state"
 version = "0.47.0"
 dependencies = [
  "apple-native-keyring-store",

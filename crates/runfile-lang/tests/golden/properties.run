@@ -1,0 +1,8 @@
+# Every property shape
+#
+# Bare, valued, and addressed by sub-key.
+
+.parallel
+.shell = "bash"
+.env.PORT = ARG.port ? "3000"
+.env-file = ".env.{{ ARG.env }}"

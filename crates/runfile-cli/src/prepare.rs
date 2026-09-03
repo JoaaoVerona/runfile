@@ -9,7 +9,7 @@
 //! re-triggers the requirement while runtime values do not.
 
 use runfile_discovery::{Catalog, Origin, Target};
-use runfile_settings::PrepareState;
+use runfile_state::PrepareState;
 
 /// The `setup` target that governs a given target, if there is one.
 fn gate_for<'a>(cat: &'a Catalog, t: &Target) -> Option<&'a Target> {

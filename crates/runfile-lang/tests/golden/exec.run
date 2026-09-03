@@ -1,0 +1,13 @@
+# An exec block, and one nested deeper than its opener
+
+exec python3
+	import sys
+	print({{ ARG.n }})
+end
+
+if FLAG.x
+	exec bash
+		echo before
+		end
+	end
+end

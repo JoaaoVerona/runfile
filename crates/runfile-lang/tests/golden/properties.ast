@@ -1,0 +1,85 @@
+Target {
+    description: Some(
+        "Every property shape\n\nBare, valued, and addressed by sub-key.",
+    ),
+    body: Block {
+        properties: [
+            Property {
+                path: [
+                    "parallel",
+                ],
+                value: None,
+                span: Span,
+            },
+            Property {
+                path: [
+                    "shell",
+                ],
+                value: Some(
+                    Str(
+                        [
+                            Literal(
+                                "bash",
+                            ),
+                        ],
+                        Span,
+                    ),
+                ),
+                span: Span,
+            },
+            Property {
+                path: [
+                    "env",
+                    "PORT",
+                ],
+                value: Some(
+                    Chain {
+                        lhs: Source {
+                            kind: Arg,
+                            key: Some(
+                                "port",
+                            ),
+                            span: Span,
+                        },
+                        rhs: Str(
+                            [
+                                Literal(
+                                    "3000",
+                                ),
+                            ],
+                            Span,
+                        ),
+                        span: Span,
+                    },
+                ),
+                span: Span,
+            },
+            Property {
+                path: [
+                    "env-file",
+                ],
+                value: Some(
+                    Str(
+                        [
+                            Literal(
+                                ".env.",
+                            ),
+                            Expr(
+                                Source {
+                                    kind: Arg,
+                                    key: Some(
+                                        "env",
+                                    ),
+                                    span: Span,
+                                },
+                            ),
+                        ],
+                        Span,
+                    ),
+                ),
+                span: Span,
+            },
+        ],
+        statements: [],
+    },
+}

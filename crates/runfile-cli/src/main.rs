@@ -167,7 +167,7 @@ fn real_main() -> Result<ExitCode, String> {
 		host.ask = Some(prompt::ask_value);
 	}
 	host.dry_run = flags.dry_run;
-	host.keys = runfile_settings::keyring_keys::all_private_keys;
+	host.keys = runfile_state::keyring_keys::all_private_keys;
 
 	// A target that declares `.watch` enters watch mode with no flag: the file
 	// already said what it wants. `--dry-run` opts out, since printing the same

@@ -1,0 +1,5 @@
+# The three string rules a lexer has to get right
+
+let escapes = "say \"hi\"\n"
+let nested = "greet {{ ARG.name ? "world" }}?"
+let raw = r"(?m)^version = \"(.+)\""

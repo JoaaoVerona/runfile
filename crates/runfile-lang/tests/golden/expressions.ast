@@ -1,0 +1,212 @@
+Target {
+    description: Some(
+        "Precedence, indexing, calls, and every literal kind",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            Let {
+                name: "arithmetic",
+                value: Binary {
+                    op: Sub,
+                    lhs: Binary {
+                        op: Add,
+                        lhs: Number(
+                            1.0,
+                            Span,
+                        ),
+                        rhs: Binary {
+                            op: Mul,
+                            lhs: Number(
+                                2.0,
+                                Span,
+                            ),
+                            rhs: Number(
+                                3.0,
+                                Span,
+                            ),
+                            span: Span,
+                        },
+                        span: Span,
+                    },
+                    rhs: Unary {
+                        op: Neg,
+                        rhs: Number(
+                            4.0,
+                            Span,
+                        ),
+                        span: Span,
+                    },
+                    span: Span,
+                },
+                span: Span,
+            },
+            Let {
+                name: "compared",
+                value: Binary {
+                    op: Or,
+                    lhs: Binary {
+                        op: Lt,
+                        lhs: Ident(
+                            "x",
+                            Span,
+                        ),
+                        rhs: Number(
+                            2.0,
+                            Span,
+                        ),
+                        span: Span,
+                    },
+                    rhs: Binary {
+                        op: And,
+                        lhs: Binary {
+                            op: Ge,
+                            lhs: Ident(
+                                "y",
+                                Span,
+                            ),
+                            rhs: Number(
+                                3.0,
+                                Span,
+                            ),
+                            span: Span,
+                        },
+                        rhs: Unary {
+                            op: Not,
+                            rhs: Ident(
+                                "z",
+                                Span,
+                            ),
+                            span: Span,
+                        },
+                        span: Span,
+                    },
+                    span: Span,
+                },
+                span: Span,
+            },
+            Let {
+                name: "chained",
+                value: Chain {
+                    lhs: Chain {
+                        lhs: Source {
+                            kind: Arg,
+                            key: Some(
+                                "a",
+                            ),
+                            span: Span,
+                        },
+                        rhs: Source {
+                            kind: Env,
+                            key: Some(
+                                "B",
+                            ),
+                            span: Span,
+                        },
+                        span: Span,
+                    },
+                    rhs: Str(
+                        [
+                            Literal(
+                                "fallback",
+                            ),
+                        ],
+                        Span,
+                    ),
+                    span: Span,
+                },
+                span: Span,
+            },
+            Let {
+                name: "indexed",
+                value: Index {
+                    base: Call {
+                        name: "split",
+                        args: [
+                            Str(
+                                [
+                                    Literal(
+                                        "1.2.3",
+                                    ),
+                                ],
+                                Span,
+                            ),
+                            Str(
+                                [
+                                    Literal(
+                                        ".",
+                                    ),
+                                ],
+                                Span,
+                            ),
+                        ],
+                        span: Span,
+                    },
+                    index: Number(
+                        1.0,
+                        Span,
+                    ),
+                    span: Span,
+                },
+                span: Span,
+            },
+            Let {
+                name: "called",
+                value: Call {
+                    name: "concat",
+                    args: [
+                        Str(
+                            [
+                                Literal(
+                                    "a",
+                                ),
+                            ],
+                            Span,
+                        ),
+                        Call {
+                            name: "to_upper",
+                            args: [
+                                Str(
+                                    [
+                                        Literal(
+                                            "b",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                            ],
+                            span: Span,
+                        },
+                    ],
+                    span: Span,
+                },
+                span: Span,
+            },
+            Let {
+                name: "list",
+                value: List(
+                    [
+                        Str(
+                            [
+                                Literal(
+                                    "a",
+                                ),
+                            ],
+                            Span,
+                        ),
+                        Number(
+                            2.0,
+                            Span,
+                        ),
+                        Bool(
+                            true,
+                            Span,
+                        ),
+                    ],
+                    Span,
+                ),
+                span: Span,
+            },
+        ],
+    },
+}

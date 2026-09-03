@@ -30,7 +30,7 @@ runfile-discovery = { path = "crates/runfile-discovery" }
 runfile-env = { path = "crates/runfile-env" }
 runfile-lang = { path = "crates/runfile-lang" }
 runfile-runtime = { path = "crates/runfile-runtime" }
-runfile-settings = { path = "crates/runfile-settings" }
+runfile-state = { path = "crates/runfile-state" }
 secret-service = { default-features = false, features = ["rt-async-io-crypto-rust"], version = "=5.1.0" }
 serde = { features = ["derive"], version = "=1.0.228" }
 serde_json = { version = "=1.0.149", features = ["preserve_order"] }

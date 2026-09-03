@@ -1,0 +1,209 @@
+Target {
+    description: Some(
+        "Every control-flow shape",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            If {
+                cond: Binary {
+                    op: And,
+                    lhs: Binary {
+                        op: Eq,
+                        lhs: Source {
+                            kind: Arg,
+                            key: Some(
+                                "env",
+                            ),
+                            span: Span,
+                        },
+                        rhs: Str(
+                            [
+                                Literal(
+                                    "prod",
+                                ),
+                            ],
+                            Span,
+                        ),
+                        span: Span,
+                    },
+                    rhs: Unary {
+                        op: Not,
+                        rhs: Source {
+                            kind: Flag,
+                            key: Some(
+                                "dry",
+                            ),
+                            span: Span,
+                        },
+                        span: Span,
+                    },
+                    span: Span,
+                },
+                then: Block {
+                    properties: [],
+                    statements: [
+                        Exec {
+                            command: None,
+                            body: [
+                                [
+                                    Literal(
+                                        "deploy",
+                                    ),
+                                ],
+                            ],
+                            lines,
+                            span: Span,
+                        },
+                    ],
+                },
+                otherwise: Some(
+                    Block {
+                        properties: [],
+                        statements: [
+                            Exec {
+                                command: None,
+                                body: [
+                                    [
+                                        Literal(
+                                            "echo skipped",
+                                        ),
+                                    ],
+                                ],
+                                lines,
+                                span: Span,
+                            },
+                        ],
+                    },
+                ),
+                span: Span,
+            },
+            For {
+                name: "f",
+                iter: List(
+                    [
+                        Str(
+                            [
+                                Literal(
+                                    "a",
+                                ),
+                            ],
+                            Span,
+                        ),
+                        Str(
+                            [
+                                Literal(
+                                    "b",
+                                ),
+                            ],
+                            Span,
+                        ),
+                    ],
+                    Span,
+                ),
+                body: Block {
+                    properties: [],
+                    statements: [
+                        Exec {
+                            command: None,
+                            body: [
+                                [
+                                    Literal(
+                                        "echo ",
+                                    ),
+                                    Expr(
+                                        Ident(
+                                            "f",
+                                            Span,
+                                        ),
+                                    ),
+                                ],
+                            ],
+                            lines,
+                            span: Span,
+                        },
+                    ],
+                },
+                span: Span,
+            },
+            Match {
+                subject: Source {
+                    kind: Arg,
+                    key: Some(
+                        "part",
+                    ),
+                    span: Span,
+                },
+                cases: [
+                    MatchCase {
+                        label: "major",
+                        body: Block {
+                            properties: [],
+                            statements: [
+                                Exec {
+                                    command: None,
+                                    body: [
+                                        [
+                                            Literal(
+                                                "echo major",
+                                            ),
+                                        ],
+                                    ],
+                                    lines,
+                                    span: Span,
+                                },
+                            ],
+                        },
+                        span: Span,
+                    },
+                    MatchCase {
+                        label: "minor",
+                        body: Block {
+                            properties: [],
+                            statements: [
+                                Exec {
+                                    command: None,
+                                    body: [
+                                        [
+                                            Literal(
+                                                "echo minor",
+                                            ),
+                                        ],
+                                    ],
+                                    lines,
+                                    span: Span,
+                                },
+                            ],
+                        },
+                        span: Span,
+                    },
+                ],
+                default: Some(
+                    Block {
+                        properties: [],
+                        statements: [
+                            Call {
+                                expr: Call {
+                                    name: "error",
+                                    args: [
+                                        Str(
+                                            [
+                                                Literal(
+                                                    "unknown",
+                                                ),
+                                            ],
+                                            Span,
+                                        ),
+                                    ],
+                                    span: Span,
+                                },
+                                span: Span,
+                            },
+                        ],
+                    },
+                ),
+                span: Span,
+            },
+        ],
+    },
+}

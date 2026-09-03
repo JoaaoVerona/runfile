@@ -352,7 +352,7 @@ fn apply_add_to_path_chain(
 /// Looks up the value of `RUNFILE_ENCRYPTION_PUBLIC_KEY` in the merged env
 /// and matches it against the pool returned by `available_private_keys`
 /// (which itself merges `RUNFILE_PRIVATE_KEYS` with the OS credential store
-/// — see `runfile_settings::keyring_keys::all_private_keys`). Errors if the
+/// — see `runfile_state::keyring_keys::all_private_keys`). Errors if the
 /// public key is missing, the pool is empty, or no key in the pool matches.
 fn resolve_decryption_key(
 	env_map: &HashMap<String, String>,

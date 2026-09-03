@@ -1,0 +1,8 @@
+# Shell lines coalesce, and a backslash continues one
+
+$ echo one
+
+# a comment between them is transparent
+$ echo two \
+	still-two
+$ cp {{ ARG.src }} /tmp

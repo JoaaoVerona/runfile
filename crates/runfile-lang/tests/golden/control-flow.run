@@ -1,0 +1,20 @@
+# Every control-flow shape
+
+if ARG.env == "prod" && !FLAG.dry
+	$ deploy
+else
+	$ echo skipped
+end
+
+for f in ["a", "b"]
+	$ echo {{ f }}
+end
+
+match ARG.part
+case major
+	$ echo major
+case "minor"
+	$ echo minor
+default
+	error("unknown")
+end

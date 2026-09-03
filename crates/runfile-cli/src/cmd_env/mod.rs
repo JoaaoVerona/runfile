@@ -1,7 +1,7 @@
 pub mod dispatch;
 use crate::ci_detect;
 pub use dispatch::dispatch;
-use runfile_settings::keyring_keys;
+use runfile_state::keyring_keys;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read};
 use std::path::Path;

@@ -1,0 +1,69 @@
+Target {
+    description: Some(
+        "The three string rules a lexer has to get right",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            Let {
+                name: "escapes",
+                value: Str(
+                    [
+                        Literal(
+                            "say \"hi\"\n",
+                        ),
+                    ],
+                    Span,
+                ),
+                span: Span,
+            },
+            Let {
+                name: "nested",
+                value: Str(
+                    [
+                        Literal(
+                            "greet ",
+                        ),
+                        Expr(
+                            Chain {
+                                lhs: Source {
+                                    kind: Arg,
+                                    key: Some(
+                                        "name",
+                                    ),
+                                    span: Span,
+                                },
+                                rhs: Str(
+                                    [
+                                        Literal(
+                                            "world",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                                span: Span,
+                            },
+                        ),
+                        Literal(
+                            "?",
+                        ),
+                    ],
+                    Span,
+                ),
+                span: Span,
+            },
+            Let {
+                name: "raw",
+                value: Str(
+                    [
+                        Literal(
+                            "(?m)^version = \\\"(.+)\\\"",
+                        ),
+                    ],
+                    Span,
+                ),
+                span: Span,
+            },
+        ],
+    },
+}

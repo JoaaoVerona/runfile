@@ -1,0 +1,84 @@
+Target {
+    description: Some(
+        "An exec block, and one nested deeper than its opener",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            Exec {
+                command: Some(
+                    [
+                        Literal(
+                            "python3",
+                        ),
+                    ],
+                ),
+                body: [
+                    [
+                        Literal(
+                            "import sys",
+                        ),
+                    ],
+                    [
+                        Literal(
+                            "print(",
+                        ),
+                        Expr(
+                            Source {
+                                kind: Arg,
+                                key: Some(
+                                    "n",
+                                ),
+                                span: Span,
+                            },
+                        ),
+                        Literal(
+                            ")",
+                        ),
+                    ],
+                ],
+                lines,
+                span: Span,
+            },
+            If {
+                cond: Source {
+                    kind: Flag,
+                    key: Some(
+                        "x",
+                    ),
+                    span: Span,
+                },
+                then: Block {
+                    properties: [],
+                    statements: [
+                        Exec {
+                            command: Some(
+                                [
+                                    Literal(
+                                        "bash",
+                                    ),
+                                ],
+                            ),
+                            body: [
+                                [
+                                    Literal(
+                                        "echo before",
+                                    ),
+                                ],
+                                [
+                                    Literal(
+                                        "end",
+                                    ),
+                                ],
+                            ],
+                            lines,
+                            span: Span,
+                        },
+                    ],
+                },
+                otherwise: None,
+                span: Span,
+            },
+        ],
+    },
+}

@@ -130,7 +130,7 @@ crates/
   runfile-cli/                 # The `run` binary
   runfile-env/                 # .env parsing and env-map building
   runfile-crypto/              # AES-256-GCM for encrypted env values
-  runfile-settings/            # Prepare state, OS credential store access
+  runfile-state/               # Prepare state, OS credential store access
 ```
 
 ## Crate Responsibilities
@@ -266,6 +266,8 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 
 - **Runner flags are recognised only before the target name**; everything after it belongs to the target. So
   `run echoes --dry-run` passes `--dry-run` through as `FLAG.dry-run`.
+- `:list` shows the aliases a target answers to. Without that a documented alias is undiscoverable, since
+  the listing otherwise reports only the file name -- which the corpus inventory diff is what surfaced.
 - `:list` has three forms: human, `--names` (for completion scripts), `--json` (for tooling). The JSON is
   serialized by hand — four string fields do not justify a serde dependency in the CLI — and carries a
   `formatVersion` that CI checks against the extension's constant.
@@ -335,9 +337,14 @@ tests that assert the mechanism rather than the symptom.
    (`tests/binary.rs`) — nothing in the former would notice a broken `main.rs` or a renamed binary, and it
    is what ships.
 5. Tests that need an external tool (shellcheck) skip cleanly when it is absent, so a contributor without it
-   does not see a broken build.
-6. Watch tests poll rather than sleep; a fixed sleep is either flaky or slow.
-7. Cross-platform: normalize backslashes in path assertions. A test that can only hold on one platform should
+   does not see a broken build. One of them is a gate: `runfile-lsp/tests/repo_shell.rs` shellchecks every
+   `.run` file in this repository through the same extraction an editor uses, so the repo's own shell cannot
+   rot. It caught an unbalanced `if` in a golden fixture the first time it ran.
+6. `runfile-lang/tests/golden/` holds one file per AST shape beside the tree it parses to, with source
+   positions stripped so a diff is about structure rather than whitespace. Regenerate a deliberate change
+   with `UPDATE_GOLDEN=1 cargo test -p runfile-lang --test golden`.
+7. Watch tests poll rather than sleep; a fixed sleep is either flaky or slow.
+8. Cross-platform: normalize backslashes in path assertions. A test that can only hold on one platform should
    be `#[cfg]`-gated there rather than weakened.
 
 ## Documentation

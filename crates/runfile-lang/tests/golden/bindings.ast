@@ -1,0 +1,70 @@
+Target {
+    description: Some(
+        "Binding, rebinding, and both capture forms",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            Let {
+                name: "plain",
+                value: Number(
+                    1.0,
+                    Span,
+                ),
+                span: Span,
+            },
+            Assign {
+                name: "plain",
+                value: Binary {
+                    op: Add,
+                    lhs: Ident(
+                        "plain",
+                        Span,
+                    ),
+                    rhs: Number(
+                        1.0,
+                        Span,
+                    ),
+                    span: Span,
+                },
+                span: Span,
+            },
+            Let {
+                name: "out",
+                value: Capture {
+                    command: None,
+                    body: [
+                        [
+                            Literal(
+                                "git rev-parse HEAD",
+                            ),
+                        ],
+                    ],
+                    span: Span,
+                },
+                span: Span,
+            },
+            Let {
+                name: "block",
+                value: Capture {
+                    command: Some(
+                        [
+                            Literal(
+                                "sh",
+                            ),
+                        ],
+                    ),
+                    body: [
+                        [
+                            Literal(
+                                "echo hi",
+                            ),
+                        ],
+                    ],
+                    span: Span,
+                },
+                span: Span,
+            },
+        ],
+    },
+}
