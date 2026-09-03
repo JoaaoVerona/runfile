@@ -1,0 +1,3 @@
+# Run all workspace tests, through WSL
+
+$ wsl --shell-type login -- cargo test --workspace --all-features --locked {{ ARGS }}

@@ -69,7 +69,7 @@ fn shared_is_not_a_target() {
 	let c = discover(d.path(), None).unwrap();
 	assert!(c.resolve("_shared").is_none());
 	let t = c.resolve("build").unwrap();
-	assert!(c.shared_for(t).is_some(), "but it is found for the targets it covers");
+	assert_eq!(c.shared_chain(t).len(), 1, "but it applies to the targets it covers");
 }
 
 #[test]
@@ -224,4 +224,52 @@ fn a_subproject_alias_resolves_unqualified_from_inside_it() {
 
 	let c = discover(&web, None).unwrap();
 	assert_eq!(c.resolve("deps").unwrap().name, "setup");
+}
+
+#[test]
+fn a_nested_directory_carries_its_own_shared_settings() {
+	// `runfiles/api/_shared.run` was collected by nothing, so it applied to
+	// nothing -- despite naming a directory whose files inherit it.
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles/api")).unwrap();
+	std::fs::write(d.path().join("runfiles/_shared.run"), ".env.A = \"1\"\n").unwrap();
+	std::fs::write(d.path().join("runfiles/api/_shared.run"), ".env.B = \"2\"\n").unwrap();
+	std::fs::write(d.path().join("runfiles/api/deploy.run"), "$ true\n").unwrap();
+	std::fs::write(d.path().join("runfiles/build.run"), "$ true\n").unwrap();
+
+	let c = discover(d.path(), None).unwrap();
+	let chain = c.shared_chain(c.resolve("api:deploy").unwrap());
+	assert_eq!(chain.len(), 2, "both apply, outermost first: {chain:?}");
+	assert!(chain[0].ends_with("runfiles/_shared.run"), "{chain:?}");
+	assert!(chain[1].ends_with("runfiles/api/_shared.run"), "{chain:?}");
+
+	let top = c.shared_chain(c.resolve("build").unwrap());
+	assert_eq!(top.len(), 1, "a top-level target sees only the top one");
+}
+
+#[test]
+fn a_subproject_does_not_inherit_the_root_shared_file() {
+	// It is a separate `runfiles/` tree; the root's settings are not its to
+	// inherit, the same reason its targets carry their own namespace.
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
+	std::fs::write(d.path().join("runfiles/_shared.run"), ".env.A = \"1\"\n").unwrap();
+	std::fs::write(d.path().join("runfiles/build.run"), "$ true\n").unwrap();
+	std::fs::create_dir_all(d.path().join("web/runfiles")).unwrap();
+	std::fs::write(d.path().join("web/runfiles/_shared.run"), ".env.B = \"2\"\n").unwrap();
+	std::fs::write(d.path().join("web/runfiles/dev.run"), "$ true\n").unwrap();
+
+	let c = discover(d.path(), None).unwrap();
+	let chain = c.shared_chain(c.resolve("web:dev").unwrap());
+	assert_eq!(chain.len(), 1, "{chain:?}");
+	assert!(chain[0].ends_with("web/runfiles/_shared.run"), "{chain:?}");
+}
+
+#[test]
+fn a_missing_shared_file_contributes_nothing() {
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles/api")).unwrap();
+	std::fs::write(d.path().join("runfiles/api/deploy.run"), "$ true\n").unwrap();
+	let c = discover(d.path(), None).unwrap();
+	assert!(c.shared_chain(c.resolve("api:deploy").unwrap()).is_empty());
 }

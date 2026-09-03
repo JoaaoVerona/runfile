@@ -138,19 +138,17 @@ impl<'a> Host<'a> {
 		scope.private_keys = runfile_lang::Keys::new(self.keys);
 
 		// `_shared.run` is the globals analog: its properties and bindings apply
-		// to every target in the directory, so it is evaluated first into the
-		// same scope.
-		let shared_props = match self.catalog.shared_for(target) {
-			Some(p) if p.is_file() => {
-				let (shared, shared_text) = parse_file(&p)?;
-				let props = Props::default().extend(&shared.body, &mut scope, false)?;
-				crate::run::run_block_bindings(&shared.body, &mut scope)?;
-				// A flag the shared file reads is read for every target.
-				text.push_str(&shared_text);
-				props
-			}
-			_ => Props::default(),
-		};
+		// to every target in the directory, so they are evaluated first into the
+		// same scope. Outermost first, so a nested directory's settings layer
+		// over the one above it.
+		let mut shared_props = Props::default();
+		for p in self.catalog.shared_chain(target) {
+			let (shared, shared_text) = parse_file(&p)?;
+			shared_props = shared_props.extend(&shared.body, &mut scope, false)?;
+			crate::run::run_block_bindings(&shared.body, &mut scope)?;
+			// A flag a shared file reads is read for every target under it.
+			text.push_str(&shared_text);
+		}
 
 		if advise && let Some(warn) = self.warn {
 			for unread in unread_inputs(&scope, &text) {

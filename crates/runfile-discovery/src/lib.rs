@@ -192,10 +192,18 @@ fn scan_subprojects(root: &Path, depth: usize, cat: &mut Catalog) -> Result<(), 
 /// Every `.run` under `dir` becomes a target named by its path, with `/`
 /// mapped to `:`.
 fn collect(dir: &Path, anchor: &Path, prefix: &str, origin: Origin, cat: &mut Catalog) -> Result<(), DiscoverError> {
-	if !prefix.is_empty() || origin == Origin::Local || origin == Origin::Global {
-		cat.shared.insert(prefix.to_string(), dir.join(SHARED));
-	}
 	walk_runs(dir, dir, anchor, prefix, origin, cat)
+}
+
+/// The namespace a directory inside a `runfiles/` tree contributes to.
+fn dir_prefix(root: &Path, dir: &Path, prefix: &str) -> String {
+	let rel = dir.strip_prefix(root).unwrap_or(dir);
+	let mut parts: Vec<String> = Vec::new();
+	if !prefix.is_empty() {
+		parts.push(prefix.to_string());
+	}
+	parts.extend(rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+	parts.join(":")
 }
 
 fn walk_runs(
@@ -206,6 +214,11 @@ fn walk_runs(
 	origin: Origin,
 	cat: &mut Catalog,
 ) -> Result<(), DiscoverError> {
+	// Every directory in the tree can carry settings, not just the top one:
+	// `runfiles/api/_shared.run` applies to `api:*`. Registering only the root
+	// meant a nested one was read by nothing at all.
+	cat.shared.insert(dir_prefix(root, dir, prefix), dir.join(SHARED));
+
 	let Ok(rd) = std::fs::read_dir(dir) else { return Ok(()) };
 	let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
 	entries.sort();
@@ -293,12 +306,22 @@ impl Catalog {
 	}
 
 	/// The `_shared.run` that applies to a target, if any.
-	pub fn shared_for(&self, target: &Target) -> Option<PathBuf> {
-		let prefix = match target.name.rfind(':') {
-			Some(_) if target.origin == Origin::Included => target.name.split(':').next().unwrap_or("").to_string(),
-			_ => String::new(),
-		};
-		self.shared.get(&prefix).filter(|p| p.is_file()).cloned()
+	/// Every `_shared.run` that applies to a target, outermost first, so a
+	/// nested one layers over the directory above rather than replacing it.
+	///
+	/// The walk stops at the target's own `runfiles/` tree: a subproject is
+	/// self-contained, so the root's settings are not its to inherit.
+	pub fn shared_chain(&self, target: &Target) -> Vec<PathBuf> {
+		let segments: Vec<&str> = target.name.split(':').collect();
+		let namespace = &segments[..segments.len().saturating_sub(1)];
+		// A subproject's own root is its first segment; everything else starts
+		// at the top of the local tree.
+		let from = usize::from(target.origin == Origin::Included);
+		(from..=namespace.len())
+			.filter_map(|end| self.shared.get(&namespace[..end].join(":")))
+			.filter(|p| p.is_file())
+			.cloned()
+			.collect()
 	}
 }
 

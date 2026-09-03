@@ -189,7 +189,8 @@ Set on the file, or inside a block where marked.
 `shell`, `env`, `workdir`, `parallel` and `ignore-errors` may be set inside an `if` / `for` / `match` block. The
 rest belong at the top of the file.
 
-`_shared.run` holds properties every target in its directory inherits.
+`_shared.run` holds properties every target in its directory inherits. A nested one layers over the directory
+above it, so `runfiles/api/_shared.run` adds to `runfiles/_shared.run`.
 
 ## How targets are found
 

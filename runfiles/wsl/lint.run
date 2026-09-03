@@ -1,0 +1,5 @@
+# Type-check, format and lint the whole workspace, through WSL
+
+$ wsl --shell-type login -- cargo check --all-targets --all-features --locked
+$ wsl --shell-type login -- cargo fmt --all
+$ wsl --shell-type login -- cargo clippy --all-targets --all-features --locked -- -D warnings

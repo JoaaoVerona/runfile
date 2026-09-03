@@ -1,0 +1,8 @@
+# Settings the WSL targets inherit.
+#
+# These exist to drive a Linux build from a Windows checkout, so they run
+# everything through `wsl` and pin the Linux target directory explicitly rather
+# than taking the per-OS one the root `_shared.run` sets -- from Windows that
+# would be `target-windows`, which is not what the Linux toolchain wrote.
+
+.env.CARGO_TARGET_DIR = "target-linux"

@@ -1060,3 +1060,30 @@ fn the_bash_script_completes_generate_editors() {
 	got.sort();
 	assert_eq!(got, ["jetbrains", "vscode", "zed"]);
 }
+
+#[test]
+fn a_nested_shared_file_layers_over_the_one_above_it() {
+	// Both apply, and the nested one wins where they disagree.
+	let p = project(&[
+		(
+			"runfiles/_shared.run",
+			".env.SHARED = \"root\"\n.env.ONLY_ROOT = \"yes\"\n",
+		),
+		("runfiles/api/_shared.run", ".env.SHARED = \"api\"\n"),
+		("runfiles/api/show.run", "$ echo {{ ENV.SHARED }} {{ ENV.ONLY_ROOT }}\n"),
+	]);
+	let o = p.run(&["api:show"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "api yes");
+}
+
+#[test]
+fn a_binding_in_a_nested_shared_file_is_visible_to_its_targets() {
+	let p = project(&[
+		("runfiles/api/_shared.run", "let region = \"eu\"\n"),
+		("runfiles/api/show.run", "$ echo {{ region }}\n"),
+	]);
+	let o = p.run(&["api:show"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "eu");
+}
