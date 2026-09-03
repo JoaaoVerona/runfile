@@ -31,6 +31,25 @@ pub struct Props {
 /// the runner has to know it before any statement runs.
 const BLOCK_SCOPED: &[&str] = &["shell", "parallel", "ignore-errors", "workdir", "env"];
 
+/// Every property name, and whether it may appear inside a block.
+///
+/// Exported so tooling offers exactly what exists. A test walks this list and
+/// rejects any name `extend` would call unknown.
+pub const PROPERTIES: &[(&str, bool)] = &[
+	("add-path", false),
+	("alias", false),
+	("confirm", false),
+	("env", true),
+	("env-file", false),
+	("hide", false),
+	("ignore-errors", true),
+	("only-in-directories", false),
+	("parallel", true),
+	("shell", true),
+	("watch", false),
+	("workdir", true),
+];
+
 #[derive(Debug, thiserror::Error)]
 pub enum PropError {
 	#[error("line {line}: unknown property `.{name}`")]

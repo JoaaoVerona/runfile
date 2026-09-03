@@ -17,6 +17,20 @@ fn err<T>(line: usize, msg: impl Into<String>) -> Result<T, ParseError> {
 	Err(ParseError::At { line, msg: msg.into() })
 }
 
+/// `let` and reassignment both bind a name, and both used to take whatever text
+/// preceded the `=` -- including nothing at all.
+fn check_binding_name(name: &str, line: usize) -> Result<(), ParseError> {
+	if name.is_empty() {
+		return err(line, "binding has no name");
+	}
+	let ok = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+		&& name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+	if !ok {
+		return err(line, format!("`{name}` is not a valid name"));
+	}
+	Ok(())
+}
+
 /// One physical line, pre-classified.
 struct Line<'a> {
 	raw: &'a str,
@@ -112,6 +126,15 @@ impl<'a> P<'a> {
 				return Ok(b);
 			}
 			let line = &self.lines[self.i];
+			// At file level `at_block_end` says no, so a closer would otherwise
+			// fall through and parse as an expression statement -- deferring a
+			// plain typo to a confusing "not defined" at run time.
+			if kw.is_none() {
+				let head = line.trimmed.split_whitespace().next().unwrap_or("");
+				if matches!(head, "end" | "else" | "case" | "default") {
+					return err(line.no, format!("`{head}` closes a block, but none is open"));
+				}
+			}
 			if line.trimmed.starts_with('.') {
 				b.properties.push(self.property()?);
 			} else {
@@ -184,6 +207,7 @@ impl<'a> P<'a> {
 					return err(no, "`let` needs `= value`");
 				};
 				let name = rest[..eq].trim().to_string();
+				check_binding_name(&name, no)?;
 				let base = offset + (text.len() - rest.len()) + eq + 1;
 				let raw_rhs = rest[eq + 1..].trim();
 				let value = match self.capture_rhs(raw_rhs, indent, base, no)? {
@@ -271,6 +295,7 @@ impl<'a> P<'a> {
 			_ => {
 				if let Some(eq) = assignment_split(&text) {
 					let name = text[..eq].trim().to_string();
+					check_binding_name(&name, no)?;
 					let raw_rhs = text[eq + 1..].trim();
 					let value = match self.capture_rhs(raw_rhs, indent, offset + eq + 1, no)? {
 						Some(e) => e,

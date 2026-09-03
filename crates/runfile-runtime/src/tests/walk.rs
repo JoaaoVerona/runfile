@@ -124,3 +124,29 @@ fn namespaces_come_from_discovered_subprojects() {
 	let trace = host_run(&d, "all").expect("fans out over discovered namespaces");
 	assert_eq!(trace.len(), 2, "one per subproject, no declaration anywhere");
 }
+
+#[test]
+fn every_exported_property_name_is_actually_known() {
+	// The exported list drives editor completion; a name here that `extend`
+	// rejects would be offered and then fail.
+	for (name, block_ok) in crate::props::PROPERTIES {
+		// `.env` is the one property addressed by sub-key rather than set whole.
+		let lhs = if *name == "env" {
+			"env.SOME_KEY".to_string()
+		} else {
+			(*name).to_string()
+		};
+		let src = format!(".{lhs} = \"x\"\n$ true\n");
+		let ast = runfile_lang::parse(&src).unwrap_or_else(|e| panic!(".{name}: {e}"));
+		let mut sc = runfile_lang::Scope::new();
+		if let Err(crate::props::PropError::Unknown { .. }) =
+			crate::props::Props::default().extend(&ast.body, &mut sc, false)
+		{
+			panic!("`.{name}` is exported for completion but not known");
+		}
+		// And the second column must match where it is actually allowed.
+		let nested = crate::props::Props::default().extend(&ast.body, &mut sc, true);
+		let allowed = !matches!(nested, Err(crate::props::PropError::NotBlockScoped { .. }));
+		assert_eq!(allowed, *block_ok, "`.{name}` block-scoping is mislabelled");
+	}
+}

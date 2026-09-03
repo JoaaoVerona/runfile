@@ -6,3 +6,4 @@ mod exec;
 mod expr;
 mod io;
 mod lines;
+mod parser;

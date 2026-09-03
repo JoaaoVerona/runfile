@@ -296,6 +296,58 @@ fn resolve(base: &Path, p: &str) -> PathBuf {
 	}
 }
 
+/// Every function name the language knows.
+///
+/// Exported so tooling (completion, the language server) offers exactly what
+/// exists, and cannot drift from what `call` accepts -- a test below walks this
+/// list and rejects any name the dispatcher does not recognise.
+pub const FUNCTIONS: &[&str] = &[
+	"abs",
+	"base64_decode",
+	"base64_encode",
+	"basename",
+	"ceil",
+	"concat",
+	"contains",
+	"decrypt",
+	"dirname",
+	"ends_with",
+	"error",
+	"extname",
+	"file_exists",
+	"first",
+	"floor",
+	"glob",
+	"is_number",
+	"join",
+	"last",
+	"length",
+	"lines",
+	"max",
+	"number",
+	"one_of",
+	"read_file",
+	"regex_capture",
+	"regex_capture_all",
+	"regex_matches",
+	"regex_remove",
+	"regex_replace",
+	"remove_all",
+	"remove_prefix",
+	"remove_suffix",
+	"replace_all",
+	"round",
+	"split",
+	"starts_with",
+	"stem",
+	"to_lower",
+	"to_upper",
+	"trim",
+	"trim_end",
+	"trim_start",
+	"write_file",
+];
+
 pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<Result<Value, EvalError>> {
 	let s = |i: usize| -> Result<&str, EvalError> { v[i].as_str().map_err(|e| ty(sp, e)) };
 	let other = |m: String| EvalError::Other { msg: m, line: sp.line };

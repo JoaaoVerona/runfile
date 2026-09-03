@@ -161,3 +161,21 @@ fn shell_quoting_defuses_expansion() {
 	assert_eq!(shell_quote("it's"), r#"'it'\''s'"#);
 	assert_eq!(shell_quote("plain.txt"), "plain.txt", "nothing to quote");
 }
+
+#[test]
+fn every_exported_function_name_is_actually_dispatched() {
+	// The exported list drives editor completion. A name here that `call` does
+	// not know would be offered and then fail, so the list is checked against
+	// the dispatcher rather than trusted.
+	for name in crate::functions::FUNCTIONS {
+		// Filesystem functions are matched on name *and* arity, so a name is
+		// only unknown if every plausible arity rejects it. Any other outcome
+		// -- a type complaint, a missing file -- means it was recognised.
+		let known = (0..=4).any(|n| {
+			let args = vec!["\"x\""; n].join(", ");
+			let e = parse_expr(&format!("{name}({args})"), 0, 1).unwrap_or_else(|x| panic!("{name}: {x}"));
+			!matches!(eval(&e, &mut sc()), Err(crate::EvalError::UnknownFunction { .. }))
+		});
+		assert!(known, "`{name}` is exported for completion but not dispatched");
+	}
+}

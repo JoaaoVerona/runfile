@@ -1317,6 +1317,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "runfile-lsp"
+version = "0.47.0"
+dependencies = [
+ "runfile-discovery",
+ "runfile-lang",
+ "runfile-runtime",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "runfile-runtime"
 version = "0.47.0"
 dependencies = [
