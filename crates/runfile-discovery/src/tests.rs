@@ -186,3 +186,42 @@ fn scoping_matches_whole_path_components_not_string_prefixes() {
 	let c = discover(&sibling, Some(home.path())).unwrap();
 	assert!(c.resolve("deploy").is_none(), "acme-other is not inside acme");
 }
+
+#[test]
+fn a_subproject_alias_carries_its_namespace() {
+	// Otherwise a subproject claims a bare name in the root, and the qualified
+	// spelling every listing shows does not work.
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
+	std::fs::write(d.path().join("runfiles/root.run"), "$ true\n").unwrap();
+	std::fs::create_dir_all(d.path().join("web/runfiles")).unwrap();
+	std::fs::write(d.path().join("web/runfiles/setup.run"), ".alias = \"deps\"\n$ true\n").unwrap();
+
+	let c = discover(d.path(), None).unwrap();
+	assert_eq!(c.resolve("web:deps").unwrap().name, "web:setup");
+	assert!(c.resolve("deps").is_none(), "a subproject must not claim a bare name");
+}
+
+#[test]
+fn a_root_alias_stays_unqualified() {
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
+	std::fs::write(d.path().join("runfiles/build.run"), ".alias = \"b\"\n$ true\n").unwrap();
+	let c = discover(d.path(), None).unwrap();
+	assert_eq!(c.resolve("b").unwrap().name, "build");
+}
+
+#[test]
+fn a_subproject_alias_resolves_unqualified_from_inside_it() {
+	// From within the subproject its targets have no prefix, so neither do its
+	// aliases -- the same file works either way.
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
+	std::fs::write(d.path().join("runfiles/root.run"), "$ true\n").unwrap();
+	let web = d.path().join("web");
+	std::fs::create_dir_all(web.join("runfiles")).unwrap();
+	std::fs::write(web.join("runfiles/setup.run"), ".alias = \"deps\"\n$ true\n").unwrap();
+
+	let c = discover(&web, None).unwrap();
+	assert_eq!(c.resolve("deps").unwrap().name, "setup");
+}

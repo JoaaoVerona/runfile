@@ -23,25 +23,29 @@ inputs:
       `RUNFILE_PRIVATE_KEYS` for the job, so no OS credential store / keyring daemon
       is involved. The env var disappears with the runner.
     default: ''
-  global-files:
+  global-targets:
     description: |
-      Optional newline-separated list of Runfile.json paths to register as global files
-      via `run :config global-files add`. Useful for layering CI-only targets on top of
-      the project's main Runfile. Paths are resolved relative to the workflow's working
-      directory (typically the checkout root).
+      Optional newline-separated list of `.run` files (or directories of them) to
+      install into `$HOME/.runfiles/`, the machine-wide target directory `run`
+      folds into every listing. Useful for layering CI-only targets on top of the
+      project's own `runfiles/`. Paths are resolved relative to the workflow's
+      working directory (typically the checkout root).
     default: ''
   runfile-source:
     description: |
-      Optional raw Runfile.json (or Runfile.json5) source. When set, the contents are
-      written to a temp file on the runner and `RUNFILE_TARGET` is exported so every
-      subsequent `run` invocation without an explicit `-f` flag uses that file instead
-      of discovering one in the workspace.
+      Optional raw `.run` source for a single target. When set, the contents are
+      installed into `$HOME/.runfiles/` under `runfile-source-name`, making it
+      available machine-wide alongside the project's own targets.
 
-      Intended for repositories that want to keep their full Runfile private: pass the
+      Intended for repositories that want to keep a target private: pass the
       source via a GitHub secret and the action will materialize it for the job.
-      The file lives in `$RUNNER_TEMP` and disappears when the runner is torn down.
-      Combine with `global-files` to layer secret content on top of a public base Runfile.
+      It is removed by the `cleanup` action at the end of the job.
     default: ''
+  runfile-source-name:
+    description: |
+      File name for `runfile-source`. The stem is the target name, so the default
+      makes it runnable as `run ci`.
+    default: ci.run
   env-file-source:
     description: |
       Optional raw `.env` file source (plaintext or encrypted). When set, the contents
@@ -60,18 +64,18 @@ inputs:
       is removed before it registers or materializes anything, so the job starts
       from a clean slate:
 
-      - the machine-global settings directory (`settings.json` — global files, path
-        aliases, custom shell paths — plus the `state.json` preparation-state file);
-      - `$RUNNER_TEMP/runfile-source/`, where `runfile-source` / `env-file-source`
-        write their contents.
+      - `$HOME/.runfiles/`, the machine-wide target directory that
+        `global-targets` and `runfile-source` install into;
+      - the machine-local state directory holding `state.json`;
+      - `$RUNNER_TEMP/runfile-source/`, where `env-file-source` writes.
 
       This matters on self-hosted runners, where `$HOME` persists between jobs and
       `$RUNNER_TEMP` is not always cleared: a cancelled or failed job would otherwise
-      leak its `global-files` registrations — and the plaintext secrets it
+      leak its global targets — and the plaintext secrets it
       materialized — into every later run on that machine. Pair with the companion
       `cleanup` action (as an `if: always()` step) to also clear them on the way out.
 
-      Set to `false` on a self-hosted runner whose global Runfile settings are
+      Set to `false` on a self-hosted runner whose `$HOME/.runfiles/` is
       configured on purpose and must survive CI.
     default: 'true'
 
@@ -185,18 +189,18 @@ runs:
           echo '__RUNFILE_KEYS_EOF__'
         } >> "$GITHUB_ENV"
 
-    # Both materialize steps write into $RUNNER_TEMP/runfile-source/ — the same
-    # directory ../cleanup/cleanup.sh removes. Keep the path in sync with it.
+    # Writes into $HOME/.runfiles/ — the directory ../cleanup/cleanup.sh removes.
+    # Keep the path in sync with it.
     - name: Materialize Runfile source
       if: inputs.runfile-source != ''
       shell: bash
       env:
         RUNFILE_SOURCE: ${{ inputs.runfile-source }}
+        RUNFILE_SOURCE_NAME: ${{ inputs.runfile-source-name }}
       run: |
-        path="$RUNNER_TEMP/runfile-source/Runfile.json5"
-        mkdir -p "$(dirname "$path")"
-        printf '%s\n' "$RUNFILE_SOURCE" > "$path"
-        echo "RUNFILE_TARGET=$path" >> "$GITHUB_ENV"
+        set -euo pipefail
+        mkdir -p "$HOME/.runfiles"
+        printf '%s\n' "$RUNFILE_SOURCE" > "$HOME/.runfiles/$RUNFILE_SOURCE_NAME"
 
     - name: Materialize env file source
       if: inputs.env-file-source != ''
@@ -209,14 +213,22 @@ runs:
         printf '%s\n' "$ENV_FILE_SOURCE" > "$path"
         echo "RUNFILE_ENV_FILE_TARGET=$path" >> "$GITHUB_ENV"
 
-    - name: Register global Runfiles
-      if: inputs.global-files != ''
+    # There is no registry to add to any more: a global target is simply a file
+    # in $HOME/.runfiles/, so installing one is a copy.
+    - name: Install global targets
+      if: inputs.global-targets != ''
       shell: bash
       env:
-        GLOBAL_FILES: ${{ inputs.global-files }}
+        GLOBAL_TARGETS: ${{ inputs.global-targets }}
       run: |
-        printf '%s\n' "$GLOBAL_FILES" | while IFS= read -r line; do
+        set -euo pipefail
+        mkdir -p "$HOME/.runfiles"
+        printf '%s\n' "$GLOBAL_TARGETS" | while IFS= read -r line; do
           path="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           [ -z "$path" ] && continue
-          run :config global-files add "$path"
+          if [ -d "$path" ]; then
+            cp -R "$path"/. "$HOME/.runfiles/"
+          else
+            cp "$path" "$HOME/.runfiles/"
+          fi
         done

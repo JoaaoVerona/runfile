@@ -240,9 +240,20 @@ fn walk_runs(
 	Ok(())
 }
 
-/// The aliases a target declares.
+/// The names a target answers to besides its own, qualified by its namespace.
+///
+/// An alias declared in `web/runfiles/setup.run` as `deps` answers to
+/// `web:deps`, not `deps`: a subproject must not be able to claim a bare name
+/// in the root, and the qualified spelling is the one every listing shows.
 pub fn aliases_of(t: &Target) -> Vec<String> {
+	let prefix = match t.name.rsplit_once(':') {
+		Some((p, _)) => format!("{p}:"),
+		None => String::new(),
+	};
 	shared_strings(&t.path, "alias")
+		.into_iter()
+		.map(|a| format!("{prefix}{a}"))
+		.collect()
 }
 
 impl Catalog {
