@@ -3,14 +3,14 @@ use super::{Recorder, run_src};
 #[test]
 fn a_shell_run_is_one_process_so_cd_persists() {
 	// The Make wart this design set out to remove.
-	let mut d = Recorder::default();
-	run_src("$ cd /\n$ pwd > /dev/null\n", &mut d).expect("both lines share a shell");
+	let d = Recorder::default();
+	run_src("$ cd /\n$ pwd > /dev/null\n", &d).expect("both lines share a shell");
 }
 
 #[test]
 fn a_statement_between_shell_lines_starts_a_new_process() {
-	let mut d = Recorder::default();
-	let trace = run_src("$ cd /\nlet x = 1\n$ pwd > /dev/null\n", &mut d).unwrap();
+	let d = Recorder::default();
+	let trace = run_src("$ cd /\nlet x = 1\n$ pwd > /dev/null\n", &d).unwrap();
 	assert_eq!(trace.len(), 2, "two separate shells");
 }
 
@@ -19,8 +19,8 @@ fn exec_pipes_the_body_to_an_arbitrary_command() {
 	let dir = std::env::temp_dir().join("runfile-exec-test");
 	let _ = std::fs::remove_file(&dir);
 	let src = format!("exec tee {}\n\thello\n\tthere\nend\n", dir.display());
-	let mut d = Recorder::default();
-	run_src(&src, &mut d).expect("tee runs");
+	let d = Recorder::default();
+	run_src(&src, &d).expect("tee runs");
 	let got = std::fs::read_to_string(&dir).unwrap();
 	assert_eq!(got, "hello\nthere", "body reaches the command's stdin, dedented");
 	let _ = std::fs::remove_file(&dir);
@@ -28,38 +28,38 @@ fn exec_pipes_the_body_to_an_arbitrary_command() {
 
 #[test]
 fn a_failing_command_stops_the_target() {
-	let mut d = Recorder::default();
-	let e = run_src("$ exit 3\n$ echo unreachable\n", &mut d).unwrap_err();
+	let d = Recorder::default();
+	let e = run_src("$ exit 3\n$ echo unreachable\n", &d).unwrap_err();
 	assert!(e.to_string().contains("status 3"), "{e}");
 }
 
 #[test]
 fn ignore_errors_lets_the_target_continue() {
-	let mut d = Recorder::default();
-	run_src(".ignore-errors\n$ exit 3\n\nlet x = 1\n$ true\n", &mut d).expect("failure is swallowed");
+	let d = Recorder::default();
+	run_src(".ignore-errors\n$ exit 3\n\nlet x = 1\n$ true\n", &d).expect("failure is swallowed");
 }
 
 #[test]
 fn capture_takes_stdout_with_one_trailing_newline_stripped() {
-	let mut d = Recorder::default();
+	let d = Recorder::default();
 	// echo appends a newline; the capture must not keep it.
-	run_src("let v = $ echo hi\n$ test {{ v }} = hi\n", &mut d).expect("trailing newline stripped");
-	run_src("let v = $ printf x\n$ test {{ v }} = x\n", &mut d).expect("no newline to strip");
+	run_src("let v = $ echo hi\n$ test {{ v }} = hi\n", &d).expect("trailing newline stripped");
+	run_src("let v = $ printf x\n$ test {{ v }} = x\n", &d).expect("no newline to strip");
 }
 
 #[test]
 fn interpolation_quotes_so_a_dollar_cannot_expand() {
 	// If the value were pasted raw, $HOME would expand and the test would fail.
-	let mut d = Recorder::default();
-	run_src("let v = \"$HOME\"\n$ test {{ v }} = '$HOME'\n", &mut d).expect("quoted, not expanded");
+	let d = Recorder::default();
+	run_src("let v = \"$HOME\"\n$ test {{ v }} = '$HOME'\n", &d).expect("quoted, not expanded");
 }
 
 #[test]
 fn an_explicitly_named_shell_gets_the_same_stop_on_failure_as_dollar() {
 	// `$ x` must behave exactly like `exec sh` with x as its body.
-	let mut d = Recorder::default();
-	let a = run_src("$ false\n$ echo unreachable\n", &mut d).unwrap_err();
-	let b = run_src("exec sh\n\tfalse\n\techo unreachable\nend\n", &mut d).unwrap_err();
+	let d = Recorder::default();
+	let a = run_src("$ false\n$ echo unreachable\n", &d).unwrap_err();
+	let b = run_src("exec sh\n\tfalse\n\techo unreachable\nend\n", &d).unwrap_err();
 	assert!(a.to_string().contains("status 1"), "{a}");
 	assert!(b.to_string().contains("status 1"), "{b}");
 }
@@ -70,16 +70,16 @@ fn a_non_shell_command_is_spawned_verbatim() {
 	// arguments -- the same reasoning keeps `exec ssh host bash` untouched.
 	let f = std::env::temp_dir().join("runfile-verbatim-test");
 	let _ = std::fs::remove_file(&f);
-	let mut d = Recorder::default();
-	run_src(&format!("exec tee {}\n\tline\nend\n", f.display()), &mut d).expect("tee runs");
+	let d = Recorder::default();
+	run_src(&format!("exec tee {}\n\tline\nend\n", f.display()), &d).expect("tee runs");
 	assert_eq!(std::fs::read_to_string(&f).unwrap(), "line");
 	let _ = std::fs::remove_file(&f);
 }
 
 #[test]
 fn env_properties_reach_the_process() {
-	let mut d = Recorder::default();
-	run_src(".env.GREETING = \"hi\"\n$ test \"$GREETING\" = hi\n", &mut d).expect("env is set");
+	let d = Recorder::default();
+	run_src(".env.GREETING = \"hi\"\n$ test \"$GREETING\" = hi\n", &d).expect("env is set");
 }
 
 #[test]
@@ -88,13 +88,14 @@ fn an_env_file_is_loaded_before_the_body_is_evaluated() {
 	let dir = std::env::temp_dir().join("runfile-envfile-test");
 	std::fs::create_dir_all(&dir).unwrap();
 	std::fs::write(dir.join("vals.env"), "FROM_FILE=loaded\n").unwrap();
-	let mut d = Recorder::default();
+	let d = Recorder::default();
 	let target = runfile_lang::parse(".env-file = \"vals.env\"\n$ test {{ ENV.FROM_FILE }} = loaded\n").expect("parse");
 	let mut r = crate::run::Runner {
+		chain: Vec::new(),
 		scope: runfile_lang::eval::Scope::new(),
 		env: Vec::new(),
 		anchor: dir.clone(),
-		dispatch: &mut d,
+		dispatch: &d,
 		assume_yes: true,
 		prompt: None,
 		trace: Vec::new(),
@@ -106,12 +107,13 @@ fn an_env_file_is_loaded_before_the_body_is_evaluated() {
 #[test]
 fn confirm_cancels_when_there_is_nobody_to_ask() {
 	let target = runfile_lang::parse(".confirm = \"proceed?\"\n$ true\n").unwrap();
-	let mut d = Recorder::default();
+	let d = Recorder::default();
 	let mut r = crate::run::Runner {
+		chain: Vec::new(),
 		scope: runfile_lang::eval::Scope::new(),
 		env: Vec::new(),
 		anchor: std::env::temp_dir(),
-		dispatch: &mut d,
+		dispatch: &d,
 		assume_yes: false,
 		prompt: None,
 		trace: Vec::new(),
@@ -124,27 +126,28 @@ fn confirm_cancels_when_there_is_nobody_to_ask() {
 
 #[test]
 fn confirm_interpolates_its_message() {
-	let asked = std::cell::RefCell::new(String::new());
+	let asked = std::sync::Mutex::new(String::new());
 	let ask = |m: &str| {
-		*asked.borrow_mut() = m.to_string();
+		*asked.lock().expect("asked") = m.to_string();
 		true
 	};
 	let target = runfile_lang::parse(".confirm = \"wipe {{ ARG.env }}?\"\n$ true\n").unwrap();
-	let mut d = Recorder::default();
+	let d = Recorder::default();
 	let mut scope = runfile_lang::eval::Scope::new();
 	scope.args.insert("env".into(), "production".into());
 	let mut r = crate::run::Runner {
+		chain: Vec::new(),
 		scope,
 		env: Vec::new(),
 		anchor: std::env::temp_dir(),
-		dispatch: &mut d,
+		dispatch: &d,
 		assume_yes: false,
 		prompt: Some(&ask),
 		trace: Vec::new(),
 	};
 	crate::run::run_target(&target, &mut r).expect("consent given");
 	assert_eq!(
-		*asked.borrow(),
+		*asked.lock().expect("asked"),
 		"wipe production?",
 		"the field could not interpolate before"
 	);
@@ -155,12 +158,13 @@ fn a_header_property_cannot_see_a_body_binding() {
 	// Header properties resolve before any statement runs -- that ordering is
 	// what lets `.env-file` feed `{{ ENV.x }}` -- so they see sources, not lets.
 	let target = runfile_lang::parse("let e = \"x\"\n.confirm = \"{{ e }}?\"\n$ true\n").unwrap();
-	let mut d = Recorder::default();
+	let d = Recorder::default();
 	let mut r = crate::run::Runner {
+		chain: Vec::new(),
 		scope: runfile_lang::eval::Scope::new(),
 		env: Vec::new(),
 		anchor: std::env::temp_dir(),
-		dispatch: &mut d,
+		dispatch: &d,
 		assume_yes: true,
 		prompt: None,
 		trace: Vec::new(),

@@ -10,8 +10,8 @@ use crate::run::{Dispatch, RunError, Runner};
 use runfile_discovery::Catalog;
 use runfile_lang::Value;
 use runfile_lang::eval::Scope;
-use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Mutex;
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -31,11 +31,12 @@ pub enum HostError {
 pub struct Host<'a> {
 	pub catalog: &'a Catalog,
 	pub assume_yes: bool,
-	pub prompt: Option<&'a dyn Fn(&str) -> bool>,
-	/// Targets currently on the stack, for cycle detection.
-	chain: RefCell<Vec<String>>,
-	/// Every shell body that ran, in order.
-	pub trace: RefCell<Vec<String>>,
+	/// `Sync` so a `.parallel` fan-out can ask; a prompt during one is the
+	/// caller's problem to serialise.
+	pub prompt: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
+	/// Every shell body that ran. Order is arrival order, which under
+	/// `.parallel` is completion order rather than source order.
+	pub trace: Mutex<Vec<String>>,
 }
 
 impl<'a> Host<'a> {
@@ -44,12 +45,15 @@ impl<'a> Host<'a> {
 			catalog,
 			assume_yes: false,
 			prompt: None,
-			chain: RefCell::new(Vec::new()),
-			trace: RefCell::new(Vec::new()),
+			trace: Mutex::new(Vec::new()),
 		}
 	}
 
 	pub fn run(&self, name: &str, args: &[String]) -> Result<(), RunError> {
+		self.run_with_chain(name, args, &[])
+	}
+
+	fn run_with_chain(&self, name: &str, args: &[String], chain: &[String]) -> Result<(), RunError> {
 		let target = self.catalog.resolve(name).ok_or_else(|| {
 			let near: Vec<&str> = self
 				.catalog
@@ -69,21 +73,25 @@ impl<'a> Host<'a> {
 			}))
 		})?;
 
-		if self.chain.borrow().iter().any(|c| c == name) {
-			let mut chain = self.chain.borrow().clone();
-			chain.push(name.to_string());
+		if chain.iter().any(|c| c == name) {
+			let mut shown = chain.to_vec();
+			shown.push(name.to_string());
 			return Err(RunError::Host(Box::new(HostError::Cycle {
 				name: name.to_string(),
-				chain: chain.join(" -> "),
+				chain: shown.join(" -> "),
 			})));
 		}
-		self.chain.borrow_mut().push(name.to_string());
-		let out = self.run_inner(target, args);
-		self.chain.borrow_mut().pop();
-		out
+		let mut next = chain.to_vec();
+		next.push(name.to_string());
+		self.run_inner(target, args, next)
 	}
 
-	fn run_inner(&self, target: &runfile_discovery::Target, args: &[String]) -> Result<(), RunError> {
+	fn run_inner(
+		&self,
+		target: &runfile_discovery::Target,
+		args: &[String],
+		chain: Vec<String>,
+	) -> Result<(), RunError> {
 		let ast = parse_file(&target.path)?;
 		let mut scope = Scope::new();
 		populate_run_context(&mut scope, target, self.catalog);
@@ -103,18 +111,19 @@ impl<'a> Host<'a> {
 			_ => Props::default(),
 		};
 
-		let mut adapter = HostDispatch { host: self };
+		let adapter = HostDispatch { host: self };
 		let mut r = Runner {
 			scope,
+			chain,
 			env: Vec::new(),
 			anchor: target.anchor.clone(),
-			dispatch: &mut adapter,
+			dispatch: &adapter,
 			assume_yes: self.assume_yes,
 			prompt: self.prompt,
 			trace: Vec::new(),
 		};
 		let out = crate::run::run_target_with(&ast, shared_props, &mut r);
-		self.trace.borrow_mut().extend(r.trace);
+		self.trace.lock().expect("trace lock").extend(r.trace);
 		out
 	}
 }
@@ -124,8 +133,8 @@ struct HostDispatch<'a, 'b> {
 }
 
 impl Dispatch for HostDispatch<'_, '_> {
-	fn run(&mut self, target: &str, args: &[String]) -> Result<(), RunError> {
-		self.host.run(target, args)
+	fn run(&self, target: &str, args: &[String], chain: &[String]) -> Result<(), RunError> {
+		self.host.run_with_chain(target, args, chain)
 	}
 }
 

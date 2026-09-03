@@ -19,7 +19,7 @@ fn main() {
 	host.assume_yes = true;
 	match host.run(&target, &args) {
 		Ok(()) => {
-			let trace = host.trace.borrow();
+			let trace = host.trace.lock().expect("trace");
 			for line in trace.iter() {
 				let shown: String = line.replace('\n', "\n       ");
 				println!("[ran] {shown}");

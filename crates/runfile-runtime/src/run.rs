@@ -37,30 +37,49 @@ pub enum RunError {
 /// and the step counter are ordinary data rather than an env-var protocol.
 /// Writing `$ run <target>` instead re-execs the binary, which is just a shell
 /// line and never reaches this.
-pub trait Dispatch {
-	fn run(&mut self, target: &str, args: &[String]) -> Result<(), RunError>;
+/// `Sync` and `&self` because a `.parallel` block fans out across threads.
+/// The call chain is passed rather than held: parallel branches have separate
+/// paths, so a shared stack would make one branch look like a cycle to another.
+pub trait Dispatch: Sync {
+	fn run(&self, target: &str, args: &[String], chain: &[String]) -> Result<(), RunError>;
 }
 
 pub struct NoDispatch;
 impl Dispatch for NoDispatch {
-	fn run(&mut self, _t: &str, _a: &[String]) -> Result<(), RunError> {
+	fn run(&self, _t: &str, _a: &[String], _c: &[String]) -> Result<(), RunError> {
 		Err(RunError::NoResolver { line: 0 })
 	}
 }
 
+/// One unit of concurrent work, fully rendered so a thread needs no scope.
+enum Leaf {
+	Exec {
+		cmd: Option<String>,
+		body: String,
+		env: Vec<(String, String)>,
+		dir: PathBuf,
+	},
+	Run {
+		target: String,
+		args: Vec<String>,
+	},
+}
+
 pub struct Runner<'a> {
 	pub scope: Scope,
+	/// Targets already on this call path, for cycle detection.
+	pub chain: Vec<String>,
 	/// Built once from the header properties, before the body is evaluated, so
 	/// `{{ ENV.x }}` can see what `.env-file` brought in.
 	pub env: Vec<(String, String)>,
 	/// The anchor: the directory containing `runfiles/`. Everything relative
 	/// resolves against it.
 	pub anchor: PathBuf,
-	pub dispatch: &'a mut dyn Dispatch,
+	pub dispatch: &'a dyn Dispatch,
 	pub assume_yes: bool,
 	/// Asked when a target declares `.confirm`. `None` means never prompt,
 	/// which is what CI detection and `-y` reduce to.
-	pub prompt: Option<&'a dyn Fn(&str) -> bool>,
+	pub prompt: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
 	/// Collected so a caller can show what ran without re-deriving it.
 	pub trace: Vec<String>,
 }
@@ -104,6 +123,9 @@ pub fn run_target_with(target: &Target, base: Props, r: &mut Runner<'_>) -> Resu
 }
 
 fn walk(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
+	if props.parallel {
+		return walk_parallel(block, props, r);
+	}
 	for st in &block.statements {
 		if let Err(e) = statement(st, props, r)
 			&& !props.ignore_errors
@@ -195,7 +217,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				.iter()
 				.map(|w| interpolate_shell(w, &mut r.scope))
 				.collect::<Result<_, _>>()?;
-			r.dispatch.run(&t, &a)
+			r.dispatch.run(&t, &a, &r.chain)
 		}
 		Statement::Exec { command, body, .. } => {
 			let (cmd, text) = render(command.as_deref(), body, r)?;
@@ -272,4 +294,151 @@ fn merged_env(r: &Runner<'_>, props: &Props) -> Vec<(String, String)> {
 		}
 	}
 	out
+}
+
+// ------------------------------------------------------------------ parallel
+
+/// A parallel block evaluates its bindings in source order, then fans out the
+/// executable leaves. Rendering happens first and sequentially, so a thread
+/// carries a finished command rather than a borrow of the scope.
+fn walk_parallel(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
+	let mut leaves = Vec::new();
+	collect(block, props, r, &mut leaves)?;
+	run_leaves(leaves, props, r)
+}
+
+fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>) -> Result<(), RunError> {
+	for st in &block.statements {
+		match st {
+			Statement::Let { name, value, .. } | Statement::Assign { name, value, .. } => {
+				let v = value_of(value, props, r)?;
+				r.scope.bind(name, v);
+			}
+			Statement::Call { expr, .. } => {
+				eval_boundary(expr, &mut r.scope)?;
+			}
+			Statement::Exec { command, body, .. } => {
+				let (cmd, text) = render(command.as_deref(), body, r)?;
+				out.push(Leaf::Exec {
+					cmd,
+					body: text,
+					env: merged_env(r, props),
+					dir: cwd(props, &r.anchor),
+				});
+			}
+			Statement::Run { target, args, .. } => {
+				let t = interpolate_shell(target, &mut r.scope)?;
+				let a = args
+					.iter()
+					.map(|w| interpolate_shell(w, &mut r.scope))
+					.collect::<Result<Vec<_>, _>>()?;
+				out.push(Leaf::Run { target: t, args: a });
+			}
+			// Control flow is expanded here so its leaves join the same batch.
+			Statement::If {
+				cond,
+				then,
+				otherwise,
+				span,
+			} => {
+				let taken = eval_boundary(cond, &mut r.scope)?
+					.as_bool()
+					.map_err(|e| EvalError::ty(span.line, e))?;
+				match (taken, otherwise) {
+					(true, _) => collect(then, props, r, out)?,
+					(false, Some(b)) => collect(b, props, r, out)?,
+					(false, None) => {}
+				}
+			}
+			Statement::For { name, iter, body, span } => {
+				let items = match eval_boundary(iter, &mut r.scope)? {
+					Value::List(v) => v,
+					other => {
+						return Err(RunError::ForNeedsList {
+							actual: other.type_name(),
+							line: span.line,
+						});
+					}
+				};
+				let prior = r.scope.vars.remove(name);
+				for item in items {
+					r.scope.bind(name, item);
+					collect(body, props, r, out)?;
+				}
+				r.scope.restore(name, prior);
+			}
+			Statement::Match {
+				subject,
+				cases,
+				default,
+				span,
+			} => {
+				let v = eval_boundary(subject, &mut r.scope)?.to_string();
+				match cases.iter().find(|c| c.label == v) {
+					Some(c) => collect(&c.body, props, r, out)?,
+					None => match default {
+						Some(b) => collect(b, props, r, out)?,
+						None => {
+							return Err(RunError::NoCase {
+								subject: v,
+								cases: cases.iter().map(|c| c.label.clone()).collect::<Vec<_>>().join(", "),
+								line: span.line,
+							});
+						}
+					},
+				}
+			}
+		}
+	}
+	Ok(())
+}
+
+fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
+	let dispatch = r.dispatch;
+	let chain = r.chain.clone();
+	let results: Vec<Result<Option<String>, RunError>> = std::thread::scope(|s| {
+		let handles: Vec<_> = leaves
+			.iter()
+			.map(|leaf| {
+				let chain = &chain;
+				s.spawn(move || match leaf {
+					Leaf::Exec { cmd, body, env, dir } => exec::spawn(Spawn {
+						command: cmd.as_deref(),
+						body,
+						cwd: dir,
+						env,
+						capture: false,
+					})
+					.map(|_| Some(body.clone()))
+					.map_err(RunError::from),
+					// A dispatched target contributes its own bodies to the
+					// trace, so nothing is recorded for the call itself.
+					Leaf::Run { target, args } => dispatch.run(target, args, chain).map(|()| None),
+				})
+			})
+			.collect();
+		handles
+			.into_iter()
+			.map(|h| h.join().expect("branch panicked"))
+			.collect()
+	});
+
+	let mut first_error = None;
+	for res in results {
+		match res {
+			Ok(Some(body)) => r.trace.push(body),
+			Ok(None) => {}
+			Err(e) => {
+				if first_error.is_none() {
+					first_error = Some(e);
+				}
+			}
+		}
+	}
+	// Every branch runs to completion before a failure surfaces -- stopping the
+	// others would leave a half-started fan-out behind.
+	match first_error {
+		Some(e) if !props.ignore_errors => Err(e),
+		_ => Ok(()),
+	}
 }
