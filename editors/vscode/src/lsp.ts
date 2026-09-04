@@ -1,15 +1,17 @@
 // The language server client.
 //
-// Hand-rolled over `vscode.languages.createDiagnosticCollection` rather than
-// pulled in through `vscode-languageclient`: the server speaks a small, fixed
-// subset -- open, change, close, publish, format -- and a full client library
-// would be a large dependency to carry for five message types. Completion and
-// go-to-definition are contributed by the extension directly, from the same
-// catalog the tree uses, so nothing is lost by not routing them through LSP.
+// Hand-rolled rather than pulled in through `vscode-languageclient`: the
+// server speaks a small, fixed subset, and a full client library would be a
+// large dependency to carry for it.
+//
+// Everything the server offers is asked for here. It used to be only the
+// notifications -- open, change, close -- with the reply-carrying half of the
+// protocol unimplemented, so completion, hover and go-to-definition were
+// advertised by the server, wired to nothing, and simply did not happen.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import * as vscode from "vscode";
-import { MessageReader, frame, replyId } from "./pure";
+import { MessageReader, completionKind, completionPrefixStart, frame, markdownOf, replyId } from "./pure";
 
 /** A whole-document replacement, which is the only edit the server sends. */
 interface TextEdit {
@@ -18,6 +20,13 @@ interface TextEdit {
 		end: { line: number; character: number };
 	};
 	newText: string;
+}
+
+interface CompletionItem {
+	label: string;
+	kind?: number;
+	detail?: string;
+	documentation?: unknown;
 }
 
 interface Diagnostic {
@@ -123,6 +132,72 @@ export class LanguageClient implements vscode.Disposable {
 			const timer = setTimeout(() => done(null), timeoutMs);
 			this.pending.set(id, done);
 			this.send({ jsonrpc: "2.0", id, method, params });
+		});
+	}
+
+	/**
+	 * What may be written at this position: properties after a `.`, functions
+	 * and sources, `RUN.` keys, target names after `run `.
+	 *
+	 * The range is given explicitly. VS Code's own idea of a word ends at a
+	 * `-` and a `:`, which would make `.env-file` complete to `.env-env-file`.
+	 */
+	async completion(doc: vscode.TextDocument, pos: vscode.Position): Promise<vscode.CompletionItem[]> {
+		const result = (await this.position("textDocument/completion", doc, pos)) as {
+			items?: CompletionItem[];
+		} | null;
+		const items = result?.items;
+		if (!Array.isArray(items)) {
+			return [];
+		}
+		const line = doc.lineAt(pos.line).text;
+		const range = new vscode.Range(
+			pos.line,
+			completionPrefixStart(line, pos.character),
+			pos.line,
+			pos.character,
+		);
+		return items.map((i) => {
+			const item = new vscode.CompletionItem(i.label, completionKind(i.kind) as vscode.CompletionItemKind);
+			item.detail = i.detail;
+			const doc = markdownOf(i.documentation);
+			if (doc) {
+				item.documentation = new vscode.MarkdownString(doc);
+			}
+			item.range = range;
+			return item;
+		});
+	}
+
+	async hover(doc: vscode.TextDocument, pos: vscode.Position): Promise<vscode.Hover | undefined> {
+		const result = (await this.position("textDocument/hover", doc, pos)) as { contents?: unknown } | null;
+		const text = markdownOf(result?.contents);
+		return text ? new vscode.Hover(new vscode.MarkdownString(text)) : undefined;
+	}
+
+	async definition(doc: vscode.TextDocument, pos: vscode.Position): Promise<vscode.Location | undefined> {
+		const result = (await this.position("textDocument/definition", doc, pos)) as {
+			uri?: string;
+			range?: TextEdit["range"];
+		} | null;
+		if (!result?.uri || !result.range) {
+			return undefined;
+		}
+		const r = result.range;
+		return new vscode.Location(
+			vscode.Uri.parse(result.uri),
+			new vscode.Range(r.start.line, r.start.character, r.end.line, r.end.character),
+		);
+	}
+
+	/** A request about a place in a document, which is most of them. */
+	private position(method: string, doc: vscode.TextDocument, pos: vscode.Position): Promise<unknown> {
+		if (!this.isRunfile(doc)) {
+			return Promise.resolve(null);
+		}
+		return this.request(method, {
+			textDocument: { uri: doc.uri.toString() },
+			position: { line: pos.line, character: pos.character },
 		});
 	}
 

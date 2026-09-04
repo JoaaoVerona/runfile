@@ -8,7 +8,10 @@ import {
 	MessageReader,
 	SUPPORTED_FORMAT_VERSION,
 	anchorFor,
+	completionKind,
+	completionPrefixStart,
 	frame,
+	markdownOf,
 	namespaceOf,
 	parseCatalog,
 	replyId,
@@ -154,4 +157,37 @@ test("a reply is told from a notification by its id", () => {
 	// A server-to-client *request* has both, and is not ours to resolve.
 	assert.equal(replyId({ jsonrpc: "2.0", id: 1, method: "window/showMessageRequest" }), undefined);
 	assert.equal(replyId({ jsonrpc: "2.0", id: "1", result: [] }), undefined);
+})
+
+test("completion kinds map onto VS Code's enumeration", () => {
+	// Both list the same kinds in the same order, LSP from 1 and VS Code from
+	// 0. Only the four the server sends are translated; anything else would be
+	// a wrong icon, so it falls back to Text.
+	assert.equal(completionKind(10), 9, "Property")
+	assert.equal(completionKind(3), 2, "Function")
+	assert.equal(completionKind(6), 5, "Variable")
+	assert.equal(completionKind(12), 11, "Value")
+	assert.equal(completionKind(undefined), 0)
+	assert.equal(completionKind(99), 0)
+})
+
+test("the completed word starts after the dot and takes hyphens and colons", () => {
+	// VS Code's own word ends at `-` and `:`, which would give `.env-env-file`
+	// and `run vscode:vscode:test`.
+	const at = (line: string) => completionPrefixStart(line, line.length)
+	assert.equal(at("."), 1, "the dot stays; the name is written after it")
+	assert.equal(at(".env-fi"), 1)
+	assert.equal(at("\t.para"), 2)
+	assert.equal(at("run vscode:te"), 4)
+	assert.equal(at("RUN."), 4)
+	assert.equal(at("let x = conc"), 8)
+	assert.equal(completionPrefixStart(".parallel = true", 4), 1, "mid-line, not just at the end")
+})
+
+test("markdown is read from either shape the protocol allows", () => {
+	assert.equal(markdownOf({ kind: "markdown", value: "**x**" }), "**x**")
+	assert.equal(markdownOf("plain"), "plain")
+	assert.equal(markdownOf(["a", { value: "b" }]), "a\n\nb")
+	assert.equal(markdownOf(null), "")
+	assert.equal(markdownOf({ kind: "markdown" }), "")
 })

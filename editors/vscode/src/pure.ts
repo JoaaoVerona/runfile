@@ -125,6 +125,50 @@ export class MessageReader {
 }
 
 /**
+ * VS Code's `CompletionItemKind` for an LSP one.
+ *
+ * The two enumerations list the same kinds in the same order, LSP starting at
+ * 1 and VS Code at 0, so the mapping is an offset -- but only where the value
+ * is one the server actually sends. Anything else falls back to Text rather
+ * than landing on a wrong icon.
+ */
+export function completionKind(lsp: number | undefined): number {
+	// Property, Function, Variable, Value: what `server.rs` sends.
+	if (lsp === undefined || ![3, 6, 10, 12].includes(lsp)) {
+		return 0;
+	}
+	return lsp - 1;
+}
+
+/**
+ * Where the word being completed starts on its line.
+ *
+ * Given explicitly rather than left to VS Code, whose idea of a word stops at
+ * a `-` and at a `:` -- so `.env-file` would come out as `.env-env-file` and
+ * `run vscode:test` as `run vscode:vscode:test`. A `.` is *not* part of it:
+ * the dot stays, and the property name is written after it.
+ */
+export function completionPrefixStart(line: string, character: number): number {
+	let i = Math.min(character, line.length);
+	while (i > 0 && /[A-Za-z0-9_:-]/.test(line[i - 1] as string)) {
+		i--;
+	}
+	return i;
+}
+
+/** The text of an LSP `MarkupContent`, a plain string, or a list of either. */
+export function markdownOf(contents: unknown): string {
+	if (typeof contents === "string") {
+		return contents;
+	}
+	if (Array.isArray(contents)) {
+		return contents.map(markdownOf).filter(Boolean).join("\n\n");
+	}
+	const m = contents as { value?: unknown } | null;
+	return typeof m?.value === "string" ? m.value : "";
+}
+
+/**
  * Whether a message from the server is a reply to a request rather than a
  * notification.
  *

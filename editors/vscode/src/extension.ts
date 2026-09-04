@@ -48,9 +48,25 @@ export function activate(context: vscode.ExtensionContext): void {
 		// Registering this is what makes `editor.formatOnSave` work for `.run`
 		// files, and Format Document too. The shape comes from the server, so
 		// an editor cannot leave a file in one the CLI would then change.
+		// The server advertises all of these; without a provider registered for
+		// each, it is asked nothing and none of them happen.
 		context.subscriptions.push(
 			vscode.languages.registerDocumentFormattingEditProvider(RUNFILE_SELECTOR, {
 				provideDocumentFormattingEdits: (doc) => client.format(doc)
+			}),
+			// The trigger characters are the server's: `.` opens the property
+			// list, and a space is what puts `run ` in front of a target name.
+			vscode.languages.registerCompletionItemProvider(
+				RUNFILE_SELECTOR,
+				{ provideCompletionItems: (doc, pos) => client.completion(doc, pos) },
+				".",
+				" "
+			),
+			vscode.languages.registerHoverProvider(RUNFILE_SELECTOR, {
+				provideHover: (doc, pos) => client.hover(doc, pos)
+			}),
+			vscode.languages.registerDefinitionProvider(RUNFILE_SELECTOR, {
+				provideDefinition: (doc, pos) => client.definition(doc, pos)
 			})
 		)
 	}
