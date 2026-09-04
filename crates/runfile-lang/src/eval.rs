@@ -297,8 +297,14 @@ fn source(kind: SourceKind, key: Option<&str>, sc: &Scope, line: usize) -> Resul
 		}
 		SourceKind::Env => {
 			let k = key.unwrap_or_default();
+			// Exact first, then ignoring case. Windows environment variables
+			// are case-insensitive and POSIX ones are not, so a file written
+			// once has to work on both -- `{{ ENV.port }}` against a `PORT=`
+			// line is ordinary, not a mistake. An exact hit still wins, so a
+			// environment holding both keeps them distinct.
 			sc.env
 				.get(k)
+				.or_else(|| sc.env.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v))
 				.cloned()
 				.map(Value::Str)
 				.ok_or_else(|| EvalError::MissingEnv {

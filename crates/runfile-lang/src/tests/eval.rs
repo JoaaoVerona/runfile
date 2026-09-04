@@ -410,3 +410,33 @@ fn power_rejects_a_result_that_is_not_a_number() {
 	assert_eq!(v("power(9, 0.5)"), Value::Num(3.0));
 	assert!(boom("power(0, -1)").contains("finite"));
 }
+
+#[test]
+fn an_env_name_matches_ignoring_case() {
+	// Windows environment variables are case-insensitive and POSIX ones are
+	// not, so one file has to work on both. Six targets in the corpus read
+	// `ENV.port` against a `PORT=` line, and an exact-only lookup broke them.
+	let mut s = sc();
+	s.env.insert("PORT".into(), "4003".into());
+	let e = parse_expr("ENV.port", 0, 1).unwrap();
+	assert_eq!(eval_boundary(&e, &mut s).unwrap(), Value::Str("4003".into()));
+}
+
+#[test]
+fn an_exact_env_name_still_wins() {
+	// Only reachable on a platform that allows both, but the fallback must not
+	// make the exact one ambiguous.
+	let mut s = sc();
+	s.env.insert("Path".into(), "mixed".into());
+	s.env.insert("PATH".into(), "upper".into());
+	let e = parse_expr("ENV.PATH", 0, 1).unwrap();
+	assert_eq!(eval_boundary(&e, &mut s).unwrap(), Value::Str("upper".into()));
+}
+
+#[test]
+fn a_genuinely_absent_env_name_is_still_an_error() {
+	let mut s = sc();
+	s.env.insert("PORT".into(), "1".into());
+	let e = parse_expr("ENV.nowhere", 0, 1).unwrap();
+	assert!(eval(&e, &mut s).is_err());
+}
