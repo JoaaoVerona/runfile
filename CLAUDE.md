@@ -291,8 +291,10 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   serves). `completions::ROOT` is the single description of the command tree, so a subcommand of a subcommand
   completes without a fifth copy of the walk in a language that cannot share one. The binary answers with
   words, or with a `<files>` / `<dirs>` marker where only the shell can do the job well — a word list cannot
-  append a `/` instead of a space. Flags are offered only once a `-` is typed, and past a target name nothing
-  is offered at all: the arguments there are the target's, and guessing would be confident nonsense. The bash
+  append a `/` instead of a space. **A bare Tab lists the commands and the targets together**, as it always
+  has: a command nobody can see without first guessing its `:` is a command nobody finds. Flags are the one
+  list that waits for a `-`, and past a target name nothing is offered at all: the arguments there are the
+  target's, and guessing would be confident nonsense. The bash
   one is tested by sourcing it and driving `_run` the way the shell does; the tree is tested directly, and in
   both directions against the help.
   `:completions` takes `install`, `uninstall` or `output`, the shape the old CLI had. **bash and fish get a

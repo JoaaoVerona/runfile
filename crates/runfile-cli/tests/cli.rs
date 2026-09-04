@@ -611,6 +611,12 @@ fn the_bash_script_completes_target_names() {
 	let mut got = complete_bash(&p, "run de");
 	got.sort();
 	assert_eq!(got, ["deploy", "dev"], "names come from the binary");
+
+	// A bare Tab is the discovery case: every command and every target.
+	let got = complete_bash(&p, "run ");
+	for w in [":list", ":env", ":completions", "deploy", "dev"] {
+		assert!(got.iter().any(|g| g == w), "`{w}` missing from {got:?}");
+	}
 }
 
 #[cfg(unix)]

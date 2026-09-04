@@ -423,15 +423,16 @@ pub fn complete(words: &[String], cword: usize, targets: &dyn Fn() -> Vec<String
 		i += 1;
 	}
 
-	// At the top, the shape of the word says which of three lists is wanted --
-	// as it did before there was a tree, so a bare Tab still means targets and
-	// not a wall of every flag.
+	// At the top, a bare Tab lists the commands *and* the targets together --
+	// both are things a person types there, and hiding the commands behind a
+	// `:` makes them undiscoverable. Only flags wait to be asked for.
 	if root {
-		return match cur.chars().next() {
-			Some(':') => node.subs.iter().map(|c| c.name.to_string()).collect(),
-			Some('-') => node.flags.iter().map(|f| f.0.to_string()).collect(),
-			_ => targets(),
-		};
+		if cur.starts_with('-') {
+			return node.flags.iter().map(|f| f.0.to_string()).collect();
+		}
+		let mut out: Vec<String> = node.subs.iter().map(|c| c.name.to_string()).collect();
+		out.extend(targets());
+		return out;
 	}
 
 	let mut out: Vec<String> = node.subs.iter().map(|c| c.name.to_string()).collect();
@@ -627,14 +628,20 @@ mod tests {
 	}
 
 	#[test]
-	fn the_first_word_still_chooses_between_targets_commands_and_flags() {
+	fn the_first_word_offers_commands_and_targets_together() {
 		let targets = || vec!["build".to_string()];
 		let at = |cur: &str| {
 			let words = vec!["run".to_string(), cur.to_string()];
 			complete(&words, 1, &targets)
 		};
-		assert_eq!(at(""), vec!["build".to_string()]);
+		// A bare Tab shows both, as it always has. A command a person cannot
+		// see without first guessing its `:` is a command they never find.
+		let bare = at("");
+		assert!(bare.contains(&":list".to_string()), "{bare:?}");
+		assert!(bare.contains(&"build".to_string()), "{bare:?}");
 		assert!(at(":").contains(&":list".to_string()));
+		// Flags are the one list that waits to be asked for.
 		assert!(at("--").contains(&"--dry-run".to_string()));
+		assert!(!at("--").contains(&"build".to_string()));
 	}
 }
