@@ -1448,3 +1448,102 @@ fn a_for_block_without_parallel_still_runs_in_order() {
 	let done = std::fs::read_to_string(p.dir.path().join("out.txt")).unwrap();
 	assert_eq!(done, "1\n2\n3\n", "source order, one at a time");
 }
+
+// ------------------------------------------------- installing completions
+
+#[test]
+fn install_adds_a_hook_to_the_shell_profile_and_uninstall_takes_it_out() {
+	// The hook calls the binary rather than embedding the script, so upgrading
+	// `run` needs no reinstall.
+	let p = project(&[(MARK, &marker("o"))]);
+	let rc = p.home.path().join(".bashrc");
+	std::fs::write(&rc, "# my own settings\nexport EDITOR=vim\n").unwrap();
+
+	let o = p.run(&[":completions", "install", "bash"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains(".bashrc"), "{}", out(&o));
+	let after = std::fs::read_to_string(&rc).unwrap();
+	assert!(after.contains("# runfile completions"), "{after}");
+	assert!(after.contains(r#"eval "$(run :completions bash)""#), "{after}");
+	assert!(
+		after.starts_with("# my own settings\nexport EDITOR=vim\n"),
+		"kept: {after}"
+	);
+
+	let o = p.run(&[":completions", "uninstall", "bash"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		std::fs::read_to_string(&rc).unwrap(),
+		"# my own settings\nexport EDITOR=vim\n",
+		"the profile is exactly as it was"
+	);
+}
+
+#[test]
+fn installing_twice_changes_nothing() {
+	let p = project(&[(MARK, &marker("o"))]);
+	p.run(&[":completions", "install", "zsh"]);
+	let once = std::fs::read_to_string(p.home.path().join(".zshrc")).unwrap();
+	let o = p.run(&[":completions", "install", "zsh"]);
+	assert!(out(&o).contains("Already installed"), "{}", out(&o));
+	assert_eq!(std::fs::read_to_string(p.home.path().join(".zshrc")).unwrap(), once);
+}
+
+#[test]
+fn install_creates_a_profile_that_does_not_exist_yet() {
+	let p = project(&[(MARK, &marker("o"))]);
+	assert!(p.run(&[":completions", "install", "bash"]).status.success());
+	assert!(p.home.path().join(".bashrc").exists());
+}
+
+#[test]
+fn fish_gets_a_file_of_its_own_rather_than_a_profile_line() {
+	// Fish reads a completions directory, so the whole script goes there.
+	let p = project(&[(MARK, &marker("o"))]);
+	let o = p.run(&[":completions", "install", "fish"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let path = p.home.path().join("fish/completions/run.fish");
+	assert!(path.exists(), "{}", out(&o));
+	assert!(std::fs::read_to_string(&path).unwrap().contains("run :list --names"));
+
+	assert!(p.run(&[":completions", "uninstall", "fish"]).status.success());
+	assert!(!path.exists());
+}
+
+#[test]
+fn uninstalling_what_was_never_installed_is_not_an_error() {
+	let p = project(&[(MARK, &marker("o"))]);
+	for shell in ["bash", "fish"] {
+		let o = p.run(&[":completions", "uninstall", shell]);
+		assert!(o.status.success(), "{shell}: {}", err(&o));
+		assert!(out(&o).contains("Nothing installed"), "{shell}: {}", out(&o));
+	}
+}
+
+#[test]
+fn a_bare_shell_name_still_prints_the_script() {
+	// The installed hook calls exactly this, so it cannot change shape.
+	let p = project(&[(MARK, &marker("o"))]);
+	let o = p.run(&[":completions", "bash"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("complete -F _run run"), "{}", out(&o));
+	assert!(!p.home.path().join(".bashrc").exists(), "printing installs nothing");
+}
+
+#[test]
+fn install_rejects_a_shell_it_does_not_know() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let o = p.run(&[":completions", "install", "nushell"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("bash, zsh, fish"), "{}", err(&o));
+	assert!(err(&p.run(&[":completions", "install"])).contains("usage:"));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_the_completions_actions() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let mut got = complete_bash(&p, "run :completions ins");
+	got.sort();
+	assert_eq!(got, ["install"]);
+}

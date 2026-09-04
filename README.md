@@ -245,7 +245,8 @@ exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
 | `run :list` | List every target (`--names`, `--json` for tooling) |
 | `run :init` | Create `runfiles/` with an example |
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
-| `run :completions <shell>` | A completion script for bash, zsh, fish or powershell |
+| `run :completions <shell>` | Print a completion script for bash, zsh, fish or powershell |
+| `run :completions install <shell>` | Add it to that shell's profile; `uninstall` removes it |
 | `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
 | `run :update` | Update the binary |
 | `run :version` | Print the version |

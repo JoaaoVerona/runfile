@@ -27,6 +27,8 @@ run :list                     list every target
 run :init                     create runfiles/ with an example target
 run :env <subcommand>         manage .env files
 run :completions <shell>      print a completion script
+run :completions install <shell>
+                              add it to that shell's profile; uninstall removes it
 run :generate <editor>        write task files for zed, jetbrains or vscode
 run :update                   update the runfile binary
 run :version                  print the version
@@ -124,11 +126,26 @@ fn real_main() -> Result<ExitCode, String> {
 			return Ok(ExitCode::SUCCESS);
 		}
 		":completions" => {
-			let shell = args
-				.first()
-				.ok_or("usage: run :completions <bash|zsh|fish|powershell>")?;
-			print!("{}", completions::script(shell)?);
-			return Ok(ExitCode::SUCCESS);
+			const USE: &str = "usage: run :completions [install|uninstall] <bash|zsh|fish|powershell>";
+			// A bare shell name still prints the script: that is what the
+			// installed hook itself calls, and what `eval` expects.
+			return match args.first().map(String::as_str) {
+				Some(action @ ("install" | "uninstall")) => {
+					let shell = args.get(1).ok_or(USE)?;
+					let out = if action == "install" {
+						completions::install(shell)?
+					} else {
+						completions::uninstall(shell)?
+					};
+					println!("{out}");
+					Ok(ExitCode::SUCCESS)
+				}
+				Some(shell) => {
+					print!("{}", completions::script(shell)?);
+					Ok(ExitCode::SUCCESS)
+				}
+				None => Err(USE.into()),
+			};
 		}
 		":init" => {
 			let dir = match &flags.dir {

@@ -1,9 +1,15 @@
 //! `run :completions <shell>` -- hand-written completion scripts.
 //!
+//! `install` and `uninstall` put the hook into the shell's own profile, or into
+//! fish's completions directory, and take it out again -- both idempotent, both
+//! leaving everything else in the file alone.
+//!
 //! Every script asks the binary itself for target names (`run :list --names`)
 //! rather than parsing files, so completion never has to know the language and
 //! cannot drift from it. Names are the only dynamic input: subcommands and
 //! flags are fixed, so they are baked into each script.
+
+use std::path::{Path, PathBuf};
 
 /// Subcommands offered when the current word starts with `:`.
 pub const COMMANDS: &[&str] = &[":list", ":env", ":update", ":completions", ":init", ":version"];
@@ -22,6 +28,136 @@ pub const ENV_SUBS: &[&str] = &[
 ];
 /// `:generate` editors, the other nested level.
 pub const GENERATE_SUBS: &[&str] = crate::cmd_generate::SUBS;
+/// What `:completions` accepts: the two actions, then the shells.
+pub const COMPLETION_SUBS: &[&str] = &["install", "uninstall", "bash", "zsh", "fish", "powershell"];
+
+/// Where an installed hook lives, and what goes in it.
+///
+/// A profile gets a marked block that calls the binary rather than a copy of
+/// the script, so an upgraded `run` is picked up without reinstalling. Fish
+/// reads a directory, so it gets a file of its own.
+enum Where {
+	/// Append a marked block to this profile.
+	Profile(PathBuf, String),
+	/// Write the whole script to this file.
+	File(PathBuf),
+}
+
+const MARKER: &str = "# runfile completions";
+
+fn home() -> Result<PathBuf, String> {
+	runfile_discovery::home_dir().ok_or_else(|| "no home directory".to_string())
+}
+
+fn config_dir() -> Result<PathBuf, String> {
+	match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+		Some(d) => Ok(PathBuf::from(d)),
+		None => Ok(home()?.join(".config")),
+	}
+}
+
+fn destination(shell: &str) -> Result<Where, String> {
+	Ok(match shell {
+		"bash" => Where::Profile(home()?.join(".bashrc"), r#"eval "$(run :completions bash)""#.into()),
+		"zsh" => Where::Profile(home()?.join(".zshrc"), r#"eval "$(run :completions zsh)""#.into()),
+		"fish" => Where::File(config_dir()?.join("fish/completions/run.fish")),
+		"powershell" | "pwsh" => Where::Profile(
+			powershell_profile()?,
+			"run :completions powershell | Out-String | Invoke-Expression".into(),
+		),
+		other => return Err(unknown(other)),
+	})
+}
+
+/// PowerShell's `$PROFILE`, by its documented location rather than by asking
+/// PowerShell -- which may not be installed on the machine doing the install.
+fn powershell_profile() -> Result<PathBuf, String> {
+	if cfg!(windows) {
+		Ok(home()?.join("Documents/PowerShell/Microsoft.PowerShell_profile.ps1"))
+	} else {
+		Ok(config_dir()?.join("powershell/Microsoft.PowerShell_profile.ps1"))
+	}
+}
+
+/// Add the hook, or say it is already there. Idempotent: the marker is what
+/// makes a second install a no-op and an uninstall exact.
+pub fn install(shell: &str) -> Result<String, String> {
+	match destination(shell)? {
+		Where::File(path) => {
+			let body = script(shell)?;
+			write_new(&path, &body)?;
+			Ok(format!("Installed to {}", path.display()))
+		}
+		Where::Profile(path, line) => {
+			let existing = std::fs::read_to_string(&path).unwrap_or_default();
+			if existing.contains(MARKER) {
+				return Ok(format!("Already installed in {}", path.display()));
+			}
+			let mut out = existing;
+			if !out.is_empty() && !out.ends_with('\n') {
+				out.push('\n');
+			}
+			out.push_str(&format!("\n{MARKER}\n{line}\n"));
+			write_new(&path, &out)?;
+			Ok(format!(
+				"Installed to {}\nRestart your shell to pick it up.",
+				path.display()
+			))
+		}
+	}
+}
+
+/// Take it out again, leaving anything else in the profile untouched.
+pub fn uninstall(shell: &str) -> Result<String, String> {
+	match destination(shell)? {
+		Where::File(path) => match std::fs::remove_file(&path) {
+			Ok(()) => Ok(format!("Removed {}", path.display())),
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+				Ok(format!("Nothing installed at {}", path.display()))
+			}
+			Err(e) => Err(format!("{}: {e}", path.display())),
+		},
+		Where::Profile(path, _) => {
+			let Ok(existing) = std::fs::read_to_string(&path) else {
+				return Ok(format!("Nothing installed in {}", path.display()));
+			};
+			let Some(trimmed) = without_block(&existing) else {
+				return Ok(format!("Nothing installed in {}", path.display()));
+			};
+			write_new(&path, &trimmed)?;
+			Ok(format!("Removed from {}", path.display()))
+		}
+	}
+}
+
+/// Drop the marker line and the line after it, and nothing else.
+fn without_block(text: &str) -> Option<String> {
+	let lines: Vec<&str> = text.lines().collect();
+	let at = lines.iter().position(|l| l.trim() == MARKER)?;
+	let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+	kept.extend(&lines[..at]);
+	kept.extend(&lines[(at + 2).min(lines.len())..]);
+	// The block was preceded by a blank separator we added; take it back.
+	while kept.last().is_some_and(|l| l.trim().is_empty()) {
+		kept.pop();
+	}
+	let mut out = kept.join("\n");
+	if !out.is_empty() {
+		out.push('\n');
+	}
+	Some(out)
+}
+
+fn write_new(path: &Path, body: &str) -> Result<(), String> {
+	if let Some(d) = path.parent() {
+		std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+	}
+	std::fs::write(path, body).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn unknown(shell: &str) -> String {
+	format!("unknown shell `{shell}`; expected one of: bash, zsh, fish, powershell")
+}
 
 pub fn script(shell: &str) -> Result<String, String> {
 	let s = match shell {
@@ -29,16 +165,13 @@ pub fn script(shell: &str) -> Result<String, String> {
 		"zsh" => ZSH,
 		"fish" => FISH,
 		"powershell" | "pwsh" => POWERSHELL,
-		other => {
-			return Err(format!(
-				"unknown shell `{other}`; expected one of: bash, zsh, fish, powershell"
-			));
-		}
+		other => return Err(unknown(other)),
 	};
 	Ok(s.replace("@COMMANDS@", &COMMANDS.join(" "))
 		.replace("@FLAGS@", &FLAGS.join(" "))
 		.replace("@ENV_SUBS@", &ENV_SUBS.join(" "))
-		.replace("@GENERATE_SUBS@", &GENERATE_SUBS.join(" ")))
+		.replace("@GENERATE_SUBS@", &GENERATE_SUBS.join(" "))
+		.replace("@COMPLETION_SUBS@", &COMPLETION_SUBS.join(" ")))
 }
 
 const BASH: &str = r#"# run(1) completion. Install: eval "$(run :completions bash)"
@@ -68,6 +201,7 @@ _run() {
 	case "$first" in
 		:env) subs="@ENV_SUBS@" ;;
 		:generate) subs="@GENERATE_SUBS@" ;;
+		:completions) subs="@COMPLETION_SUBS@" ;;
 	esac
 	if [[ -n "$subs" ]]; then
 		if [[ $(( COMP_CWORD - i )) -eq 1 ]]; then
@@ -117,6 +251,7 @@ _run() {
 	case "$first" in
 		:env) subs="@ENV_SUBS@" ;;
 		:generate) subs="@GENERATE_SUBS@" ;;
+		:completions) subs="@COMPLETION_SUBS@" ;;
 	esac
 	if [[ -n "$subs" ]]; then
 		if (( CURRENT - i == 1 )); then
@@ -173,14 +308,19 @@ function __run_generate_sub
 	test (__run_first_word) = ":generate"; and test (count (commandline -opc)) -eq 2
 end
 
+function __run_completions_sub
+	test (__run_first_word) = ":completions"; and test (count (commandline -opc)) -eq 2
+end
+
 # No target chosen yet: names, commands and flags.
 complete -c run -f -n __run_no_target -a "(run :list --names 2>/dev/null)"
 complete -c run -f -n __run_no_target -a "@COMMANDS@"
 complete -c run -f -n __run_no_target -a "@FLAGS@"
 complete -c run -f -n __run_env_sub -a "@ENV_SUBS@"
 complete -c run -f -n __run_generate_sub -a "@GENERATE_SUBS@"
+complete -c run -f -n __run_completions_sub -a "@COMPLETION_SUBS@"
 # Past the target name, arguments are its own business: offer files.
-complete -c run -F -n 'not __run_no_target; and not __run_env_sub; and not __run_generate_sub'
+complete -c run -F -n 'not __run_no_target; and not __run_env_sub; and not __run_generate_sub; and not __run_completions_sub'
 complete -c run -r -n '__fish_seen_argument -l dir' -a "(__fish_complete_directories)"
 "#;
 
@@ -208,6 +348,7 @@ Register-ArgumentCompleter -Native -CommandName run -ScriptBlock {
 
 	if ($first -eq ':env' -and $words.Count -le 2) { return & $emit @('@ENV_SUBS@'.Split(' ')) }
 	if ($first -eq ':generate' -and $words.Count -le 2) { return & $emit @('@GENERATE_SUBS@'.Split(' ')) }
+	if ($first -eq ':completions' -and $words.Count -le 2) { return & $emit @('@COMPLETION_SUBS@'.Split(' ')) }
 	if ($first) { return [System.Management.Automation.CompletionCompleters]::CompleteFilename($wordToComplete) }
 	if ($wordToComplete.StartsWith(':')) { return & $emit @('@COMMANDS@'.Split(' ')) }
 	if ($wordToComplete.StartsWith('-')) { return & $emit @('@FLAGS@'.Split(' ')) }
@@ -226,7 +367,13 @@ mod tests {
 			assert!(s.contains("run :list --names"), "{sh} must ask the binary for names");
 			// `@` alone is legal PowerShell array syntax, so check the actual
 			// placeholder spellings.
-			for ph in ["@COMMANDS@", "@FLAGS@", "@ENV_SUBS@", "@GENERATE_SUBS@"] {
+			for ph in [
+				"@COMMANDS@",
+				"@FLAGS@",
+				"@ENV_SUBS@",
+				"@GENERATE_SUBS@",
+				"@COMPLETION_SUBS@",
+			] {
 				assert!(!s.contains(ph), "{sh} left {ph} unsubstituted");
 			}
 		}
