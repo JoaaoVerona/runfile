@@ -8,6 +8,7 @@
 
 pub mod ast;
 pub mod eval;
+pub mod format;
 pub mod functions;
 pub mod lexer;
 pub mod parser;
@@ -16,6 +17,7 @@ pub mod value;
 
 pub use ast::{Block, Expr, InterpPart, Property, SourceKind, Statement, Target};
 pub use eval::{EvalError, Keys, Scope, TempFiles, eval};
+pub use format::format;
 pub use parser::{ParseError, parse};
 
 /// A fingerprint of what a target *does*, ignoring where it says it.

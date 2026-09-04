@@ -317,6 +317,16 @@ pub const ROOT: Cmd = Cmd {
 		},
 		leaf(":init"),
 		Cmd {
+			name: ":format",
+			subs: &[],
+			flags: &[
+				Flag("--check", Arg::None),
+				Flag("--stdout", Arg::None),
+				Flag("--include-global", Arg::None),
+			],
+			arg: Arg::Files,
+		},
+		Cmd {
 			name: ":env",
 			subs: &[
 				takes_file("init", &[Flag("--plain", Arg::None), KEY]),

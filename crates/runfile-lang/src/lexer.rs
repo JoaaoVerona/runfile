@@ -111,7 +111,7 @@ pub fn split_interp(text: &str, base: usize, line: usize) -> Result<Vec<RawPart>
 
 /// Scan a `"…"` or `r"…"` literal starting at `i`. Returns the parts and the
 /// index just past the closing quote.
-fn scan_string(s: &str, i: usize, line: usize, raw: bool) -> Result<(Vec<RawPart>, usize), LexError> {
+pub fn scan_string(s: &str, i: usize, line: usize, raw: bool) -> Result<(Vec<RawPart>, usize), LexError> {
 	let b = s.as_bytes();
 	let open = if raw { i + 2 } else { i + 1 };
 	let mut j = open;

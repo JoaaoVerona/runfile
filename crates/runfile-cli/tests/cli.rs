@@ -1157,6 +1157,109 @@ fn two_populated_global_directories_stop_the_run_and_name_both() {
 }
 
 #[test]
+fn format_rewrites_every_runfile_in_the_project() {
+	let p = project(&[
+		("runfiles/a.run", "if x==1\n$ echo a\nend\n"),
+		("runfiles/sub/b.run", "let y=[1,2]\n"),
+	]);
+	let o = p.run(&[":format"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("runfiles/a.run")).unwrap(),
+		"if x == 1\n\t$ echo a\nend\n"
+	);
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("runfiles/sub/b.run")).unwrap(),
+		"let y = [1, 2]\n"
+	);
+}
+
+#[test]
+fn format_reaches_shared_run_which_is_not_a_target() {
+	// Nothing that walks the catalog by name would find it, and it is the file
+	// most likely to sit unread and drift.
+	let p = project(&[
+		("runfiles/a.run", "$ true\n"),
+		("runfiles/_shared.run", ".shell   =  \"bash\"\n"),
+	]);
+	assert!(p.run(&[":format"]).status.success());
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("runfiles/_shared.run")).unwrap(),
+		".shell = \"bash\"\n"
+	);
+}
+
+#[test]
+fn format_check_reports_and_fails_without_writing() {
+	let p = project(&[("runfiles/a.run", "let y=1\n")]);
+	let o = p.run(&[":format", "--check"]);
+	assert!(!o.status.success(), "--check must fail when work is needed");
+	assert!(out(&o).contains("a.run"), "it has to say which file: {}", out(&o));
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("runfiles/a.run")).unwrap(),
+		"let y=1\n",
+		"--check must not write"
+	);
+}
+
+#[test]
+fn format_stdout_prints_without_writing() {
+	let p = project(&[("runfiles/a.run", "let y=1\n")]);
+	let o = p.run(&[":format", "--stdout"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("let y = 1"), "{}", out(&o));
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("runfiles/a.run")).unwrap(),
+		"let y=1\n"
+	);
+}
+
+#[test]
+fn format_takes_explicit_paths_including_directories() {
+	let p = project(&[("runfiles/a.run", "$ true\n")]);
+	std::fs::create_dir_all(p.dir.path().join("elsewhere")).unwrap();
+	std::fs::write(p.dir.path().join("elsewhere/x.run"), "let y=1\n").unwrap();
+	let o = p.run(&[":format", "elsewhere"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("elsewhere/x.run")).unwrap(),
+		"let y = 1\n",
+		"a directory argument is walked"
+	);
+}
+
+#[test]
+fn format_leaves_the_global_directory_alone_unless_asked() {
+	let p = project(&[("runfiles/a.run", "$ true\n")]);
+	let g = p.home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("mine.run"), "let y=1\n").unwrap();
+
+	assert!(p.run(&[":format"]).status.success());
+	assert_eq!(
+		std::fs::read_to_string(g.join("mine.run")).unwrap(),
+		"let y=1\n",
+		"a task file is committed; the machine-wide directory is one person's"
+	);
+
+	assert!(p.run(&[":format", "--include-global"]).status.success());
+	assert_eq!(std::fs::read_to_string(g.join("mine.run")).unwrap(), "let y = 1\n");
+}
+
+#[test]
+fn format_refuses_a_file_that_does_not_parse_and_leaves_it_whole() {
+	let p = project(&[("runfiles/a.run", "$ true\n")]);
+	std::fs::write(p.dir.path().join("runfiles/broken.run"), "if x\n$ echo a\n").unwrap();
+	let o = p.run(&[":format"]);
+	assert!(!o.status.success(), "a file it could not read must not pass silently");
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("runfiles/broken.run")).unwrap(),
+		"if x\n$ echo a\n",
+		"reindenting a file whose blocks do not close is guesswork"
+	);
+}
+
+#[test]
 fn generate_leaves_global_targets_out_unless_asked() {
 	let p = project(GEN);
 	std::fs::create_dir_all(p.home.path().join(".runfiles")).unwrap();

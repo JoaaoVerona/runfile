@@ -247,13 +247,19 @@ exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
 | `run <target> [args…]` | Run a target |
 | `run :list` | List every target (`--names`, `--json` for tooling) |
 | `run :init` | Create `runfiles/` with an example |
+| `run :format [path…]` | Format runfiles in place (`--check`, `--stdout`) |
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
 | `run :completions <command>` | `install`, `uninstall` or `output` a completion script |
-
-`install` puts bash and fish completions in the directory each shell loads on demand, and adds a line to
-`.zshrc` or PowerShell's profile for the other two. Open a new shell afterwards.
 | `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
 | `run :update` | Update the binary |
+
+`run :completions install` puts bash and fish completions in the directory each shell loads on demand, and
+adds a line to `.zshrc` or PowerShell's profile for the other two. Open a new shell afterwards.
+
+`run :format` has no settings: one shape, everywhere. It reindents with tabs, spaces expressions, and leaves
+the three things that are not the language's to touch — strings, the text after `$ `, and `exec` bodies —
+exactly as written. It refuses a file that does not parse, and checks that its own output still means the same
+thing before writing it. `--check` reports what would change and exits 1, which is what a CI step wants.
 
 | Flag | |
 | --- | --- |

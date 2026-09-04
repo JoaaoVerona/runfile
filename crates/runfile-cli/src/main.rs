@@ -7,6 +7,7 @@
 
 mod ci_detect;
 mod cmd_env;
+mod cmd_format;
 mod cmd_generate;
 mod cmd_update;
 mod completions;
@@ -33,6 +34,7 @@ const SECTIONS: &[Section] = &[
 			Row("run <target> [args...]", "run a target"),
 			Row("run :list", "list every target"),
 			Row("run :init", "create runfiles/ with an example target"),
+			Row("run :format", "format every runfile in this project"),
 			Row("run :env <command>", "manage .env files"),
 			Row("run :completions <command>", "shell tab-completion"),
 			Row(
@@ -162,6 +164,20 @@ fn real_main() -> Result<ExitCode, String> {
 				list::print(&cat);
 			}
 			return Ok(ExitCode::SUCCESS);
+		}
+		":format" => {
+			if help::wants_help(&args) {
+				print!("{}", cmd_format::usage());
+				return Ok(ExitCode::SUCCESS);
+			}
+			let flag = |n: &str| args.iter().any(|a| a == n);
+			let paths: Vec<String> = args.iter().filter(|a| !a.starts_with('-')).cloned().collect();
+			let files = if paths.is_empty() {
+				cmd_format::project_files(&catalog(&flags)?, flag("--include-global"))
+			} else {
+				cmd_format::from_paths(&paths)?
+			};
+			return cmd_format::format_files(&files, flag("--check"), flag("--stdout"));
 		}
 		":completions" => return completions::dispatch(&args),
 		// Hidden: the shells' one question, "what may follow what". Kept out of

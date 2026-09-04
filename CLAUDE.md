@@ -136,7 +136,7 @@ crates/
 
 ### runfile-lang
 
-`lexer.rs` is a hand-rolled scanner (`skip_interp`, `split_interp`, `scan_string`, `tokenize`). `parser.rs`
+`format.rs` is the pretty-printer. `lexer.rs` is a hand-rolled scanner (`skip_interp`, `split_interp`, `scan_string`, `tokenize`). `parser.rs`
 classifies lines, then climbs precedence for expressions. `eval.rs` holds `Scope` and evaluation; `functions.rs`
 holds the pure standard library plus `call_io` for filesystem and regex; `value.rs` holds `Value` and shell
 quoting.
@@ -155,6 +155,17 @@ quoting.
   drains after every iteration.
 - Binding names are validated in both `let` and reassignment; a block closer (`end`/`else`/`case`/`default`)
   with nothing open is a parse error rather than an expression statement.
+- **The formatter is line-oriented, not an AST printer.** The tree keeps no comments and folds a run of `$`
+  lines into one statement, so printing from it would delete what a person wrote. Tokens are rendered from
+  their **source spans**, so a string — raw prefix, escapes, interpolations — is copied out verbatim and
+  nothing has to be reconstructed. Three regions are never touched: strings, the text after `$ ` (a
+  continuation line reaches the shell *raw*, indentation included), and `exec` bodies (only the base indent
+  moves, which the parser strips anyway). An `exec` **command** is not re-split on whitespace the way a `run`
+  argument is, so its internal spacing is left alone too. `format` re-parses its own output and compares
+  `fingerprint`s before returning: it cannot change what a file means. It refuses source that does not parse,
+  since reindenting unclosed blocks is guesswork. `case`/`default` sit at the `match`'s own level, and a
+  `for x in [` spills its list at the header's level rather than the body's. Gated by
+  `runfile-lang/tests/repo_format.rs`, the `.run` equivalent of `cargo fmt --check`.
 - `Statement::Exec` carries `lines: Vec<usize>`, the source line of each body line. The two are not derivable
   from each other: a `$` run skips blank and comment lines, and a backslash continuation folds several source
   lines into one.
@@ -276,7 +287,7 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 ### runfile-cli
 
 `main.rs` (flags and dispatch), `list.rs`, `prepare.rs`, `prompt.rs`, `watch.rs`, `completions.rs`, `init.rs`,
-`cmd_env/`, `cmd_update.rs`, `ci_detect.rs`.
+`cmd_env/`, `cmd_format.rs`, `cmd_update.rs`, `ci_detect.rs`.
 
 - **Runner flags are recognised only before the target name**; everything after it belongs to the target. So
   `run echoes --dry-run` passes `--dry-run` through as `FLAG.dry-run`.
@@ -316,6 +327,10 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   renders through it, so they cannot drift into different shapes, and a `--help` never needs a project to
   exist. The version is flags only (`-v`, `-V`, `--version`): nothing else about the binary itself is a
   command.
+- `:format` writes every runfile into the one shape there is, `_shared.run` included — it is not a target, so
+  nothing that walks the catalog by name would reach it. Global files are left out unless `--include-global`,
+  as with `:generate`. `--check` reports and exits 1; `--stdout` prints. Explicit paths override the catalog,
+  and a directory argument is walked.
 - `:generate zed|jetbrains|vscode` is a lean port of the old generators: an entry is recognised as ours by its
   shape (command `run`, label `run <target>`), so a rerun replaces exactly those and keeps a person's own; a
   file is rewritten with the indentation it already uses. The 661-line `.editorconfig` reader did not come
