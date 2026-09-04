@@ -1128,6 +1128,35 @@ fn generate_refuses_to_touch_a_file_it_cannot_parse() {
 }
 
 #[test]
+fn global_runfiles_may_use_any_of_the_three_names() {
+	for name in [".runfiles", "runfiles", "Runfiles"] {
+		let p = project(&[("runfiles/local.run", "$ true\n")]);
+		let g = p.home.path().join(name);
+		std::fs::create_dir_all(&g).unwrap();
+		std::fs::write(g.join("mine.run"), "$ echo global\n").unwrap();
+		let o = p.run(&["mine"]);
+		assert!(o.status.success(), "{name}: {}", err(&o));
+		assert!(out(&o).contains("global"), "{name} was not read");
+	}
+}
+
+#[test]
+fn two_populated_global_directories_stop_the_run_and_name_both() {
+	let p = project(&[("runfiles/local.run", "$ true\n")]);
+	for name in [".runfiles", "Runfiles"] {
+		let g = p.home.path().join(name);
+		std::fs::create_dir_all(&g).unwrap();
+		std::fs::write(g.join("mine.run"), "$ true\n").unwrap();
+	}
+	let o = p.run(&["local"]);
+	assert!(!o.status.success(), "a silent winner is the thing being avoided");
+	let e = err(&o);
+	assert!(e.contains(".runfiles"), "{e}");
+	assert!(e.contains("Runfiles"), "{e}");
+	assert!(e.contains("keep one of them"), "the error must say what to do: {e}");
+}
+
+#[test]
 fn generate_leaves_global_targets_out_unless_asked() {
 	let p = project(GEN);
 	std::fs::create_dir_all(p.home.path().join(".runfiles")).unwrap();

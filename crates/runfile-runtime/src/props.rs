@@ -91,7 +91,7 @@ pub const PROPERTIES: &[KnownProperty] = &[
 	KnownProperty {
 		name: "only-in-directories",
 		block_scoped: false,
-		doc: "For `~/.runfiles/`: offer these targets only inside these directories.",
+		doc: "For the machine-wide directory: offer these targets only inside these directories.",
 	},
 	KnownProperty {
 		name: "parallel",

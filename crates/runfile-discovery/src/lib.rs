@@ -1,9 +1,12 @@
 //! Finding targets on disk.
 //!
 //! A project's targets live in `runfiles/` -- visible, because hiding them
-//! hurts discoverability. The machine-wide one is `$HOME/.runfiles/`, dotted
-//! like every other `$HOME` config, at a fixed path with no setting to change
-//! it.
+//! hurts discoverability. The machine-wide one is one of `$HOME/.runfiles/`,
+//! `$HOME/runfiles/` or `$HOME/Runfiles/`: a fixed set of names with no setting
+//! to add to it, so that a person may spell it the way they like without the
+//! runner having to be told. Exactly one of them may hold anything -- two
+//! populated ones is an error rather than a merge, because which target wins
+//! would be invisible.
 //!
 //! Nested directories contribute namespace segments, which is what replaced
 //! `includes`: 27 of the corpus's 32 includes were depth-1 subdirectories
@@ -60,6 +63,11 @@ pub enum DiscoverError {
 	Duplicate { name: String, a: PathBuf, b: PathBuf },
 	#[error("alias `{alias}` is claimed by both `{a}` and `{b}`")]
 	DuplicateAlias { alias: String, a: String, b: String },
+	#[error(
+		"global runfiles live in two places at once: {a} and {b}\n\
+		 keep one of them and remove or empty the other"
+	)]
+	AmbiguousGlobal { a: PathBuf, b: PathBuf },
 }
 
 /// Read the declaration-region values of a property from a `_shared.run`.
@@ -138,11 +146,16 @@ pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverErr
 	}
 
 	if let Some(h) = home {
-		let g = h.join(".runfiles");
-		// A machine-wide directory can scope itself: registered everywhere,
-		// active only inside the directories it names.
-		if g.is_dir() && covers_cwd(h, &shared_strings(&g.join(SHARED), "only-in-directories"), from) {
-			collect(&g, h, "", Origin::Global, &mut cat)?;
+		// `$HOME/runfiles` is a legal spelling, so it can also be the *local*
+		// directory when the run started at or below the home directory.
+		// Collecting it twice would report every target as a duplicate.
+		if let Some(g) = global_dir(h)?.filter(|g| local.as_ref() != Some(g)) {
+			// A machine-wide directory can scope itself: registered everywhere,
+			// active only inside the directories it names.
+			let scope = shared_strings(&g.join(SHARED), "only-in-directories");
+			if covers_cwd(h, &scope, from) {
+				collect(&g, h, "", Origin::Global, &mut cat)?;
+			}
 		}
 	}
 
@@ -150,6 +163,51 @@ pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverErr
 		return Err(DiscoverError::NotFound(from.to_path_buf()));
 	}
 	Ok(cat)
+}
+
+/// The names the machine-wide directory may go by, in the order they are
+/// reported. A dotted one is the default; the other two exist because a person
+/// who wants to see the directory in their home should not have to argue.
+pub const GLOBAL_NAMES: &[&str] = &[".runfiles", "runfiles", "Runfiles"];
+
+/// The one machine-wide directory, or an error naming the two that clash.
+///
+/// A directory that exists but holds nothing does not count: an empty one is
+/// indistinguishable from a leftover, and refusing to run because of a
+/// forgotten `mkdir` would be absurd.
+pub fn global_dir(home: &Path) -> Result<Option<PathBuf>, DiscoverError> {
+	let mut found: Option<PathBuf> = None;
+	for name in GLOBAL_NAMES {
+		let dir = home.join(name);
+		if !has_content(&dir) {
+			continue;
+		}
+		match &found {
+			// `runfiles` and `Runfiles` are one directory on a case-insensitive
+			// filesystem, and it must not be reported as clashing with itself.
+			Some(first) if same_dir(first, &dir) => {}
+			Some(first) => {
+				return Err(DiscoverError::AmbiguousGlobal {
+					a: first.clone(),
+					b: dir,
+				});
+			}
+			None => found = Some(dir),
+		}
+	}
+	Ok(found)
+}
+
+/// Whether the directory exists and holds at least one entry.
+fn has_content(dir: &Path) -> bool {
+	std::fs::read_dir(dir).is_ok_and(|mut e| e.next().is_some())
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+	match (a.canonicalize(), b.canonicalize()) {
+		(Ok(a), Ok(b)) => a == b,
+		_ => false,
+	}
 }
 
 fn find_upward(from: &Path) -> Option<PathBuf> {

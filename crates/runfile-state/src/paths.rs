@@ -16,7 +16,7 @@ pub const CONFIG_DIR_ENV_VAR: &str = "RUNFILE_CONFIG_DIR";
 ///
 /// There is no settings file: everything that used to live in one -- global
 /// file registrations, path aliases, custom shell paths -- was replaced by
-/// conventions (`$HOME/.runfiles/`, discovery, shell detection). What remains
+/// conventions (the machine-wide directory, discovery, shell detection). What remains
 /// is `state.json`, which records completed preparation runs.
 ///
 /// - [`CONFIG_DIR_ENV_VAR`], when set to a non-empty value (used verbatim)

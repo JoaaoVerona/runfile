@@ -163,8 +163,12 @@ quoting.
 
 Walks **up** for the nearest `runfiles/`, then **down** for `*/runfiles/` (depth cap 3, skipping
 `node_modules`, `target`, `dist`, `build`, `.git`, `vendor`). Nested directories become `:`-separated namespace
-segments. `$HOME/.runfiles/` is machine-wide, at a **fixed path with no setting to move it**. This replaced
-`includes` entirely.
+segments. The machine-wide directory is `$HOME/.runfiles/`, `$HOME/runfiles/` or `$HOME/Runfiles/` — a
+**fixed set of names with no setting to add to it**, so a person can show the folder or hide it without
+telling the runner. **Exactly one of the three may hold anything**: two populated ones is `AmbiguousGlobal`
+naming both, since merging them would let one target shadow another invisibly. An *empty* one never clashes
+(a leftover `mkdir` must not stop a run), and `$HOME/runfiles/` found by the upward walk is not collected a
+second time as the global. This replaced `includes` entirely.
 
 - **The anchor rule**: the parent of `runfiles/` is the single anchor for cwd, `.env-file`, `.add-path`,
   `glob`, `read_file` and `{{ RUN.parent }}`.
@@ -316,7 +320,7 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   shape (command `run`, label `run <target>`), so a rerun replaces exactly those and keeps a person's own; a
   file is rewritten with the indentation it already uses. The 661-line `.editorconfig` reader did not come
   back. Global targets are left out unless `--include-global`, since a task file is committed and
-  `~/.runfiles/` is one person's. `Catalog.root` (the parent of the nearest `runfiles/`) is where the files go.
+  the machine-wide directory is one person's. `Catalog.root` (the parent of the nearest `runfiles/`) is where the files go.
 
 ## Properties
 
@@ -332,7 +336,7 @@ per loop iteration.
 A target named `setup` gates every other target in its directory, fingerprinted by its own text, so editing the
 setup re-triggers the requirement. State lives in `state.json` in the platform state directory. There is no
 settings file: global registrations, path aliases and custom shell paths were all replaced by conventions
-(`$HOME/.runfiles/`, discovery, shell detection).
+(the machine-wide directory, discovery, shell detection).
 
 ## Removed, and not coming back
 

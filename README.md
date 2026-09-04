@@ -196,7 +196,7 @@ Set on the file, or inside a block where marked.
 | `.alias` | Another name for this target. |
 | `.hide` | Keep out of `run :list`. |
 | `.detach` | Start the commands and do not wait. |
-| `.only-in-directories` | For `~/.runfiles/`: only offer these targets inside these directories. |
+| `.only-in-directories` | For the machine-wide directory: only offer these targets inside these directories. |
 
 `shell`, `env`, `workdir`, `parallel` and `ignore-errors` may be set inside an `if` / `for` / `match` block. The
 rest belong at the top of the file.
@@ -215,7 +215,10 @@ web/runfiles/build.run      → run web:build
 runfiles/api/deploy.run     → run api:deploy
 ```
 
-`$HOME/.runfiles/` holds machine-wide targets, available in every project.
+`$HOME/.runfiles/` holds machine-wide targets, available in every project. If you would rather see the
+directory than hide it, `$HOME/runfiles/` and `$HOME/Runfiles/` are read too — but only one of the three may
+hold anything. Two populated ones is an error naming both, because a merge would let one target shadow
+another with no way to see it.
 
 Inside a subproject, `run build` means *that* subproject's `build` — so a file reads the same wherever you
 invoke `run` from.

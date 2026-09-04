@@ -31,7 +31,7 @@ would actually do. The command runs in each workspace folder every time VS Code 
 cache, deliberately.
 
 Discovery is the CLI's job: it walks up for the nearest `runfiles/`, down for subprojects, and folds in
-`~/.runfiles/`. Hidden targets (`.hide`) are left out, the same as in `run :list`.
+`~/.runfiles/` (or `~/runfiles/`, or `~/Runfiles/`). Hidden targets (`.hide`) are left out, the same as in `run :list`.
 
 ### Anchoring
 

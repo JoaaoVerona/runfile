@@ -273,3 +273,70 @@ fn a_missing_shared_file_contributes_nothing() {
 	let c = discover(d.path(), None).unwrap();
 	assert!(c.shared_chain(c.resolve("api:deploy").unwrap()).is_empty());
 }
+
+#[test]
+fn any_of_the_three_global_names_is_read() {
+	// A person should not have to argue with the runner about whether their
+	// own home directory shows the folder or hides it.
+	for name in GLOBAL_NAMES {
+		let home = TempDir::new().unwrap();
+		let g = home.path().join(name);
+		std::fs::create_dir_all(&g).unwrap();
+		std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
+		let elsewhere = TempDir::new().unwrap();
+		std::fs::create_dir_all(elsewhere.path().join("runfiles")).unwrap();
+		std::fs::write(elsewhere.path().join("runfiles/x.run"), "$ true\n").unwrap();
+		let c = discover(elsewhere.path(), Some(home.path())).unwrap();
+		assert!(c.resolve("deploy").is_some(), "{name} was not read");
+	}
+}
+
+#[test]
+fn two_populated_global_directories_are_an_error_naming_both() {
+	// Merging them would mean one target silently shadowing another, and no
+	// way to see which. Refusing says exactly what to fix.
+	let home = TempDir::new().unwrap();
+	for name in [".runfiles", "runfiles"] {
+		let g = home.path().join(name);
+		std::fs::create_dir_all(&g).unwrap();
+		std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
+	}
+	let elsewhere = TempDir::new().unwrap();
+	std::fs::create_dir_all(elsewhere.path().join("runfiles")).unwrap();
+	std::fs::write(elsewhere.path().join("runfiles/x.run"), "$ true\n").unwrap();
+
+	let e = discover(elsewhere.path(), Some(home.path())).unwrap_err();
+	let msg = e.to_string();
+	assert!(msg.contains(".runfiles"), "{msg}");
+	assert!(msg.contains("two places at once"), "{msg}");
+}
+
+#[test]
+fn an_empty_global_directory_never_clashes() {
+	// An empty one is indistinguishable from a leftover `mkdir`, and refusing
+	// to run because of one would be absurd.
+	let home = TempDir::new().unwrap();
+	std::fs::create_dir_all(home.path().join("Runfiles")).unwrap();
+	let g = home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
+
+	let elsewhere = TempDir::new().unwrap();
+	std::fs::create_dir_all(elsewhere.path().join("runfiles")).unwrap();
+	std::fs::write(elsewhere.path().join("runfiles/x.run"), "$ true\n").unwrap();
+	let c = discover(elsewhere.path(), Some(home.path())).unwrap();
+	assert!(c.resolve("deploy").is_some(), "the empty one is not a rival");
+}
+
+#[test]
+fn a_home_directory_project_is_not_also_its_own_global() {
+	// `$HOME/runfiles` is a legal global spelling *and* what `find_upward`
+	// finds when the run starts at home. Collecting it twice would report
+	// every target in it as defined twice.
+	let home = TempDir::new().unwrap();
+	let g = home.path().join("runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
+	let c = discover(home.path(), Some(home.path())).unwrap();
+	assert!(c.resolve("deploy").is_some());
+}

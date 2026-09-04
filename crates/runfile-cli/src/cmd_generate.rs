@@ -30,7 +30,7 @@ const SECTIONS: &[crate::help::Section] = &[
 	crate::help::Section(
 		"Options",
 		&[
-			crate::help::Row("--include-global", "include targets from ~/.runfiles/"),
+			crate::help::Row("--include-global", "include the machine-wide targets"),
 			crate::help::Row("--stdout", "print instead of writing"),
 		],
 	),
@@ -43,7 +43,7 @@ const DEFAULT_INDENT: &str = "  ";
 
 struct Options {
 	/// Machine-wide targets are left out unless asked for: a task file is
-	/// committed, and `~/.runfiles/` is one person's.
+	/// committed, and the machine-wide directory is one person's.
 	include_global: bool,
 	stdout: bool,
 }

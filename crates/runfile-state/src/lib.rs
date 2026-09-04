@@ -1,6 +1,7 @@
 //! Machine-local state: OS credential-store access and the prepare gate's
 //! record. There is no user settings file and no `run :config` -- the one
-//! machine-wide directory is `$HOME/.runfiles/`, at a fixed path.
+//! machine-wide directory is `$HOME/.runfiles/` (or `runfiles`/`Runfiles`),
+//! at a fixed set of names.
 
 pub mod keyring_keys;
 pub mod keyring_store;
