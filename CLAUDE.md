@@ -294,9 +294,12 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   append a `/` instead of a space. **A bare Tab lists the commands and the targets together**, as it always
   has: a command nobody can see without first guessing its `:` is a command nobody finds. Flags are the one
   list that waits for a `-`, and past a target name nothing is offered at all: the arguments there are the
-  target's, and guessing would be confident nonsense. The bash
-  one is tested by sourcing it and driving `_run` the way the shell does; the tree is tested directly, and in
-  both directions against the help.
+  target's, and guessing would be confident nonsense. The bash script takes `:` out of `COMP_WORDBREAKS` at
+  load, as npm and nvm do and as the old one did: readline otherwise splits `:env` and `vscode:test` before
+  the function sees them, and inserts a candidate's own colon after the one already typed. It is tested by
+  sourcing it and driving `_run` the way the shell does — **splitting the line on the script's own
+  `COMP_WORDBREAKS`, not on spaces**, since a harness that splits by hand cannot see that class of bug at
+  all. The tree is tested directly, and in both directions against the help.
   `:completions` takes `install`, `uninstall` or `output`, the shape the old CLI had. **bash and fish get a
   file in the directory their completion system reads on demand**, not a line in a profile: Ubuntu's
   `~/.profile` sources `.bashrc` *before* it puts `~/.local/bin` on PATH, so a startup hook that shells out to

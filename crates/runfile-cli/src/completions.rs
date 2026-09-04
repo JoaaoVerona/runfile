@@ -466,6 +466,15 @@ const BASH: &str = r#"# run(1) completion. Install: run :completions install bas
 #
 # The binary owns the command tree. This asks it what may follow what, and it
 # answers with words, or with <files>/<dirs> when only the shell can do it.
+
+# Readline breaks a word at every character in COMP_WORDBREAKS, and `:` is one
+# of them by default -- which splits both `:env` and a namespaced target like
+# `vscode:test` into pieces before this function ever sees them, and makes
+# readline insert a candidate's own colon after the one already typed. Taking
+# `:` out is the fix npm and nvm use, and it has to happen at load: readline
+# reads the variable after the function returns, not before.
+COMP_WORDBREAKS="${COMP_WORDBREAKS//:/}"
+
 _run() {
 	local cur out
 	cur="${COMP_WORDS[COMP_CWORD]}"

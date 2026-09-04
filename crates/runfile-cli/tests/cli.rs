@@ -571,19 +571,58 @@ fn complete_bash(p: &Project, line: &str) -> Vec<String> {
 	let script = out(&p.run(&[":completions", "output", "bash"]));
 	let path = p.dir.path().join("comp.bash");
 	std::fs::write(&path, &script).unwrap();
-	// COMP_WORDS/COMP_CWORD are what bash-completion sets before calling the
-	// function. Splitting on a space already yields an empty final word for a
-	// line ending in one, which is exactly the "fresh word" case.
-	let words: Vec<String> = line.split(' ').map(|w| format!("'{w}'")).collect();
+
+	// Split the line the way readline does, using the script's own
+	// COMP_WORDBREAKS -- not on spaces alone. `:` is a word break by default,
+	// so a script that does not deal with it sees `run : env`, not `run :env`,
+	// and every nested completion silently stops working. Splitting by hand
+	// hides exactly that.
+	let breaks = bash(
+		p,
+		&format!("source {}\nprintf '%s' \"$COMP_WORDBREAKS\"", path.display()),
+	);
+	let breaks: Vec<char> = breaks.chars().filter(|c| !c.is_whitespace()).collect();
+	let mut words: Vec<String> = Vec::new();
+	for tok in line.split(' ').filter(|t| !t.is_empty()) {
+		let mut buf = String::new();
+		for c in tok.chars() {
+			if breaks.contains(&c) {
+				if !buf.is_empty() {
+					words.push(std::mem::take(&mut buf));
+				}
+				words.push(c.to_string());
+			} else {
+				buf.push(c);
+			}
+		}
+		if !buf.is_empty() {
+			words.push(buf);
+		}
+	}
+	if line.ends_with(' ') || words.is_empty() {
+		words.push(String::new());
+	}
+	let cword = words.len() - 1;
+	let quoted: Vec<String> = words.iter().map(|w| format!("'{w}'")).collect();
+
 	let prog = format!(
 		"source {}\nCOMP_WORDS=({})\nCOMP_CWORD={}\n_run\nprintf '%s\\n' \"${{COMPREPLY[@]}}\"",
 		path.display(),
-		words.join(" "),
-		words.len() - 1,
+		quoted.join(" "),
+		cword,
 	);
+	bash(p, &prog)
+		.lines()
+		.filter(|l| !l.is_empty())
+		.map(String::from)
+		.collect()
+}
+
+#[cfg(unix)]
+fn bash(p: &Project, prog: &str) -> String {
 	let o = Command::new("bash")
 		.arg("-c")
-		.arg(&prog)
+		.arg(prog)
 		.current_dir(p.dir.path())
 		.env(
 			"PATH",
@@ -592,11 +631,7 @@ fn complete_bash(p: &Project, line: &str) -> Vec<String> {
 		.env("HOME", p.home.path())
 		.output()
 		.expect("bash");
-	String::from_utf8_lossy(&o.stdout)
-		.lines()
-		.filter(|l| !l.is_empty())
-		.map(String::from)
-		.collect()
+	String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
 #[cfg(unix)]
@@ -642,6 +677,40 @@ fn the_bash_script_completes_env_subcommands() {
 	let mut got = complete_bash(&p, "run :env in");
 	got.sort();
 	assert_eq!(got, ["init", "inject"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_takes_the_colon_out_of_the_word_breaks() {
+	// Readline splits on `:` by default, which would hand this function
+	// `run : env` and make it insert a candidate's colon after the typed one.
+	// Asserting the mechanism, because the symptom only shows under readline.
+	let p = project(&[(MARK, &marker("o"))]);
+	let script = out(&p.run(&[":completions", "output", "bash"]));
+	let path = p.dir.path().join("c.bash");
+	std::fs::write(&path, &script).unwrap();
+	let got = bash(
+		&p,
+		&format!(
+			"source {}\ncase \"$COMP_WORDBREAKS\" in *:*) echo split;; *) echo whole;; esac",
+			path.display()
+		),
+	);
+	assert_eq!(
+		got.trim(),
+		"whole",
+		"a `:` in COMP_WORDBREAKS breaks every namespaced name"
+	);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_a_namespaced_target() {
+	// `vscode:test` is one word to a person and two to readline. It must
+	// survive both the split and the insertion.
+	let p = project(&[("runfiles/vscode/test.run", "$ true\n")]);
+	assert_eq!(complete_bash(&p, "run vscode:"), ["vscode:test"]);
+	assert_eq!(complete_bash(&p, "run vscode:te"), ["vscode:test"]);
 }
 
 #[cfg(unix)]
