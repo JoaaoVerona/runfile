@@ -539,7 +539,10 @@ fn completions_are_produced_for_each_supported_shell() {
 	for sh in ["bash", "zsh", "fish", "powershell"] {
 		let o = p.run(&[":completions", "output", sh]);
 		assert!(o.status.success(), "{sh}: {}", err(&o));
-		assert!(out(&o).contains("run :list --names"), "{sh} must ask for names");
+		assert!(
+			out(&o).contains("run :complete"),
+			"{sh} must ask the binary what follows what"
+		);
 	}
 }
 
@@ -633,6 +636,74 @@ fn the_bash_script_completes_env_subcommands() {
 	let mut got = complete_bash(&p, "run :env in");
 	got.sort();
 	assert_eq!(got, ["init", "inject"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_a_subcommand_of_a_subcommand() {
+	// Three words deep. This used to fall through to file names, because each
+	// script carried its own walk and none of them recursed.
+	let p = project(&[(MARK, &marker("o"))]);
+	let mut got = complete_bash(&p, "run :env secret-keys ");
+	got.sort();
+	assert_eq!(got, ["add", "get-private", "list", "remove"]);
+
+	let got = complete_bash(&p, "run :env secret-keys get");
+	assert_eq!(got, ["get-private"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_the_shell_a_completion_command_takes() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let got = complete_bash(&p, "run :completions install f");
+	assert_eq!(got, ["fish"]);
+	let got = complete_bash(&p, "run :completions output z");
+	assert_eq!(got, ["zsh"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_a_nested_commands_own_flags() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let got = complete_bash(&p, "run :generate zed --incl");
+	assert_eq!(got, ["--include-global"]);
+	let got = complete_bash(&p, "run :env rotate --delete");
+	assert_eq!(got, ["--delete-current-key"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_hands_paths_back_to_the_shell() {
+	// `run :env get <Tab>` names a file, and only the shell completes those
+	// properly. The marker asks it to, and must not be offered as a word.
+	let p = project(&[
+		(MARK, &marker("o")),
+		(
+			".env.local",
+			"A=1
+",
+		),
+	]);
+	let got = complete_bash(&p, "run :env get .env");
+	assert_eq!(got, [".env.local"], "the marker itself is never a candidate");
+
+	let got = complete_bash(&p, "run --dir runfi");
+	assert_eq!(got, ["runfiles"], "--dir takes a directory, not a file");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_leaves_a_targets_arguments_alone() {
+	let p = project(&[(
+		"runfiles/deploy.run",
+		"$ true
+",
+	)]);
+	assert!(
+		complete_bash(&p, "run deploy --any").is_empty(),
+		"a target's own flags are its business, and we cannot know them"
+	);
 }
 
 #[cfg(unix)]
@@ -1541,7 +1612,7 @@ fn fish_gets_a_file_of_its_own_rather_than_a_profile_line() {
 	assert!(o.status.success(), "{}", err(&o));
 	let path = p.home.path().join("fish/completions/run.fish");
 	assert!(path.exists(), "{}", out(&o));
-	assert!(std::fs::read_to_string(&path).unwrap().contains("run :list --names"));
+	assert!(std::fs::read_to_string(&path).unwrap().contains("run :complete"));
 
 	assert!(p.run(&[":completions", "uninstall", "fish"]).status.success());
 	assert!(!path.exists());

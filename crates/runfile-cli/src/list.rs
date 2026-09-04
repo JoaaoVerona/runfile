@@ -109,11 +109,18 @@ fn quote(s: &str) -> String {
 
 /// One name per line, for shell completion. Hidden targets are omitted, the
 /// same as the human listing.
+/// Every target a person may type, hidden ones left out.
+pub fn names(cat: &Catalog) -> Vec<String> {
+	cat.targets
+		.values()
+		.filter(|t| !facts(t).hidden)
+		.map(|t| t.name.clone())
+		.collect()
+}
+
 pub fn print_names(cat: &Catalog) {
-	for t in cat.targets.values() {
-		if !facts(t).hidden {
-			println!("{}", t.name);
-		}
+	for n in names(cat) {
+		println!("{n}");
 	}
 }
 

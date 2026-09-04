@@ -164,6 +164,20 @@ fn real_main() -> Result<ExitCode, String> {
 			return Ok(ExitCode::SUCCESS);
 		}
 		":completions" => return completions::dispatch(&args),
+		// Hidden: the shells' one question, "what may follow what". Kept out of
+		// the help and out of the tree, since nobody types it. It must never fail
+		// loudly either -- a Tab in a directory with no runfiles offers nothing,
+		// it does not print an error over the prompt.
+		":complete" => {
+			let cword: usize = args.first().and_then(|a| a.parse().ok()).unwrap_or(0);
+			let words = args.get(1..).unwrap_or(&[]);
+			let cat = catalog(&flags).ok();
+			let targets = || cat.as_ref().map(list::names).unwrap_or_default();
+			for c in completions::complete(words, cword, &targets) {
+				println!("{c}");
+			}
+			return Ok(ExitCode::SUCCESS);
+		}
 		":init" => {
 			let dir = match &flags.dir {
 				Some(d) => d.clone(),

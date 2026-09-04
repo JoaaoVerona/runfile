@@ -4,44 +4,12 @@
 //! fish's completions directory, and take it out again -- both idempotent, both
 //! leaving everything else in the file alone.
 //!
-//! Every script asks the binary itself for target names (`run :list --names`)
-//! rather than parsing files, so completion never has to know the language and
-//! cannot drift from it. Names are the only dynamic input: subcommands and
-//! flags are fixed, so they are baked into each script.
+//! Every script asks the binary itself what may follow what (`run :complete`)
+//! rather than carrying its own copy of the command tree. That is what makes
+//! subcommands complete at any depth: the tree below is the only description of
+//! it, so four shell dialects cannot drift from each other or from the CLI.
 
 use std::path::{Path, PathBuf};
-
-/// Subcommands offered when the current word starts with `:`.
-pub const COMMANDS: &[&str] = &[":list", ":env", ":update", ":completions", ":init", ":generate"];
-/// Flags offered before the target name.
-pub const FLAGS: &[&str] = &[
-	"-y",
-	"--yes",
-	"--stdin-args",
-	"--dry-run",
-	"--dir",
-	"-h",
-	"--help",
-	"-v",
-	"--version",
-];
-/// `:env` subcommands, the one nested level that exists.
-pub const ENV_SUBS: &[&str] = &[
-	"init",
-	"get",
-	"set",
-	"encrypt",
-	"decrypt",
-	"rotate",
-	"inject",
-	"secret-keys",
-];
-/// `:generate` editors, the other nested level.
-pub const GENERATE_SUBS: &[&str] = crate::cmd_generate::SUBS;
-/// What `:completions` accepts.
-pub const COMPLETION_SUBS: &[&str] = &["install", "uninstall", "output"];
-/// The shells any of those takes.
-pub const SHELLS: &[&str] = &["bash", "zsh", "fish", "powershell"];
 
 const INTRO: &str = "run :completions <command> <shell>   —   shell tab-completion";
 
@@ -261,212 +229,317 @@ fn unknown(shell: &str) -> String {
 	format!("unknown shell `{shell}`; expected one of: bash, zsh, fish, powershell")
 }
 
+// ---------------------------------------------------------------- the tree
+//
+// One description of what may follow what, which every shell queries through
+// `run :complete`. Encoding it here rather than in four shell dialects is what
+// lets a subcommand of a subcommand complete: nesting costs a nested `Cmd`,
+// not a fifth copy of the walk in a language that cannot share it.
+
+/// What a word in this position completes to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Arg {
+	/// Nothing. The position takes no free-form word.
+	None,
+	/// A path, or a directory. The shell is told to take over, since it does
+	/// this far better than a word list can.
+	Files,
+	Dirs,
+	/// A target name, read from the catalog.
+	Targets,
+}
+
+/// A flag, and what its value completes to if it takes one.
+pub struct Flag(pub &'static str, pub Arg);
+
+pub struct Cmd {
+	pub name: &'static str,
+	pub subs: &'static [Cmd],
+	pub flags: &'static [Flag],
+	/// What a word that matches no subcommand completes to.
+	pub arg: Arg,
+}
+
+const fn leaf(name: &'static str) -> Cmd {
+	Cmd {
+		name,
+		subs: &[],
+		flags: &[],
+		arg: Arg::None,
+	}
+}
+
+/// A command whose remaining words are paths.
+const fn takes_file(name: &'static str, flags: &'static [Flag]) -> Cmd {
+	Cmd {
+		name,
+		subs: &[],
+		flags,
+		arg: Arg::Files,
+	}
+}
+
+/// The shells with a script -- also the words `:completions` takes.
+const SHELLS: &[Cmd] = &[leaf("bash"), leaf("zsh"), leaf("fish"), leaf("powershell")];
+
+const fn takes_shell(name: &'static str) -> Cmd {
+	Cmd {
+		name,
+		subs: SHELLS,
+		flags: &[],
+		arg: Arg::None,
+	}
+}
+
+const GEN_FLAGS: &[Flag] = &[Flag("--include-global", Arg::None), Flag("--stdout", Arg::None)];
+
+const fn editor(name: &'static str) -> Cmd {
+	Cmd {
+		name,
+		subs: &[],
+		flags: GEN_FLAGS,
+		arg: Arg::None,
+	}
+}
+
+/// A `--key` names a key file, and may be spelled `--key X` or `--key=X`.
+const KEY: Flag = Flag("--key", Arg::Files);
+
+/// The whole command line, from `run` down.
+pub const ROOT: Cmd = Cmd {
+	name: "run",
+	subs: &[
+		Cmd {
+			name: ":list",
+			subs: &[],
+			flags: &[Flag("--names", Arg::None), Flag("--json", Arg::None)],
+			arg: Arg::None,
+		},
+		leaf(":init"),
+		Cmd {
+			name: ":env",
+			subs: &[
+				takes_file("init", &[Flag("--plain", Arg::None), KEY]),
+				takes_file("get", &[]),
+				takes_file("set", &[Flag("--plain", Arg::None)]),
+				takes_file("encrypt", &[]),
+				takes_file("decrypt", &[]),
+				takes_file("rotate", &[Flag("--delete-current-key", Arg::None)]),
+				takes_file("inject", &[]),
+				Cmd {
+					name: "secret-keys",
+					subs: &[
+						Cmd {
+							name: "add",
+							subs: &[],
+							flags: &[KEY],
+							arg: Arg::None,
+						},
+						leaf("list"),
+						leaf("get-private"),
+						leaf("remove"),
+					],
+					flags: &[],
+					arg: Arg::None,
+				},
+			],
+			flags: &[],
+			arg: Arg::None,
+		},
+		Cmd {
+			name: ":completions",
+			subs: &[takes_shell("install"), takes_shell("uninstall"), takes_shell("output")],
+			flags: &[],
+			arg: Arg::None,
+		},
+		Cmd {
+			name: ":generate",
+			subs: &[editor("zed"), editor("jetbrains"), editor("vscode")],
+			flags: &[],
+			arg: Arg::None,
+		},
+		leaf(":update"),
+	],
+	flags: &[
+		Flag("-y", Arg::None),
+		Flag("--yes", Arg::None),
+		Flag("--stdin-args", Arg::None),
+		Flag("--dry-run", Arg::None),
+		Flag("--dir", Arg::Dirs),
+		Flag("-h", Arg::None),
+		Flag("--help", Arg::None),
+		Flag("-v", Arg::None),
+		Flag("--version", Arg::None),
+	],
+	arg: Arg::Targets,
+};
+
+/// Asks the shell to complete paths itself. A word list cannot do it well:
+/// only the shell knows to append a `/` and not a space.
+pub const FILES: &str = "<files>";
+pub const DIRS: &str = "<dirs>";
+
+/// Candidates for the word at `cword`, given the words typed so far.
+///
+/// `words[0]` is the program name. The word being completed is `words[cword]`
+/// when the shell passes it (bash does, fish does not), and may be a partial
+/// one -- filtering by it is the shell's job, except where it decides *which*
+/// kind of candidate applies at all.
+pub fn complete(words: &[String], cword: usize, targets: &dyn Fn() -> Vec<String>) -> Vec<String> {
+	let cur = words.get(cword).map(String::as_str).unwrap_or("");
+	let mut node = &ROOT;
+	let mut root = true;
+	let mut i = 1;
+	while i < cword.min(words.len()) {
+		let w = words[i].as_str();
+		if let Some(f) = node.flags.iter().find(|f| f.0 == w) {
+			// `--dir /some/path`: the value is a word of its own, and if the
+			// cursor is on it, that is what we are completing.
+			if f.1 != Arg::None {
+				if i + 1 == cword {
+					return vec![marker(f.1)];
+				}
+				i += 1;
+			}
+			i += 1;
+			continue;
+		}
+		if w.starts_with('-') {
+			i += 1;
+			continue;
+		}
+		match node.subs.iter().find(|c| c.name == w) {
+			Some(next) => {
+				node = next;
+				root = false;
+			}
+			// An unrecognised word at the top is a target name, and everything
+			// after it belongs to the target rather than to us.
+			None if root => return Vec::new(),
+			// Below the top it is a free-form argument, so the node keeps
+			// offering whatever it offers.
+			None => break,
+		}
+		i += 1;
+	}
+
+	// At the top, the shape of the word says which of three lists is wanted --
+	// as it did before there was a tree, so a bare Tab still means targets and
+	// not a wall of every flag.
+	if root {
+		return match cur.chars().next() {
+			Some(':') => node.subs.iter().map(|c| c.name.to_string()).collect(),
+			Some('-') => node.flags.iter().map(|f| f.0.to_string()).collect(),
+			_ => targets(),
+		};
+	}
+
+	let mut out: Vec<String> = node.subs.iter().map(|c| c.name.to_string()).collect();
+	// Flags only once one is being typed: they are noise beside a file list.
+	if cur.starts_with('-') {
+		out.extend(node.flags.iter().map(|f| f.0.to_string()));
+	} else if node.arg != Arg::None {
+		out.push(marker(node.arg));
+	}
+	out
+}
+
+fn marker(arg: Arg) -> String {
+	match arg {
+		Arg::Dirs => DIRS.to_string(),
+		_ => FILES.to_string(),
+	}
+}
+
 pub fn script(shell: &str) -> Result<String, String> {
-	let s = match shell {
-		"bash" => BASH,
-		"zsh" => ZSH,
-		"fish" => FISH,
-		"powershell" | "pwsh" => POWERSHELL,
-		other => return Err(unknown(other)),
-	};
-	Ok(s.replace("@COMMANDS@", &COMMANDS.join(" "))
-		.replace("@FLAGS@", &FLAGS.join(" "))
-		.replace("@ENV_SUBS@", &ENV_SUBS.join(" "))
-		.replace("@GENERATE_SUBS@", &GENERATE_SUBS.join(" "))
-		.replace("@COMPLETION_SUBS@", &COMPLETION_SUBS.join(" "))
-		.replace("@SHELLS@", &SHELLS.join(" ")))
+	match shell {
+		"bash" => Ok(BASH.to_string()),
+		"zsh" => Ok(ZSH.to_string()),
+		"fish" => Ok(FISH.to_string()),
+		"powershell" | "pwsh" => Ok(POWERSHELL.to_string()),
+		other => Err(unknown(other)),
+	}
 }
 
 const BASH: &str = r#"# run(1) completion. Install: run :completions install bash
+#
+# The binary owns the command tree. This asks it what may follow what, and it
+# answers with words, or with <files>/<dirs> when only the shell can do it.
 _run() {
-	local cur prev words cword
+	local cur out
 	cur="${COMP_WORDS[COMP_CWORD]}"
-	prev="${COMP_WORDS[COMP_CWORD-1]}"
-
-	# --dir takes a directory, whatever position it is in.
-	if [[ "$prev" == "--dir" ]]; then
-		COMPREPLY=( $(compgen -d -- "$cur") )
-		return
-	fi
-
-	# Find the first word that is neither a flag nor a flag's value.
-	local i first=""
-	for (( i=1; i < COMP_CWORD; i++ )); do
-		case "${COMP_WORDS[i]}" in
-			--dir) (( i++ ));;
-			-*) ;;
-			*) first="${COMP_WORDS[i]}"; break;;
-		esac
-	done
-
-	# Two commands take a subcommand: one nested level, then file names.
-	local subs=""
-	case "$first" in
-		:env) subs="@ENV_SUBS@" ;;
-		:generate) subs="@GENERATE_SUBS@" ;;
-		:completions) subs="@COMPLETION_SUBS@" ;;
+	out="$(run :complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null)"
+	COMPREPLY=()
+	case "$out" in
+		*"<dirs>"*) COMPREPLY=( $(compgen -d -- "$cur") ); out="${out/<dirs>/}" ;;
+		*"<files>"*) COMPREPLY=( $(compgen -f -- "$cur") ); out="${out/<files>/}" ;;
 	esac
-	if [[ -n "$subs" ]]; then
-		local depth=$(( COMP_CWORD - i ))
-		if [[ $depth -eq 1 ]]; then
-			COMPREPLY=( $(compgen -W "$subs" -- "$cur") )
-		elif [[ $depth -eq 2 && "$first" == ":completions" ]]; then
-			COMPREPLY=( $(compgen -W "@SHELLS@" -- "$cur") )
-		else
-			COMPREPLY=( $(compgen -f -- "$cur") )
-		fi
-		return
-	fi
-
-	# Past the target name: its arguments are the target's business, so offer
-	# files rather than guessing.
-	if [[ -n "$first" ]]; then
-		COMPREPLY=( $(compgen -f -- "$cur") )
-		return
-	fi
-
-	if [[ "$cur" == :* ]]; then
-		COMPREPLY=( $(compgen -W "@COMMANDS@" -- "$cur") )
-	elif [[ "$cur" == -* ]]; then
-		COMPREPLY=( $(compgen -W "@FLAGS@" -- "$cur") )
-	else
-		COMPREPLY=( $(compgen -W "$(run :list --names 2>/dev/null)" -- "$cur") )
-	fi
+	COMPREPLY+=( $(compgen -W "$out" -- "$cur") )
 }
 complete -F _run run
 "#;
 
 const ZSH: &str = r#"# run(1) completion. Install: run :completions install zsh
 _run() {
-	local -a words_before
-	local first="" i
-	for (( i = 2; i < CURRENT; i++ )); do
-		case "${words[i]}" in
-			--dir) (( i++ ));;
-			-*) ;;
-			*) first="${words[i]}"; break;;
-		esac
-	done
-
-	if [[ "${words[CURRENT-1]}" == "--dir" ]]; then
+	local -a out
+	# `${(@)words}` keeps an empty final word, which is what a fresh Tab is.
+	# The markers are escaped: `<...>` is a numeric-range glob to zsh.
+	out=( ${(f)"$(run :complete $(( CURRENT - 1 )) "${(@)words}" 2>/dev/null)"} )
+	if (( ${out[(I)\<dirs\>]} )); then
+		out=( ${out:#\<dirs\>} )
 		_files -/
-		return
-	fi
-
-	local subs=""
-	case "$first" in
-		:env) subs="@ENV_SUBS@" ;;
-		:generate) subs="@GENERATE_SUBS@" ;;
-		:completions) subs="@COMPLETION_SUBS@" ;;
-	esac
-	if [[ -n "$subs" ]]; then
-		if (( CURRENT - i == 1 )); then
-			compadd -- ${=subs}
-		elif [[ "$first" == ":completions" ]] && (( CURRENT - i == 2 )); then
-			compadd -- @SHELLS@
-		else
-			_files
-		fi
-		return
-	fi
-
-	if [[ -n "$first" ]]; then
+	elif (( ${out[(I)\<files\>]} )); then
+		out=( ${out:#\<files\>} )
 		_files
-		return
 	fi
-
-	case "$PREFIX" in
-		:*) compadd -- @COMMANDS@ ;;
-		-*) compadd -- @FLAGS@ ;;
-		*)  compadd -- ${(f)"$(run :list --names 2>/dev/null)"} ;;
-	esac
+	(( ${#out} )) && compadd -- $out
 }
 compdef _run run
 "#;
 
 const FISH: &str = r#"# run(1) completion. Install: run :completions install fish
-function __run_first_word
+#
+# `-opc` gives the finished words only, so the count of them is the index of
+# the one being completed. `-ct` is that word, which the binary needs too: a
+# leading `:` or `-` is what tells it to offer commands or flags over targets.
+function __run_complete
 	set -l toks (commandline -opc)
-	set -l skip 0
-	for tok in $toks[2..-1]
-		if test $skip -eq 1
-			set skip 0
-			continue
-		end
-		switch $tok
-			case --dir
-				set skip 1
-			case '-*'
-			case '*'
-				echo $tok
-				return
-		end
-	end
+	run :complete (count $toks) $toks (commandline -ct) 2>/dev/null
 end
 
-function __run_no_target
-	test -z (__run_first_word)
+function __run_words
+	__run_complete | string match -v -- '<files>' | string match -v -- '<dirs>'
 end
 
-function __run_env_sub
-	test (__run_first_word) = ":env"; and test (count (commandline -opc)) -eq 2
+function __run_wants_files
+	__run_complete | string match -q -- '<files>'
 end
 
-function __run_generate_sub
-	test (__run_first_word) = ":generate"; and test (count (commandline -opc)) -eq 2
+function __run_wants_dirs
+	__run_complete | string match -q -- '<dirs>'
 end
 
-function __run_completions_sub
-	test (__run_first_word) = ":completions"; and test (count (commandline -opc)) -eq 2
-end
-
-function __run_first_word_is_completions_shell
-	test (__run_first_word) = ":completions"; and test (count (commandline -opc)) -eq 3
-end
-
-# No target chosen yet: names, commands and flags.
-complete -c run -f -n __run_no_target -a "(run :list --names 2>/dev/null)"
-complete -c run -f -n __run_no_target -a "@COMMANDS@"
-complete -c run -f -n __run_no_target -a "@FLAGS@"
-complete -c run -f -n __run_env_sub -a "@ENV_SUBS@"
-complete -c run -f -n __run_generate_sub -a "@GENERATE_SUBS@"
-complete -c run -f -n __run_completions_sub -a "@COMPLETION_SUBS@"
-complete -c run -f -n '__run_first_word_is_completions_shell' -a "@SHELLS@"
-# Past the target name, arguments are its own business: offer files.
-complete -c run -F -n 'not __run_no_target; and not __run_env_sub; and not __run_generate_sub; and not __run_completions_sub'
-complete -c run -r -n '__fish_seen_argument -l dir' -a "(__fish_complete_directories)"
+complete -c run -f -a "(__run_words)"
+complete -c run -F -n __run_wants_files
+complete -c run -f -n __run_wants_dirs -a "(__fish_complete_directories)"
 "#;
 
 const POWERSHELL: &str = r#"# run(1) completion. Install: run :completions install powershell
 Register-ArgumentCompleter -Native -CommandName run -ScriptBlock {
 	param($wordToComplete, $commandAst, $cursorPosition)
 
-	$words = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.ToString() })
-	$first = $null
-	$skip = $false
-	foreach ($w in $words) {
-		if ($skip) { $skip = $false; continue }
-		if ($w -eq '--dir') { $skip = $true; continue }
-		if ($w.StartsWith('-')) { continue }
-		$first = $w
-		break
-	}
+	$words = @($commandAst.CommandElements | ForEach-Object { $_.ToString() })
+	# The trailing word is only in the AST once it has a character; on an empty
+	# one the position being completed is the next index along.
+	$cword = if ($wordToComplete) { $words.Count - 1 } else { $words.Count }
+	$out = @(& run :complete $cword @words 2>$null)
 
-	$emit = {
-		param($items)
-		$items | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-			[System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-		}
+	if ($out -contains '<files>' -or $out -contains '<dirs>') {
+		return [System.Management.Automation.CompletionCompleters]::CompleteFilename($wordToComplete)
 	}
-
-	if ($first -eq ':env' -and $words.Count -le 2) { return & $emit @('@ENV_SUBS@'.Split(' ')) }
-	if ($first -eq ':generate' -and $words.Count -le 2) { return & $emit @('@GENERATE_SUBS@'.Split(' ')) }
-	if ($first -eq ':completions' -and $words.Count -le 2) { return & $emit @('@COMPLETION_SUBS@'.Split(' ')) }
-	if ($first -eq ':completions' -and $words.Count -le 3) { return & $emit @('@SHELLS@'.Split(' ')) }
-	if ($first) { return [System.Management.Automation.CompletionCompleters]::CompleteFilename($wordToComplete) }
-	if ($wordToComplete.StartsWith(':')) { return & $emit @('@COMMANDS@'.Split(' ')) }
-	if ($wordToComplete.StartsWith('-')) { return & $emit @('@FLAGS@'.Split(' ')) }
-	& $emit @(& run :list --names 2>$null)
+	$out | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+		[System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+	}
 }
 "#;
 
@@ -478,17 +551,13 @@ mod tests {
 	fn every_supported_shell_produces_a_script() {
 		for sh in ["bash", "zsh", "fish", "powershell", "pwsh"] {
 			let s = script(sh).unwrap_or_else(|e| panic!("{sh}: {e}"));
-			assert!(s.contains("run :list --names"), "{sh} must ask the binary for names");
-			// `@` alone is legal PowerShell array syntax, so check the actual
-			// placeholder spellings.
-			for ph in [
-				"@COMMANDS@",
-				"@FLAGS@",
-				"@ENV_SUBS@",
-				"@GENERATE_SUBS@",
-				"@COMPLETION_SUBS@",
-			] {
-				assert!(!s.contains(ph), "{sh} left {ph} unsubstituted");
+			// Every script must ask the binary rather than carry its own copy of
+			// the tree -- that is the whole point of there being one tree.
+			assert!(s.contains("run :complete"), "{sh} must ask the binary");
+			// zsh writes the markers escaped, since `<...>` is a glob to it.
+			let plain = s.replace('\\', "");
+			for m in [FILES, DIRS] {
+				assert!(plain.contains(m), "{sh} ignores the {m} marker");
 			}
 		}
 	}
@@ -501,11 +570,71 @@ mod tests {
 
 	#[test]
 	fn every_advertised_command_is_offered_by_completion() {
-		// The scripts bake the command list in, so it can drift from what the
-		// help offers. This is the check that it has not.
+		// The tree is written by hand, so it can drift from what the help
+		// offers. This is the check that it has not.
 		let usage = crate::usage();
-		for c in COMMANDS {
-			assert!(usage.contains(c), "`{c}` is completed but not in the help");
+		for c in ROOT.subs {
+			assert!(usage.contains(c.name), "`{}` is completed but not in the help", c.name);
 		}
+		// And the other way, which is the direction a new command drifts in:
+		// added to the help, forgotten in the tree.
+		for word in usage.split_whitespace() {
+			let word = word.trim_end_matches(|c: char| !c.is_alphanumeric());
+			if word.starts_with(':') && word.len() > 1 {
+				assert!(
+					ROOT.subs.iter().any(|c| c.name == word),
+					"`{word}` is in the help but completes to nothing"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn subcommands_complete_at_every_depth() {
+		let none = || Vec::new();
+		let at = |line: &str| {
+			let words: Vec<String> = line.split(' ').map(String::from).collect();
+			complete(&words, words.len() - 1, &none)
+		};
+		// One level, two levels, three -- the last is the one that used to fall
+		// through to file names.
+		assert!(at("run :env ").contains(&"secret-keys".to_string()));
+		assert!(at("run :env secret-keys ").contains(&"get-private".to_string()));
+		assert!(at("run :completions install ").contains(&"fish".to_string()));
+		assert!(at("run :generate ").contains(&"jetbrains".to_string()));
+	}
+
+	#[test]
+	fn a_flags_value_completes_as_its_own_word() {
+		let none = || Vec::new();
+		let words: Vec<String> = ["run", "--dir", ""].iter().map(|s| s.to_string()).collect();
+		assert_eq!(complete(&words, 2, &none), vec![DIRS.to_string()]);
+		// ...and the flag does not derail the walk that follows it.
+		let words: Vec<String> = ["run", "--dir", "/tmp", ":env", ""]
+			.iter()
+			.map(|s| s.to_string())
+			.collect();
+		assert!(complete(&words, 4, &none).contains(&"inject".to_string()));
+	}
+
+	#[test]
+	fn a_targets_own_arguments_are_left_alone() {
+		// Past a target name the words belong to the target, and guessing at
+		// them would offer confident nonsense.
+		let targets = || vec!["build".to_string()];
+		let words: Vec<String> = ["run", "build", ""].iter().map(|s| s.to_string()).collect();
+		assert!(complete(&words, 2, &targets).is_empty());
+	}
+
+	#[test]
+	fn the_first_word_still_chooses_between_targets_commands_and_flags() {
+		let targets = || vec!["build".to_string()];
+		let at = |cur: &str| {
+			let words = vec!["run".to_string(), cur.to_string()];
+			complete(&words, 1, &targets)
+		};
+		assert_eq!(at(""), vec!["build".to_string()]);
+		assert!(at(":").contains(&":list".to_string()));
+		assert!(at("--").contains(&"--dry-run".to_string()));
 	}
 }

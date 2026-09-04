@@ -286,8 +286,15 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 - Watch mode is entered automatically by any target declaring `.watch`; there is no flag, because the file
   already said what it wants. Patterns interpolate, so they resolve through `Host::header_props` rather than
   being read off the source text. A failing run is reported and watching continues.
-- Completion scripts are hand-written per shell and ask the binary itself for names, so they can never drift
-  from the language. The bash one is tested by sourcing it and driving `_run` the way the shell does.
+- Completion scripts are hand-written per shell, but carry no knowledge of their own: they ask the binary
+  what may follow what (`run :complete <cword> <word>...`, hidden, absent from the help and from the tree it
+  serves). `completions::ROOT` is the single description of the command tree, so a subcommand of a subcommand
+  completes without a fifth copy of the walk in a language that cannot share one. The binary answers with
+  words, or with a `<files>` / `<dirs>` marker where only the shell can do the job well — a word list cannot
+  append a `/` instead of a space. Flags are offered only once a `-` is typed, and past a target name nothing
+  is offered at all: the arguments there are the target's, and guessing would be confident nonsense. The bash
+  one is tested by sourcing it and driving `_run` the way the shell does; the tree is tested directly, and in
+  both directions against the help.
   `:completions` takes `install`, `uninstall` or `output`, the shape the old CLI had. **bash and fish get a
   file in the directory their completion system reads on demand**, not a line in a profile: Ubuntu's
   `~/.profile` sources `.bashrc` *before* it puts `~/.local/bin` on PATH, so a startup hook that shells out to
