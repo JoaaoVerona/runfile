@@ -1,6 +1,7 @@
 # Copy the built binary to ~/.local/bin as "rund"
 
 let ext = ""
+
 if RUN.os == "windows"
 	ext = ".exe"
 end

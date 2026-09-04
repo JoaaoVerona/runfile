@@ -49,6 +49,7 @@ fn initialize_announces_what_the_server_can_do() {
 	assert_eq!(caps["textDocumentSync"], 1, "full sync");
 	assert!(caps["completionProvider"].is_object());
 	assert_eq!(caps["definitionProvider"], true);
+	assert_eq!(caps["documentFormattingProvider"], true, "format-on-save needs this");
 }
 
 #[test]
@@ -326,4 +327,49 @@ fn completion_carries_a_signature_and_documentation() {
 	assert!(sub["detail"].as_str().unwrap().starts_with("substring("), "{sub}");
 	assert_eq!(sub["documentation"]["kind"], "markdown");
 	assert!(!sub["documentation"]["value"].as_str().unwrap().is_empty());
+}
+
+fn formatting(uri: &str) -> Value {
+	json!({
+		"jsonrpc": "2.0", "id": 9, "method": "textDocument/formatting",
+		"params": {"textDocument": {"uri": uri}, "options": {"tabSize": 4, "insertSpaces": false}},
+	})
+}
+
+fn reply_to(out: &[Value], id: i64) -> &Value {
+	out.iter().find(|m| m["id"] == id).expect("a reply")
+}
+
+#[test]
+fn formatting_returns_one_edit_covering_the_whole_document() {
+	// Whole-document because sync is whole-document. A minimal diff would be a
+	// second description of the same change, and a chance for the two to
+	// disagree.
+	let uri = "file:///x/runfiles/a.run";
+	let out = converse(&[did_open(uri, "let x=1\nif x\n$ a\nend\n"), formatting(uri)]);
+	let edits = reply_to(&out, 9)["result"].as_array().expect("edits");
+	assert_eq!(edits.len(), 1);
+	assert_eq!(edits[0]["range"]["start"]["line"], 0);
+	assert_eq!(
+		edits[0]["newText"], "let x = 1\n\nif x\n\t$ a\nend\n",
+		"the same shape `run :format` produces"
+	);
+}
+
+#[test]
+fn formatting_an_already_formatted_document_edits_nothing() {
+	// An editor must not mark a file dirty on every save of a clean one.
+	let uri = "file:///x/runfiles/a.run";
+	let out = converse(&[did_open(uri, "$ echo hi\n"), formatting(uri)]);
+	assert_eq!(reply_to(&out, 9)["result"].as_array().expect("edits").len(), 0);
+}
+
+#[test]
+fn formatting_a_document_that_does_not_parse_is_answered_with_null() {
+	// A file is unfinished for most of the time it is being written, and
+	// format-on-save must not put a dialog in the way of that. Still an
+	// answer, though: an unanswered request hangs the client.
+	let uri = "file:///x/runfiles/a.run";
+	let out = converse(&[did_open(uri, "if x\n$ a\n"), formatting(uri)]);
+	assert!(reply_to(&out, 9)["result"].is_null());
 }

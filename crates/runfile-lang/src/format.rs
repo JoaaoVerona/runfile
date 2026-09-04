@@ -48,39 +48,82 @@ pub fn format(src: &str) -> Result<String, ParseError> {
 	Ok(out)
 }
 
-/// What a level of the block stack does to indentation.
+/// What a level of the block stack does to indentation. Every one of them is
+/// one level, `match` included: a `case` reads as being *inside* its match.
 #[derive(Clone, Copy, PartialEq)]
 enum Frame {
-	/// `if`, `else`, `for`, `exec` -- its body is one level in.
+	/// `if`, `else`, `for`, `exec`.
 	Body,
-	/// `match` -- its `case`s sit at the *same* level, so it adds nothing.
+	/// `match`, holding its `case`s.
 	Match,
-	/// `case`, `default` -- one level in, and closed by the next `case` or the
-	/// `end`, never by one of its own.
+	/// `case`, `default` -- closed by the next `case` or by the `end`, never
+	/// by one of its own.
 	Case,
 }
 
+/// What a line is, for deciding where blank lines belong.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+	/// The leading comment block: the target's description.
+	Description,
+	/// A comment, which attaches to whatever follows it.
+	Comment,
+	/// `.name = value`.
+	Property,
+	/// `let name = …`.
+	Let,
+	/// Opens a block: `if`, `for`, `match`, `exec`.
+	Open,
+	/// `else`, `case`, `default`.
+	Mid,
+	/// `end`.
+	Close,
+	/// Part of the line before it -- an `exec` body, a `$` continuation.
+	Opaque,
+	/// Everything else: `$`, `run`, calls, reassignment.
+	Other,
+	Blank,
+}
+
 struct Out {
-	lines: Vec<String>,
+	lines: Vec<(Kind, String)>,
 	stack: Vec<Frame>,
+	/// Still in the leading comment block.
+	heading: bool,
 }
 
 impl Out {
 	fn depth(&self) -> usize {
-		self.stack.iter().filter(|f| **f != Frame::Match).count()
+		self.stack.len()
 	}
 
-	fn push(&mut self, depth: usize, text: &str) {
+	fn push(&mut self, depth: usize, text: &str, kind: Kind) {
+		if !matches!(kind, Kind::Comment | Kind::Description | Kind::Blank) {
+			self.heading = false;
+		}
 		if text.is_empty() {
-			self.lines.push(String::new());
+			self.lines.push((Kind::Blank, String::new()));
 		} else {
-			self.lines.push(format!("{}{text}", INDENT.repeat(depth)));
+			self.lines.push((kind, format!("{}{text}", INDENT.repeat(depth))));
 		}
 	}
 
-	fn at_depth(&mut self, text: &str) {
+	fn at_depth(&mut self, text: &str, kind: Kind) {
 		let d = self.depth();
-		self.push(d, text);
+		self.push(d, text, kind);
+	}
+
+	fn blank(&mut self) {
+		// A blank line ends the description: the parser reads the *contiguous*
+		// leading comment block, so a comment below the gap is an ordinary one.
+		if self.lines.iter().any(|(k, _)| *k == Kind::Description) {
+			self.heading = false;
+		}
+		self.lines.push((Kind::Blank, String::new()));
+	}
+
+	fn opaque(&mut self, text: String) {
+		self.lines.push((Kind::Opaque, text));
 	}
 }
 
@@ -89,6 +132,7 @@ fn render(src: &str) -> Result<String, ParseError> {
 	let mut o = Out {
 		lines: Vec::new(),
 		stack: Vec::new(),
+		heading: true,
 	};
 	let mut i = 0;
 	while i < raw.len() {
@@ -97,12 +141,13 @@ fn render(src: &str) -> Result<String, ParseError> {
 		let no = i + 1;
 
 		if trimmed.is_empty() {
-			o.lines.push(String::new());
+			o.blank();
 			i += 1;
 			continue;
 		}
 		if trimmed.starts_with('#') {
-			o.at_depth(trimmed);
+			let kind = if o.heading { Kind::Description } else { Kind::Comment };
+			o.at_depth(trimmed, kind);
 			i += 1;
 			continue;
 		}
@@ -114,11 +159,11 @@ fn render(src: &str) -> Result<String, ParseError> {
 			} else {
 				format!("$ {body}")
 			};
-			o.at_depth(&shell);
+			o.at_depth(&shell, Kind::Other);
 			let mut last = trimmed.to_string();
 			while last.ends_with('\\') && i + 1 < raw.len() {
 				i += 1;
-				o.lines.push(raw[i].to_string());
+				o.opaque(raw[i].to_string());
 				last = raw[i].to_string();
 			}
 			i += 1;
@@ -126,7 +171,7 @@ fn render(src: &str) -> Result<String, ParseError> {
 		}
 		if let Some(cmd) = trimmed.strip_prefix("exec ") {
 			let d = o.depth();
-			o.push(d, &format!("exec {}", cmd.trim()));
+			o.push(d, &format!("exec {}", cmd.trim()), Kind::Open);
 			i = exec_body(&raw, i + 1, line, d, &mut o);
 			continue;
 		}
@@ -138,11 +183,11 @@ fn render(src: &str) -> Result<String, ParseError> {
 					o.stack.pop();
 				}
 				o.stack.pop();
-				o.at_depth("end");
+				o.at_depth("end", Kind::Close);
 			}
 			"else" => {
 				o.stack.pop();
-				o.at_depth("else");
+				o.at_depth("else", Kind::Mid);
 				o.stack.push(Frame::Body);
 			}
 			"case" | "default" => {
@@ -152,11 +197,12 @@ fn render(src: &str) -> Result<String, ParseError> {
 				// The label is matched textually by the parser, quotes and
 				// all, so it is passed through rather than re-rendered.
 				let rest = trimmed[head.len()..].trim();
-				o.at_depth(&if rest.is_empty() {
+				let text = if rest.is_empty() {
 					head.to_string()
 				} else {
 					format!("{head} {rest}")
-				});
+				};
+				o.at_depth(&text, Kind::Mid);
 				o.stack.push(Frame::Case);
 			}
 			_ => {
@@ -195,13 +241,13 @@ fn exec_body(raw: &[&str], from: usize, opener: &str, depth: usize, o: &mut Out)
 	for l in &body {
 		let text = if l.len() >= base { &l[base..] } else { "" };
 		if text.trim().is_empty() {
-			o.lines.push(String::new());
+			o.opaque(String::new());
 		} else {
-			o.lines.push(format!("{}{text}", INDENT.repeat(depth + 1)));
+			o.opaque(format!("{}{text}", INDENT.repeat(depth + 1)));
 		}
 	}
 	if j < raw.len() {
-		o.push(depth, "end");
+		o.push(depth, "end", Kind::Close);
 	}
 	j + 1
 }
@@ -243,12 +289,12 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 	{
 		let d = o.depth();
 		let head = text[..text.len() - rest.len()].to_string();
-		o.push(d, &format!("{head}exec {}", cmd.trim()));
+		o.push(d, &format!("{head}exec {}", cmd.trim()), Kind::Open);
 		return Ok(exec_body(raw, i + 1, raw[i], d, o));
 	}
 
 	let d = o.depth();
-	o.push(d, &text);
+	o.push(d, &text, kind_of(head, trimmed, opens));
 	// `let x = [` and its continuation lines are one logical line to the
 	// parser, so they are indented as a run rather than as statements -- and
 	// against the *opener's* depth, since `for x in [` spills its list before
@@ -259,7 +305,7 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 		let t = raw[j].trim();
 		let rendered = if t.is_empty() { String::new() } else { spaced(t, no)? };
 		let delta = brackets(&rendered, no)?;
-		o.push(if open + delta <= 0 { d } else { d + 1 }, &rendered);
+		o.push(if open + delta <= 0 { d } else { d + 1 }, &rendered, Kind::Opaque);
 		open += delta;
 		j += 1;
 	}
@@ -422,17 +468,128 @@ fn space_between((pc, punary): (Cls, bool), cur: Cls) -> bool {
 	}
 }
 
-/// One trailing newline, no leading blank lines, and never two blanks running.
-fn finish(lines: Vec<String>) -> String {
-	let mut out: Vec<String> = Vec::with_capacity(lines.len());
-	for l in lines {
-		if l.is_empty() && (out.is_empty() || out.last().is_some_and(String::is_empty)) {
-			continue;
-		}
-		out.push(l);
+/// What a statement line counts as when blank lines are being placed.
+fn kind_of(head: &str, trimmed: &str, opens: Option<Frame>) -> Kind {
+	if opens.is_some() {
+		return Kind::Open;
 	}
-	while out.last().is_some_and(String::is_empty) {
-		out.pop();
+	if trimmed.starts_with('.') {
+		return Kind::Property;
+	}
+	if head == "let" {
+		return Kind::Let;
+	}
+	Kind::Other
+}
+
+/// A statement together with the comments written above it.
+///
+/// Comments are not free-standing: one written directly above a statement is
+/// about that statement, so a blank line belongs *before* the comment and
+/// never between the two. Grouping them here is what makes that fall out.
+struct Unit {
+	kind: Kind,
+	lines: Vec<String>,
+	/// The author already left a blank line here, which is kept whatever the
+	/// rules say.
+	spaced: bool,
+}
+
+/// Whether a blank line belongs between two units.
+///
+/// Only ever *adds* one. Removing the author's own blank lines would be
+/// arguing with them about the shape of their file; this is about the places
+/// where a missing one makes a file harder to read.
+fn wants_blank(prev: Kind, cur: Kind) -> bool {
+	use Kind::*;
+	match (prev, cur) {
+		// Nothing is pushed away from the block it closes or continues, and
+		// nothing is pushed away from the line that opened one.
+		(_, Close | Mid) => false,
+		(Open | Mid, _) => false,
+		// The description is a paragraph of its own, then the properties.
+		(Description, _) => true,
+		// After a block has closed, the next thing is a new thought.
+		(Close, _) => true,
+		// Blocks stand out from what runs before them.
+		(_, Open) => true,
+		// A run of `let`s is one group; anything either side of it is not.
+		(Let, x) => x != Let,
+		(_, Let) => true,
+		(Property, x) => x != Property,
+		_ => false,
+	}
+}
+
+/// Group the emitted lines, place the blank lines, and end the file properly.
+fn finish(lines: Vec<(Kind, String)>) -> String {
+	let mut units: Vec<Unit> = Vec::new();
+	let mut pending: Vec<String> = Vec::new();
+	let mut spaced = false;
+
+	for (kind, text) in lines {
+		match kind {
+			Kind::Blank => {
+				// A blank between a comment and what follows means the comment
+				// was a remark, not a heading for the next statement.
+				if !pending.is_empty() {
+					units.push(Unit {
+						kind: Kind::Comment,
+						lines: std::mem::take(&mut pending),
+						spaced,
+					});
+					spaced = false;
+				}
+				spaced = spaced || !units.is_empty();
+			}
+			// The description is one paragraph, however many `#` lines it took.
+			Kind::Description => match units.last_mut() {
+				Some(u) if u.kind == Kind::Description => u.lines.push(text),
+				_ => units.push(Unit {
+					kind: Kind::Description,
+					lines: vec![text],
+					spaced: false,
+				}),
+			},
+			Kind::Comment => pending.push(text),
+			Kind::Opaque => match units.last_mut() {
+				Some(u) => u.lines.push(text),
+				None => units.push(Unit {
+					kind: Kind::Other,
+					lines: vec![text],
+					spaced: false,
+				}),
+			},
+			_ => {
+				let mut group = std::mem::take(&mut pending);
+				group.push(text);
+				units.push(Unit {
+					kind,
+					lines: group,
+					spaced,
+				});
+				spaced = false;
+			}
+		}
+	}
+	if !pending.is_empty() {
+		units.push(Unit {
+			kind: Kind::Comment,
+			lines: pending,
+			spaced,
+		});
+	}
+
+	let mut out: Vec<String> = Vec::new();
+	let mut prev: Option<Kind> = None;
+	for u in units {
+		if let Some(p) = prev
+			&& (u.spaced || wants_blank(p, u.kind))
+		{
+			out.push(String::new());
+		}
+		out.extend(u.lines);
+		prev = Some(u.kind);
 	}
 	if out.is_empty() {
 		return String::new();

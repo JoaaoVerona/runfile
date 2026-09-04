@@ -155,6 +155,12 @@ quoting.
   drains after every iteration.
 - Binding names are validated in both `let` and reassignment; a block closer (`end`/`else`/`case`/`default`)
   with nothing open is a parse error rather than an expression statement.
+- **`exit` is the one function that may be written without parentheses**, so `exit` and `exit(0)` mean the
+  same and a bare word can end a branch. It leaves as `EvalError::Exit`, since an error is the only path out
+  of an expression, and *every* catcher re-raises it: `try`, a `?` chain and `.ignore-errors` all let it
+  through, the way an interrupt is not something a target gets to shrug off. `RunError::exit_code` is what the
+  CLI reads to set its own status instead of printing an error. The parser rule means a binding named `exit`
+  can never be read back, which is the price of the bare form.
 - **The formatter is line-oriented, not an AST printer.** The tree keeps no comments and folds a run of `$`
   lines into one statement, so printing from it would delete what a person wrote. Tokens are rendered from
   their **source spans**, so a string — raw prefix, escapes, interpolations — is copied out verbatim and
@@ -164,7 +170,12 @@ quoting.
   argument is, so its internal spacing is left alone too. `format` re-parses its own output and compares
   `fingerprint`s before returning: it cannot change what a file means. It refuses source that does not parse,
   since reindenting unclosed blocks is guesswork. `case`/`default` sit at the `match`'s own level, and a
-  `for x in [` spills its list at the header's level rather than the body's. Gated by
+  `for x in [` spills its list at the header's level rather than the body's — a `case` is indented *inside*
+  its `match`, since three keywords at one level read as three separate things. Blank lines are **added, never
+  removed**: after the description, between properties and the body, around a run of `let`s (a run is one
+  group), before a block opener and after an `end` — but never between a comment and the statement it is
+  about, and never pushing the first line of a body away from what opened it. Removing an author's own blank
+  lines would be arguing with them; adding the missing ones is not. Gated by
   `runfile-lang/tests/repo_format.rs`, the `.run` equivalent of `cargo fmt --check`.
 - `Statement::Exec` carries `lines: Vec<usize>`, the source line of each body line. The two are not derivable
   from each other: a `$` run skips blank and comment lines, and a backslash continuation folds several source
@@ -258,12 +269,27 @@ second time as the global. This replaced `includes` entirely.
   hover has something to say. Hover reads the word under the cursor rather than the tree, so it keeps working
   while the document does not parse. `RUN.` is the only source whose keys are known ahead of time; `ARG`,
   `ENV` and `FLAG` are whatever the caller passed, so there is nothing to offer for them.
+- **`textDocument/formatting`** returns one edit covering the whole document, because sync is whole-document:
+  a minimal diff would be a second description of the same change and a chance for the two to disagree. A
+  document that does not parse is answered with `null` rather than an error — a file is unfinished for most of
+  the time it is being written, and format-on-save must not put a dialog in the way of that. This is what
+  makes format-on-save work in every editor, the CLI and the editor sharing one formatter.
 - **Shellcheck delegation**: `$` runs and `exec sh|bash|dash|ash|ksh` bodies are handed to shellcheck. An
   interpolation renders as one quoted placeholder, because it resolves to exactly one shell word; leaving the
   braces in would have shellcheck reporting on a command nobody wrote. Since a placeholder is a different width
   from what it stands for, a line containing one is reported **whole** rather than with a confidently wrong
   column. Shellcheck's four levels map onto LSP's four. Checking is skipped when the document does not parse,
   and a missing shellcheck is silent.
+
+### editors/vscode
+
+The LSP client is hand-rolled rather than `vscode-languageclient`: the server speaks a small, fixed subset,
+and a full client library is a large dependency for five message types. It was notification-only until
+format-on-save needed a reply, so it now correlates requests by id with a **timeout** — this runs on save, and
+a wedged server must not take the editor's save with it. Telling a reply from a notification is `replyId` in
+`pure.ts`, extracted so the rule has a test on it rather than sitting in a class that cannot be loaded outside
+an extension host. Registering `DocumentFormattingEditProvider` is what makes `editor.formatOnSave` apply to
+`.run` files; every other editor gets the same thing straight from the LSP.
 
 ### editors/tree-sitter
 

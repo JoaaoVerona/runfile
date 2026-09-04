@@ -45,6 +45,14 @@ export function activate(context: vscode.ExtensionContext): void {
 		const client = new LanguageClient(config.get<string>("lspPath", "runfile-lsp"), output)
 		client.start()
 		context.subscriptions.push(client)
+		// Registering this is what makes `editor.formatOnSave` work for `.run`
+		// files, and Format Document too. The shape comes from the server, so
+		// an editor cannot leave a file in one the CLI would then change.
+		context.subscriptions.push(
+			vscode.languages.registerDocumentFormattingEditProvider(RUNFILE_SELECTOR, {
+				provideDocumentFormattingEdits: (doc) => client.format(doc)
+			})
+		)
 	}
 
 	context.subscriptions.push(

@@ -97,11 +97,42 @@ impl Server {
 			"textDocument/completion" => vec![reply(id, self.completion(&msg["params"]))],
 			"textDocument/hover" => vec![reply(id, self.hover(&msg["params"]))],
 			"textDocument/definition" => vec![reply(id, self.definition(&msg["params"]))],
+			"textDocument/formatting" => vec![reply(id, self.formatting(&msg["params"]))],
 			// Anything else: an unanswered request hangs the client, so refuse
 			// rather than ignore.
 			_ if id.is_some() => vec![reply(id, Value::Null)],
 			_ => vec![],
 		}
+	}
+
+	/// One edit replacing the whole document.
+	///
+	/// Whole-document because sync is whole-document: a minimal diff would be
+	/// a second description of the same change, and a chance for the two to
+	/// disagree. A document that does not parse is answered with `null` rather
+	/// than an error -- a file is unfinished for most of the time it is being
+	/// written, and format-on-save must not put a dialog in the way of that.
+	fn formatting(&self, params: &Value) -> Value {
+		let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+		let Some(src) = self.docs.get(uri) else {
+			return Value::Null;
+		};
+		let Ok(out) = runfile_lang::format(src) else {
+			return Value::Null;
+		};
+		if out == *src {
+			// No edits at all, so an editor marks nothing dirty.
+			return json!([]);
+		}
+		// An end position past the last line covers the document whatever its
+		// line endings are, which is what every server does here.
+		json!([{
+			"range": {
+				"start": {"line": 0, "character": 0},
+				"end": {"line": src.lines().count() + 1, "character": 0},
+			},
+			"newText": out,
+		}])
 	}
 
 	fn diagnostics_for(&self, uri: &str) -> Value {
@@ -247,6 +278,11 @@ fn capabilities() -> Value {
 			"completionProvider": {"triggerCharacters": [".", " "]},
 			"hoverProvider": true,
 			"definitionProvider": true,
+			// Format-on-save works through this: an editor asks for edits
+			// before writing, and the answer is the same `run :format`
+			// produces, so a file cannot come out of an editor in a shape the
+			// CLI would then change.
+			"documentFormattingProvider": true,
 		},
 		"serverInfo": {"name": "runfile-lsp", "version": env!("CARGO_PKG_VERSION")},
 	})

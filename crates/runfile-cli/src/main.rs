@@ -278,7 +278,15 @@ fn real_main() -> Result<ExitCode, String> {
 			prepare::record(&cat, target);
 			Ok(ExitCode::SUCCESS)
 		}
-		Err(e) => Err(e.to_string()),
+		// `exit(code)` is not a failure: it is the status the target asked for,
+		// so it is returned rather than printed as an error.
+		Err(e) => match e.exit_code() {
+			Some(code) => {
+				prepare::record(&cat, target);
+				Ok(ExitCode::from(code as u8))
+			}
+			None => Err(e.to_string()),
+		},
 	}
 }
 

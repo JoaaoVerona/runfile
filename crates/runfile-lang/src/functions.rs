@@ -33,7 +33,10 @@ pub fn call(name: &str, args: &[Expr], sc: &mut Scope, sp: Span) -> Result<Value
 		let was = std::mem::replace(&mut sc.in_try, true);
 		let out = eval(&args[0], sc);
 		sc.in_try = was;
-		return out.map_err(|_| EvalError::Caught { line: sp.line });
+		return out.map_err(|e| match e {
+			e @ EvalError::Exit { .. } => e,
+			_ => EvalError::Caught { line: sp.line },
+		});
 	}
 
 	let v: Vec<Value> = args.iter().map(|a| eval(a, sc)).collect::<Result<_, _>>()?;
@@ -41,6 +44,17 @@ pub fn call(name: &str, args: &[Expr], sc: &mut Scope, sp: Span) -> Result<Value
 	let s = |i: usize| v[i].as_str().map_err(|e| ty(sp, e));
 	let num = |i: usize| v[i].as_num().map_err(|e| ty(sp, e));
 	let list = |i: usize| v[i].as_list().map_err(|e| ty(sp, e));
+
+	// `exit` ends the run rather than producing a value, so it leaves here as
+	// an error instead of falling through to the table below.
+	if name == "exit" {
+		let code = match n {
+			0 => 0,
+			1 => num(0)? as i32,
+			_ => return Err(arity("exit", "0 or 1 arguments", n, sp)),
+		};
+		return Err(EvalError::Exit { code, line: sp.line });
+	}
 
 	macro_rules! want {
 		($k:literal, $want:literal) => {
@@ -759,6 +773,11 @@ pub const FUNCTIONS: &[Function] = &[
 		name: "file_exists",
 		signature: "file_exists(path)",
 		doc: "Whether the path exists, relative to the runfiles parent.",
+	},
+	Function {
+		name: "exit",
+		signature: "exit(code?)",
+		doc: "Stop the run with this exit status, or 0. May be written without parentheses.",
 	},
 	Function {
 		name: "first",

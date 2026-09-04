@@ -1156,6 +1156,72 @@ fn two_populated_global_directories_stop_the_run_and_name_both() {
 	assert!(e.contains("keep one of them"), "the error must say what to do: {e}");
 }
 
+fn code_of(o: &std::process::Output) -> i32 {
+	o.status.code().expect("an exit status")
+}
+
+#[test]
+fn exit_sets_the_process_status_and_is_not_an_error() {
+	for (body, want) in [
+		("exit\n", 0),
+		("exit(0)\n", 0),
+		("exit(3)\n", 3),
+		// The shell truncates to a byte; -1 is the classic 255.
+		("exit(-1)\n", 255),
+	] {
+		let p = project(&[("runfiles/e.run", body)]);
+		let o = p.run(&["e"]);
+		assert_eq!(code_of(&o), want, "{body:?}");
+		assert!(
+			err(&o).is_empty() || !err(&o).contains("error:"),
+			"not a failure: {}",
+			err(&o)
+		);
+	}
+}
+
+#[test]
+fn exit_stops_the_statements_after_it() {
+	let p = project(&[("runfiles/e.run", "$ echo before\nexit(2)\n$ echo after\n")]);
+	let o = p.run(&["e"]);
+	assert_eq!(code_of(&o), 2);
+	assert!(out(&o).contains("before"), "{}", out(&o));
+	assert!(!out(&o).contains("after"), "everything past it is skipped: {}", out(&o));
+}
+
+#[test]
+fn ignore_errors_does_not_shrug_off_an_exit() {
+	// A target may forgive a command that failed. Being told to stop is not
+	// that -- same reason an interrupt is not ignorable.
+	let p = project(&[(
+		"runfiles/e.run",
+		".ignore-errors = true\n$ false\nexit(5)\n$ echo after\n",
+	)]);
+	let o = p.run(&["e"]);
+	assert_eq!(code_of(&o), 5);
+	assert!(!out(&o).contains("after"), "{}", out(&o));
+}
+
+#[test]
+fn an_exit_inside_a_called_target_ends_the_whole_run() {
+	let p = project(&[
+		("runfiles/parent.run", "run child\n$ echo after\n"),
+		("runfiles/child.run", "exit(7)\n"),
+	]);
+	let o = p.run(&["parent"]);
+	assert_eq!(code_of(&o), 7, "{}", err(&o));
+	assert!(!out(&o).contains("after"), "{}", out(&o));
+}
+
+#[test]
+fn exit_inside_a_branch_reads_as_a_bare_word() {
+	let p = project(&[("runfiles/e.run", "if FLAG.stop\n\texit(4)\nend\n$ echo went-on\n")]);
+	assert_eq!(code_of(&p.run(&["e", "--stop"])), 4);
+	let o = p.run(&["e"]);
+	assert_eq!(code_of(&o), 0);
+	assert!(out(&o).contains("went-on"), "{}", out(&o));
+}
+
 #[test]
 fn format_rewrites_every_runfile_in_the_project() {
 	let p = project(&[

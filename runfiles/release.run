@@ -14,13 +14,14 @@ let minor = number(parts[1])
 let patch = number(parts[2])
 
 let next = ""
+
 match part
-case "major"
-	next = concat(major + 1, ".0.0")
-case "minor"
-	next = concat(major, ".", minor + 1, ".0")
-case "patch"
-	next = concat(major, ".", minor, ".", patch + 1)
+	case "major"
+		next = concat(major + 1, ".0.0")
+	case "minor"
+		next = concat(major, ".", minor + 1, ".0")
+	case "patch"
+		next = concat(major, ".", minor, ".", patch + 1)
 end
 
 write_file("Cargo.toml", regex_replace(cargo, "(?m)^version = \"[^\"]+\"", concat("version = \"", next, "\"")))
@@ -29,6 +30,7 @@ $ cargo update --workspace
 run _bump-vscode-extension {{ next }}
 
 let tag = concat("v", next)
+
 $ echo "Bumped: {{ cur }} -> {{ next }}, tagging {{ tag }}"
 $ git commit Cargo.toml Cargo.lock editors/vscode/package.json -m "bump to {{ next }}"
 $ git tag {{ tag }}

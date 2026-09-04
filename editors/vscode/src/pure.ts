@@ -124,6 +124,22 @@ export class MessageReader {
 	}
 }
 
+/**
+ * Whether a message from the server is a reply to a request rather than a
+ * notification.
+ *
+ * A reply carries an id and no method; a notification carries a method and no
+ * id. Told apart here so the rule is one line with a test on it rather than a
+ * condition buried in a class that cannot be loaded without VS Code.
+ */
+export function replyId(message: unknown): number | undefined {
+	const m = message as { id?: unknown; method?: unknown };
+	if (m.method !== undefined || typeof m.id !== "number") {
+		return undefined;
+	}
+	return m.id;
+}
+
 export function frame(message: unknown): string {
 	const body = Buffer.from(JSON.stringify(message), "utf8");
 	return `Content-Length: ${body.length}\r\n\r\n${body.toString("utf8")}`;

@@ -11,6 +11,7 @@ import {
 	frame,
 	namespaceOf,
 	parseCatalog,
+	replyId,
 	targetNameFor,
 } from "./pure";
 
@@ -142,3 +143,15 @@ test("a header without a length is skipped rather than stalling", () => {
 	const out = r.push(Buffer.from(`X-Nonsense: 1\r\n\r\n${frame({ ok: true })}`, "utf8"));
 	assert.deepEqual(out, [{ ok: true }]);
 });
+
+test("a reply is told from a notification by its id", () => {
+	// Format-on-save waits on a reply; mistaking a notification for one would
+	// resolve the wrong request, and mistaking a reply for a notification
+	// would leave the save waiting until it timed out.
+	assert.equal(replyId({ jsonrpc: "2.0", id: 9, result: [] }), 9);
+	assert.equal(replyId({ jsonrpc: "2.0", id: 0, result: null }), 0);
+	assert.equal(replyId({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: {} }), undefined);
+	// A server-to-client *request* has both, and is not ours to resolve.
+	assert.equal(replyId({ jsonrpc: "2.0", id: 1, method: "window/showMessageRequest" }), undefined);
+	assert.equal(replyId({ jsonrpc: "2.0", id: "1", result: [] }), undefined);
+})

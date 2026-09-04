@@ -143,6 +143,21 @@ $ cp {{ ARG.src }} {{ ARG.dest }}
 **Never wrap an interpolation in shell quotes.** There is no `shell_quote` function because there is nothing to
 quote: the substitution already did it.
 
+### Stopping early
+
+`exit` ends the run with a status. Written without parentheses it means `exit(0)`; with one it takes any
+number, which the shell truncates to a byte the usual way — `exit(-1)` is 255.
+
+```sh
+if !file_exists(".env")
+	$ echo 'no .env here' >&2
+	exit(1)
+end
+```
+
+Nothing catches it: not `try`, not a `?` fallback, not `.ignore-errors`. A target may forgive a command that
+failed, but being told to stop is not that.
+
 ### Temporary files
 
 `temp_file` and `temp_dir` make something in the OS temp directory and hand back the path. Both are deleted
@@ -256,10 +271,15 @@ exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
 `run :completions install` puts bash and fish completions in the directory each shell loads on demand, and
 adds a line to `.zshrc` or PowerShell's profile for the other two. Open a new shell afterwards.
 
-`run :format` has no settings: one shape, everywhere. It reindents with tabs, spaces expressions, and leaves
-the three things that are not the language's to touch — strings, the text after `$ `, and `exec` bodies —
-exactly as written. It refuses a file that does not parse, and checks that its own output still means the same
-thing before writing it. `--check` reports what would change and exits 1, which is what a CI step wants.
+`run :format` has no settings: one shape, everywhere. It reindents with tabs, spaces expressions, places
+blank lines (after the description, around a run of `let`s, before a block, after an `end`), and leaves the
+three things that are not the language's to touch — strings, the text after `$ `, and `exec` bodies — exactly
+as written. It refuses a file that does not parse, and checks that its own output still means the same thing
+before writing it. `--check` reports what would change and exits 1, which is what a CI step wants.
+
+The language server offers the same formatting, so **format-on-save works in any editor with the extension or
+the LSP configured** — in VS Code, `"editor.formatOnSave": true`. A file is never reformatted while it does
+not parse.
 
 | Flag | |
 | --- | --- |

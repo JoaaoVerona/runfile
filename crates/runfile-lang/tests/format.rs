@@ -37,10 +37,13 @@ end
 
 .env.A = \"one\"
 .shell = \"bash\"
+
 let x = concat(\"a\", \"b\")
 let y = [1, 2, 3]
+
 if x == \"ab\" && !contains(x, \"z\")
 \t$ echo   {{ x }}
+
 \tfor i in y
 \t\tif i > 1
 \t\t\t$ echo big
@@ -51,11 +54,12 @@ if x == \"ab\" && !contains(x, \"z\")
 else
 \t$ echo no
 end
+
 match x
-case \"ab\"
-\t$ echo m
-default
-\t$ echo d
+\tcase \"ab\"
+\t\t$ echo m
+\tdefault
+\t\t$ echo d
 end
 ";
 	assert_eq!(format(src).unwrap(), want);
@@ -199,4 +203,50 @@ fn formatting_is_idempotent() {
 		let twice = format(&once).unwrap();
 		assert_eq!(once, twice, "not stable:\n{once}");
 	}
+}
+
+#[test]
+fn a_case_sits_inside_its_match() {
+	// `match`/`case`/`end` at one level read as three separate things. A case
+	// is part of the match, and the indentation should say so.
+	let src = "match x\ncase \"a\"\n$ one\ndefault\n$ two\nend\n";
+	assert_eq!(
+		format(src).unwrap(),
+		"match x\n\tcase \"a\"\n\t\t$ one\n\tdefault\n\t\t$ two\nend\n"
+	);
+}
+
+#[test]
+fn blank_lines_are_placed_where_a_file_needs_air() {
+	// The description is a paragraph of its own; a run of `let`s is one group;
+	// a block stands out from what runs before it; and after an `end` comes a
+	// new thought.
+	let src = "# What this does\n.shell = \"bash\"\nlet a = 1\nlet b = 2\n$ echo hi\nif a\n$ x\nend\n$ done\n";
+	assert_eq!(
+		format(src).unwrap(),
+		"# What this does\n\n.shell = \"bash\"\n\nlet a = 1\nlet b = 2\n\n$ echo hi\n\nif a\n\t$ x\nend\n\n$ done\n"
+	);
+}
+
+#[test]
+fn a_comment_stays_with_the_statement_it_is_about() {
+	// The blank goes above the comment, not between it and what it explains.
+	let src = "$ first\n# why this next bit\nif a\n$ x\nend\n";
+	assert_eq!(
+		format(src).unwrap(),
+		"$ first\n\n# why this next bit\nif a\n\t$ x\nend\n"
+	);
+}
+
+#[test]
+fn nothing_is_pushed_away_from_the_block_it_opens_or_closes() {
+	let src = "if a\nlet x = 1\nelse\nlet y = 2\nend\n";
+	assert_eq!(format(src).unwrap(), "if a\n\tlet x = 1\nelse\n\tlet y = 2\nend\n");
+}
+
+#[test]
+fn the_authors_own_blank_lines_are_kept() {
+	// The rules add; they do not argue with someone who wanted a break here.
+	let src = "let a = 1\n\nlet b = 2\n";
+	assert_eq!(format(src).unwrap(), src);
 }

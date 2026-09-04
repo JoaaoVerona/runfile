@@ -440,3 +440,59 @@ fn a_genuinely_absent_env_name_is_still_an_error() {
 	let e = parse_expr("ENV.nowhere", 0, 1).unwrap();
 	assert!(eval(&e, &mut s).is_err());
 }
+
+#[test]
+fn exit_carries_a_status_out_rather_than_producing_a_value() {
+	// It leaves as an error because that is the only way out of an
+	// expression. What it carries is a status, not a message.
+	let at = |src: &str| {
+		let e = parse_expr(src, 0, 1).unwrap_or_else(|x| panic!("{src}: {x}"));
+		match eval(&e, &mut sc()) {
+			Err(crate::EvalError::Exit { code, .. }) => code,
+			other => panic!("{src}: expected an exit, got {other:?}"),
+		}
+	};
+	assert_eq!(at("exit"), 0, "a bare word means the same as exit(0)");
+	assert_eq!(at("exit(0)"), 0);
+	assert_eq!(at("exit(3)"), 3);
+	// Truncation to 255 is the operating system's, so the value is carried
+	// whole and a test of it does not depend on the platform.
+	assert_eq!(at("exit(-1)"), -1);
+	assert_eq!(
+		at("exit(number(ARG.count))"),
+		3,
+		"the argument is an ordinary expression"
+	);
+}
+
+#[test]
+fn nothing_catches_an_exit() {
+	// `try` and `?` are for failures to fall back from. This is not one: a
+	// target that says stop must stop.
+	for src in ["try(exit(4))", "exit(4) ? 9"] {
+		let e = parse_expr(src, 0, 1).unwrap();
+		match eval(&e, &mut sc()) {
+			Err(crate::EvalError::Exit { code: 4, .. }) => {}
+			other => panic!("{src} swallowed it: {other:?}"),
+		}
+	}
+}
+
+#[test]
+fn exit_takes_at_most_one_argument() {
+	assert!(boom("exit(1, 2)").contains("0 or 1 arguments"));
+}
+
+#[test]
+fn a_binding_named_exit_is_not_shadowed_by_the_keyword() {
+	// `exit` without parentheses is a call, so it cannot also be read as a
+	// variable. Worth pinning: it is the one name in the language for which
+	// that is true.
+	let mut s = sc();
+	s.vars.insert("exit".into(), Value::Num(1.0));
+	let e = parse_expr("exit", 0, 1).unwrap();
+	assert!(
+		matches!(eval(&e, &mut s), Err(crate::EvalError::Exit { .. })),
+		"the call wins"
+	);
+}

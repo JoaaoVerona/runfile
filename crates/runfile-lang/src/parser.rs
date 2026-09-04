@@ -762,6 +762,14 @@ impl<'a> E<'a> {
 						key: None,
 						span: self.span(from),
 					}),
+					// The one function that may be written without parentheses:
+					// `exit` reads better than `exit()` at the end of a branch,
+					// and `exit(1)` still parses as an ordinary call below.
+					"exit" if !matches!(self.peek(), Some(Token::Punct("("))) => Ok(Expr::Call {
+						name: "exit".into(),
+						args: Vec::new(),
+						span: self.span(from),
+					}),
 					"true" => Ok(Expr::Bool(true, self.span(from))),
 					"false" => Ok(Expr::Bool(false, self.span(from))),
 					_ => Ok(Expr::Ident(name, self.span(from))),

@@ -35,6 +35,18 @@ pub enum RunError {
 	Host(Box<dyn std::error::Error + Send + Sync>),
 }
 
+impl RunError {
+	/// The status `exit(code)` asked for, if this is that rather than a
+	/// failure. `.ignore-errors` consults it: a target may shrug off a command
+	/// that failed, but not an instruction to stop.
+	pub fn exit_code(&self) -> Option<i32> {
+		match self {
+			RunError::Eval(EvalError::Exit { code, .. }) => Some(*code),
+			_ => None,
+		}
+	}
+}
+
 /// How a nested `run <target>` is dispatched. In-process, so cycle detection
 /// and the step counter are ordinary data rather than an env-var protocol.
 /// Writing `$ run <target>` instead re-execs the binary, which is just a shell
@@ -167,7 +179,7 @@ fn walk(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError
 			return Err(RunError::Interrupted);
 		}
 		if let Err(e) = statement(st, props, r)
-			&& !props.ignore_errors
+			&& (!props.ignore_errors || e.exit_code().is_some())
 		{
 			return Err(e);
 		}
@@ -234,7 +246,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			for item in items {
 				r.scope.bind(name, item);
 				if let Err(e) = walk(body, &inner, r)
-					&& !inner.ignore_errors
+					&& (!inner.ignore_errors || e.exit_code().is_some())
 				{
 					r.scope.restore(name, prior);
 					return Err(e);
@@ -565,7 +577,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 	// Every branch runs to completion before a failure surfaces -- stopping the
 	// others would leave a half-started fan-out behind.
 	match first_error {
-		Some(e) if !props.ignore_errors => Err(e),
+		Some(e) if !props.ignore_errors || e.exit_code().is_some() => Err(e),
 		_ => Ok(()),
 	}
 }

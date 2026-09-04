@@ -43,6 +43,13 @@ pub enum EvalError {
 	/// a bare `try(x)` resolves to an empty string at the boundary.
 	#[error("line {line}: caught failure")]
 	Caught { line: usize },
+	/// `exit(code)`. Not a failure -- an instruction to stop with that status.
+	/// It travels as an error because that is the only path out of an
+	/// expression, and every catcher along the way lets it through: `try`, a
+	/// `?` chain and `.ignore-errors` all re-raise it, the way an interrupt is
+	/// not something a target gets to shrug off.
+	#[error("exit {code}")]
+	Exit { code: i32, line: usize },
 }
 
 impl EvalError {
@@ -248,6 +255,8 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 			sc.in_try = was;
 			match left {
 				Ok(v) => Ok(v),
+				// `exit` is not a failure to fall back from.
+				Err(e @ EvalError::Exit { .. }) => Err(e),
 				Err(_) => eval(rhs, sc),
 			}
 		}

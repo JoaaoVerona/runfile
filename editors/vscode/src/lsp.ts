@@ -2,14 +2,23 @@
 //
 // Hand-rolled over `vscode.languages.createDiagnosticCollection` rather than
 // pulled in through `vscode-languageclient`: the server speaks a small, fixed
-// subset -- open, change, close, publish -- and a full client library would be
-// a large dependency to carry for four message types. Completion and
+// subset -- open, change, close, publish, format -- and a full client library
+// would be a large dependency to carry for five message types. Completion and
 // go-to-definition are contributed by the extension directly, from the same
 // catalog the tree uses, so nothing is lost by not routing them through LSP.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import * as vscode from "vscode";
-import { MessageReader, frame } from "./pure";
+import { MessageReader, frame, replyId } from "./pure";
+
+/** A whole-document replacement, which is the only edit the server sends. */
+interface TextEdit {
+	range: {
+		start: { line: number; character: number };
+		end: { line: number; character: number };
+	};
+	newText: string;
+}
 
 interface Diagnostic {
 	range: {
@@ -40,6 +49,8 @@ export class LanguageClient implements vscode.Disposable {
 	private readonly diagnostics = vscode.languages.createDiagnosticCollection("runfile");
 	private readonly subs: vscode.Disposable[] = [];
 	private nextId = 1;
+	/** Requests waiting on a reply, by id. */
+	private readonly pending = new Map<number, (result: unknown) => void>();
 
 	constructor(
 		private readonly command: string,
@@ -92,8 +103,66 @@ export class LanguageClient implements vscode.Disposable {
 		this.child?.stdin?.write(frame(message));
 	}
 
+	/**
+	 * Send a request and wait for its reply.
+	 *
+	 * Times out rather than waiting forever: this runs on save, and a server
+	 * that has wedged must not take the editor's save with it.
+	 */
+	private request(method: string, params: unknown, timeoutMs = 2000): Promise<unknown> {
+		if (!this.child) {
+			return Promise.resolve(null);
+		}
+		const id = this.nextId++;
+		return new Promise((resolve) => {
+			const done = (result: unknown) => {
+				clearTimeout(timer);
+				this.pending.delete(id);
+				resolve(result);
+			};
+			const timer = setTimeout(() => done(null), timeoutMs);
+			this.pending.set(id, done);
+			this.send({ jsonrpc: "2.0", id, method, params });
+		});
+	}
+
+	/**
+	 * The edits that put a document into the one shape there is -- the same
+	 * `run :format` produces, since both call the same formatter.
+	 *
+	 * An empty list when nothing needs changing, so saving a clean file marks
+	 * nothing dirty; nothing at all when the document does not parse, because
+	 * a file is unfinished for most of the time it is being written.
+	 */
+	async format(doc: vscode.TextDocument): Promise<vscode.TextEdit[]> {
+		if (!this.isRunfile(doc)) {
+			return [];
+		}
+		const result = (await this.request("textDocument/formatting", {
+			textDocument: { uri: doc.uri.toString() },
+			options: { tabSize: 4, insertSpaces: false },
+		})) as TextEdit[] | null;
+		if (!Array.isArray(result)) {
+			return [];
+		}
+		// The server sends one edit past the last line; clamp it to what the
+		// document actually has, which is what VS Code will accept.
+		const full = new vscode.Range(0, 0, doc.lineCount, 0);
+		return result.map((e) => vscode.TextEdit.replace(full, e.newText));
+	}
+
 	private receive(message: unknown): void {
-		const m = message as { method?: string; params?: { uri?: string; diagnostics?: Diagnostic[] } };
+		const m = message as {
+			id?: number;
+			result?: unknown;
+			method?: string;
+			params?: { uri?: string; diagnostics?: Diagnostic[] };
+		};
+		const id = replyId(message);
+		if (id !== undefined) {
+			this.pending.get(id)?.(m.result ?? null);
+			return;
+		}
 		if (m.method !== "textDocument/publishDiagnostics" || !m.params?.uri) {
 			return;
 		}
