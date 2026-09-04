@@ -1,7 +1,7 @@
 import * as cp from "node:child_process"
 import * as vscode from "vscode"
 import { type Target, load, namespaceOf } from "./catalog"
-import { RUNFILE_SELECTOR, RunfileCodeLensProvider } from "./codeLens"
+import { RUNFILE_LANGUAGE, RUNFILE_SELECTOR, RunfileCodeLensProvider } from "./codeLens"
 import { LanguageClient } from "./lsp"
 
 /** The task type we register a provider for and stamp on every generated task. */
@@ -51,21 +51,21 @@ export function activate(context: vscode.ExtensionContext): void {
 		// The server advertises all of these; without a provider registered for
 		// each, it is asked nothing and none of them happen.
 		context.subscriptions.push(
-			vscode.languages.registerDocumentFormattingEditProvider(RUNFILE_SELECTOR, {
+			vscode.languages.registerDocumentFormattingEditProvider(RUNFILE_LANGUAGE, {
 				provideDocumentFormattingEdits: (doc) => client.format(doc)
 			}),
 			// The trigger characters are the server's: `.` opens the property
 			// list, and a space is what puts `run ` in front of a target name.
 			vscode.languages.registerCompletionItemProvider(
-				RUNFILE_SELECTOR,
+				RUNFILE_LANGUAGE,
 				{ provideCompletionItems: (doc, pos) => client.completion(doc, pos) },
 				".",
 				" "
 			),
-			vscode.languages.registerHoverProvider(RUNFILE_SELECTOR, {
+			vscode.languages.registerHoverProvider(RUNFILE_LANGUAGE, {
 				provideHover: (doc, pos) => client.hover(doc, pos)
 			}),
-			vscode.languages.registerDefinitionProvider(RUNFILE_SELECTOR, {
+			vscode.languages.registerDefinitionProvider(RUNFILE_LANGUAGE, {
 				provideDefinition: (doc, pos) => client.definition(doc, pos)
 			})
 		)

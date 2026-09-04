@@ -15,6 +15,19 @@ export const RUNFILE_SELECTOR: vscode.DocumentSelector = {
 	pattern: "**/runfiles/**/*.run",
 };
 
+/**
+ * Every `.run` file, wherever it is.
+ *
+ * The language features go by language rather than by location: completion
+ * and formatting are about the file, not about whether it sits in a project.
+ * The machine-wide directory is `~/.runfiles`, which the pattern above does
+ * not match -- a leading dot is a different directory name -- so keying those
+ * off it would leave a person's own global targets with no editor support at
+ * all. The code lens still uses the pattern, since running a target needs a
+ * project to run it in.
+ */
+export const RUNFILE_LANGUAGE: vscode.DocumentSelector = { scheme: "file", language: "runfile" };
+
 /** The directory `run` should discover from, using this platform's separator. */
 export function anchorFor(filePath: string): string | undefined {
 	return anchorOf(filePath, path.sep);
