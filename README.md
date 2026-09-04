@@ -246,6 +246,9 @@ exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
 | `run :init` | Create `runfiles/` with an example |
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
 | `run :completions <command>` | `install`, `uninstall` or `output` a completion script |
+
+`install` puts bash and fish completions in the directory each shell loads on demand, and adds a line to
+`.zshrc` or PowerShell's profile for the other two. Open a new shell afterwards.
 | `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
 | `run :update` | Update the binary |
 

@@ -107,20 +107,51 @@ fn config_dir() -> Result<PathBuf, String> {
 	}
 }
 
+/// `~/.local/share`, or wherever XDG says.
+fn data_dir() -> Result<PathBuf, String> {
+	match std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+		Some(d) => Ok(PathBuf::from(d)),
+		None => Ok(home()?.join(".local/share")),
+	}
+}
+
+/// This binary's own path, so an installed hook does not depend on PATH being
+/// ready when the shell reads its profile.
+fn exe() -> String {
+	std::env::current_exe()
+		.map(|p| p.display().to_string())
+		.unwrap_or_else(|_| "run".to_string())
+}
+
+/// Where an older version put the hook, so `uninstall` can still find it.
+fn legacy_profile(shell: &str) -> Option<PathBuf> {
+	match shell {
+		"bash" => home().ok().map(|h| h.join(".bashrc")),
+		_ => None,
+	}
+}
+
 fn destination(shell: &str) -> Result<Where, String> {
 	Ok(match shell {
-		"bash" => Where::Profile(
-			home()?.join(".bashrc"),
-			r#"eval "$(run :completions output bash)""#.into(),
-		),
+		// A file in bash-completion's own directory rather than a line in
+		// `.bashrc`. Ubuntu's `~/.profile` sources `.bashrc` *before* it puts
+		// `~/.local/bin` on PATH, so a startup hook that shells out to `run`
+		// finds nothing and `eval` registers nothing, silently. A file here is
+		// read on demand, by which time PATH is complete.
+		"bash" => Where::File(data_dir()?.join("bash-completion/completions/run")),
+		// zsh can hit the same ordering, so the line names the binary outright
+		// rather than trusting PATH at startup.
 		"zsh" => Where::Profile(
 			home()?.join(".zshrc"),
-			r#"eval "$(run :completions output zsh)""#.into(),
+			format!(r#"eval "$({} :completions output zsh)""#, exe()),
 		),
 		"fish" => Where::File(config_dir()?.join("fish/completions/run.fish")),
 		"powershell" | "pwsh" => Where::Profile(
 			powershell_profile()?,
-			"run :completions output powershell | Out-String | Invoke-Expression".into(),
+			format!(
+				"& '{}' :completions output powershell | Out-String | Invoke-Expression",
+				exe()
+			),
 		),
 		other => return Err(unknown(other)),
 	})
@@ -166,6 +197,20 @@ pub fn install(shell: &str) -> Result<String, String> {
 
 /// Take it out again, leaving anything else in the profile untouched.
 pub fn uninstall(shell: &str) -> Result<String, String> {
+	// An older version put a line in `.bashrc`; take that out too, so an
+	// upgrade does not leave a dead hook behind.
+	let mut also = String::new();
+	if let Some(profile) = legacy_profile(shell)
+		&& let Ok(text) = std::fs::read_to_string(&profile)
+		&& let Some(trimmed) = without_block(&text)
+	{
+		write_new(&profile, &trimmed)?;
+		also = format!("\nAlso removed the older hook from {}", profile.display());
+	}
+	Ok(uninstall_at(shell)? + &also)
+}
+
+fn uninstall_at(shell: &str) -> Result<String, String> {
 	match destination(shell)? {
 		Where::File(path) => match std::fs::remove_file(&path) {
 			Ok(()) => Ok(format!("Removed {}", path.display())),

@@ -288,10 +288,13 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   being read off the source text. A failing run is reported and watching continues.
 - Completion scripts are hand-written per shell and ask the binary itself for names, so they can never drift
   from the language. The bash one is tested by sourcing it and driving `_run` the way the shell does.
-  `:completions` takes `install`, `uninstall` or `output`, the shape the old CLI had. `install` puts a marked
-  hook in the shell's own profile — fish gets a file, since it reads a directory — and the hook calls
-  `run :completions output <shell>` rather than embedding the script, so an upgrade needs no reinstall. The
-  marker is what makes a second install a no-op and `uninstall` exact.
+  `:completions` takes `install`, `uninstall` or `output`, the shape the old CLI had. **bash and fish get a
+  file in the directory their completion system reads on demand**, not a line in a profile: Ubuntu's
+  `~/.profile` sources `.bashrc` *before* it puts `~/.local/bin` on PATH, so a startup hook that shells out to
+  `run` found nothing and `eval` registered nothing, silently — completions simply never appeared in a login
+  shell. zsh and PowerShell still take a profile line, so that line names the binary by its full path rather
+  than trusting PATH at startup. `uninstall` also removes the older `.bashrc` hook, so upgrading leaves no
+  dead line behind.
 - Help is data, not a string literal: `help.rs` renders `Section`/`Row` tables, bold headings and cyan names
   when stdout is a terminal and plainly into a pipe, honouring `NO_COLOR` and `TERM=dumb`. Every command
   renders through it, so they cannot drift into different shapes, and a `--help` never needs a project to

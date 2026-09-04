@@ -1460,31 +1460,60 @@ fn a_for_block_without_parallel_still_runs_in_order() {
 // ------------------------------------------------- installing completions
 
 #[test]
-fn install_adds_a_hook_to_the_shell_profile_and_uninstall_takes_it_out() {
-	// The hook calls the binary rather than embedding the script, so upgrading
-	// `run` needs no reinstall.
+fn bash_installs_a_file_that_is_loaded_on_demand_not_a_startup_hook() {
+	// The bug this exists for: Ubuntu's `~/.profile` sources `.bashrc` before
+	// it puts `~/.local/bin` on PATH, so a startup hook that shells out to
+	// `run` found nothing and `eval` registered nothing, silently. A file in
+	// bash-completion's directory is read when Tab is first pressed, by which
+	// time PATH is complete.
 	let p = project(&[(MARK, &marker("o"))]);
 	let rc = p.home.path().join(".bashrc");
-	std::fs::write(&rc, "# my own settings\nexport EDITOR=vim\n").unwrap();
+	std::fs::write(&rc, "# my own settings\n").unwrap();
 
 	let o = p.run(&[":completions", "install", "bash"]);
 	assert!(o.status.success(), "{}", err(&o));
-	assert!(out(&o).contains(".bashrc"), "{}", out(&o));
-	let after = std::fs::read_to_string(&rc).unwrap();
-	assert!(after.contains("# runfile completions"), "{after}");
-	assert!(after.contains(r#"eval "$(run :completions output bash)""#), "{after}");
+	let installed = p.home.path().join(".local/share/bash-completion/completions/run");
+	assert!(installed.is_file(), "{}", out(&o));
 	assert!(
-		after.starts_with("# my own settings\nexport EDITOR=vim\n"),
-		"kept: {after}"
+		std::fs::read_to_string(&installed)
+			.unwrap()
+			.contains("complete -F _run run")
 	);
-
-	let o = p.run(&[":completions", "uninstall", "bash"]);
-	assert!(o.status.success(), "{}", err(&o));
 	assert_eq!(
 		std::fs::read_to_string(&rc).unwrap(),
-		"# my own settings\nexport EDITOR=vim\n",
-		"the profile is exactly as it was"
+		"# my own settings\n",
+		"and the profile is not touched at all"
 	);
+
+	assert!(p.run(&[":completions", "uninstall", "bash"]).status.success());
+	assert!(!installed.exists());
+}
+
+#[test]
+fn uninstalling_bash_also_removes_an_older_startup_hook() {
+	// Upgrading must not leave the broken line behind.
+	let p = project(&[(MARK, &marker("o"))]);
+	let rc = p.home.path().join(".bashrc");
+	std::fs::write(
+		&rc,
+		"# mine\n\n# runfile completions\neval \"$(run :completions output bash)\"\n",
+	)
+	.unwrap();
+	let o = p.run(&[":completions", "uninstall", "bash"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(std::fs::read_to_string(&rc).unwrap(), "# mine\n");
+	assert!(out(&o).contains("older hook"), "{}", out(&o));
+}
+
+#[test]
+fn a_profile_hook_names_the_binary_rather_than_trusting_the_path() {
+	// Same hazard for zsh: at startup `run` may not be on PATH yet.
+	let p = project(&[(MARK, &marker("o"))]);
+	assert!(p.run(&[":completions", "install", "zsh"]).status.success());
+	let rc = std::fs::read_to_string(p.home.path().join(".zshrc")).unwrap();
+	assert!(rc.contains("# runfile completions"), "{rc}");
+	assert!(rc.contains(":completions output zsh"), "{rc}");
+	assert!(rc.contains('/'), "the hook names a path, not a bare `run`: {rc}");
 }
 
 #[test]
@@ -1500,8 +1529,8 @@ fn installing_twice_changes_nothing() {
 #[test]
 fn install_creates_a_profile_that_does_not_exist_yet() {
 	let p = project(&[(MARK, &marker("o"))]);
-	assert!(p.run(&[":completions", "install", "bash"]).status.success());
-	assert!(p.home.path().join(".bashrc").exists());
+	assert!(p.run(&[":completions", "install", "zsh"]).status.success());
+	assert!(p.home.path().join(".zshrc").exists());
 }
 
 #[test]
@@ -1521,7 +1550,7 @@ fn fish_gets_a_file_of_its_own_rather_than_a_profile_line() {
 #[test]
 fn uninstalling_what_was_never_installed_is_not_an_error() {
 	let p = project(&[(MARK, &marker("o"))]);
-	for shell in ["bash", "fish"] {
+	for shell in ["bash", "fish", "zsh"] {
 		let o = p.run(&[":completions", "uninstall", shell]);
 		assert!(o.status.success(), "{shell}: {}", err(&o));
 		assert!(out(&o).contains("Nothing installed"), "{shell}: {}", out(&o));

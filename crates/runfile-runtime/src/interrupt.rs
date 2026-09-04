@@ -45,6 +45,21 @@ pub fn install() {
 	install_inner();
 }
 
+/// Die quietly when a reader goes away, the way every other command-line tool
+/// does. Rust ignores SIGPIPE so a closed pipe surfaces as a write error, and
+/// `println!` panics on one: `run :list --names | head` printed a backtrace.
+#[cfg(unix)]
+pub fn ignore_broken_pipe() {
+	// SAFETY: restoring the default disposition of one signal, which is what
+	// the process would have had without Rust's start-up code.
+	unsafe {
+		libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+	}
+}
+
+#[cfg(not(unix))]
+pub fn ignore_broken_pipe() {}
+
 #[cfg(unix)]
 fn install_inner() {
 	// Only an atomic store, which is async-signal-safe. Anything more -- a

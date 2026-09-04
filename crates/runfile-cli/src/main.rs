@@ -62,8 +62,14 @@ pub(crate) fn usage() -> String {
 	help::render(INTRO, SECTIONS)
 }
 
+/// `run :list --names | head` should end quietly, not with a backtrace.
+fn runtime_pipe_default() {
+	runfile_runtime::interrupt::ignore_broken_pipe();
+}
+
 fn main() -> ExitCode {
 	runfile_runtime::interrupt::install();
+	runtime_pipe_default();
 	match real_main() {
 		Ok(code) => code,
 		Err(msg) => {
