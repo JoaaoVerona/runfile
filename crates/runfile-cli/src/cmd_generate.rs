@@ -16,7 +16,29 @@ use runfile_discovery::{Catalog, Origin};
 use serde_json::{Map, Value, json};
 
 pub const SUBS: &[&str] = &["zed", "jetbrains", "vscode"];
-const USAGE: &str = "usage: run :generate <zed|jetbrains|vscode> [--include-global] [--stdout]";
+const INTRO: &str = "run :generate <editor>   —   task files for editors without an extension";
+
+const SECTIONS: &[crate::help::Section] = &[
+	crate::help::Section(
+		"Editors",
+		&[
+			crate::help::Row("run :generate zed", "write .zed/tasks.json"),
+			crate::help::Row("run :generate jetbrains", "write .idea/runConfigurations/"),
+			crate::help::Row("run :generate vscode", "write .vscode/tasks.json"),
+		],
+	),
+	crate::help::Section(
+		"Options",
+		&[
+			crate::help::Row("--include-global", "include targets from ~/.runfiles/"),
+			crate::help::Row("--stdout", "print instead of writing"),
+		],
+	),
+];
+
+pub(crate) fn usage() -> String {
+	crate::help::render(INTRO, SECTIONS)
+}
 const DEFAULT_INDENT: &str = "  ";
 
 struct Options {
@@ -33,9 +55,11 @@ struct Entry {
 }
 
 pub fn dispatch(cat: &Catalog, args: &[String]) -> Result<ExitCode, String> {
-	let Some(editor) = args.first() else {
-		return Err(USAGE.into());
-	};
+	if args.is_empty() || crate::help::wants_help(args) {
+		print!("{}", usage());
+		return Ok(ExitCode::SUCCESS);
+	}
+	let editor = &args[0];
 	let mut opts = Options {
 		include_global: false,
 		stdout: false,
@@ -44,7 +68,7 @@ pub fn dispatch(cat: &Catalog, args: &[String]) -> Result<ExitCode, String> {
 		match a.as_str() {
 			"--include-global" => opts.include_global = true,
 			"--stdout" => opts.stdout = true,
-			other => return Err(format!("unknown option `{other}`\n\n{USAGE}")),
+			other => return Err(format!("unknown option `{other}`\n{}", usage())),
 		}
 	}
 	let entries = entries(cat, opts.include_global);

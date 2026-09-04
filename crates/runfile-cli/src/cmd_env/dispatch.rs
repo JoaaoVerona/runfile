@@ -2,20 +2,41 @@
 
 use std::process::ExitCode;
 
-const USAGE: &str = "\
-run :env init [path]                  create a .env, encrypted unless --plain
-run :env get <file> <var>             read one value, decrypting if needed
-run :env set <file> <var> [value]     write one value, encrypting by default
-run :env encrypt <src> <dst> <key>    encrypt a plain file
-run :env decrypt [src] [dst]          decrypt to a plain file
-run :env rotate <file>                re-key every encrypted value
-run :env inject <file...> -- <cmd>    run a command with the file's values
-run :env secret-keys <add|list|get-private|remove>
-";
+use crate::help::{Row, Section};
+
+const INTRO: &str = "run :env <command>   —   .env files, with per-value encryption";
+
+const SECTIONS: &[Section] = &[Section(
+	"Commands",
+	&[
+		Row("run :env init [path]", "create a .env, encrypted unless --plain"),
+		Row("run :env get <file> <var>", "read one value, decrypting if needed"),
+		Row(
+			"run :env set <file> <var> [value]",
+			"write one value, encrypting by default",
+		),
+		Row("run :env encrypt <src> <dst> <key>", "encrypt a plain file"),
+		Row("run :env decrypt [src] [dst]", "decrypt to a plain file"),
+		Row("run :env rotate <file>", "re-key every encrypted value"),
+		Row(
+			"run :env inject <file...> -- <cmd>",
+			"run a command with the file's values",
+		),
+		Row("run :env secret-keys <command>", "add · list · get-private · remove"),
+	],
+)];
+
+fn usage() -> String {
+	crate::help::render(INTRO, SECTIONS)
+}
 
 pub fn dispatch(args: &[String]) -> Result<ExitCode, String> {
-	let Some(sub) = args.first().map(String::as_str) else {
-		print!("{USAGE}");
+	let Some(sub) = args
+		.first()
+		.map(String::as_str)
+		.filter(|_| !crate::help::wants_help(args))
+	else {
+		print!("{}", usage());
 		return Ok(ExitCode::SUCCESS);
 	};
 	let rest = &args[1..];
@@ -60,7 +81,7 @@ pub fn dispatch(args: &[String]) -> Result<ExitCode, String> {
 			super::cmd_inject(&files, &rest[split + 1..]);
 		}
 		"secret-keys" => return secret_keys(rest),
-		other => return Err(format!("unknown `:env` subcommand `{other}`\n\n{USAGE}")),
+		other => return Err(format!("unknown `:env` command `{other}`\n{}", usage())),
 	}
 	Ok(ExitCode::SUCCESS)
 }

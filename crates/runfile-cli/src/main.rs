@@ -10,6 +10,7 @@ mod cmd_env;
 mod cmd_generate;
 mod cmd_update;
 mod completions;
+mod help;
 mod init;
 mod list;
 mod prepare;
@@ -21,23 +22,45 @@ use runfile_runtime::dispatch::Host;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "\
-run <target> [args...]        run a target
-run :list                     list every target
-run :init                     create runfiles/ with an example target
-run :env <subcommand>         manage .env files
-run :completions <shell>      print a completion script
-run :completions install <shell>
-                              add it to that shell's profile; uninstall removes it
-run :generate <editor>        write task files for zed, jetbrains or vscode
-run :update                   update the runfile binary
-run :version                  print the version
+use help::{Row, Section};
 
-  -y, --yes          skip confirmation prompts
-      --stdin-args   prompt for inputs a target needs but was not given
-      --dry-run      print what would run, without running it
-      --dir <path>   start discovery here instead of the working directory
-";
+const INTRO: &str = "run <target> [args...]   —   a cross-platform command runner";
+
+const SECTIONS: &[Section] = &[
+	Section(
+		"Commands",
+		&[
+			Row("run <target> [args...]", "run a target"),
+			Row("run :list", "list every target"),
+			Row("run :init", "create runfiles/ with an example target"),
+			Row("run :env <command>", "manage .env files"),
+			Row("run :completions <command>", "shell tab-completion"),
+			Row(
+				"run :generate <editor>",
+				"write task files for zed, jetbrains or vscode",
+			),
+			Row("run :update", "update the runfile binary"),
+		],
+	),
+	Section(
+		"Options",
+		&[
+			Row("-y, --yes", "skip confirmation prompts"),
+			Row("    --stdin-args", "prompt for inputs a target needs but was not given"),
+			Row("    --dry-run", "print what would run, without running it"),
+			Row(
+				"    --dir <path>",
+				"start discovery here instead of the working directory",
+			),
+			Row("-h, --help", "show this"),
+			Row("-v, --version", "print the version"),
+		],
+	),
+];
+
+pub(crate) fn usage() -> String {
+	help::render(INTRO, SECTIONS)
+}
 
 fn main() -> ExitCode {
 	runfile_runtime::interrupt::install();
@@ -93,7 +116,7 @@ fn split_flags(argv: Vec<String>) -> (Flags, Vec<String>) {
 fn real_main() -> Result<ExitCode, String> {
 	let (flags, rest) = split_flags(std::env::args().skip(1).collect());
 	let Some(first) = rest.first().cloned() else {
-		print!("{USAGE}");
+		print!("{}", usage());
 		return Ok(ExitCode::SUCCESS);
 	};
 	let args: Vec<String> = rest[1..].to_vec();
@@ -101,6 +124,11 @@ fn real_main() -> Result<ExitCode, String> {
 	match first.as_str() {
 		":env" => return cmd_env::dispatch(&args),
 		":generate" => {
+			// Asking what it does must not require a project to be there.
+			if args.is_empty() || help::wants_help(&args) {
+				print!("{}", cmd_generate::usage());
+				return Ok(ExitCode::SUCCESS);
+			}
 			let cat = catalog(&flags)?;
 			return cmd_generate::dispatch(&cat, &args);
 		}
@@ -108,8 +136,12 @@ fn real_main() -> Result<ExitCode, String> {
 			cmd_update::cmd_update(args.first().map(String::as_str));
 			return Ok(ExitCode::SUCCESS);
 		}
-		":version" | "--version" | "-V" => {
+		"--version" | "-v" | "-V" => {
 			println!("run {}", env!("CARGO_PKG_VERSION"));
+			return Ok(ExitCode::SUCCESS);
+		}
+		"--help" | "-h" => {
+			print!("{}", usage());
 			return Ok(ExitCode::SUCCESS);
 		}
 		":list" => {
@@ -125,28 +157,7 @@ fn real_main() -> Result<ExitCode, String> {
 			}
 			return Ok(ExitCode::SUCCESS);
 		}
-		":completions" => {
-			const USE: &str = "usage: run :completions [install|uninstall] <bash|zsh|fish|powershell>";
-			// A bare shell name still prints the script: that is what the
-			// installed hook itself calls, and what `eval` expects.
-			return match args.first().map(String::as_str) {
-				Some(action @ ("install" | "uninstall")) => {
-					let shell = args.get(1).ok_or(USE)?;
-					let out = if action == "install" {
-						completions::install(shell)?
-					} else {
-						completions::uninstall(shell)?
-					};
-					println!("{out}");
-					Ok(ExitCode::SUCCESS)
-				}
-				Some(shell) => {
-					print!("{}", completions::script(shell)?);
-					Ok(ExitCode::SUCCESS)
-				}
-				None => Err(USE.into()),
-			};
-		}
+		":completions" => return completions::dispatch(&args),
 		":init" => {
 			let dir = match &flags.dir {
 				Some(d) => d.clone(),
@@ -155,7 +166,7 @@ fn real_main() -> Result<ExitCode, String> {
 			print!("{}", init::init(&dir)?);
 			return Ok(ExitCode::SUCCESS);
 		}
-		t if t.starts_with(':') => return Err(format!("unknown command `{t}`\n\n{USAGE}")),
+		t if t.starts_with(':') => return Err(format!("unknown command `{t}`\n{}", usage())),
 		_ => {}
 	}
 

@@ -12,9 +12,19 @@
 use std::path::{Path, PathBuf};
 
 /// Subcommands offered when the current word starts with `:`.
-pub const COMMANDS: &[&str] = &[":list", ":env", ":update", ":completions", ":init", ":version"];
+pub const COMMANDS: &[&str] = &[":list", ":env", ":update", ":completions", ":init", ":generate"];
 /// Flags offered before the target name.
-pub const FLAGS: &[&str] = &["-y", "--yes", "--stdin-args", "--dry-run", "--dir"];
+pub const FLAGS: &[&str] = &[
+	"-y",
+	"--yes",
+	"--stdin-args",
+	"--dry-run",
+	"--dir",
+	"-h",
+	"--help",
+	"-v",
+	"--version",
+];
 /// `:env` subcommands, the one nested level that exists.
 pub const ENV_SUBS: &[&str] = &[
 	"init",
@@ -28,8 +38,49 @@ pub const ENV_SUBS: &[&str] = &[
 ];
 /// `:generate` editors, the other nested level.
 pub const GENERATE_SUBS: &[&str] = crate::cmd_generate::SUBS;
-/// What `:completions` accepts: the two actions, then the shells.
-pub const COMPLETION_SUBS: &[&str] = &["install", "uninstall", "bash", "zsh", "fish", "powershell"];
+/// What `:completions` accepts.
+pub const COMPLETION_SUBS: &[&str] = &["install", "uninstall", "output"];
+/// The shells any of those takes.
+pub const SHELLS: &[&str] = &["bash", "zsh", "fish", "powershell"];
+
+const INTRO: &str = "run :completions <command> <shell>   —   shell tab-completion";
+
+const SECTIONS: &[crate::help::Section] = &[
+	crate::help::Section(
+		"Commands",
+		&[
+			crate::help::Row(
+				"run :completions install <shell>",
+				"add the hook to that shell's profile",
+			),
+			crate::help::Row("run :completions uninstall <shell>", "take it out again"),
+			crate::help::Row(
+				"run :completions output <shell>",
+				"print the script, for `eval` or by hand",
+			),
+		],
+	),
+	crate::help::Section("Shells", &[crate::help::Row("bash · zsh · fish · powershell", "")]),
+];
+
+pub fn dispatch(args: &[String]) -> Result<std::process::ExitCode, String> {
+	let usage = || crate::help::render(INTRO, SECTIONS);
+	if args.is_empty() || crate::help::wants_help(args) {
+		print!("{}", usage());
+		return Ok(std::process::ExitCode::SUCCESS);
+	}
+	let action = args[0].as_str();
+	let shell = args
+		.get(1)
+		.ok_or_else(|| format!("`{action}` needs a shell\n{}", usage()))?;
+	match action {
+		"install" => println!("{}", install(shell)?),
+		"uninstall" => println!("{}", uninstall(shell)?),
+		"output" => print!("{}", script(shell)?),
+		other => return Err(format!("unknown command `{other}`\n{}", usage())),
+	}
+	Ok(std::process::ExitCode::SUCCESS)
+}
 
 /// Where an installed hook lives, and what goes in it.
 ///
@@ -58,12 +109,18 @@ fn config_dir() -> Result<PathBuf, String> {
 
 fn destination(shell: &str) -> Result<Where, String> {
 	Ok(match shell {
-		"bash" => Where::Profile(home()?.join(".bashrc"), r#"eval "$(run :completions bash)""#.into()),
-		"zsh" => Where::Profile(home()?.join(".zshrc"), r#"eval "$(run :completions zsh)""#.into()),
+		"bash" => Where::Profile(
+			home()?.join(".bashrc"),
+			r#"eval "$(run :completions output bash)""#.into(),
+		),
+		"zsh" => Where::Profile(
+			home()?.join(".zshrc"),
+			r#"eval "$(run :completions output zsh)""#.into(),
+		),
 		"fish" => Where::File(config_dir()?.join("fish/completions/run.fish")),
 		"powershell" | "pwsh" => Where::Profile(
 			powershell_profile()?,
-			"run :completions powershell | Out-String | Invoke-Expression".into(),
+			"run :completions output powershell | Out-String | Invoke-Expression".into(),
 		),
 		other => return Err(unknown(other)),
 	})
@@ -171,10 +228,11 @@ pub fn script(shell: &str) -> Result<String, String> {
 		.replace("@FLAGS@", &FLAGS.join(" "))
 		.replace("@ENV_SUBS@", &ENV_SUBS.join(" "))
 		.replace("@GENERATE_SUBS@", &GENERATE_SUBS.join(" "))
-		.replace("@COMPLETION_SUBS@", &COMPLETION_SUBS.join(" ")))
+		.replace("@COMPLETION_SUBS@", &COMPLETION_SUBS.join(" "))
+		.replace("@SHELLS@", &SHELLS.join(" ")))
 }
 
-const BASH: &str = r#"# run(1) completion. Install: eval "$(run :completions bash)"
+const BASH: &str = r#"# run(1) completion. Install: run :completions install bash
 _run() {
 	local cur prev words cword
 	cur="${COMP_WORDS[COMP_CWORD]}"
@@ -204,8 +262,11 @@ _run() {
 		:completions) subs="@COMPLETION_SUBS@" ;;
 	esac
 	if [[ -n "$subs" ]]; then
-		if [[ $(( COMP_CWORD - i )) -eq 1 ]]; then
+		local depth=$(( COMP_CWORD - i ))
+		if [[ $depth -eq 1 ]]; then
 			COMPREPLY=( $(compgen -W "$subs" -- "$cur") )
+		elif [[ $depth -eq 2 && "$first" == ":completions" ]]; then
+			COMPREPLY=( $(compgen -W "@SHELLS@" -- "$cur") )
 		else
 			COMPREPLY=( $(compgen -f -- "$cur") )
 		fi
@@ -230,7 +291,7 @@ _run() {
 complete -F _run run
 "#;
 
-const ZSH: &str = r#"# run(1) completion. Install: eval "$(run :completions zsh)"
+const ZSH: &str = r#"# run(1) completion. Install: run :completions install zsh
 _run() {
 	local -a words_before
 	local first="" i
@@ -256,6 +317,8 @@ _run() {
 	if [[ -n "$subs" ]]; then
 		if (( CURRENT - i == 1 )); then
 			compadd -- ${=subs}
+		elif [[ "$first" == ":completions" ]] && (( CURRENT - i == 2 )); then
+			compadd -- @SHELLS@
 		else
 			_files
 		fi
@@ -276,7 +339,7 @@ _run() {
 compdef _run run
 "#;
 
-const FISH: &str = r#"# run(1) completion. Install: run :completions fish > ~/.config/fish/completions/run.fish
+const FISH: &str = r#"# run(1) completion. Install: run :completions install fish
 function __run_first_word
 	set -l toks (commandline -opc)
 	set -l skip 0
@@ -312,6 +375,10 @@ function __run_completions_sub
 	test (__run_first_word) = ":completions"; and test (count (commandline -opc)) -eq 2
 end
 
+function __run_first_word_is_completions_shell
+	test (__run_first_word) = ":completions"; and test (count (commandline -opc)) -eq 3
+end
+
 # No target chosen yet: names, commands and flags.
 complete -c run -f -n __run_no_target -a "(run :list --names 2>/dev/null)"
 complete -c run -f -n __run_no_target -a "@COMMANDS@"
@@ -319,12 +386,13 @@ complete -c run -f -n __run_no_target -a "@FLAGS@"
 complete -c run -f -n __run_env_sub -a "@ENV_SUBS@"
 complete -c run -f -n __run_generate_sub -a "@GENERATE_SUBS@"
 complete -c run -f -n __run_completions_sub -a "@COMPLETION_SUBS@"
+complete -c run -f -n '__run_first_word_is_completions_shell' -a "@SHELLS@"
 # Past the target name, arguments are its own business: offer files.
 complete -c run -F -n 'not __run_no_target; and not __run_env_sub; and not __run_generate_sub; and not __run_completions_sub'
 complete -c run -r -n '__fish_seen_argument -l dir' -a "(__fish_complete_directories)"
 "#;
 
-const POWERSHELL: &str = r#"# run(1) completion. Install: run :completions powershell | Out-String | Invoke-Expression
+const POWERSHELL: &str = r#"# run(1) completion. Install: run :completions install powershell
 Register-ArgumentCompleter -Native -CommandName run -ScriptBlock {
 	param($wordToComplete, $commandAst, $cursorPosition)
 
@@ -349,6 +417,7 @@ Register-ArgumentCompleter -Native -CommandName run -ScriptBlock {
 	if ($first -eq ':env' -and $words.Count -le 2) { return & $emit @('@ENV_SUBS@'.Split(' ')) }
 	if ($first -eq ':generate' -and $words.Count -le 2) { return & $emit @('@GENERATE_SUBS@'.Split(' ')) }
 	if ($first -eq ':completions' -and $words.Count -le 2) { return & $emit @('@COMPLETION_SUBS@'.Split(' ')) }
+	if ($first -eq ':completions' -and $words.Count -le 3) { return & $emit @('@SHELLS@'.Split(' ')) }
 	if ($first) { return [System.Management.Automation.CompletionCompleters]::CompleteFilename($wordToComplete) }
 	if ($wordToComplete.StartsWith(':')) { return & $emit @('@COMMANDS@'.Split(' ')) }
 	if ($wordToComplete.StartsWith('-')) { return & $emit @('@FLAGS@'.Split(' ')) }
@@ -387,11 +456,11 @@ mod tests {
 
 	#[test]
 	fn every_advertised_command_is_offered_by_completion() {
-		// The scripts bake the command list in, so it can drift from `main`'s
-		// dispatch. This is the check that it has not.
-		let usage = crate::USAGE;
+		// The scripts bake the command list in, so it can drift from what the
+		// help offers. This is the check that it has not.
+		let usage = crate::usage();
 		for c in COMMANDS {
-			assert!(usage.contains(c), "`{c}` is completed but not in the usage text");
+			assert!(usage.contains(c), "`{c}` is completed but not in the help");
 		}
 	}
 }

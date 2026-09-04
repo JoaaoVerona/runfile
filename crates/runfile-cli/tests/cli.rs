@@ -537,7 +537,7 @@ fn list_names_prints_one_bare_name_per_line() {
 fn completions_are_produced_for_each_supported_shell() {
 	let p = project(&[]);
 	for sh in ["bash", "zsh", "fish", "powershell"] {
-		let o = p.run(&[":completions", sh]);
+		let o = p.run(&[":completions", "output", sh]);
 		assert!(o.status.success(), "{sh}: {}", err(&o));
 		assert!(out(&o).contains("run :list --names"), "{sh} must ask for names");
 	}
@@ -546,24 +546,26 @@ fn completions_are_produced_for_each_supported_shell() {
 #[test]
 fn an_unknown_shell_is_rejected() {
 	let p = project(&[]);
-	let o = p.run(&[":completions", "nushell"]);
+	let o = p.run(&[":completions", "output", "nushell"]);
 	assert!(!o.status.success());
 	assert!(err(&o).contains("bash, zsh, fish"), "{}", err(&o));
 }
 
 #[test]
-fn completions_with_no_shell_prints_usage() {
+fn completions_with_no_command_prints_its_help() {
 	let p = project(&[]);
 	let o = p.run(&[":completions"]);
-	assert!(!o.status.success());
-	assert!(err(&o).contains("usage:"), "{}", err(&o));
+	assert!(o.status.success(), "{}", err(&o));
+	for word in ["install", "uninstall", "output"] {
+		assert!(out(&o).contains(word), "{}", out(&o));
+	}
 }
 
 /// Source the generated bash script and ask it to complete, the way the shell
 /// would. Without this the scripts are only ever eyeballed.
 #[cfg(unix)]
 fn complete_bash(p: &Project, line: &str) -> Vec<String> {
-	let script = out(&p.run(&[":completions", "bash"]));
+	let script = out(&p.run(&[":completions", "output", "bash"]));
 	let path = p.dir.path().join("comp.bash");
 	std::fs::write(&path, &script).unwrap();
 	// COMP_WORDS/COMP_CWORD are what bash-completion sets before calling the
@@ -841,10 +843,10 @@ fn a_sibling_wins_over_a_root_target_with_the_same_name() {
 
 #[test]
 fn the_version_is_printed_by_every_spelling() {
-	// `--version` and `-V` are what people type; `:version` is the form that
-	// matches every other built-in.
+	// Flags only: a `:version` command would be the odd one out, since nothing
+	// else about the binary itself is a command.
 	let p = project(&[(MARK, &marker("o"))]);
-	for form in [":version", "--version", "-V"] {
+	for form in ["--version", "-v", "-V"] {
 		let o = p.run(&[form]);
 		assert!(o.status.success(), "{form}: {}", err(&o));
 		assert!(out(&o).starts_with("run "), "{form}: {}", out(&o));
@@ -1059,10 +1061,16 @@ fn generate_jetbrains_writes_one_configuration_per_target_and_respects_foreign_f
 #[test]
 fn generate_needs_an_editor_it_knows() {
 	let p = project(GEN);
-	assert!(err(&p.run(&[":generate"])).contains("usage:"));
+	// No editor at all is a request for help, not an error.
+	let o = p.run(&[":generate"]);
+	assert!(
+		o.status.success() && out(&o).contains("run :generate zed"),
+		"{}",
+		out(&o)
+	);
 	let o = p.run(&[":generate", "emacs"]);
 	assert!(!o.status.success());
-	assert!(err(&o).contains("zed, jetbrains, vscode"), "{}", err(&o));
+	assert!(err(&o).contains("unknown editor `emacs`"), "{}", err(&o));
 	assert!(err(&p.run(&[":generate", "zed", "--bogus"])).contains("unknown option"));
 }
 
@@ -1464,7 +1472,7 @@ fn install_adds_a_hook_to_the_shell_profile_and_uninstall_takes_it_out() {
 	assert!(out(&o).contains(".bashrc"), "{}", out(&o));
 	let after = std::fs::read_to_string(&rc).unwrap();
 	assert!(after.contains("# runfile completions"), "{after}");
-	assert!(after.contains(r#"eval "$(run :completions bash)""#), "{after}");
+	assert!(after.contains(r#"eval "$(run :completions output bash)""#), "{after}");
 	assert!(
 		after.starts_with("# my own settings\nexport EDITOR=vim\n"),
 		"kept: {after}"
@@ -1521,10 +1529,10 @@ fn uninstalling_what_was_never_installed_is_not_an_error() {
 }
 
 #[test]
-fn a_bare_shell_name_still_prints_the_script() {
+fn output_prints_the_script_without_installing_it() {
 	// The installed hook calls exactly this, so it cannot change shape.
 	let p = project(&[(MARK, &marker("o"))]);
-	let o = p.run(&[":completions", "bash"]);
+	let o = p.run(&[":completions", "output", "bash"]);
 	assert!(o.status.success(), "{}", err(&o));
 	assert!(out(&o).contains("complete -F _run run"), "{}", out(&o));
 	assert!(!p.home.path().join(".bashrc").exists(), "printing installs nothing");
@@ -1536,7 +1544,7 @@ fn install_rejects_a_shell_it_does_not_know() {
 	let o = p.run(&[":completions", "install", "nushell"]);
 	assert!(!o.status.success());
 	assert!(err(&o).contains("bash, zsh, fish"), "{}", err(&o));
-	assert!(err(&p.run(&[":completions", "install"])).contains("usage:"));
+	assert!(err(&p.run(&[":completions", "install"])).contains("needs a shell"));
 }
 
 #[cfg(unix)]
@@ -1546,4 +1554,71 @@ fn the_bash_script_completes_the_completions_actions() {
 	let mut got = complete_bash(&p, "run :completions ins");
 	got.sort();
 	assert_eq!(got, ["install"]);
+	// And a shell at the next level.
+	let mut shells = complete_bash(&p, "run :completions install ba");
+	shells.sort();
+	assert_eq!(shells, ["bash"]);
+}
+
+// ------------------------------------------------------------------- help
+
+#[test]
+fn help_is_available_from_the_flag_and_from_no_arguments() {
+	// Neither should need a runfiles/ directory to exist.
+	let p = project(&[]);
+	for args in [vec!["--help"], vec!["-h"], vec![]] {
+		let o = p.run(&args);
+		assert!(o.status.success(), "{args:?}: {}", err(&o));
+		assert!(out(&o).contains("run :list"), "{args:?}: {}", out(&o));
+		assert!(out(&o).contains("Commands"), "{args:?}: {}", out(&o));
+		assert!(out(&o).contains("Options"), "{args:?}: {}", out(&o));
+	}
+}
+
+#[test]
+fn the_main_help_does_not_list_a_subcommands_own_commands() {
+	// One line per command, like every other entry; `:completions` explains
+	// itself when you ask it.
+	let p = project(&[]);
+	let text = out(&p.run(&["--help"]));
+	assert!(text.contains("run :completions <command>"), "{text}");
+	assert!(!text.contains(":completions install"), "{text}");
+	assert!(!text.contains(":env init"), "{text}");
+}
+
+#[test]
+fn each_subcommand_explains_itself() {
+	let p = project(&[]);
+	for (args, expect) in [
+		(vec![":env"], "run :env init"),
+		(vec![":env", "--help"], "run :env init"),
+		(vec![":completions"], "run :completions install"),
+		(vec![":completions", "--help"], "run :completions output"),
+		(vec![":generate"], "run :generate zed"),
+		(vec![":generate", "--help"], "run :generate jetbrains"),
+	] {
+		let o = p.run(&args);
+		assert!(o.status.success(), "{args:?}: {}", err(&o));
+		assert!(out(&o).contains(expect), "{args:?}: {}", out(&o));
+	}
+}
+
+#[test]
+fn help_is_plain_when_it_is_not_going_to_a_terminal() {
+	// Captured output is a pipe, so no escape codes may appear in it.
+	let p = project(&[]);
+	for args in [vec!["--help"], vec![":env"], vec![":generate"]] {
+		assert!(
+			!out(&p.run(&args)).contains('\x1b'),
+			"{args:?} emitted colour into a pipe"
+		);
+	}
+}
+
+#[test]
+fn there_is_no_version_command_any_more() {
+	let p = project(&[(MARK, &marker("o"))]);
+	let o = p.run(&[":version"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("unknown command"), "{}", err(&o));
 }

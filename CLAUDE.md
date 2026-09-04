@@ -288,9 +288,15 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   being read off the source text. A failing run is reported and watching continues.
 - Completion scripts are hand-written per shell and ask the binary itself for names, so they can never drift
   from the language. The bash one is tested by sourcing it and driving `_run` the way the shell does.
-  `:completions install <shell>` puts a marked hook in the shell's own profile — fish gets a file, since it
-  reads a directory — and the hook calls the binary rather than embedding the script, so an upgrade needs no
-  reinstall. The marker is what makes a second install a no-op and `uninstall` exact.
+  `:completions` takes `install`, `uninstall` or `output`, the shape the old CLI had. `install` puts a marked
+  hook in the shell's own profile — fish gets a file, since it reads a directory — and the hook calls
+  `run :completions output <shell>` rather than embedding the script, so an upgrade needs no reinstall. The
+  marker is what makes a second install a no-op and `uninstall` exact.
+- Help is data, not a string literal: `help.rs` renders `Section`/`Row` tables, bold headings and cyan names
+  when stdout is a terminal and plainly into a pipe, honouring `NO_COLOR` and `TERM=dumb`. Every command
+  renders through it, so they cannot drift into different shapes, and a `--help` never needs a project to
+  exist. The version is flags only (`-v`, `-V`, `--version`): nothing else about the binary itself is a
+  command.
 - `:generate zed|jetbrains|vscode` is a lean port of the old generators: an entry is recognised as ours by its
   shape (command `run`, label `run <target>`), so a rerun replaces exactly those and keeps a person's own; a
   file is rewritten with the indentation it already uses. The 661-line `.editorconfig` reader did not come

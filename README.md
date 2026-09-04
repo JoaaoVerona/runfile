@@ -245,11 +245,9 @@ exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
 | `run :list` | List every target (`--names`, `--json` for tooling) |
 | `run :init` | Create `runfiles/` with an example |
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
-| `run :completions <shell>` | Print a completion script for bash, zsh, fish or powershell |
-| `run :completions install <shell>` | Add it to that shell's profile; `uninstall` removes it |
+| `run :completions <command>` | `install`, `uninstall` or `output` a completion script |
 | `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
 | `run :update` | Update the binary |
-| `run :version` | Print the version |
 
 | Flag | |
 | --- | --- |
@@ -257,6 +255,8 @@ exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
 | `--stdin-args` | Prompt for anything a target needs but was not given |
 | `--dry-run` | Print what would run, without running it |
 | `--dir <path>` | Start discovery somewhere else |
+| `-h`, `--help` | Show the help for `run` or any of its commands |
+| `-v`, `--version` | Print the version |
 
 Flags belong **before** the target name; everything after it is passed to the target.
 
