@@ -368,11 +368,20 @@ fn a_failure_names_the_command_and_never_the_shell() {
 	assert!(!e.contains("bash"), "{e}");
 
 	// Several lines share one shell and `-e` stops at the one that failed,
-	// which the runner cannot see -- but each announced itself as it ran.
+	// which the runner cannot see -- but with `.logging` each announced itself
+	// as it ran, so the last one shown is the one that stopped.
 	let d = Recorder::default();
-	let e = run_src("$ true\n$ false\n", &d).unwrap_err().to_string();
+	let e = run_src(".logging = true\n$ true\n$ false\n", &d)
+		.unwrap_err()
+		.to_string();
 	assert!(e.contains("the command above exited with status 1"), "{e}");
 	assert!(!e.contains("bash"), "{e}");
+
+	// Without it there is nothing above, so nothing is claimed to be there.
+	let d = Recorder::default();
+	let e = run_src("$ true\n$ false\n", &d).unwrap_err().to_string();
+	assert!(e.contains("a command in `true"), "{e}");
+	assert!(!e.contains("above"), "{e}");
 
 	// A block the runner could not take apart is announced whole, so there is
 	// no single line above to point at: it names the block instead. Claiming

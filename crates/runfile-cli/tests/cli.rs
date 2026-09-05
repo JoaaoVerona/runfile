@@ -1166,7 +1166,10 @@ fn a_command_is_announced_when_it_runs_not_before() {
 	// A block of `$` lines is one process, so the runner used to print every
 	// command before any of them ran -- and a failure then landed at the end,
 	// under nothing. The announcement goes inside the script instead.
-	let p = project(&[("runfiles/e.run", "$ echo first\n$ echo second\n$ false\n$ echo never\n")]);
+	let p = project(&[(
+		"runfiles/e.run",
+		".logging = true\n$ echo first\n$ echo second\n$ false\n$ echo never\n",
+	)]);
 	let o = p.run(&["e"]);
 	assert!(!o.status.success());
 
@@ -1188,7 +1191,10 @@ fn a_command_is_announced_when_it_runs_not_before() {
 fn a_block_the_runner_cannot_take_apart_is_announced_whole() {
 	// A `for` spread over `$` lines is one command to the shell. It still runs,
 	// and every line of it is still shown.
-	let p = project(&[("runfiles/e.run", "$ for f in a b; do\n$ echo $f\n$ done\n")]);
+	let p = project(&[(
+		"runfiles/e.run",
+		".logging = true\n$ for f in a b; do\n$ echo $f\n$ done\n",
+	)]);
 	let o = p.run(&["e"]);
 	assert!(o.status.success(), "{}", err(&o));
 	assert!(out(&o).contains('a') && out(&o).contains('b'), "{}", out(&o));
@@ -1764,9 +1770,9 @@ fn a_target_with_no_alias_lists_exactly_as_before() {
 
 #[test]
 fn the_runner_announces_each_command_on_stderr() {
-	// Native, with no property to turn it on: the old `logging: true` field was
-	// cut because of this. On stderr, so a pipeline reading stdout is unaffected.
-	let p = project(&[("runfiles/t.run", "$ echo hello\n")]);
+	// Asked for with `.logging`, and off without it: most targets are run for
+	// their output. On stderr, so a pipeline reading stdout is unaffected.
+	let p = project(&[("runfiles/t.run", ".logging = true\n$ echo hello\n")]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
 	assert_eq!(out(&o), "hello\n", "stdout stays exactly the command's own output");
@@ -1776,10 +1782,23 @@ fn the_runner_announces_each_command_on_stderr() {
 #[test]
 fn an_exec_block_is_announced_whole() {
 	// It is one process, so showing half of it would be a lie.
-	let p = project(&[("runfiles/t.run", "exec sh\n\techo one\n\techo two\nend\n")]);
+	let p = project(&[(
+		"runfiles/t.run",
+		".logging = true\nexec sh\n\techo one\n\techo two\nend\n",
+	)]);
 	let o = p.run(&["t"]);
 	assert!(err(&o).contains("[runfile] echo one"), "{}", err(&o));
 	assert!(err(&o).contains("[runfile] echo two"), "{}", err(&o));
+}
+
+#[test]
+fn nothing_is_announced_unless_a_target_asks() {
+	// Off by default, as it was before the rewrite: a target is run for its
+	// output, and a runner talking over it is noise.
+	let p = project(&[("runfiles/t.run", "$ echo hello\n")]);
+	let o = p.run(&["t"]);
+	assert_eq!(out(&o), "hello\n");
+	assert!(!err(&o).contains("[runfile]"), "{}", err(&o));
 }
 
 #[test]

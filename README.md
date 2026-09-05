@@ -261,6 +261,7 @@ Set on the file, or inside a block where marked.
 | `.workdir` | Where commands run. |
 | `.parallel` | Run this block's commands at once. On a `for`, its iterations. |
 | `.ignore-errors` | Keep going when a command fails. |
+| `.logging` | Announce each command on stderr before it runs. Off unless set. |
 | `.confirm` | Ask before running. |
 | `.watch` | Re-run when matching files change. |
 | `.alias` | Another name for this target. |

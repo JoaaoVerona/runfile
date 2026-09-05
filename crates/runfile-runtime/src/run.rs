@@ -347,7 +347,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				dry_run: r.dry_run,
 				label: r.label.as_deref(),
 				detach: props.detach,
-				announce: !r.dry_run,
+				announce: props.logging && !r.dry_run,
 			})?;
 			Ok(())
 		}
@@ -386,7 +386,7 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		// A capture's output is a value, not something to show, and it is
 		// never detached: the whole point is waiting for what it prints.
 		detach: false,
-		announce: !r.dry_run,
+		announce: props.logging && !r.dry_run,
 	})?;
 	Ok(Value::Str(out))
 }
@@ -423,7 +423,7 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 		dry_run: r.dry_run,
 		label: r.label.as_deref(),
 		detach: false,
-		announce: !r.dry_run,
+		announce: props.logging && !r.dry_run,
 	})?)
 }
 
@@ -634,6 +634,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 	let dispatch = r.dispatch;
 	let chain = r.chain.clone();
 	let dry_run = r.dry_run;
+	let logging = props.logging;
 	let results: Vec<Result<Option<String>, RunError>> = std::thread::scope(|s| {
 		let handles: Vec<_> = leaves
 			.iter()
@@ -656,7 +657,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 						dry_run,
 						label: Some(label),
 						detach: *detach,
-						announce: !dry_run,
+						announce: logging && !dry_run,
 					})
 					.map(|_| Some(body.clone()))
 					.map_err(RunError::from),

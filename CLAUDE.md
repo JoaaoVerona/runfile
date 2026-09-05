@@ -276,10 +276,11 @@ second time as the global. This replaced `includes` entirely.
   parallel siblings are not mistaken for a cycle.
 - `.parallel`: bindings evaluate in source order, then executable leaves fan out via `std::thread::scope`.
   Control flow expands into the same batch, and every branch completes before a failure surfaces.
-- **The runner announces every command on stderr**, natively, with no property to turn it on: that is why the
-  old `logging` field was cut rather than renamed. stderr, so a pipeline reading stdout is unaffected, and
-  never under `--dry-run`, which already prints the commands to stdout. **Each command announces itself as it
-  runs**, from *inside* the script: a block of `$` lines is one process, so the runner cannot observe when
+- **`.logging` announces each command on stderr, and is off unless asked for** — the same default the old
+  `logging` field had (`unwrap_or(false)`), and for the same reason: a target is run for its output, and a
+  runner talking over it is noise. Block-scoped, so a `_shared.run` covers a directory the way `globals` used
+  to. stderr, so a pipeline reading stdout is unaffected, and never under `--dry-run`, which already prints
+  the commands to stdout. **Each command announces itself as it runs**, from *inside* the script: a block of `$` lines is one process, so the runner cannot observe when
   each line starts and could only ever print all of them before any of them ran — which put a failure at the
   end, under nothing. `exec::traced` puts a `printf … >&2` before each line instead. It returns `None`, and
   the block is announced whole as before, when that would be unsafe: a `for` or an `if` spread over several
@@ -450,8 +451,8 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 ## Properties
 
 Header-only: `alias`, `confirm`, `env-file`, `add-path`, `hide`, `watch`, `only-in-directories`, `detach`.
-Block-scoped (may also appear inside `if` / `for` / `match`): `shell`, `parallel`, `ignore-errors`, `workdir`,
-`env` (addressed by sub-key, `.env.NAME = "value"`).
+Block-scoped (may also appear inside `if` / `for` / `match`): `shell`, `parallel`, `ignore-errors`, `logging`,
+`workdir`, `env` (addressed by sub-key, `.env.NAME = "value"`).
 
 A nested block inherits behaviour but never a parent's one-shot header state — a `confirm` must not fire again
 per loop iteration.

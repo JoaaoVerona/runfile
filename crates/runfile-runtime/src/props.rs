@@ -15,6 +15,11 @@ pub struct Props {
 	pub shell: Option<String>,
 	pub parallel: bool,
 	pub ignore_errors: bool,
+	/// Announce each command on stderr before it runs. Off unless asked for:
+	/// most targets are run for their output, and a runner talking over it is
+	/// noise. `run --dry-run` prints the commands to stdout instead and never
+	/// announces.
+	pub logging: bool,
 	pub workdir: Option<String>,
 	pub env: BTreeMap<String, String>,
 	// header-only
@@ -31,7 +36,7 @@ pub struct Props {
 
 /// Properties a nested block may set. Everything else is header-only, because
 /// the runner has to know it before any statement runs.
-const BLOCK_SCOPED: &[&str] = &["shell", "parallel", "ignore-errors", "workdir", "env"];
+const BLOCK_SCOPED: &[&str] = &["shell", "parallel", "ignore-errors", "logging", "workdir", "env"];
 
 /// Every property name, and whether it may appear inside a block.
 ///
@@ -87,6 +92,11 @@ pub const PROPERTIES: &[KnownProperty] = &[
 		name: "ignore-errors",
 		block_scoped: true,
 		doc: "Keep going when a command fails.",
+	},
+	KnownProperty {
+		name: "logging",
+		block_scoped: true,
+		doc: "Announce each command on stderr before it runs.",
 	},
 	KnownProperty {
 		name: "only-in-directories",
@@ -172,6 +182,7 @@ impl Props {
 		};
 		match head {
 			"shell" => self.shell = Some(value(p, sc)?.to_string()),
+			"logging" => self.logging = flag(p, sc)?,
 			"parallel" => self.parallel = flag(p, sc)?,
 			"ignore-errors" => self.ignore_errors = flag(p, sc)?,
 			"workdir" => self.workdir = Some(value(p, sc)?.to_string()),
