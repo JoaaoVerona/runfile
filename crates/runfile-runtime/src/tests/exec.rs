@@ -273,3 +273,53 @@ fn a_capture_condition_uses_the_same_shell_as_a_line() {
 	.unwrap();
 	assert_eq!(d.calls(), vec!["sh"]);
 }
+
+#[test]
+fn retry_stops_at_the_first_success() {
+	let d = Recorder::default();
+	run_src("retry 5\n\t$ true\n\trun once\nend\n", &d).unwrap();
+	assert_eq!(d.calls(), vec!["once"], "not retried after it worked");
+}
+
+#[test]
+fn retry_runs_the_else_when_it_never_succeeds() {
+	let d = Recorder::default();
+	run_src("retry 3\n\t$ false\nelse\n\trun gave-up\nend\nrun after\n", &d).unwrap();
+	assert_eq!(d.calls(), vec!["gave-up", "after"], "and the target carries on");
+}
+
+#[test]
+fn retry_without_an_else_fails_with_the_last_error() {
+	let d = Recorder::default();
+	let e = run_src("retry 2\n\t$ false\nend\nrun after\n", &d).unwrap_err();
+	assert!(e.to_string().contains("exited with status 1"), "{e}");
+	assert!(d.calls().is_empty(), "the statement after it does not run");
+}
+
+#[test]
+fn retry_sees_failures_that_ignore_errors_would_forgive() {
+	// Otherwise the body always "succeeds" and a retry runs exactly once,
+	// which is the least useful way for this to be wrong.
+	let d = Recorder::default();
+	run_src(
+		".ignore-errors = true\nretry 3\n\t$ false\nelse\n\trun gave-up\nend\n",
+		&d,
+	)
+	.unwrap();
+	assert_eq!(d.calls(), vec!["gave-up"]);
+}
+
+#[test]
+fn an_exit_inside_a_retry_is_not_retried() {
+	// It is an instruction to stop, not a failure to have another go at.
+	let d = Recorder::default();
+	let e = run_src("retry 5\n\t$ echo trying\n\texit(4)\nend\n", &d).unwrap_err();
+	assert_eq!(e.exit_code(), Some(4), "{e}");
+}
+
+#[test]
+fn retry_is_refused_inside_a_parallel_block() {
+	let d = Recorder::default();
+	let e = run_src(".parallel = true\nretry 2\n\t$ false\nend\n", &d).unwrap_err();
+	assert!(e.to_string().contains("cannot be inside a `.parallel`"), "{e}");
+}

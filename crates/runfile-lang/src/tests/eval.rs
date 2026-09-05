@@ -683,3 +683,35 @@ fn code_of_says_what_it_wants_when_it_is_written_wrongly() {
 			.contains("never closed")
 	);
 }
+
+#[test]
+fn retry_parses_its_count_its_delay_and_its_else() {
+	use crate::Statement;
+	let t = crate::parse("retry 120 every 1\n\t$ true\nelse\n\t$ false\nend\n").unwrap();
+	let Statement::Retry {
+		attempts,
+		delay,
+		otherwise,
+		..
+	} = &t.body.statements[0]
+	else {
+		panic!("{:?}", t.body.statements[0])
+	};
+	assert!(matches!(attempts, crate::Expr::Number(n, _) if *n == 120.0));
+	assert!(matches!(delay, Some(crate::Expr::Number(n, _)) if *n == 1.0));
+	assert!(otherwise.is_some());
+
+	// The delay is optional, and the count may be any expression.
+	let t = crate::parse("retry number(ARG.n)\n\t$ true\nend\n").unwrap();
+	let Statement::Retry { delay, otherwise, .. } = &t.body.statements[0] else {
+		panic!()
+	};
+	assert!(delay.is_none() && otherwise.is_none());
+
+	assert!(
+		crate::parse("retry\n\t$ true\nend\n")
+			.unwrap_err()
+			.to_string()
+			.contains("needs a number")
+	);
+}

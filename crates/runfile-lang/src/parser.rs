@@ -242,6 +242,37 @@ impl<'a> P<'a> {
 					span,
 				})
 			}
+			// `retry n [every secs]` … `[else …]` `end`
+			"retry" => {
+				let rest = text[5..].trim();
+				let (count, wait) = match rest.split_once(" every ") {
+					Some((a, d)) => (a.trim(), Some(d.trim())),
+					None => (rest, None),
+				};
+				if count.is_empty() {
+					return err(no, "`retry` needs a number of attempts, as `retry 30 every 1`");
+				}
+				let attempts = parse_expr(count, offset + 6, no)?;
+				let delay = match wait {
+					Some(d) => Some(parse_expr(d, offset + 6, no)?),
+					None => None,
+				};
+				let body = self.block(Some("retry"))?;
+				let otherwise = if self.peek_kw() == Some("else") {
+					self.i += 1;
+					Some(self.block(Some("retry"))?)
+				} else {
+					None
+				};
+				self.expect_end(no)?;
+				Ok(Statement::Retry {
+					attempts,
+					delay,
+					body,
+					otherwise,
+					span,
+				})
+			}
 			"for" => {
 				let rest = text[3..].trim();
 				let Some(k) = rest.find(" in ") else {

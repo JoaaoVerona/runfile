@@ -71,6 +71,7 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `if` / `else` / `end` | Branch. |
 | `for x in list` / `end` | Loop. |
 | `match` / `case` / `default` / `end` | Dispatch on a value. A `case` label is a quoted string: `case "linux"`. |
+| `retry n [every s]` … `end` | Run the block again while it fails, up to `n` times. |
 | `run other-target` | Run another target, in this process. |
 
 ```sh
@@ -174,6 +175,24 @@ let made = code_of($ mkdir out)
 
 A `$` run reaches to the end of its line, which is why a capture cannot nest in a call — `code_of` is the one
 exception, and its command may not contain a `)`.
+
+### Waiting for something
+
+`retry` runs its block again while it fails, up to a number of attempts, waiting between them. `else` is what
+to do when it never worked; without one, the last failure is the statement's.
+
+```sh
+retry 120 every 1
+	$ docker exec db pg_isready -h 127.0.0.1 >/dev/null 2>&1
+else
+	$ echo 'ERROR: the database did not come up' >&2
+	exit(1)
+end
+```
+
+The block sees its own failures whatever `.ignore-errors` says around it — a retry that could not tell would
+run exactly once. An `exit()` inside is not retried: it is an instruction to stop. And a `retry` cannot sit
+inside a `.parallel` block, where several bodies sleeping against each other has no useful meaning.
 
 ### Stopping early
 

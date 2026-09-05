@@ -168,3 +168,26 @@ code_of($ false)
     (code_of
       (shell_text
         (shell_content)))))
+
+================================================================================
+A retry with a delay and an else
+================================================================================
+
+retry 120 every 1
+	$ pg_isready
+else
+	$ echo gave up
+end
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (retry_statement
+    (number)
+    (number)
+    (shell_line
+      (shell_text
+        (shell_content)))
+    (shell_line
+      (shell_text
+        (shell_content)))))

@@ -45,6 +45,18 @@ pub enum Statement {
 		otherwise: Option<Block>,
 		span: Span,
 	},
+	/// `retry n [every secs] … [else …] end`
+	///
+	/// The body is run again while it fails, up to `attempts` times. `else` is
+	/// what to do when it never succeeded; without one, the last failure is
+	/// the statement's.
+	Retry {
+		attempts: Expr,
+		delay: Option<Expr>,
+		body: Block,
+		otherwise: Option<Block>,
+		span: Span,
+	},
 	/// `for name in iter … end`
 	For {
 		name: String,

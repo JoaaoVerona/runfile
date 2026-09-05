@@ -31,6 +31,8 @@ pub enum RunError {
 	Interrupted,
 	#[error("line {line}: `run` is not wired to a target resolver here")]
 	NoResolver { line: usize },
+	#[error("line {line}: a `retry` cannot be inside a `.parallel` block")]
+	RetryInParallel { line: usize },
 	#[error(transparent)]
 	Host(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -216,6 +218,55 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				(true, _) => nested(then, props, r),
 				(false, Some(b)) => nested(b, props, r),
 				(false, None) => Ok(()),
+			}
+		}
+		Statement::Retry {
+			attempts,
+			delay,
+			body,
+			otherwise,
+			span,
+		} => {
+			let n = eval_boundary(attempts, &mut r.scope)?
+				.as_num()
+				.map_err(|e| EvalError::ty(span.line, e))?
+				.max(1.0) as u64;
+			let secs = match delay {
+				Some(d) => eval_boundary(d, &mut r.scope)?
+					.as_num()
+					.map_err(|e| EvalError::ty(span.line, e))?
+					.max(0.0),
+				None => 0.0,
+			};
+			// The body has to see its own failures: `.ignore-errors` around it
+			// would forgive them, and a retry that cannot tell would run once.
+			let mut inner = props.extend(body, &mut r.scope, true)?;
+			inner.ignore_errors = false;
+
+			let mut last = None;
+			for attempt in 0..n {
+				if r.interrupted.is_some_and(|f| f()) {
+					return Err(RunError::Interrupted);
+				}
+				match walk(body, &inner, r) {
+					Ok(()) => {
+						last = None;
+						break;
+					}
+					// `exit` is an instruction to stop, not a failure to retry.
+					Err(e) if e.exit_code().is_some() => return Err(e),
+					Err(e) => {
+						last = Some(e);
+						if attempt + 1 < n && secs > 0.0 && !r.dry_run {
+							std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+						}
+					}
+				}
+			}
+			match (last, otherwise) {
+				(None, _) => Ok(()),
+				(Some(_), Some(b)) => nested(b, props, r),
+				(Some(e), None) => Err(e),
 			}
 		}
 		Statement::For { name, iter, body, span } => {
@@ -521,6 +572,10 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 				}
 				r.scope.restore(name, prior);
 			}
+			// Retrying inside a fan-out would mean several bodies sleeping and
+			// re-running against each other, with no useful reading of what
+			// "attempts" counted. Refused rather than guessed at.
+			Statement::Retry { span, .. } => return Err(RunError::RetryInParallel { line: span.line }),
 			Statement::Match {
 				subject,
 				cases,

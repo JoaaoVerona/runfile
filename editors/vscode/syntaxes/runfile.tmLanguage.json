@@ -16,6 +16,12 @@
 			"include": "#exec-block"
 		},
 		{
+			"include": "#shell-condition"
+		},
+		{
+			"include": "#code-of"
+		},
+		{
 			"include": "#shell-line"
 		},
 		{
@@ -309,6 +315,64 @@
 			"patterns": [
 				{
 					"include": "source.shell#typical_statements"
+				}
+			]
+		},
+		"shell-condition": {
+			"$comment": "`if $ cmd` and `match $ cmd`: the condition is a shell run, so it is coloured as one. Without this the text after `$` was read as a runfile expression -- a quoted argument came out a runfile string and a redirection came out an operator.",
+			"begin": "^\\s*(if|match)[ \\t]+(\\$)(?=[ \\t]|$)",
+			"beginCaptures": {
+				"1": {
+					"name": "keyword.control.run"
+				},
+				"2": {
+					"name": "keyword.control.shell.run"
+				}
+			},
+			"end": "(?<![\\\\\\n])$",
+			"contentName": "meta.embedded.line.shell",
+			"patterns": [
+				{
+					"include": "#interpolation"
+				},
+				{
+					"include": "#first-shell-statement"
+				},
+				{
+					"include": "source.shell"
+				}
+			]
+		},
+		"code-of": {
+			"$comment": "`code_of($ cmd)` is the one call holding shell text. It ends at the `)`, which is the same rule the parser and the tree-sitter grammar enforce.",
+			"begin": "\\b(code_of)(\\()[ \\t]*(\\$)(?=[ \\t]|\\))",
+			"beginCaptures": {
+				"1": {
+					"name": "support.function.run"
+				},
+				"2": {
+					"name": "punctuation.section.arguments.begin.run"
+				},
+				"3": {
+					"name": "keyword.control.shell.run"
+				}
+			},
+			"end": "\\)",
+			"endCaptures": {
+				"0": {
+					"name": "punctuation.section.arguments.end.run"
+				}
+			},
+			"contentName": "meta.embedded.line.shell",
+			"patterns": [
+				{
+					"include": "#interpolation"
+				},
+				{
+					"include": "#first-shell-statement"
+				},
+				{
+					"include": "source.shell"
 				}
 			]
 		}

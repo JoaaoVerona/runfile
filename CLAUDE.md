@@ -48,7 +48,7 @@ Line-oriented. Every line is one of:
 | `$ <line>` | Hand this line to a shell. |
 | `exec <cmd>` … `end` | Run `<cmd>`, with the block's body as its stdin. |
 | `let x = expr`, `x = expr` | Bind and rebind. |
-| `if` / `else` / `end`, `for x in …`, `match` / `case` / `default` | Control flow. |
+| `if` / `else` / `end`, `for x in …`, `match` / `case` / `default`, `retry n [every s]` | Control flow. |
 | `run <target> [args]` | Dispatch another target, in-process. |
 | `expr` | Evaluated for effect, e.g. `write_file(…)`. |
 
@@ -95,6 +95,15 @@ interpolation sites in the corpus, 48 would have been unsafe under manual quotin
 
 Quotes inside `{{ }}` need no escaping — an interpolation is opaque to the string containing it. `.confirm =
 "Greet {{ ARG.name ? "world" }}?"` is correct as written.
+
+### `retry`
+
+`retry n [every s]` … `[else …]` `end` runs its block again while it fails. Four wait loops in the corpus were
+shell `until … do sleep … done`, three of them re-implementing an attempt counter and an error message by
+hand. The block is run with **`ignore_errors` forced off** — a retry that could not see failure would run
+exactly once, which is the least useful way for it to be wrong — and an `exit()` inside is re-raised rather
+than retried. It is refused inside `.parallel`: several bodies sleeping and re-running against each other has
+no useful reading of what "attempts" counted, so `RunError::RetryInParallel` says so rather than guessing.
 
 ### A command's exit status
 

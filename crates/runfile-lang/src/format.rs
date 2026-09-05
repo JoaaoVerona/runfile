@@ -257,6 +257,15 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 	let head = trimmed.split_whitespace().next().unwrap_or("");
 	let (text, opens) = match head {
 		"if" => (format!("if {}", condition(trimmed[2..].trim(), no)?), Some(Frame::Body)),
+		// `retry n every s` -- two ordinary expressions around a keyword.
+		"retry" => {
+			let rest = trimmed[5..].trim();
+			let text = match rest.split_once(" every ") {
+				Some((a, d)) => format!("retry {} every {}", spaced(a.trim(), no)?, spaced(d.trim(), no)?),
+				None => format!("retry {}", spaced(rest, no)?),
+			};
+			(text, Some(Frame::Body))
+		}
 		"match" => (
 			format!("match {}", condition(trimmed[5..].trim(), no)?),
 			Some(Frame::Match),

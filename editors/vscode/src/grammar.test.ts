@@ -216,3 +216,38 @@ test("a shell line is coloured exactly as the same command in a .sh file", async
 		await sameAsShellFile(line, shell)
 	}
 })
+
+test("a `$` condition and a code_of body are coloured as shell", async () => {
+	// Both used to be read as runfile *expressions* -- a quoted argument came
+	// out a runfile string, a redirection came out an operator.
+	const shell = realShellGrammar()
+	if (!shell) {
+		return
+	}
+	for (const line of [
+		'if $ launchctl print "gui/$(id -u)/x" >/dev/null 2>&1',
+		"match $ grep -q a b",
+		"let c = code_of($ mkdir out)"
+	]) {
+		const [tokens] = await tokensOf(`${line}\n`, shell)
+		const marker = (tokens ?? []).findIndex((t) => t.scopes.includes("keyword.control.shell.run"))
+		assert.ok(marker >= 0, `${line}: the $ is not marked as ours`)
+		// Everything past the marker belongs to the shell grammar.
+		const after = (tokens ?? []).slice(marker + 1).filter((t) => t.text.trim() && t.text !== ")")
+		assert.ok(
+			after.some((t) => t.scopes.includes("entity.name.command.shell")),
+			`${line}: no command scope after the $`
+		)
+		for (const t of after) {
+			assert.ok(
+				!t.scopes.some((s) => s.endsWith(".run") && s !== "source.run"),
+				`${line}: ${JSON.stringify(t.text)} was read as runfile, not shell: ${t.scopes.join(" ")}`
+			)
+		}
+	}
+})
+
+test("the keyword before a `$` condition is still the language's", async () => {
+	const [scopes] = await scopesOf("if $ true\n")
+	assert.ok(scopes?.includes("keyword.control.run"), `got ${scopes?.join(" ")}`)
+})

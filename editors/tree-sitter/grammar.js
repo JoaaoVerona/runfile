@@ -56,6 +56,7 @@ module.exports = grammar({
 				$.let_statement,
 				$.assignment,
 				$.if_statement,
+				$.retry_statement,
 				$.for_statement,
 				$.match_statement,
 				$.run_statement,
@@ -129,6 +130,20 @@ module.exports = grammar({
 				// command succeeds. Never an `exec` -- its `end` would be the
 				// one the `if` wants.
 				field("condition", choice($.shell_capture, $._expression)),
+				$._newline,
+				repeat($._line),
+				optional(seq("else", $._newline, repeat($._line))),
+				"end",
+				$._newline,
+			),
+
+		// `retry n [every s]` … `[else …]` `end`: the body is run again while it
+		// fails, up to n times, and `else` is what to do when it never worked.
+		retry_statement: ($) =>
+			seq(
+				"retry",
+				field("attempts", $._expression),
+				optional(seq("every", field("delay", $._expression))),
 				$._newline,
 				repeat($._line),
 				optional(seq("else", $._newline, repeat($._line))),
