@@ -93,14 +93,14 @@ pub fn watch(anchor: &Path, patterns: &[String], mut once: impl FnMut()) -> Resu
 		.map_err(|e| format!("cannot watch {}: {e}", anchor.display()))?;
 
 	once();
-	eprintln!("[runfile] watching for changes — Ctrl+C to stop");
+	eprintln!("{} watching for changes — Ctrl+C to stop", runfile_runtime::exec::tag());
 	while next_change(&rx, &pats, anchor).is_some() {
 		// The message says Ctrl+C stops it, so it has to.
 		if runfile_runtime::interrupt::interrupted() {
 			break;
 		}
 		once();
-		eprintln!("[runfile] watching for changes — Ctrl+C to stop");
+		eprintln!("{} watching for changes — Ctrl+C to stop", runfile_runtime::exec::tag());
 	}
 	Ok(())
 }

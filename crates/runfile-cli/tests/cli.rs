@@ -1020,7 +1020,7 @@ fn a_forgotten_double_dash_is_warned_about_on_stderr() {
 	assert!(o.status.success(), "{}", err(&o));
 	assert_eq!(out(&o).trim(), "s3api x");
 	assert!(
-		err(&o).starts_with("warning: `--bucket` was passed to `wrap`"),
+		err(&o).starts_with("[runfile] warning: `--bucket` was passed to `wrap`"),
 		"{}",
 		err(&o)
 	);
@@ -1789,6 +1789,22 @@ fn an_exec_block_is_announced_whole() {
 	let o = p.run(&["t"]);
 	assert!(err(&o).contains("[runfile] echo one"), "{}", err(&o));
 	assert!(err(&o).contains("[runfile] echo two"), "{}", err(&o));
+}
+
+#[test]
+fn everything_the_runner_says_while_a_target_runs_is_marked_as_its_own() {
+	// A person reading a terminal is watching two things talk at once. Without
+	// the prefix, `error: …` could as easily be the target's own output.
+	let p = project(&[("runfiles/e.run", "$ echo mine\n$ false\n")]);
+	let o = p.run(&["e", "--stray"]);
+	assert!(!o.status.success());
+	for line in err(&o).lines().filter(|l| !l.trim().is_empty()) {
+		assert!(line.starts_with("[runfile] "), "unmarked: {line:?}\nin {}", err(&o));
+	}
+	assert!(err(&o).contains("[runfile] warning: `--stray`"), "{}", err(&o));
+	assert!(err(&o).contains("[runfile] error: "), "{}", err(&o));
+	// The target's own output is untouched, on its own stream.
+	assert_eq!(out(&o), "mine\n");
 }
 
 #[test]

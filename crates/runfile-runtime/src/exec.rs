@@ -244,6 +244,16 @@ fn relay(stream: Option<impl std::io::Read>, label: &str, is_err: bool) {
 /// The body rather than the program, because `sh` is what almost every block
 /// is and `cargo build` is what the reader wants to see. A multi-line body is
 /// shown whole: it is one process, and half of it would be a lie.
+/// The prefix every message from the runner carries.
+///
+/// Exported so a message written anywhere -- an error, a warning, a prompt --
+/// is marked as the runner's rather than the target's. A person reading a
+/// terminal is watching two things talk at once, and the whole point of the
+/// prefix is telling them apart.
+pub fn tag() -> &'static str {
+	tags().0
+}
+
 /// The tag every announcement carries, bold cyan when a terminal is watching.
 fn tags() -> (&'static str, &'static str, &'static str) {
 	if std::io::IsTerminal::is_terminal(&std::io::stderr()) {

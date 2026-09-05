@@ -164,7 +164,9 @@ pub(crate) fn merge_key_sources(env_pool: Vec<String>, keyring: Result<Blob, Key
 		Ok(blob) => keys.extend(blob.into_values()),
 		Err(e) => {
 			if keys.is_empty() {
-				eprintln!("Warning: failed to load private keys from credential store: {e}");
+				// Plain, not coloured: this crate sits below the one that owns
+				// the tag, and nothing else here writes to a terminal.
+				eprintln!("[runfile] warning: could not load private keys from the credential store: {e}");
 			}
 		}
 	}

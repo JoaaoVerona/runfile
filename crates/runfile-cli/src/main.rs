@@ -81,7 +81,7 @@ fn main() -> ExitCode {
 			if runfile_runtime::interrupt::interrupted() {
 				return ExitCode::from(runfile_runtime::interrupt::EXIT_CODE as u8);
 			}
-			eprintln!("error: {msg}");
+			eprintln!("{} error: {msg}", runfile_runtime::exec::tag());
 			ExitCode::FAILURE
 		}
 	}
@@ -218,7 +218,7 @@ fn real_main() -> Result<ExitCode, String> {
 	}
 
 	let ask = prompt::confirmer();
-	let warn = |m: &str| eprintln!("warning: {m}");
+	let warn = |m: &str| eprintln!("{} warning: {m}", runfile_runtime::exec::tag());
 	let interrupted = || runfile_runtime::interrupt::interrupted();
 	let mut host = Host::new(&cat);
 	host.warn = Some(&warn);
@@ -246,7 +246,7 @@ fn real_main() -> Result<ExitCode, String> {
 		return watch::watch(&anchor, &watching, || {
 			match host.run(&first, &args) {
 				Ok(()) => prepare::record(&cat, target),
-				Err(e) => eprintln!("[runfile] {e}"),
+				Err(e) => eprintln!("{} {e}", runfile_runtime::exec::tag()),
 			}
 			// Each iteration starts clean; Ctrl+C ends the session rather than
 			// poisoning every run after it.

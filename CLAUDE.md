@@ -276,6 +276,12 @@ second time as the global. This replaced `includes` entirely.
   parallel siblings are not mistaken for a cycle.
 - `.parallel`: bindings evaluate in source order, then executable leaves fan out via `std::thread::scope`.
   Control flow expands into the same batch, and every branch completes before a failure surfaces.
+- **Everything the runner says while a target runs carries `[runfile]`** — the announcement, `error:`,
+  `warning:`, the `.confirm` question, the `--stdin-args` prompt, watch-mode notices. A person reading a
+  terminal is watching two things talk at once, and without the prefix `error: …` could as easily be the
+  target's own output. `exec::tag()` is the one place it is spelled; the credential-store warning in
+  `runfile-state` writes a plain one because that crate sits below the one that owns it. `run :env`'s own
+  chatter is not target execution and is left alone.
 - **`.logging` announces each command on stderr, and is off unless asked for** — the same default the old
   `logging` field had (`unwrap_or(false)`), and for the same reason: a target is run for its output, and a
   runner talking over it is noise. Block-scoped, so a `_shared.run` covers a directory the way `globals` used
