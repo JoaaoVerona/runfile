@@ -363,23 +363,30 @@ impl Catalog {
 		Ok(found)
 	}
 
-	/// The `_shared.run` that applies to a target, if any.
 	/// Every `_shared.run` that applies to a target, outermost first, so a
 	/// nested one layers over the directory above rather than replacing it.
 	///
-	/// The walk stops at the target's own `runfiles/` tree: a subproject is
-	/// self-contained, so the root's settings are not its to inherit.
+	/// Walked from the target's own file rather than looked up by namespace.
+	/// A namespace is not unique across trees: the machine-wide one has none,
+	/// so its `_shared.run` was registered under the same empty key as a
+	/// project's own -- and since the key is written whether or not the file
+	/// exists, merely *having* a `~/.runfiles` silently disabled the root
+	/// `_shared.run` of every project on the machine. A path cannot collide.
+	///
+	/// The walk stops at the anchor, so a subproject is self-contained: the
+	/// settings above its own `runfiles/` are not its to inherit.
 	pub fn shared_chain(&self, target: &Target) -> Vec<PathBuf> {
-		let segments: Vec<&str> = target.name.split(':').collect();
-		let namespace = &segments[..segments.len().saturating_sub(1)];
-		// A subproject's own root is its first segment; everything else starts
-		// at the top of the local tree.
-		let from = usize::from(target.origin == Origin::Included);
-		(from..=namespace.len())
-			.filter_map(|end| self.shared.get(&namespace[..end].join(":")))
-			.filter(|p| p.is_file())
-			.cloned()
-			.collect()
+		let mut out = Vec::new();
+		let mut dir = target.path.parent();
+		while let Some(d) = dir.filter(|d| *d != target.anchor && d.starts_with(&target.anchor)) {
+			let p = d.join(SHARED);
+			if p.is_file() {
+				out.push(p);
+			}
+			dir = d.parent();
+		}
+		out.reverse();
+		out
 	}
 }
 

@@ -340,3 +340,50 @@ fn a_home_directory_project_is_not_also_its_own_global() {
 	let c = discover(home.path(), Some(home.path())).unwrap();
 	assert!(c.resolve("deploy").is_some());
 }
+
+#[test]
+fn a_global_directory_does_not_shadow_a_projects_own_shared_file() {
+	// The machine-wide tree has no namespace, so keying the chain by namespace
+	// put its `_shared.run` under the same empty key as a project's own. The
+	// key was written whether or not the file existed, so merely *having* a
+	// `~/.runfiles` disabled the root `_shared.run` of every project.
+	let home = TempDir::new().unwrap();
+	let g = home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("mine.run"), "$ true\n").unwrap();
+
+	let proj = TempDir::new().unwrap();
+	std::fs::create_dir_all(proj.path().join("runfiles")).unwrap();
+	std::fs::write(proj.path().join("runfiles/build.run"), "$ true\n").unwrap();
+	std::fs::write(proj.path().join("runfiles/_shared.run"), ".env.X = \"1\"\n").unwrap();
+
+	let c = discover(proj.path(), Some(home.path())).unwrap();
+	let chain = c.shared_chain(c.resolve("build").unwrap());
+	assert_eq!(chain.len(), 1, "the project's own still applies: {chain:?}");
+	assert!(chain[0].starts_with(proj.path()), "{chain:?}");
+
+	// And the global targets still see their own.
+	std::fs::write(g.join(SHARED), ".env.Y = \"2\"\n").unwrap();
+	let c = discover(proj.path(), Some(home.path())).unwrap();
+	let mine = c.shared_chain(c.resolve("mine").unwrap());
+	assert_eq!(mine.len(), 1, "{mine:?}");
+	assert!(mine[0].starts_with(home.path()), "{mine:?}");
+}
+
+#[test]
+fn a_binding_in_a_shared_file_is_reported_in_the_chain_outermost_first() {
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles/api")).unwrap();
+	for (f, text) in [
+		("runfiles/_shared.run", "let a = \"root\"\n"),
+		("runfiles/api/_shared.run", "let b = \"api\"\n"),
+		("runfiles/api/deploy.run", "$ true\n"),
+	] {
+		std::fs::write(d.path().join(f), text).unwrap();
+	}
+	let c = discover(d.path(), None).unwrap();
+	let chain = c.shared_chain(c.resolve("api:deploy").unwrap());
+	assert_eq!(chain.len(), 2, "{chain:?}");
+	assert!(chain[0].ends_with("runfiles/_shared.run"), "outermost first: {chain:?}");
+	assert!(chain[1].ends_with("runfiles/api/_shared.run"), "{chain:?}");
+}

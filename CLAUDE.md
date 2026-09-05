@@ -207,8 +207,13 @@ second time as the global. This replaced `includes` entirely.
   `glob`, `read_file` and `{{ RUN.parent }}`.
 - **`_shared.run` layers by directory.** `Catalog::shared_chain` returns every one that applies, outermost
   first, so `runfiles/api/_shared.run` adds to `runfiles/_shared.run` rather than replacing it. Only the top
-  one used to be registered at all, so a nested one was read by nothing. The walk stops at the target's own
-  `runfiles/` tree: a subproject does not inherit the root's, for the same reason its targets are namespaced.
+  one used to be registered at all, so a nested one was read by nothing. The walk stops at the **anchor**: a
+  subproject does not inherit the root's, for the same reason its targets are namespaced. It is walked from
+  the target's own **path**, never looked up by namespace — a namespace is not unique across trees, the
+  machine-wide one has none, and `Catalog.shared` records a key whether or not the file is there, so keying
+  by it meant that merely *having* a `~/.runfiles` silently disabled the root `_shared.run` of every project
+  on the machine. Its properties *and* its `let` bindings apply (`run_block_bindings`), which is what makes
+  it the `globals` analog.
 - `resolve` is one hash lookup; `.alias` is only scanned on a miss, so aliases cost nothing in the common case.
   A real file name always wins over an alias, and two targets claiming one alias is an error naming both.
 - **An alias carries its target's namespace.** `web/runfiles/setup.run` declaring `deps` answers to `web:deps`,
