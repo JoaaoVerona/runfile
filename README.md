@@ -70,7 +70,7 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `let x = 1` | Bind a value. `x = 2` rebinds. |
 | `if` / `else` / `end` | Branch. |
 | `for x in list` / `end` | Loop. |
-| `match` / `case` / `default` / `end` | Dispatch on a value. |
+| `match` / `case` / `default` / `end` | Dispatch on a value. A `case` label is a quoted string: `case "linux"`. |
 | `run other-target` | Run another target, in this process. |
 
 ```sh
@@ -145,8 +145,9 @@ quote: the substitution already did it.
 
 ### Stopping early
 
-`exit` ends the run with a status. Written without parentheses it means `exit(0)`; with one it takes any
-number, which the shell truncates to a byte the usual way — `exit(-1)` is 255.
+`exit()` ends the run with a status — no argument means 0, and any number is taken as given and truncated to
+a byte the usual way, so `exit(-1)` is 255. Like every call it is written with parentheses; there is no
+bare-word form.
 
 ```sh
 if !file_exists(".env")

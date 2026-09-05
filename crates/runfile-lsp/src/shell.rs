@@ -14,7 +14,9 @@ use crate::analysis::{Diagnostic, Range, Severity};
 
 /// Shells whose bodies are worth checking. `exec python` is not shell, and
 /// handing it to shellcheck would produce nothing but noise.
-const SHELLS: &[&str] = &["sh", "bash", "dash", "ash", "ksh"];
+/// Commands whose `exec` body is shell, so shellcheck has something to say
+/// about it. `brush` is bash-compatible, so bash's checker applies.
+const SHELLS: &[&str] = &["sh", "bash", "dash", "ash", "ksh", "brush"];
 
 /// One shell script pulled out of a document, with the line each of its lines
 /// came from.

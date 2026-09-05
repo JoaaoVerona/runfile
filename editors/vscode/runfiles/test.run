@@ -1,4 +1,4 @@
 # Compile and run the extension's unit tests
 
 run compile
-$ node --test out/pure.test.js
+$ node --test out/pure.test.js out/grammar.test.js

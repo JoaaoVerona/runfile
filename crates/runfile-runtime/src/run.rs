@@ -507,7 +507,7 @@ fn exec_label(command: Option<&str>, body: &str) -> String {
 			.and_then(|l| l.split_whitespace().next())
 	};
 	// A shell is never the label: every `$` branch would be called `bash`.
-	const SHELLS: &[&str] = &["sh", "bash", "dash", "ash", "zsh", "ksh", "busybox"];
+	const SHELLS: &[&str] = &["sh", "bash", "dash", "ash", "zsh", "ksh", "busybox", "brush"];
 	from_header
 		.filter(|c| !SHELLS.contains(c))
 		.or_else(from_body)

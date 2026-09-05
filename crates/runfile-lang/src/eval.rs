@@ -211,9 +211,22 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 			.map(|i| eval(i, sc))
 			.collect::<Result<Vec<_>, _>>()
 			.map(Value::List),
-		Expr::Ident(name, _) => sc.vars.get(name).cloned().ok_or(EvalError::Unbound {
-			name: name.clone(),
-			line,
+		Expr::Ident(name, _) => sc.vars.get(name).cloned().ok_or_else(|| {
+			// A function named without parentheses is a call someone forgot to
+			// finish, not an unknown binding. Saying so is the difference
+			// between a one-word fix and a hunt. Checked here rather than at
+			// parse time so a binding may still be named after a function --
+			// a bound name is found above and never reaches this.
+			if crate::functions::FUNCTIONS.iter().any(|f| f.name == name) {
+				return EvalError::Other {
+					msg: format!("`{name}` is a function; call it as `{name}()`"),
+					line,
+				};
+			}
+			EvalError::Unbound {
+				name: name.clone(),
+				line,
+			}
 		}),
 		Expr::Source { kind, key, .. } => match source(*kind, key.as_deref(), sc, line) {
 			// A missing input is offered to the prompter before it becomes an

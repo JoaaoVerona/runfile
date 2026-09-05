@@ -155,12 +155,17 @@ quoting.
   drains after every iteration.
 - Binding names are validated in both `let` and reassignment; a block closer (`end`/`else`/`case`/`default`)
   with nothing open is a parse error rather than an expression statement.
-- **`exit` is the one function that may be written without parentheses**, so `exit` and `exit(0)` mean the
-  same and a bare word can end a branch. It leaves as `EvalError::Exit`, since an error is the only path out
-  of an expression, and *every* catcher re-raises it: `try`, a `?` chain and `.ignore-errors` all let it
+- **`exit()` ends the run with a status.** It leaves as `EvalError::Exit`, since an error is the only path
+  out of an expression, and *every* catcher re-raises it: `try`, a `?` chain and `.ignore-errors` all let it
   through, the way an interrupt is not something a target gets to shrug off. `RunError::exit_code` is what the
-  CLI reads to set its own status instead of printing an error. The parser rule means a binding named `exit`
-  can never be read back, which is the price of the bare form.
+  CLI reads to set its own status instead of printing an error.
+- **Every call is written with parentheses**, `exit()` included — there is no bare-word form. A bare name that
+  matches a listed function is reported as *"`exit` is a function; call it as `exit()`"* rather than as an
+  unknown binding, which would send a person looking for a `let` that was never missing. The check is at
+  evaluation rather than parsing, so a bound name is found first and `let first = …` stays legal.
+- **A `case` label is a quoted string.** A subject is a value and a label is compared against it, so
+  `case linux` asked about a string while looking like a bare word; `RUN.os` is a string like any other. One
+  rule holds instead: a string is in quotes wherever it appears. The grammar and `GRAMMAR.ebnf` say the same.
 - **The formatter is line-oriented, not an AST printer.** The tree keeps no comments and folds a run of `$`
   lines into one statement, so printing from it would delete what a person wrote. Tokens are rendered from
   their **source spans**, so a string — raw prefix, escapes, interpolations — is copied out verbatim and
@@ -215,7 +220,12 @@ second time as the global. This replaced `includes` entirely.
   is. Block-scoped: `shell`, `parallel`, `ignore-errors`, `workdir`, `env`. The rest are header-only.
 - **Shell resolution**: bash → Git Bash (four known Windows paths) → sh. `System32\bash.exe` is deliberately
   excluded: it is the WSL launcher, and a different filesystem.
-- `is_shell()` matches `sh|bash|dash|ash|zsh|ksh|busybox` on the **first word only**, and inserts `-e`.
+- `is_shell()` matches `sh|bash|dash|ash|zsh|ksh|busybox|brush` on the **first word only**, and inserts `-e`.
+  `brush` is there because it is a bash-compatible shell someone may name in `.shell`; without it such a
+  target would run fine and silently stop stopping on failure. It is *not* a default candidate — the default
+  has to supply the POSIX toolbox as well as the language, which a shell alone does not: 9% of the corpus's
+  shell lines call one of 31 toolbox programs, and `sed`, `grep`, `awk`, `find`, `xargs` and `tar` are not
+  coreutils at all. Git Bash ships both, which is why it is the Windows answer.
 - **`Dispatch::run` returns the child's trace** rather than writing to shared state. A child finishes while its
   parent is still walking, so a shared buffer printed every dependency *before* the line that called it. The
   caller splices the trace in where the call appeared, which is what makes `--dry-run` order match execution
@@ -282,6 +292,16 @@ second time as the global. This replaced `includes` entirely.
   and a missing shellcheck is silent.
 
 ### editors/vscode
+
+**A `$` line is coloured by VS Code's own shell grammar.** The TextMate rule sets `contentName` to an
+embedded-shell scope *and* includes `source.shell`; the first alone only tells VS Code which language's
+comments and brackets to use, so for a long time a shell line came out one flat colour. Interpolation is
+listed before the include, so `{{ … }}` stays the language's. `exec` bodies are split in two rules —
+`exec sh|bash|…` delegates, anything else does not, since a Python body is not shell — and both close on an
+`end` at the opener's own indentation via a `\1` backreference to the captured indent. A `$` line ends on
+`(?<![\\\n])$`: the tokenizer scans `line + "\n"`, so a backslash continuation would otherwise end the rule
+at the position after that newline. `grammar.test.ts` runs the real tokenizer over these with a stub
+`source.shell`, which is the only way to tell "delegates" from "says it delegates" apart.
 
 The LSP client is hand-rolled rather than `vscode-languageclient`: the server speaks a small, fixed subset,
 and a full client library is a large dependency for five message types. It was notification-only until

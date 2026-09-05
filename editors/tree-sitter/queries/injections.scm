@@ -9,11 +9,11 @@
 ((exec_block
    command: (command) @_command
    body: (exec_body) @injection.content)
- (#match? @_command "^(sh|bash|dash|ash|ksh|zsh)\\b")
+ (#match? @_command "^(sh|bash|dash|ash|ksh|zsh|brush)\\b")
  (#set! injection.language "bash"))
 
 ((exec_capture
    command: (command) @_command
    body: (exec_body) @injection.content)
- (#match? @_command "^(sh|bash|dash|ash|ksh|zsh)\\b")
+ (#match? @_command "^(sh|bash|dash|ash|ksh|zsh|brush)\\b")
  (#set! injection.language "bash"))

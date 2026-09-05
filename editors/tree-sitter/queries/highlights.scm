@@ -33,7 +33,6 @@
 (number) @number
 (boolean) @boolean
 
-(match_case label: (identifier) @constant)
 
 (interpolation ["{{" "}}"] @punctuation.special)
 

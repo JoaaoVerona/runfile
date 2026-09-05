@@ -3,12 +3,27 @@
 	"name": "Runfile",
 	"scopeName": "source.run",
 	"patterns": [
-		{ "include": "#comment" },
-		{ "include": "#property" },
-		{ "include": "#exec-block" },
-		{ "include": "#shell-line" },
-		{ "include": "#keyword" },
-		{ "include": "#expression" }
+		{
+			"include": "#comment"
+		},
+		{
+			"include": "#property"
+		},
+		{
+			"include": "#exec-block-shell"
+		},
+		{
+			"include": "#exec-block"
+		},
+		{
+			"include": "#shell-line"
+		},
+		{
+			"include": "#keyword"
+		},
+		{
+			"include": "#expression"
+		}
 	],
 	"repository": {
 		"comment": {
@@ -19,50 +34,68 @@
 			"comment": "A leading dot marks configuration: `.shell = \"bash\"`.",
 			"begin": "^\\s*(\\.)([A-Za-z][A-Za-z0-9-]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
 			"beginCaptures": {
-				"1": { "name": "punctuation.definition.keyword.run" },
-				"2": { "name": "entity.other.attribute-name.run" }
+				"1": {
+					"name": "punctuation.definition.keyword.run"
+				},
+				"2": {
+					"name": "entity.other.attribute-name.run"
+				}
 			},
 			"end": "$",
 			"patterns": [
-				{ "match": "=", "name": "keyword.operator.assignment.run" },
-				{ "include": "#comment" },
-				{ "include": "#expression" }
+				{
+					"match": "=",
+					"name": "keyword.operator.assignment.run"
+				},
+				{
+					"include": "#comment"
+				},
+				{
+					"include": "#expression"
+				}
 			]
 		},
 		"shell-line": {
-			"comment": "`$ ` hands the rest of the line to a shell; only interpolation is ours.",
+			"comment": "`$ ` hands the rest of the line to a shell. Including source.shell is what colours it the way the same command is coloured in a .sh file -- contentName alone only tells VS Code which language's comments and brackets to use, not how to tokenize. Interpolation comes first, so `{{ \u2026 }}` stays ours.",
 			"begin": "^\\s*(\\$)(?=\\s|$)",
-			"beginCaptures": { "1": { "name": "keyword.control.shell.run" } },
-			"end": "$",
-			"contentName": "meta.embedded.line.shell",
-			"patterns": [{ "include": "#interpolation" }]
-		},
-		"exec-block": {
-			"comment": "`exec <command>` … `end` — the body is that command's input, not ours.",
-			"begin": "^(\\s*)(exec)\\b(.*)$",
 			"beginCaptures": {
-				"2": { "name": "keyword.control.exec.run" },
-				"3": { "patterns": [{ "include": "#interpolation" }] }
+				"1": {
+					"name": "keyword.control.shell.run"
+				}
 			},
-			"end": "^\\s*(end)\\b",
-			"endCaptures": { "1": { "name": "keyword.control.exec.run" } },
-			"contentName": "meta.embedded.block.shell",
-			"patterns": [{ "include": "#interpolation" }]
+			"end": "(?<![\\\\\\n])$",
+			"contentName": "meta.embedded.line.shell",
+			"patterns": [
+				{
+					"include": "#interpolation"
+				},
+				{
+					"include": "source.shell"
+				}
+			]
 		},
 		"keyword": {
 			"patterns": [
 				{
 					"match": "^\\s*(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)",
 					"captures": {
-						"1": { "name": "keyword.other.let.run" },
-						"2": { "name": "variable.other.definition.run" }
+						"1": {
+							"name": "keyword.other.let.run"
+						},
+						"2": {
+							"name": "variable.other.definition.run"
+						}
 					}
 				},
 				{
 					"match": "^\\s*(run)\\s+([^\\s]+)",
 					"captures": {
-						"1": { "name": "keyword.control.run.run" },
-						"2": { "name": "entity.name.function.target.run" }
+						"1": {
+							"name": "keyword.control.run.run"
+						},
+						"2": {
+							"name": "entity.name.function.target.run"
+						}
 					}
 				},
 				{
@@ -73,32 +106,72 @@
 		},
 		"expression": {
 			"patterns": [
-				{ "include": "#interpolation" },
-				{ "include": "#string" },
-				{ "include": "#raw-string" },
-				{ "include": "#number" },
-				{ "include": "#constant" },
-				{ "include": "#source" },
-				{ "include": "#function" },
-				{ "include": "#operator" }
+				{
+					"include": "#interpolation"
+				},
+				{
+					"include": "#string"
+				},
+				{
+					"include": "#raw-string"
+				},
+				{
+					"include": "#number"
+				},
+				{
+					"include": "#constant"
+				},
+				{
+					"include": "#source"
+				},
+				{
+					"include": "#function"
+				},
+				{
+					"include": "#operator"
+				}
 			]
 		},
 		"interpolation": {
-			"comment": "`{{ … }}` is language inside anything else, including strings.",
+			"comment": "`{{ \u2026 }}` is language inside anything else, including strings.",
 			"begin": "\\{\\{",
 			"end": "\\}\\}",
-			"beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.run" } },
-			"endCaptures": { "0": { "name": "punctuation.section.embedded.end.run" } },
+			"beginCaptures": {
+				"0": {
+					"name": "punctuation.section.embedded.begin.run"
+				}
+			},
+			"endCaptures": {
+				"0": {
+					"name": "punctuation.section.embedded.end.run"
+				}
+			},
 			"name": "meta.embedded.expression.run",
 			"patterns": [
-				{ "include": "#string" },
-				{ "include": "#raw-string" },
-				{ "include": "#number" },
-				{ "include": "#constant" },
-				{ "include": "#source" },
-				{ "include": "#function" },
-				{ "include": "#operator" },
-				{ "include": "#identifier" }
+				{
+					"include": "#string"
+				},
+				{
+					"include": "#raw-string"
+				},
+				{
+					"include": "#number"
+				},
+				{
+					"include": "#constant"
+				},
+				{
+					"include": "#source"
+				},
+				{
+					"include": "#function"
+				},
+				{
+					"include": "#operator"
+				},
+				{
+					"include": "#identifier"
+				}
 			]
 		},
 		"string": {
@@ -106,16 +179,25 @@
 			"end": "\"",
 			"name": "string.quoted.double.run",
 			"patterns": [
-				{ "match": "\\\\.", "name": "constant.character.escape.run" },
-				{ "include": "#interpolation" }
+				{
+					"match": "\\\\.",
+					"name": "constant.character.escape.run"
+				},
+				{
+					"include": "#interpolation"
+				}
 			]
 		},
 		"raw-string": {
-			"comment": "`r\"…\"` keeps backslashes, which is what regex patterns want.",
+			"comment": "`r\"\u2026\"` keeps backslashes, which is what regex patterns want.",
 			"begin": "r\"",
 			"end": "\"",
 			"name": "string.quoted.other.raw.run",
-			"patterns": [{ "include": "#interpolation" }]
+			"patterns": [
+				{
+					"include": "#interpolation"
+				}
+			]
 		},
 		"number": {
 			"match": "\\b-?[0-9]+(\\.[0-9]+)?\\b",
@@ -129,10 +211,18 @@
 			"comment": "The five roots a value can come from.",
 			"match": "\\b(ARG|ENV|FLAG|RUN)(\\.)([A-Za-z_][A-Za-z0-9_-]*)|\\b(ARGS)\\b",
 			"captures": {
-				"1": { "name": "support.constant.source.run" },
-				"2": { "name": "punctuation.accessor.run" },
-				"3": { "name": "variable.other.member.run" },
-				"4": { "name": "support.constant.source.run" }
+				"1": {
+					"name": "support.constant.source.run"
+				},
+				"2": {
+					"name": "punctuation.accessor.run"
+				},
+				"3": {
+					"name": "variable.other.member.run"
+				},
+				"4": {
+					"name": "support.constant.source.run"
+				}
 			}
 		},
 		"function": {
@@ -146,6 +236,65 @@
 		"identifier": {
 			"match": "\\b[A-Za-z_][A-Za-z0-9_-]*\\b",
 			"name": "variable.other.run"
+		},
+		"exec-block-shell": {
+			"comment": "`exec sh` \u2026 `end` \u2014 the body is shell, so it is coloured as shell.",
+			"begin": "^(\\s*)(exec)\\b(?=\\s*(sh|bash|dash|ash|ksh|zsh|brush)\\b)(.*)$",
+			"beginCaptures": {
+				"2": {
+					"name": "keyword.control.exec.run"
+				},
+				"3": {
+					"patterns": [
+						{
+							"include": "#interpolation"
+						}
+					]
+				}
+			},
+			"end": "^\\1(end)\\b",
+			"endCaptures": {
+				"1": {
+					"name": "keyword.control.exec.run"
+				}
+			},
+			"contentName": "meta.embedded.block.shell",
+			"patterns": [
+				{
+					"include": "#interpolation"
+				},
+				{
+					"include": "source.shell"
+				}
+			]
+		},
+		"exec-block": {
+			"comment": "`exec <command>` \u2026 `end` \u2014 the body is that command's input. Only interpolation is ours; nothing else about it is known here.",
+			"begin": "^(\\s*)(exec)\\b(?!\\s*(sh|bash|dash|ash|ksh|zsh|brush)\\b)(.*)$",
+			"beginCaptures": {
+				"2": {
+					"name": "keyword.control.exec.run"
+				},
+				"3": {
+					"patterns": [
+						{
+							"include": "#interpolation"
+						}
+					]
+				}
+			},
+			"end": "^\\1(end)\\b",
+			"endCaptures": {
+				"1": {
+					"name": "keyword.control.exec.run"
+				}
+			},
+			"contentName": "meta.embedded.block.exec",
+			"patterns": [
+				{
+					"include": "#interpolation"
+				}
+			]
 		}
 	}
 }

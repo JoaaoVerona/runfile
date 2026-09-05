@@ -452,7 +452,7 @@ fn exit_carries_a_status_out_rather_than_producing_a_value() {
 			other => panic!("{src}: expected an exit, got {other:?}"),
 		}
 	};
-	assert_eq!(at("exit"), 0, "a bare word means the same as exit(0)");
+	assert_eq!(at("exit()"), 0, "no argument means 0");
 	assert_eq!(at("exit(0)"), 0);
 	assert_eq!(at("exit(3)"), 3);
 	// Truncation to 255 is the operating system's, so the value is carried
@@ -484,15 +484,54 @@ fn exit_takes_at_most_one_argument() {
 }
 
 #[test]
-fn a_binding_named_exit_is_not_shadowed_by_the_keyword() {
-	// `exit` without parentheses is a call, so it cannot also be read as a
-	// variable. Worth pinning: it is the one name in the language for which
-	// that is true.
-	let mut s = sc();
-	s.vars.insert("exit".into(), Value::Num(1.0));
-	let e = parse_expr("exit", 0, 1).unwrap();
+fn a_function_named_without_parentheses_says_so() {
+	// Every call is written with parentheses, `exit()` included. A bare name
+	// is a call someone forgot to finish, and reporting it as an unknown
+	// binding would send them looking for a `let` that was never missing.
+	for name in ["exit", "uuid", "now"] {
+		let e = parse_expr(name, 0, 1).unwrap();
+		let msg = eval(&e, &mut sc()).expect_err(name).to_string();
+		assert!(msg.contains(&format!("call it as `{name}()`")), "{name}: {msg}");
+	}
 	assert!(
-		matches!(eval(&e, &mut s), Err(crate::EvalError::Exit { .. })),
-		"the call wins"
+		boom("nope").contains("is not defined"),
+		"an unknown name still reads that way"
+	);
+}
+
+#[test]
+fn a_binding_may_be_named_after_a_function() {
+	// The check is at evaluation, not parsing, so a bound name is found first
+	// and `let first = …` stays legal.
+	let mut s = sc();
+	s.vars.insert("first".into(), Value::Num(1.0));
+	let e = parse_expr("first", 0, 1).unwrap();
+	assert_eq!(eval(&e, &mut s).unwrap(), Value::Num(1.0));
+}
+
+#[test]
+fn a_case_label_must_be_quoted() {
+	// `RUN.os` is a string like any other, so a label compared against it is
+	// a string too -- one rule, not a bare-word exception.
+	let e = crate::parse(
+		"match RUN.os
+case linux
+$ a
+end
+",
+	)
+	.unwrap_err()
+	.to_string();
+	assert!(e.contains("must be quoted"), "{e}");
+	assert!(e.contains("case \"linux\""), "the fix is in the message: {e}");
+	assert!(
+		crate::parse(
+			"match RUN.os
+case \"linux\"
+$ a
+end
+"
+		)
+		.is_ok()
 	);
 }

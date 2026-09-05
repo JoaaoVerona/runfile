@@ -1163,7 +1163,7 @@ fn code_of(o: &std::process::Output) -> i32 {
 #[test]
 fn exit_sets_the_process_status_and_is_not_an_error() {
 	for (body, want) in [
-		("exit\n", 0),
+		("exit()\n", 0),
 		("exit(0)\n", 0),
 		("exit(3)\n", 3),
 		// The shell truncates to a byte; -1 is the classic 255.
@@ -1178,6 +1178,17 @@ fn exit_sets_the_process_status_and_is_not_an_error() {
 			err(&o)
 		);
 	}
+}
+
+#[test]
+fn a_function_without_parentheses_is_reported_as_one() {
+	// Every call is written with parentheses. A bare `exit` used to be the one
+	// exception; reporting it as an unknown binding would send a person
+	// looking for a `let` that was never missing.
+	let p = project(&[("runfiles/e.run", "exit\n")]);
+	let o = p.run(&["e"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("call it as `exit()`"), "{}", err(&o));
 }
 
 #[test]
@@ -1214,7 +1225,7 @@ fn an_exit_inside_a_called_target_ends_the_whole_run() {
 }
 
 #[test]
-fn exit_inside_a_branch_reads_as_a_bare_word() {
+fn exit_inside_a_branch_ends_the_run_there() {
 	let p = project(&[("runfiles/e.run", "if FLAG.stop\n\texit(4)\nend\n$ echo went-on\n")]);
 	assert_eq!(code_of(&p.run(&["e", "--stop"])), 4);
 	let o = p.run(&["e"]);

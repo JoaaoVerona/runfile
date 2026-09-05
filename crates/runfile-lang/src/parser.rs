@@ -256,7 +256,7 @@ impl<'a> P<'a> {
 					match self.peek_kw() {
 						Some("case") => {
 							let l = &self.lines[self.i];
-							let label = l.trimmed[4..].trim().trim_matches('"').to_string();
+							let label = case_label(l.trimmed, l.no)?;
 							let cs = Span::new(l.offset, l.offset + l.trimmed.len(), l.no);
 							self.i += 1;
 							cases.push(MatchCase {
@@ -451,6 +451,28 @@ impl<'a> P<'a> {
 			lines,
 			span: Span::new(offset, end, no),
 		})
+	}
+}
+
+/// The label of a `case`, which must be written as a quoted string.
+///
+/// A subject is a value and a label is compared against it, so `case linux`
+/// asks about a string while looking like a bare word -- and `RUN.os` is a
+/// string like any other. Requiring the quotes keeps one rule: a string is
+/// always in quotes, wherever it appears.
+fn case_label(trimmed: &str, no: usize) -> Result<String, ParseError> {
+	let rest = trimmed[4..].trim();
+	let inner = rest
+		.strip_prefix('"')
+		.and_then(|r| r.strip_suffix('"'))
+		.filter(|_| rest.len() >= 2);
+	match inner {
+		Some(label) => Ok(label.to_string()),
+		None if rest.is_empty() => err(no, "`case` needs a label, as `case \"linux\"`"),
+		None => err(
+			no,
+			format!("a `case` label is a string and must be quoted: write `case \"{rest}\"`"),
+		),
 	}
 }
 
@@ -760,14 +782,6 @@ impl<'a> E<'a> {
 					"ARGS" => Ok(Expr::Source {
 						kind: SourceKind::Args,
 						key: None,
-						span: self.span(from),
-					}),
-					// The one function that may be written without parentheses:
-					// `exit` reads better than `exit()` at the end of a branch,
-					// and `exit(1)` still parses as an ordinary call below.
-					"exit" if !matches!(self.peek(), Some(Token::Punct("("))) => Ok(Expr::Call {
-						name: "exit".into(),
-						args: Vec::new(),
 						span: self.span(from),
 					}),
 					"true" => Ok(Expr::Bool(true, self.span(from))),

@@ -12,7 +12,7 @@ for f in ["a", "b"]
 	$ echo {{ f }}
 end
 match ARG.kind
-case major
+case "major"
 	$ echo major
 case "minor"
 	$ echo minor
@@ -60,7 +60,8 @@ end
     (source
       (identifier))
     (match_case
-      (identifier)
+      (string
+        (string_content))
       (shell_line
         (shell_text
           (shell_content))))

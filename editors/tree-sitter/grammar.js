@@ -136,7 +136,9 @@ module.exports = grammar({
 				$._newline,
 			),
 
-		match_case: ($) => seq("case", field("label", choice($.identifier, $.string)), $._newline, repeat($._line)),
+		// A label is a string, always quoted: it is compared against a value, and
+		// `RUN.os` is a string like any other.
+		match_case: ($) => seq("case", field("label", $.string), $._newline, repeat($._line)),
 		match_default: ($) => seq("default", $._newline, repeat($._line)),
 
 		run_statement: ($) => seq("run", field("target", alias($.run_word, $.target)), repeat(alias($.run_word, $.argument)), $._newline),

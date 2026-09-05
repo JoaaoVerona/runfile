@@ -69,6 +69,12 @@ fn split_command(cmd: &str) -> Vec<String> {
 
 /// Shells that take `-e` and mean stop-on-failure by it.
 ///
+/// `brush` is here because it is a bash-compatible shell someone may name in
+/// `.shell`, and without it a `brush` target would silently lose the
+/// stop-on-failure every other shell gets. It is not a *default* candidate:
+/// the default has to supply the POSIX toolbox as well as the language, which
+/// a shell alone does not.
+///
 /// `$ x` must behave exactly like `exec sh` with `x` as its body, so the
 /// runner's stop-on-failure default has to reach an explicitly named shell
 /// too. Detection is on the *first* word only, which is what keeps
@@ -79,7 +85,10 @@ fn is_shell(program: &Path) -> bool {
 		return false;
 	};
 	let name = name.strip_suffix(".exe").unwrap_or(name);
-	matches!(name, "sh" | "bash" | "dash" | "ash" | "zsh" | "ksh" | "busybox")
+	matches!(
+		name,
+		"sh" | "bash" | "dash" | "ash" | "zsh" | "ksh" | "busybox" | "brush"
+	)
 }
 
 pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
@@ -225,5 +234,32 @@ fn announce(program: &str, body: &str) {
 	};
 	for line in text.lines() {
 		eprintln!("{tag} {bold}{line}{reset}");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::is_shell;
+	use std::path::Path;
+
+	#[test]
+	fn a_bash_compatible_shell_is_recognised_as_one() {
+		// Being on this list is what inserts `-e`. A shell missing from it
+		// runs fine and silently stops stopping on failure, which is the
+		// worst way for this to be wrong.
+		for name in ["sh", "bash", "dash", "ash", "zsh", "ksh", "busybox", "brush"] {
+			assert!(is_shell(Path::new(name)), "{name}");
+			assert!(is_shell(Path::new(&format!("/usr/bin/{name}"))), "{name} by path");
+			assert!(is_shell(Path::new(&format!("{name}.exe"))), "{name}.exe");
+		}
+	}
+
+	#[test]
+	fn only_the_first_word_counts_as_the_program() {
+		// `exec docker run -i alpine sh` runs docker; the inner shell is not
+		// ours to flag, and `-e` would go to the wrong program.
+		assert!(!is_shell(Path::new("docker")));
+		assert!(!is_shell(Path::new("python3")));
+		assert!(!is_shell(Path::new("brushfoo")));
 	}
 }

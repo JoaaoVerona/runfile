@@ -38,14 +38,14 @@ fn if_takes_one_branch() {
 #[test]
 fn match_falls_through_to_default() {
 	let d = Recorder::default();
-	run_src("match \"zzz\"\ncase a\n\trun a\ndefault\n\trun fallback\nend\n", &d).unwrap();
+	run_src("match \"zzz\"\ncase \"a\"\n\trun a\ndefault\n\trun fallback\nend\n", &d).unwrap();
 	assert_eq!(d.calls(), vec!["fallback"]);
 }
 
 #[test]
 fn match_without_a_default_lists_the_valid_cases() {
 	let d = Recorder::default();
-	let e = run_src("match \"zzz\"\ncase a\n\trun a\ncase b\n\trun b\nend\n", &d).unwrap_err();
+	let e = run_src("match \"zzz\"\ncase \"a\"\n\trun a\ncase \"b\"\n\trun b\nend\n", &d).unwrap_err();
 	assert!(e.to_string().contains("a, b"), "{e}");
 }
 

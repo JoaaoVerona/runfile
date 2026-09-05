@@ -11,7 +11,7 @@ for f in ["a", "b"]
 end
 
 match ARG.part
-case major
+case "major"
 	$ echo major
 case "minor"
 	$ echo minor

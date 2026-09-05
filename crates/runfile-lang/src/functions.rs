@@ -777,7 +777,7 @@ pub const FUNCTIONS: &[Function] = &[
 	Function {
 		name: "exit",
 		signature: "exit(code?)",
-		doc: "Stop the run with this exit status, or 0. May be written without parentheses.",
+		doc: "Stop the run with this exit status, or 0.",
 	},
 	Function {
 		name: "first",
