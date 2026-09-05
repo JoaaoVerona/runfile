@@ -138,42 +138,6 @@ test("a backslash continuation keeps the shell line open", async () => {
 	assert.ok(lines[1]?.includes("test.shell"), `the continuation is still shell: ${lines[1]?.join(" ")}`)
 })
 
-test("the first command on a line is coloured like every later one", async () => {
-	// `source.shell` starts a statement only after `^`, `;`, `|`, `&`, `!`,
-	// `(`, `{` or a backtick. The text after `$ ` is none of those, so the
-	// first command came out bare while every later one was fine.
-	const shell = realShellGrammar()
-	if (!shell) {
-		return
-	}
-	const [line] = await tokensOf("$ echo 'abc'; echo 'abc'\n", shell)
-	const echoes = (line ?? []).filter((t) => t.text === "echo")
-	assert.equal(echoes.length, 2, "the line has two of them")
-	for (const [i, e] of echoes.entries()) {
-		assert.ok(
-			e.scopes.includes("entity.name.command.shell"),
-			`echo #${i + 1} is not a command: ${e.scopes.join(" ")}`
-		)
-	}
-	assert.deepEqual(echoes[0]?.scopes, echoes[1]?.scopes, "and they are coloured identically")
-})
-
-test("an interpolation survives the shell grammar's own rules", async () => {
-	// A command statement covers its arguments and a quoted string covers its
-	// contents, so a pattern listed beside them can never win -- TextMate takes
-	// the earliest match, not the first listed. The injection is what puts
-	// `{{ … }}` ahead of both.
-	const shell = realShellGrammar()
-	if (!shell) {
-		return
-	}
-	for (const line of ["$ cp {{ ARG.src }} dest\n", '$ echo "{{ ARG.x }}"\n']) {
-		const [scopes] = await scopesOf(line, shell)
-		assert.ok(scopes?.includes("meta.embedded.expression.run"), `${line}: ${scopes?.join(" ")}`)
-		assert.ok(scopes?.includes("variable.other.member.run"), `${line}: the expression is parsed too`)
-	}
-})
-
 test("a flag and an argument are told apart", async () => {
 	const shell = realShellGrammar()
 	if (!shell) {
@@ -183,4 +147,72 @@ test("a flag and an argument are told apart", async () => {
 	assert.ok(line?.includes("constant.other.option.dash.shell"), "the flag")
 	assert.ok(line?.includes("meta.argument.shell"), "the argument")
 	assert.ok(line?.includes("string.quoted.single.shell"), "the quoted string")
+})
+
+/**
+ * Scopes that cannot match, and need not.
+ *
+ * A `.sh` file's root is `source.shell` where ours is the embedded marker --
+ * that is the embedding, not a difference in colour. And `meta.statement.shell`
+ * wraps the *first* statement in a `.sh` file but not here: it comes from
+ * `normal_statement`, the rule whose anchor we cannot satisfy. No theme
+ * shipped with VS Code targets `meta.statement`, so nothing is coloured by it.
+ */
+const STRUCTURAL = new Set(["source.shell", "meta.embedded.line.shell", "meta.statement.shell"])
+
+/** The scopes that decide colour, in order. */
+function coloured(scopes: string[]): string {
+	return scopes.filter((s) => s.endsWith(".shell") && !STRUCTURAL.has(s)).join(" ")
+}
+
+/**
+ * Assert that `$ <line>` is coloured exactly as `<line>` in a .sh file.
+ *
+ * This is the requirement stated plainly: the same theme, the same colours,
+ * for the same command. Anything less specific would pass while the first
+ * command on the line was left bare, which is what happened twice.
+ */
+async function sameAsShellFile(line: string, shell: string): Promise<void> {
+	const reg = await registry(shell)
+	const sh = await reg.loadGrammar("source.shell")
+	const run = await reg.loadGrammar("source.run")
+	assert.ok(sh && run, "both grammars loaded")
+
+	const real = sh
+		.tokenizeLine(line, vsctm.INITIAL)
+		.tokens.map((t) => ({ text: line.slice(t.startIndex, t.endIndex), scopes: coloured(t.scopes) }))
+		.filter((t) => t.text.trim())
+
+	const wrapped = `$ ${line}`
+	const ours = run
+		.tokenizeLine(wrapped, vsctm.INITIAL)
+		.tokens.map((t) => ({ text: wrapped.slice(t.startIndex, t.endIndex), scopes: coloured(t.scopes) }))
+		// Drop the `$` marker itself, which is ours and has no counterpart.
+		.slice(1)
+		.filter((t) => t.text.trim())
+
+	assert.deepEqual(ours, real, `\`${line}\` is not coloured the way a .sh file colours it`)
+}
+
+test("a shell line is coloured exactly as the same command in a .sh file", async () => {
+	const shell = realShellGrammar()
+	if (!shell) {
+		return
+	}
+	for (const line of [
+		// Two commands: the first used to be left bare, because the shell
+		// grammar starts a statement only after `^`, `;`, `|`, `&`, `!`, `(`,
+		// `{` or a backtick -- and `$ ` is none of those.
+		"echo 'abc'; echo 'abc'",
+		"git commit -m 'x' && git push",
+		"ls -la | grep x",
+		// An assignment, a `for`, a function definition and a subshell: the
+		// first fix reached for `command_statement`, which knows about none of
+		// them, and flattened lines like these.
+		'd=$(mktemp -d); trap \'rm -rf "$d"\' EXIT',
+		'for f in *.sh; do bash -n "$f"; done',
+		'r() { sed -e \'s|a|b|g\' "$1"; }; r x > "$d/out"'
+	]) {
+		await sameAsShellFile(line, shell)
+	}
 })

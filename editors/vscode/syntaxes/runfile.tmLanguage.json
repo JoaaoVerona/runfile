@@ -70,7 +70,7 @@
 					"include": "#interpolation"
 				},
 				{
-					"include": "source.shell#command_statement"
+					"include": "#first-shell-statement"
 				},
 				{
 					"include": "source.shell"
@@ -267,7 +267,7 @@
 					"include": "#interpolation"
 				},
 				{
-					"include": "source.shell#command_statement"
+					"include": "#first-shell-statement"
 				},
 				{
 					"include": "source.shell"
@@ -299,6 +299,16 @@
 			"patterns": [
 				{
 					"include": "#interpolation"
+				}
+			]
+		},
+		"first-shell-statement": {
+			"$comment": "`source.shell` starts a statement only after `^`, `;`, `|`, `&`, `!`, `(`, `{` or a backtick, and the text after `$ ` is none of those -- so the first command on the line was left bare while every later one was fine. `typical_statements` is what that rule delegates to once its anchor has passed: the same set of statement kinds, assignments and function definitions included. `\\G` pins this to the start of the embedded region, so everything past the first statement is still handled by the shell grammar's own rules -- tokenized identically, meta scopes and all.",
+			"begin": "\\G(?=[ \\t]*[^ \\t])",
+			"end": "(?=;|\\||&|$)",
+			"patterns": [
+				{
+					"include": "source.shell#typical_statements"
 				}
 			]
 		}

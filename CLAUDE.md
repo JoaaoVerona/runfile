@@ -302,16 +302,26 @@ listed before the include, so `{{ … }}` stays the language's. `exec` bodies ar
 
 Two things the shell grammar's own anchoring forces. It starts a statement only after `^`, `;`, `|`, `&`,
 `!`, `(`, `{` or a backtick — and the text after `$ ` is none of those, so the **first** command on a line
-came out bare while every later one was coloured. `source.shell#command_statement`, the same grammar's inner
-rule without that lookbehind, is included ahead of it so the first command is coloured by exactly the rules
-that colour the second. And an interpolation cannot simply be listed beside the include: a command statement
+came out bare while every later one was coloured. `#first-shell-statement` fixes it: `source.shell`'s
+`typical_statements`, which is exactly what the anchored rule delegates to once its lookbehind has passed —
+assignments, `for`, function definitions and plain commands alike — wrapped in a `\G`-anchored rule so it
+applies **only at the start of the embedded region**. The `\G` is the whole point: reaching for the narrower
+`command_statement` instead, or letting either take every position, flattens a line like
+`d=$(mktemp -d); trap …; r() { sed … }` into three tokens, because those rules know nothing of assignments,
+subshells or function bodies. Everything past the first statement is left to the shell grammar's own rules
+and comes out identical, token for token. And an interpolation cannot simply be listed beside the include: a command statement
 covers its arguments and a quoted string covers its contents, and TextMate takes the **earliest** match, not
 the first listed. So `{{ … }}` is a grammar **injection** (`syntaxes/runfile-interpolation.injection.json`,
 `injectTo: source.run`), which is the mechanism for putting a pattern ahead of a host grammar's at every
 position — and it works inside a shell string, which it never did before. A `$` line ends on
 `(?<![\\\n])$`: the tokenizer scans `line + "\n"`, so a backslash continuation would otherwise end the rule
-at the position after that newline. `grammar.test.ts` runs the real tokenizer over these with a stub
-`source.shell`, which is the only way to tell "delegates" from "says it delegates" apart.
+at the position after that newline. `grammar.test.ts` runs the real tokenizer over these — with a stub
+`source.shell` for the structural checks, and with **VS Code's own shell grammar** (skipped where VS Code is
+absent) for the one that matters: that `$ <line>` is coloured exactly as `<line>` in a `.sh` file, token by
+token. Nothing weaker catches this; both bugs here passed tests that only asked whether *something* was
+coloured. Two scopes are excluded from that comparison and named in the test: the root scope, which is the
+embedding rather than a colour, and `meta.statement.shell`, which comes from the anchored rule we cannot
+satisfy and which no shipped theme targets.
 
 The LSP client is hand-rolled rather than `vscode-languageclient`: the server speaks a small, fixed subset,
 and a full client library is a large dependency for five message types. It was notification-only until
