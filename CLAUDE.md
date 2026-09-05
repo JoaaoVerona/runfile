@@ -159,10 +159,16 @@ quoting.
   out of an expression, and *every* catcher re-raises it: `try`, a `?` chain and `.ignore-errors` all let it
   through, the way an interrupt is not something a target gets to shrug off. `RunError::exit_code` is what the
   CLI reads to set its own status instead of printing an error.
-- **Every call is written with parentheses**, `exit()` included — there is no bare-word form. A bare name that
-  matches a listed function is reported as *"`exit` is a function; call it as `exit()`"* rather than as an
-  unknown binding, which would send a person looking for a `let` that was never missing. The check is at
-  evaluation rather than parsing, so a bound name is found first and `let first = …` stays legal.
+- **Every call is written with parentheses**, `exit()` included — there is no bare-word form.
+- **A statement that computes a value and discards it is a parse error.** `exit`, `abc`, `35`, `"hi"`,
+  `ARG.x`, `x + 1` — a line that is only a value is always a mistake, most often a call with the parentheses
+  left off, so the message says which: *"`exit` is a function; call it as `exit()`"*, else *"this line does
+  nothing: …"*. `has_effect` looks for a `Call` or `Capture` anywhere in the tree, so `f() ? "x"` and
+  `a() && b()` are statements while `x[0]` is not; deliberately conservative, since being stricter would mean
+  deciding which functions are pure. At **statement** level this is safe to check while parsing — the line is
+  inert whether or not the name is bound — so an editor underlines it. Inside an *expression* a bare name may
+  well be a binding, so the same "is a function" hint lives in `eval` too, where `sc.vars` is consulted first
+  and `let first = …` stays legal.
 - **A `case` label is a quoted string.** A subject is a value and a label is compared against it, so
   `case linux` asked about a string while looking like a bare word; `RUN.os` is a string like any other. One
   rule holds instead: a string is in quotes wherever it appears. The grammar and `GRAMMAR.ebnf` say the same.

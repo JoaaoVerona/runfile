@@ -74,6 +74,17 @@ fn opening_a_broken_file_publishes_the_error_with_its_position() {
 }
 
 #[test]
+fn a_line_that_does_nothing_is_underlined_where_it_is() {
+	// The point of catching this at parsing: an editor shows it while the file
+	// is being written, instead of a run finding it later.
+	let out = converse(&[did_open("file:///x/runfiles/a.run", "$ ok\nif true\n\texit\nend\n")]);
+	let d = diagnostics(&out[0]);
+	assert_eq!(d.len(), 1, "{d:?}");
+	assert_eq!(d[0]["range"]["start"]["line"], 2, "the bare word's own line");
+	assert!(d[0]["message"].as_str().unwrap().contains("exit()"), "{d:?}");
+}
+
+#[test]
 fn editing_republishes_and_a_fix_clears_the_error() {
 	let uri = "file:///x/runfiles/a.run";
 	let out = converse(&[

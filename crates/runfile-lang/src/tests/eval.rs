@@ -535,3 +535,58 @@ end
 		.is_ok()
 	);
 }
+
+#[test]
+fn a_statement_that_computes_and_discards_is_rejected() {
+	// A line that is only a value is always a mistake -- most often a call
+	// with the parentheses left off. Caught at parsing, so an editor
+	// underlines it rather than a run finding it later.
+	for (src, want) in [
+		("exit\n", "call it as `exit()`"),
+		("uuid\n", "call it as `uuid()`"),
+		("abc\n", "`abc` is a value, not something to run"),
+		("35\n", "computes a value and discards it"),
+		("\"hello\"\n", "computes a value and discards it"),
+		("true\n", "computes a value and discards it"),
+		("[1, 2]\n", "computes a value and discards it"),
+		("x + 1\n", "computes a value and discards it"),
+		("ARG.x\n", "an input is a value"),
+		("x[0]\n", "computes a value and discards it"),
+	] {
+		let e = crate::parse(src).unwrap_err().to_string();
+		assert!(e.contains(want), "{src:?}: wanted {want:?}, got {e}");
+		assert!(
+			e.contains("does nothing") || e.contains("is a function"),
+			"{src:?}: {e}"
+		);
+	}
+}
+
+#[test]
+fn a_statement_that_reaches_a_call_is_kept() {
+	// Only a call can do anything, but it need not be the whole expression:
+	// a chain reaches one, and so does either side of `&&`.
+	for src in [
+		"write_file(\"a\", \"b\")\n",
+		"decrypt(ARG.x) ? \"fallback\"\n",
+		"file_exists(\"a\") && write_file(\"b\", \"c\")\n",
+		"error(\"stop\")\n",
+		"exit()\n",
+		"exit(1)\n",
+		// A statement in a block is checked the same way.
+		"if true\n\twrite_file(\"a\", \"b\")\nend\n",
+		// A call anywhere is enough: this one is pointless, but the rule is
+		// deliberately conservative -- rejecting it would mean deciding which
+		// functions are pure, and `write_file(…)[0]` is the same shape.
+		"split(\"a\", \"b\")[0]\n",
+	] {
+		crate::parse(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+	}
+}
+
+#[test]
+fn an_inert_statement_is_caught_inside_a_block_too() {
+	let e = crate::parse("if true\n\texit\nend\n").unwrap_err().to_string();
+	assert!(e.contains("line 2"), "the line is the one at fault: {e}");
+	assert!(e.contains("exit()"), "{e}");
+}

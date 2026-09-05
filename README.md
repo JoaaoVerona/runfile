@@ -145,6 +145,9 @@ quote: the substitution already did it.
 
 ### Stopping early
 
+A line that is only a value — `exit`, `abc`, `35`, `"hi"` — is a parse error, since it computes something and
+throws it away. Most often it is a call with the parentheses left off, and the message says so.
+
 `exit()` ends the run with a status — no argument means 0, and any number is taken as given and truncated to
 a byte the usual way, so `exit(-1)` is 255. Like every call it is written with parentheses; there is no
 bare-word form.

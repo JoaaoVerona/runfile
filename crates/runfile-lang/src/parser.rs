@@ -308,10 +308,9 @@ impl<'a> P<'a> {
 					};
 					return Ok(Statement::Assign { name, value, span });
 				}
-				Ok(Statement::Call {
-					expr: parse_expr(&text, offset, no)?,
-					span,
-				})
+				let expr = parse_expr(&text, offset, no)?;
+				check_has_effect(&expr, no)?;
+				Ok(Statement::Call { expr, span })
 			}
 		}
 	}
@@ -452,6 +451,45 @@ impl<'a> P<'a> {
 			span: Span::new(offset, end, no),
 		})
 	}
+}
+
+/// Whether an expression can do anything when evaluated for effect.
+///
+/// Only a call can: everything else computes a value, and a statement throws
+/// that value away. `write_file(…)` is a statement; `write_file(…) ? "x"` and
+/// `f() && g()` are too, since a call is still reached. `35` is not.
+fn has_effect(e: &Expr) -> bool {
+	match e {
+		Expr::Call { .. } | Expr::Capture { .. } => true,
+		Expr::Unary { rhs, .. } => has_effect(rhs),
+		Expr::Binary { lhs, rhs, .. } | Expr::Chain { lhs, rhs, .. } => has_effect(lhs) || has_effect(rhs),
+		Expr::Index { base, index, .. } => has_effect(base) || has_effect(index),
+		Expr::List(items, _) => items.iter().any(has_effect),
+		Expr::Number(..) | Expr::Bool(..) | Expr::Str(..) | Expr::Ident(..) | Expr::Source { .. } => false,
+	}
+}
+
+/// Reject a statement that computes a value and discards it.
+///
+/// A line like `abc`, `35` or `"hi"` is always a mistake -- most often a call
+/// with the parentheses left off. Caught here rather than at evaluation so an
+/// editor underlines it, and because at statement level it is inert whether or
+/// not the name happens to be bound, which is not true inside an expression.
+fn check_has_effect(e: &Expr, no: usize) -> Result<(), ParseError> {
+	if has_effect(e) {
+		return Ok(());
+	}
+	if let Expr::Ident(name, _) = e
+		&& crate::functions::FUNCTIONS.iter().any(|f| f.name == name)
+	{
+		return err(no, format!("`{name}` is a function; call it as `{name}()`"));
+	}
+	let what = match e {
+		Expr::Ident(name, _) => format!("`{name}` is a value, not something to run"),
+		Expr::Source { .. } => "an input is a value, not something to run".to_string(),
+		_ => "it computes a value and discards it".to_string(),
+	};
+	err(no, format!("this line does nothing: {what}"))
 }
 
 /// The label of a `case`, which must be written as a quoted string.
