@@ -288,12 +288,33 @@ fn capabilities() -> Value {
 	})
 }
 
+/// Every target name this document may write, qualified and unqualified.
+///
+/// A file calls its siblings by their bare name: `run compile` inside
+/// `web/runfiles/` resolves `web:compile` first, and only then a root
+/// `compile`. Listing just the catalog's keys had the editor underline every
+/// one of those as "no target named …" while the runner ran them happily --
+/// the editor and the runner disagreeing about validity, which is the one
+/// thing this analysis exists to prevent.
 fn target_names(doc: &Path) -> Vec<String> {
 	let Some(dir) = doc.parent() else { return Vec::new() };
-	match runfile_discovery::discover(dir, dirs_home().as_deref()) {
-		Ok(c) => c.targets.keys().cloned().collect(),
-		Err(_) => Vec::new(),
+	let Ok(c) = runfile_discovery::discover(dir, dirs_home().as_deref()) else {
+		return Vec::new();
+	};
+	let mut names: Vec<String> = c.targets.keys().cloned().collect();
+	let same = |a: &Path| a == doc || a.canonicalize().ok() == doc.canonicalize().ok();
+	if let Some(me) = c.targets.values().find(|t| same(&t.path))
+		&& let Some((prefix, _)) = me.name.rsplit_once(':')
+	{
+		let prefix = format!("{prefix}:");
+		let siblings: Vec<String> = c
+			.targets
+			.keys()
+			.filter_map(|k| k.strip_prefix(&prefix).map(str::to_string))
+			.collect();
+		names.extend(siblings);
 	}
+	names
 }
 
 fn dirs_home() -> Option<PathBuf> {

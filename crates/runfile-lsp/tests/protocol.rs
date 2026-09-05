@@ -384,3 +384,26 @@ fn formatting_a_document_that_does_not_parse_is_answered_with_null() {
 	let out = converse(&[did_open(uri, "if x\n$ a\n"), formatting(uri)]);
 	assert!(reply_to(&out, 9)["result"].is_null());
 }
+
+#[test]
+fn a_sibling_called_by_its_bare_name_is_not_reported_missing() {
+	// A subdirectory of `runfiles/` is a namespace, and a file in one calls
+	// its siblings by their bare name: `run download` in `runfiles/backup/`
+	// resolves `backup:download`. The check listed only the catalog's keys, so
+	// the editor underlined every such call while the runner ran it happily --
+	// the two disagreeing about validity, which is what this exists to prevent.
+	let d = tempfile::tempdir().unwrap();
+	let ns = d.path().join("runfiles/backup");
+	std::fs::create_dir_all(&ns).unwrap();
+	std::fs::write(ns.join("download.run"), "$ true\n").unwrap();
+	let caller = ns.join("restore.run");
+	std::fs::write(&caller, "run download\n").unwrap();
+
+	let out = converse(&[did_open(&path_to_uri(&caller), "run download\n")]);
+	assert!(diagnostics(&out[0]).is_empty(), "{:?}", diagnostics(&out[0]));
+
+	// A name that is neither a sibling nor a root target is still reported.
+	std::fs::write(&caller, "run nope\n").unwrap();
+	let out = converse(&[did_open(&path_to_uri(&caller), "run nope\n")]);
+	assert_eq!(diagnostics(&out[0]).len(), 1, "{:?}", diagnostics(&out[0]));
+}
