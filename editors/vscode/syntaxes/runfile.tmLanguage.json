@@ -16,6 +16,9 @@
 			"include": "#exec-block"
 		},
 		{
+			"include": "#retry-header"
+		},
+		{
 			"include": "#shell-condition"
 		},
 		{
@@ -373,6 +376,25 @@
 				},
 				{
 					"include": "source.shell"
+				}
+			]
+		},
+		"retry-header": {
+			"$comment": "`retry n every s`. The keywords are captured without consuming the line, so the two expressions after them are still highlighted as expressions.",
+			"begin": "^\\s*(retry)\\b",
+			"beginCaptures": {
+				"1": {
+					"name": "keyword.control.run"
+				}
+			},
+			"end": "$",
+			"patterns": [
+				{
+					"match": "\\b(every)\\b",
+					"name": "keyword.control.run"
+				},
+				{
+					"include": "#expression"
 				}
 			]
 		}

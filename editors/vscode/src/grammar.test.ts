@@ -251,3 +251,19 @@ test("the keyword before a `$` condition is still the language's", async () => {
 	const [scopes] = await scopesOf("if $ true\n")
 	assert.ok(scopes?.includes("keyword.control.run"), `got ${scopes?.join(" ")}`)
 })
+
+test("retry and every are keywords, and only inside a retry header", async () => {
+	const header = await tokensOf("retry 120 every 1\n")
+	const words = (header[0] ?? []).filter((t) => t.text.trim())
+	const kind = (text: string) =>
+		words.find((t) => t.text === text)?.scopes.find((s) => s.endsWith(".run") && s !== "source.run")
+	assert.equal(kind("retry"), "keyword.control.run")
+	assert.equal(kind("every"), "keyword.control.run")
+	assert.equal(kind("120"), "constant.numeric.run", "the count is still a number")
+	assert.equal(kind("1"), "constant.numeric.run")
+
+	// A binding may be called `every`; the keyword lives in the header only.
+	const [binding] = await tokensOf("let every = 3\n")
+	const name = (binding ?? []).find((t) => t.text === "every")
+	assert.ok(!name?.scopes.includes("keyword.control.run"), `got ${name?.scopes.join(" ")}`)
+})

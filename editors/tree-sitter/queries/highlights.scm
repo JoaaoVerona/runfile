@@ -1,5 +1,10 @@
 ; Keywords
-["let" "if" "else" "end" "for" "in" "match" "case" "default" "run" "exec"] @keyword
+["let" "if" "else" "end" "for" "in" "match" "case" "default" "run" "exec"
+ ; `every` is a token only inside a `retry` header, so naming it here
+ ; cannot colour a binding that happens to share the name.
+ "retry" "every"] @keyword
+
+(code_of "code_of" @function)
 
 ; Where values come from
 ["ARG" "ENV" "FLAG" "RUN" "ARGS"] @variable.builtin
