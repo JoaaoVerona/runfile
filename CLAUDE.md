@@ -288,7 +288,9 @@ second time as the global. This replaced `includes` entirely.
   blocks are traced, 4 fall back, and none is broken by it. A failure **never names the shell**, for the same
   reason a `.parallel` branch is not labelled `bash`: `` `docker compose up -d` exited with status 1 `` where
   the runner knows the command, and *"the command above"* where several share a shell and only the
-  announcements can say which one stopped.
+  announcements can say which one stopped — but only when the block was traced. A block announced whole has
+  no single line above to point at, so it is named instead (*"a command in `for f in a b; do …`"*): pointing
+  at output that says something else would be worse than saying less.
 - **`.detach`** starts the commands and does not wait. Its streams go to null: inherited, they would hold the
   runner's own stdout and stderr open after it exits, so whoever is reading them waits for the very command
   that was meant to outlive the run.

@@ -374,6 +374,17 @@ fn a_failure_names_the_command_and_never_the_shell() {
 	assert!(e.contains("the command above exited with status 1"), "{e}");
 	assert!(!e.contains("bash"), "{e}");
 
+	// A block the runner could not take apart is announced whole, so there is
+	// no single line above to point at: it names the block instead. Claiming
+	// "the command above" here would point at the block's last line, which is
+	// not the one that stopped.
+	let d = Recorder::default();
+	let e = run_src("$ for f in a b; do\n$ test -f nope\n$ done\n", &d)
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("a command in `for f in a b; do"), "{e}");
+	assert!(!e.contains("above"), "{e}");
+
 	// A real command still names itself.
 	let d = Recorder::default();
 	let e = run_src("exec sh\n\texit 3\nend\n", &d).unwrap_err().to_string();

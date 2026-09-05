@@ -192,7 +192,7 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 	})?;
 	if !out.status.success() {
 		return Err(ExecError::Status {
-			cmd: failed_label(&program, s.command, s.body),
+			cmd: failed_label(&program, s.command, s.body, script.is_some()),
 			code: out.status.code().unwrap_or(-1),
 		});
 	}
@@ -314,9 +314,13 @@ fn standalone(line: &str) -> bool {
 /// `.parallel` branch is never labelled `bash`.
 ///
 /// Several `$` lines share one shell and `-e` stops at the one that failed,
-/// which the runner cannot see. It does not have to: each line announces
-/// itself as it runs, so the last one shown is the one that failed.
-fn failed_label(program: &Path, command: Option<&str>, body: &str) -> String {
+/// which the runner cannot see. Where the script announces each command as it
+/// runs, it does not have to: the last one shown is the one that stopped.
+/// Where it does not -- a `for` or a heredoc spread over several lines, which
+/// is announced whole -- there is no such line to point at, and the block is
+/// named instead. Pointing at output that says something else would be worse
+/// than saying less.
+fn failed_label(program: &Path, command: Option<&str>, body: &str, traced: bool) -> String {
 	if !is_shell(program) {
 		let named = command.map_or_else(|| program.display().to_string(), str::to_string);
 		return format!("`{named}`");
@@ -324,7 +328,8 @@ fn failed_label(program: &Path, command: Option<&str>, body: &str) -> String {
 	let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
 	match (lines.next(), lines.next()) {
 		(Some(only), None) => format!("`{only}`"),
-		(Some(_), Some(_)) => "the command above".to_string(),
+		(Some(_), Some(_)) if traced => "the command above".to_string(),
+		(Some(first), Some(_)) => format!("a command in `{first} …`"),
 		_ => format!("`{}`", program.display()),
 	}
 }
