@@ -245,3 +245,31 @@ fn a_bare_code_of_runs_the_command_and_ignores_how_it_went() {
 	run_src("code_of($ false)\nrun after\n", &d).expect("it does not stop the target");
 	assert_eq!(d.calls(), vec!["after"]);
 }
+
+#[test]
+fn the_shell_property_decides_what_runs_a_line() {
+	// It was parsed, stored, documented and offered in completion, and read by
+	// nothing: `.shell = "sh"` ran under bash and said nothing about it.
+	let d = Recorder::default();
+	let trace = run_src(".shell = \"sh\"\n$ test -z \"$BASH_VERSION\"\n", &d);
+	assert!(trace.is_ok(), "sh has no BASH_VERSION: {trace:?}");
+
+	let d = Recorder::default();
+	assert!(
+		run_src(".shell = \"bash\"\n$ test -n \"$BASH_VERSION\"\n", &d).is_ok(),
+		"and bash does"
+	);
+}
+
+#[test]
+fn a_capture_condition_uses_the_same_shell_as_a_line() {
+	// `if $ cmd` is a `$` line asked a question; it must not quietly be a
+	// different shell from the lines around it.
+	let d = Recorder::default();
+	run_src(
+		".shell = \"sh\"\nif $ test -z \"$BASH_VERSION\"\n\trun sh\nelse\n\trun bash\nend\n",
+		&d,
+	)
+	.unwrap();
+	assert_eq!(d.calls(), vec!["sh"]);
+}

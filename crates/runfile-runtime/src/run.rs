@@ -288,7 +288,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			let env = merged_env(r, props);
 			let dir = cwd(props, &r.anchor);
 			exec::spawn(Spawn {
-				command: cmd.as_deref(),
+				command: command_for(cmd.as_deref(), props),
 				body: &text,
 				cwd: &dir,
 				env: &env,
@@ -325,7 +325,7 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 	let env = merged_env(r, props);
 	let dir = cwd(props, &r.anchor);
 	let out = exec::spawn(Spawn {
-		command: cmd.as_deref(),
+		command: command_for(cmd.as_deref(), props),
 		body: &text,
 		cwd: &dir,
 		env: &env,
@@ -338,6 +338,17 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		announce: !r.dry_run,
 	})?;
 	Ok(Value::Str(out))
+}
+
+/// What actually runs a `$` line: the command an `exec` named, else the
+/// target's `.shell`, else the default.
+///
+/// The property was parsed, stored, documented and offered in completion, and
+/// read by nothing -- so `.shell = "sh"` ran under bash and said nothing about
+/// it. A script written for `sh` that happens to work in bash is the quiet
+/// case; one that uses a bashism and passes locally is the other.
+fn command_for<'a>(cmd: Option<&'a str>, props: &'a Props) -> Option<&'a str> {
+	cmd.or(props.shell.as_deref())
 }
 
 /// Run a capture and report its exit status.
@@ -353,7 +364,7 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 	let env = merged_env(r, props);
 	let dir = cwd(props, &r.anchor);
 	Ok(exec::spawn_code(Spawn {
-		command: cmd.as_deref(),
+		command: command_for(cmd.as_deref(), props),
 		body: &text,
 		cwd: &dir,
 		env: &env,
@@ -582,7 +593,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 						label,
 						detach,
 					} => exec::spawn(Spawn {
-						command: cmd.as_deref(),
+						command: command_for(cmd.as_deref(), props),
 						body,
 						cwd: dir,
 						env,
