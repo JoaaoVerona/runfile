@@ -278,7 +278,14 @@ second time as the global. This replaced `includes` entirely.
   Control flow expands into the same batch, and every branch completes before a failure surfaces.
 - **The runner announces every command on stderr**, natively, with no property to turn it on: that is why the
   old `logging` field was cut rather than renamed. stderr, so a pipeline reading stdout is unaffected, and
-  never under `--dry-run`, which already prints the commands to stdout.
+  never under `--dry-run`, which already prints the commands to stdout. **Each command announces itself as it
+  runs**, from *inside* the script: a block of `$` lines is one process, so the runner cannot observe when
+  each line starts and could only ever print all of them before any of them ran — which put a failure at the
+  end, under nothing. `exec::traced` puts a `printf … >&2` before each line instead. It returns `None`, and
+  the block is announced whole as before, when that would be unsafe: a `for` or an `if` spread over several
+  `$` lines is one command to the shell, and so is a quote or a heredoc that spans them, so anything ending
+  in a continuation and anything opening a quote falls back. Measured over the corpus: 238 of 242 multi-line
+  blocks are traced, 4 fall back, and none is broken by it.
 - **`.detach`** starts the commands and does not wait. Its streams go to null: inherited, they would hold the
   runner's own stdout and stderr open after it exits, so whoever is reading them waits for the very command
   that was meant to outlive the run.

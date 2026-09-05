@@ -1160,6 +1160,41 @@ fn code_of(o: &std::process::Output) -> i32 {
 	o.status.code().expect("an exit status")
 }
 
+#[cfg(unix)]
+#[test]
+fn a_command_is_announced_when_it_runs_not_before() {
+	// A block of `$` lines is one process, so the runner used to print every
+	// command before any of them ran -- and a failure then landed at the end,
+	// under nothing. The announcement goes inside the script instead.
+	let p = project(&[("runfiles/e.run", "$ echo first\n$ echo second\n$ false\n$ echo never\n")]);
+	let o = p.run(&["e"]);
+	assert!(!o.status.success());
+
+	// stdout and stderr are separate streams, so ordering is asserted within
+	// stderr: the second announcement must come after the first, and the third
+	// must be the last thing said.
+	let e = err(&o);
+	let at = |needle: &str| e.find(needle).unwrap_or_else(|| panic!("{needle:?} not in {e}"));
+	assert!(at("echo first") < at("echo second"), "{e}");
+	assert!(at("echo second") < at("false"), "{e}");
+	assert!(
+		!e.contains("echo never"),
+		"a command that never ran is never announced: {e}"
+	);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_block_the_runner_cannot_take_apart_is_announced_whole() {
+	// A `for` spread over `$` lines is one command to the shell. It still runs,
+	// and every line of it is still shown.
+	let p = project(&[("runfiles/e.run", "$ for f in a b; do\n$ echo $f\n$ done\n")]);
+	let o = p.run(&["e"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains('a') && out(&o).contains('b'), "{}", out(&o));
+	assert!(err(&o).contains("for f in a b"), "{}", err(&o));
+}
+
 #[test]
 fn exit_sets_the_process_status_and_is_not_an_error() {
 	for (body, want) in [

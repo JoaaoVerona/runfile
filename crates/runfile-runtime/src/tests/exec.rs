@@ -323,3 +323,36 @@ fn retry_is_refused_inside_a_parallel_block() {
 	let e = run_src(".parallel = true\nretry 2\n\t$ false\nend\n", &d).unwrap_err();
 	assert!(e.to_string().contains("cannot be inside a `.parallel`"), "{e}");
 }
+
+#[test]
+fn each_command_announces_itself_as_it_runs() {
+	// A block of `$` lines is one process, so the runner cannot see when each
+	// command starts -- it used to print all of them before any of them ran,
+	// and a failure then landed at the end naming nothing.
+	let d = Recorder::default();
+	let trace = run_src("$ echo one\n$ echo two\n$ echo three\n", &d);
+	assert!(trace.is_ok(), "{trace:?}");
+}
+
+#[test]
+fn a_multi_line_shell_construct_is_left_whole() {
+	// A `for` spread over several `$` lines is one command to the shell; a
+	// line inserted into the middle of it would cut it in half.
+	let d = Recorder::default();
+	run_src("$ for f in a b; do\n$ echo $f\n$ done\n", &d).expect("the loop still parses");
+
+	let d = Recorder::default();
+	run_src("$ if true; then\n$ echo yes\n$ fi\n", &d).expect("and so does the if");
+}
+
+#[test]
+fn a_quote_spanning_lines_is_left_whole() {
+	let d = Recorder::default();
+	run_src("$ x='one\n$ two'\n$ test -n \"$x\"\n", &d).expect("the quote closes on the second line");
+}
+
+#[test]
+fn a_heredoc_is_left_whole() {
+	let d = Recorder::default();
+	run_src("$ cat <<'EOF' >/dev/null\n$ body\n$ EOF\n", &d).expect("the heredoc body is not commands");
+}

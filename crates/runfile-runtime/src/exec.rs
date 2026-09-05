@@ -145,7 +145,14 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		c.stdout(Stdio::piped());
 		c.stderr(Stdio::piped());
 	}
-	if s.announce {
+	// Announced from inside the script where that is safe, so each command is
+	// named as it runs rather than all of them before any of them do.
+	let script = if s.announce && is_shell(&program) {
+		traced(s.body)
+	} else {
+		None
+	};
+	if s.announce && script.is_none() {
 		// stderr, so a pipeline reading `run`'s output is unaffected. Bold
 		// cyan when a terminal is watching, plain when it is not.
 		announce(&label, s.body);
@@ -156,7 +163,8 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 	})?;
 	{
 		let mut stdin = child.stdin.take().expect("stdin was piped");
-		stdin.write_all(s.body.as_bytes()).map_err(|e| ExecError::Spawn {
+		let text = script.as_deref().unwrap_or(s.body);
+		stdin.write_all(text.as_bytes()).map_err(|e| ExecError::Spawn {
 			cmd: label.clone(),
 			source: e,
 		})?;
@@ -234,13 +242,70 @@ fn relay(stream: Option<impl std::io::Read>, label: &str, is_err: bool) {
 /// The body rather than the program, because `sh` is what almost every block
 /// is and `cargo build` is what the reader wants to see. A multi-line body is
 /// shown whole: it is one process, and half of it would be a lie.
-fn announce(program: &str, body: &str) {
-	let colour = std::io::IsTerminal::is_terminal(&std::io::stderr());
-	let (tag, bold, reset) = if colour {
+/// The tag every announcement carries, bold cyan when a terminal is watching.
+fn tags() -> (&'static str, &'static str, &'static str) {
+	if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
 		("\x1b[1m\x1b[36m[runfile]\x1b[0m", "\x1b[1m", "\x1b[0m")
 	} else {
 		("[runfile]", "", "")
-	};
+	}
+}
+
+/// A script that announces each of its own commands as it reaches it.
+///
+/// A block of `$` lines is one process -- that is what makes `cd` persist --
+/// so the runner cannot see when each command starts; it hands the whole
+/// script over at once and could only ever print all of them up front. Putting
+/// the announcement *inside* the script is how each command is named as it
+/// runs, and how a failure lands under the line that caused it.
+///
+/// `None` when that would be unsafe, and the caller announces the block as a
+/// whole instead. A `for` or an `if` spread over several `$` lines is one
+/// command to the shell, and a line inserted into the middle of it would cut
+/// it in half; so would one inserted inside a quote or a heredoc that spans
+/// lines. The test is deliberately blunt: anything it is unsure of falls back.
+fn traced(body: &str) -> Option<String> {
+	let lines: Vec<&str> = body.lines().collect();
+	// One command already announces itself in the right place.
+	if lines.len() < 2 {
+		return None;
+	}
+	let (tag, bold, reset) = tags();
+	let mut out = String::new();
+	for l in &lines {
+		let t = l.trim();
+		if t.is_empty() {
+			out.push('\n');
+			continue;
+		}
+		if !standalone(t) {
+			return None;
+		}
+		let said = runfile_lang::Value::Str(format!("{tag} {bold}{t}{reset}")).to_shell();
+		out.push_str(&format!("printf '%s\\n' {said} >&2\n"));
+		out.push_str(l);
+		out.push('\n');
+	}
+	Some(out)
+}
+
+/// Whether a line is a whole command, so an announcement may precede it.
+fn standalone(line: &str) -> bool {
+	// A heredoc's body is the following lines; a quote may open here and close
+	// somewhere below. Neither can have anything put between.
+	if line.contains("<<") || line.matches('\'').count() % 2 == 1 || line.matches('"').count() % 2 == 1 {
+		return false;
+	}
+	const CONTINUES: &[&str] = &["\\", "&&", "||", "|", "do", "then", "else", "in", "{", "(", ";"];
+	if CONTINUES.iter().any(|o| line.ends_with(o)) {
+		return false;
+	}
+	const CLOSES: &[&str] = &["fi", "done", "esac", "else", "elif", "}", ")", ";;"];
+	!CLOSES.contains(&line.split_whitespace().next().unwrap_or(""))
+}
+
+fn announce(program: &str, body: &str) {
+	let (tag, bold, reset) = tags();
 	let text = if body.trim().is_empty() {
 		program
 	} else {
