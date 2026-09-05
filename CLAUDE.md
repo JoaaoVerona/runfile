@@ -298,7 +298,17 @@ embedded-shell scope *and* includes `source.shell`; the first alone only tells V
 comments and brackets to use, so for a long time a shell line came out one flat colour. Interpolation is
 listed before the include, so `{{ … }}` stays the language's. `exec` bodies are split in two rules —
 `exec sh|bash|…` delegates, anything else does not, since a Python body is not shell — and both close on an
-`end` at the opener's own indentation via a `\1` backreference to the captured indent. A `$` line ends on
+`end` at the opener's own indentation via a `\1` backreference to the captured indent.
+
+Two things the shell grammar's own anchoring forces. It starts a statement only after `^`, `;`, `|`, `&`,
+`!`, `(`, `{` or a backtick — and the text after `$ ` is none of those, so the **first** command on a line
+came out bare while every later one was coloured. `source.shell#command_statement`, the same grammar's inner
+rule without that lookbehind, is included ahead of it so the first command is coloured by exactly the rules
+that colour the second. And an interpolation cannot simply be listed beside the include: a command statement
+covers its arguments and a quoted string covers its contents, and TextMate takes the **earliest** match, not
+the first listed. So `{{ … }}` is a grammar **injection** (`syntaxes/runfile-interpolation.injection.json`,
+`injectTo: source.run`), which is the mechanism for putting a pattern ahead of a host grammar's at every
+position — and it works inside a shell string, which it never did before. A `$` line ends on
 `(?<![\\\n])$`: the tokenizer scans `line + "\n"`, so a backslash continuation would otherwise end the rule
 at the position after that newline. `grammar.test.ts` runs the real tokenizer over these with a stub
 `source.shell`, which is the only way to tell "delegates" from "says it delegates" apart.

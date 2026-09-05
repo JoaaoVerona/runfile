@@ -70,6 +70,9 @@
 					"include": "#interpolation"
 				},
 				{
+					"include": "source.shell#command_statement"
+				},
+				{
 					"include": "source.shell"
 				}
 			]
@@ -262,6 +265,9 @@
 			"patterns": [
 				{
 					"include": "#interpolation"
+				},
+				{
+					"include": "source.shell#command_statement"
 				},
 				{
 					"include": "source.shell"

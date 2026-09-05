@@ -180,12 +180,12 @@
 				"runfile.catalogCommand": {
 					"type": "string",
 					"default": "run :list --json",
-					"markdownDescription": "Shell command run in each workspace folder to list targets as JSON on **stdout** — the `{ \"formatVersion\": 1, \"targets\": [...] }` document emitted by `run :list --json`. Discovery is the CLI's job, so it needs no flags: it walks up for the nearest `runfiles/`, down for subproject ones, and folds in the machine-wide `~/.runfiles/`. Anything on stderr is ignored. Re-run every time VS Code fetches tasks — keep it cheap."
+					"markdownDescription": "Shell command run in each workspace folder to list targets as JSON on **stdout** \u2014 the `{ \"formatVersion\": 1, \"targets\": [...] }` document emitted by `run :list --json`. Discovery is the CLI's job, so it needs no flags: it walks up for the nearest `runfiles/`, down for subproject ones, and folds in the machine-wide `~/.runfiles/`. Anything on stderr is ignored. Re-run every time VS Code fetches tasks \u2014 keep it cheap."
 				},
 				"runfile.codeLens": {
 					"type": "boolean",
 					"default": true,
-					"markdownDescription": "Show an inline **Run** button at the top of every `.run` file inside a `runfiles/` directory. One target is one file, so there is one button per file. It runs `run --stdin-args --dir <the runfiles parent> <target>`, so a target in a subproject runs under the name that directory gives it. `_shared.run` gets no button — it configures a directory rather than being a target."
+					"markdownDescription": "Show an inline **Run** button at the top of every `.run` file inside a `runfiles/` directory. One target is one file, so there is one button per file. It runs `run --stdin-args --dir <the runfiles parent> <target>`, so a target in a subproject runs under the name that directory gives it. `_shared.run` gets no button \u2014 it configures a directory rather than being a target."
 				},
 				"runfile.enabled": {
 					"type": "boolean",
@@ -231,6 +231,13 @@
 					"meta.embedded.line.shell": "shellscript",
 					"meta.embedded.block.shell": "shellscript"
 				}
+			},
+			{
+				"scopeName": "runfile.injection.interpolation",
+				"path": "./syntaxes/runfile-interpolation.injection.json",
+				"injectTo": [
+					"source.run"
+				]
 			}
 		]
 	},
