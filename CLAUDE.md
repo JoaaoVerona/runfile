@@ -17,7 +17,7 @@ run build                  # Debug build
 run check                  # Non-mutating gate: fmt --check + clippy (deny warnings)
 run lint                   # Formats, then lints
 run test                   # All workspace tests
-run install                # Copies the debug build to ~/.local/bin as "rund"
+run install                # Builds release and installs BOTH binaries to ~/.local/bin
 
 run vscode:setup           # One-time: pnpm install for the VS Code extension. Gates its other targets.
 run vscode:compile         # Type-check and compile the extension
@@ -328,7 +328,11 @@ second time as the global. This replaced `includes` entirely.
 
 - Diagnostics come from the **real parser**, so an editor and the runner cannot disagree about validity.
 - The binary ships in the release archive beside `run`; both installers, the npm package (one launcher script
-  copied under each name) and `:update` install both. The editor integrations find it on PATH by name.
+  copied under each name), `:update` and the repo's own `run install` install both. The editor integrations
+  find it on PATH by name. **Installing one without the other is the bug to avoid**: an editor talks to the
+  language server, so a `run` newer than the `runfile-lsp` beside it underlines valid files in red while the
+  runner accepts them. It happened three times during the rewrite -- `retry`, `.logging`, a namespaced `run`
+  call -- which is why `install` copies both and never one.
 - The transport is hand-rolled. LSP framing is a header and a byte count; a framework would reintroduce the
   async runtime this rewrite removed, for a server that answers one client, one message at a time.
 - Full document sync, deliberately: these files are small, and an incremental applier is a source of drift.

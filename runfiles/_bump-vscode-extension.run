@@ -8,3 +8,5 @@
 .workdir = "editors/vscode"
 
 $ pnpm version --no-git-tag-version --allow-same-version --no-git-checks {{ ARGS }}
+
+directory_exists()
