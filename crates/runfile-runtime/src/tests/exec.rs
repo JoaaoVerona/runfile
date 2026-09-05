@@ -356,3 +356,26 @@ fn a_heredoc_is_left_whole() {
 	let d = Recorder::default();
 	run_src("$ cat <<'EOF' >/dev/null\n$ body\n$ EOF\n", &d).expect("the heredoc body is not commands");
 }
+
+#[test]
+fn a_failure_names_the_command_and_never_the_shell() {
+	// `$ docker compose up -d` failing used to be reported as
+	// "`/usr/bin/bash` exited with status 1", which names an implementation
+	// detail and nothing a person can act on.
+	let d = Recorder::default();
+	let e = run_src("$ false\n", &d).unwrap_err().to_string();
+	assert!(e.contains("`false` exited with status 1"), "{e}");
+	assert!(!e.contains("bash"), "{e}");
+
+	// Several lines share one shell and `-e` stops at the one that failed,
+	// which the runner cannot see -- but each announced itself as it ran.
+	let d = Recorder::default();
+	let e = run_src("$ true\n$ false\n", &d).unwrap_err().to_string();
+	assert!(e.contains("the command above exited with status 1"), "{e}");
+	assert!(!e.contains("bash"), "{e}");
+
+	// A real command still names itself.
+	let d = Recorder::default();
+	let e = run_src("exec sh\n\texit 3\nend\n", &d).unwrap_err().to_string();
+	assert!(e.contains("exited with status 3"), "{e}");
+}

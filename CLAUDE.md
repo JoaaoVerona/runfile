@@ -285,7 +285,10 @@ second time as the global. This replaced `includes` entirely.
   the block is announced whole as before, when that would be unsafe: a `for` or an `if` spread over several
   `$` lines is one command to the shell, and so is a quote or a heredoc that spans them, so anything ending
   in a continuation and anything opening a quote falls back. Measured over the corpus: 238 of 242 multi-line
-  blocks are traced, 4 fall back, and none is broken by it.
+  blocks are traced, 4 fall back, and none is broken by it. A failure **never names the shell**, for the same
+  reason a `.parallel` branch is not labelled `bash`: `` `docker compose up -d` exited with status 1 `` where
+  the runner knows the command, and *"the command above"* where several share a shell and only the
+  announcements can say which one stopped.
 - **`.detach`** starts the commands and does not wait. Its streams go to null: inherited, they would hold the
   runner's own stdout and stderr open after it exits, so whoever is reading them waits for the very command
   that was meant to outlive the run.

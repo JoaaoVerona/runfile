@@ -15,7 +15,9 @@ pub enum ExecError {
 	NoShell,
 	#[error("could not start `{cmd}`: {source}")]
 	Spawn { cmd: String, source: std::io::Error },
-	#[error("`{cmd}` exited with status {code}")]
+	/// `cmd` carries its own quoting: it is a command someone wrote when the
+	/// runner knows which one, and a phrase when it does not.
+	#[error("{cmd} exited with status {code}")]
 	Status { cmd: String, code: i32 },
 	#[error("`{cmd}` produced output that is not UTF-8")]
 	NotUtf8 { cmd: String },
@@ -190,7 +192,7 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 	})?;
 	if !out.status.success() {
 		return Err(ExecError::Status {
-			cmd: label,
+			cmd: failed_label(&program, s.command, s.body),
 			code: out.status.code().unwrap_or(-1),
 		});
 	}
@@ -302,6 +304,29 @@ fn standalone(line: &str) -> bool {
 	}
 	const CLOSES: &[&str] = &["fi", "done", "esac", "else", "elif", "}", ")", ";;"];
 	!CLOSES.contains(&line.split_whitespace().next().unwrap_or(""))
+}
+
+/// What to name when a command fails.
+///
+/// Never the shell. A person wrote `$ docker compose up -d`, not bash, and
+/// being told that `/usr/bin/bash` exited with status 1 names an
+/// implementation detail and nothing they can act on -- the same reason a
+/// `.parallel` branch is never labelled `bash`.
+///
+/// Several `$` lines share one shell and `-e` stops at the one that failed,
+/// which the runner cannot see. It does not have to: each line announces
+/// itself as it runs, so the last one shown is the one that failed.
+fn failed_label(program: &Path, command: Option<&str>, body: &str) -> String {
+	if !is_shell(program) {
+		let named = command.map_or_else(|| program.display().to_string(), str::to_string);
+		return format!("`{named}`");
+	}
+	let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+	match (lines.next(), lines.next()) {
+		(Some(only), None) => format!("`{only}`"),
+		(Some(_), Some(_)) => "the command above".to_string(),
+		_ => format!("`{}`", program.display()),
+	}
 }
 
 fn announce(program: &str, body: &str) {
