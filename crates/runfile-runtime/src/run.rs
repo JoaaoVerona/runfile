@@ -200,7 +200,9 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			Ok(())
 		}
 		Statement::Call { expr, .. } => {
-			eval_boundary(expr, &mut r.scope)?;
+			// Through value_of, so a bare `code_of($ cmd)` runs the command
+			// rather than reaching the pure evaluator, which has no shell.
+			value_of(expr, props, r)?;
 			Ok(())
 		}
 		Statement::If {
@@ -209,9 +211,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			otherwise,
 			span,
 		} => {
-			let taken = eval_boundary(cond, &mut r.scope)?
-				.as_bool()
-				.map_err(|e| EvalError::ty(span.line, e))?;
+			let taken = cond_of(cond, props, r, span.line)?;
 			match (taken, otherwise) {
 				(true, _) => nested(then, props, r),
 				(false, Some(b)) => nested(b, props, r),
@@ -261,7 +261,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			default,
 			span,
 		} => {
-			let v = eval_boundary(subject, &mut r.scope)?.to_string();
+			let v = subject_of(subject, props, r)?;
 			if let Some(c) = cases.iter().find(|c| c.label == v) {
 				return nested(&c.body, props, r);
 			}
@@ -312,6 +312,12 @@ fn nested(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunErr
 /// `$`/`exec` in value position runs and yields stdout; anything else is a
 /// plain expression.
 fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunError> {
+	if let Expr::Call { name, args, .. } = e
+		&& name == "code_of"
+		&& args.len() == 1
+	{
+		return Ok(Value::Num(f64::from(exit_code(&args[0], props, r)?)));
+	}
 	let Expr::Capture { command, body, .. } = e else {
 		return Ok(eval_boundary(e, &mut r.scope)?);
 	};
@@ -332,6 +338,49 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		announce: !r.dry_run,
 	})?;
 	Ok(Value::Str(out))
+}
+
+/// Run a capture and report its exit status.
+///
+/// Not captured: `if $ grep -q x f` produces nothing either way, and hiding
+/// what `$ mkdir out` says about why it failed would be the wrong default for
+/// the one form whose whole purpose is to keep going afterwards.
+fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunError> {
+	let Expr::Capture { command, body, .. } = e else {
+		return Ok(0);
+	};
+	let (cmd, text) = render(command.as_deref(), body, r)?;
+	let env = merged_env(r, props);
+	let dir = cwd(props, &r.anchor);
+	Ok(exec::spawn_code(Spawn {
+		command: cmd.as_deref(),
+		body: &text,
+		cwd: &dir,
+		env: &env,
+		capture: false,
+		dry_run: r.dry_run,
+		label: r.label.as_deref(),
+		detach: false,
+		announce: !r.dry_run,
+	})?)
+}
+
+/// A condition, which may be a `$` run: `if $ cmd` is true when it succeeds.
+fn cond_of(cond: &Expr, props: &Props, r: &mut Runner<'_>, line: usize) -> Result<bool, RunError> {
+	if let Expr::Capture { .. } = cond {
+		return Ok(exit_code(cond, props, r)? == 0);
+	}
+	Ok(eval_boundary(cond, &mut r.scope)?
+		.as_bool()
+		.map_err(|e| EvalError::ty(line, e))?)
+}
+
+/// A `match` subject, which may be a `$` run: the cases are then exit codes.
+fn subject_of(subject: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<String, RunError> {
+	if let Expr::Capture { .. } = subject {
+		return Ok(exit_code(subject, props, r)?.to_string());
+	}
+	Ok(eval_boundary(subject, &mut r.scope)?.to_string())
 }
 
 /// Arguments for a `run` statement.
@@ -467,7 +516,7 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 				default,
 				span,
 			} => {
-				let v = eval_boundary(subject, &mut r.scope)?.to_string();
+				let v = subject_of(subject, props, r)?;
 				match cases.iter().find(|c| c.label == v) {
 					Some(c) => collect(&c.body, props, r, out)?,
 					None => match default {

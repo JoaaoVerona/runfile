@@ -222,7 +222,11 @@ impl<'a> P<'a> {
 				Ok(Statement::Let { name, value, span })
 			}
 			"if" => {
-				let cond = parse_expr(text[2..].trim(), offset + 3, no)?;
+				let rest = text[2..].trim();
+				let cond = match shell_capture(rest, offset + 3, no)? {
+					Some(e) => e,
+					None => parse_expr(rest, offset + 3, no)?,
+				};
 				let then = self.block(Some("if"))?;
 				let otherwise = if self.peek_kw() == Some("else") {
 					self.i += 1;
@@ -250,7 +254,11 @@ impl<'a> P<'a> {
 				Ok(Statement::For { name, iter, body, span })
 			}
 			"match" => {
-				let subject = parse_expr(text[5..].trim(), offset + 6, no)?;
+				let rest = text[5..].trim();
+				let subject = match shell_capture(rest, offset + 6, no)? {
+					Some(e) => e,
+					None => parse_expr(rest, offset + 6, no)?,
+				};
 				let (mut cases, mut default) = (Vec::new(), None);
 				loop {
 					match self.peek_kw() {
@@ -298,6 +306,10 @@ impl<'a> P<'a> {
 				})
 			}
 			_ => {
+				// `code_of($ cmd)` on its own: run it, ignore how it went.
+				if let Some(e) = shell_capture(&text, offset, no)? {
+					return Ok(Statement::Call { expr: e, span });
+				}
 				if let Some(eq) = assignment_split(&text) {
 					let name = text[..eq].trim().to_string();
 					check_binding_name(&name, no)?;
@@ -408,6 +420,10 @@ impl<'a> P<'a> {
 
 	/// A `$ cmd` or `exec cmd … end` used as a value.
 	fn capture_rhs(&mut self, rhs: &str, indent: &str, offset: usize, no: usize) -> Result<Option<Expr>, ParseError> {
+		// `code_of($ …)` is a capture too, wearing a name.
+		if rhs.starts_with("code_of(") {
+			return shell_capture(rhs, offset, no);
+		}
 		if let Some(cmd) = rhs.strip_prefix("$ ") {
 			let parts = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
 			let span = Span::new(offset, offset + rhs.len(), no);
@@ -490,6 +506,51 @@ fn check_has_effect(e: &Expr, no: usize) -> Result<(), ParseError> {
 		_ => "it computes a value and discards it".to_string(),
 	};
 	err(no, format!("this line does nothing: {what}"))
+}
+
+/// `$ cmd` used as a value, and `code_of($ cmd)` around it.
+///
+/// Only a `$` run, never an `exec` block: an `exec` closes on an `end` at its
+/// opener's indentation, which is the same `end` an `if` around it would want.
+///
+/// `code_of` is the one call a capture may sit inside, and it takes the rest of
+/// the line up to a final `)`. A capture otherwise runs to end of line -- that
+/// is why it cannot nest in a call in general -- so the closing parenthesis has
+/// to be found from the right, and a shell line ending in one cannot be written
+/// here. Split it into two statements if you need that.
+fn shell_capture(text: &str, offset: usize, no: usize) -> Result<Option<Expr>, ParseError> {
+	if let Some(cmd) = text.strip_prefix("$ ") {
+		return Ok(Some(capture_of(cmd.trim(), offset, no)?));
+	}
+	let Some(rest) = text.strip_prefix("code_of(") else {
+		return Ok(None);
+	};
+	let Some(inner) = rest.strip_suffix(')') else {
+		return err(no, "`code_of(` is never closed: it takes a `$` run and a final `)`");
+	};
+	let Some(cmd) = inner.trim().strip_prefix("$ ") else {
+		return err(no, "`code_of` takes a `$` run, as `code_of($ mkdir out)`");
+	};
+	if cmd.contains(')') {
+		return err(
+			no,
+			"a `)` inside `code_of` cannot be told from the one that closes it; \
+			 put the command on a `$` line of its own",
+		);
+	}
+	Ok(Some(Expr::Call {
+		name: "code_of".into(),
+		args: vec![capture_of(cmd.trim(), offset, no)?],
+		span: Span::new(offset, offset + text.len(), no),
+	}))
+}
+
+fn capture_of(cmd: &str, offset: usize, no: usize) -> Result<Expr, ParseError> {
+	Ok(Expr::Capture {
+		command: None,
+		body: vec![to_parts(lexer::split_interp(cmd, offset, no)?, no)?],
+		span: Span::new(offset, offset + cmd.len(), no),
+	})
 }
 
 /// The label of a `case`, which must be written as a quoted string.

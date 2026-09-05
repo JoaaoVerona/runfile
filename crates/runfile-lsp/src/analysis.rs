@@ -224,6 +224,7 @@ pub const RUN_KEYS: &[(&str, &str)] = &[
 		"The parent of `runfiles/`: the anchor every relative path resolves against.",
 	),
 	("namespaces", "The subproject namespaces in this project, as a list."),
+	("user", "The name of the user running this."),
 ];
 
 /// The five roots a value can come from.

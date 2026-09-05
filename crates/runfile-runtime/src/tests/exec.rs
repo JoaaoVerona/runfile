@@ -184,3 +184,64 @@ fn a_header_property_cannot_see_a_body_binding() {
 	let e = crate::run::run_target(&target, &mut r).unwrap_err();
 	assert!(e.to_string().contains("not defined"), "{e}");
 }
+
+#[test]
+fn a_capture_as_a_condition_asks_whether_the_command_succeeded() {
+	let d = Recorder::default();
+	let t = run_src("if $ true\n\trun yes\nend\n", &d).unwrap();
+	assert_eq!(d.calls(), vec!["yes"], "{t:?}");
+
+	let d = Recorder::default();
+	run_src("if $ false\n\trun yes\nelse\n\trun no\nend\n", &d).unwrap();
+	assert_eq!(d.calls(), vec!["no"]);
+}
+
+#[test]
+fn a_failing_condition_is_an_answer_and_not_a_failure() {
+	// A `$` line that exits non-zero stops the target. The whole point of
+	// `if $ cmd` is that this one does not.
+	let d = Recorder::default();
+	run_src("if $ false\n\trun yes\nend\nrun after\n", &d).expect("the run continues");
+	assert_eq!(d.calls(), vec!["after"]);
+}
+
+#[test]
+fn a_capture_as_a_match_subject_dispatches_on_the_exit_code() {
+	let d = Recorder::default();
+	run_src(
+		"match $ sh -c 'exit 3'\ncase \"0\"\n\trun zero\ncase \"3\"\n\trun three\ndefault\n\trun other\nend\n",
+		&d,
+	)
+	.unwrap();
+	assert_eq!(d.calls(), vec!["three"]);
+
+	let d = Recorder::default();
+	run_src(
+		"match $ sh -c 'exit 9'\ncase \"0\"\n\trun zero\ndefault\n\trun other\nend\n",
+		&d,
+	)
+	.unwrap();
+	assert_eq!(d.calls(), vec!["other"]);
+}
+
+#[test]
+fn code_of_yields_the_status_and_lets_the_run_carry_on() {
+	let d = Recorder::default();
+	run_src("let c = code_of($ true)\nif c == 0\n\trun ok\nend\n", &d).unwrap();
+	assert_eq!(d.calls(), vec!["ok"]);
+
+	let d = Recorder::default();
+	run_src(
+		"let c = code_of($ sh -c 'exit 7')\nmatch c\ncase \"7\"\n\trun seven\ndefault\n\trun other\nend\n",
+		&d,
+	)
+	.expect("a non-zero code is a value, not a failure");
+	assert_eq!(d.calls(), vec!["seven"]);
+}
+
+#[test]
+fn a_bare_code_of_runs_the_command_and_ignores_how_it_went() {
+	let d = Recorder::default();
+	run_src("code_of($ false)\nrun after\n", &d).expect("it does not stop the target");
+	assert_eq!(d.calls(), vec!["after"]);
+}

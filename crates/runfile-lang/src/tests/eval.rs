@@ -590,3 +590,96 @@ fn an_inert_statement_is_caught_inside_a_block_too() {
 	assert!(e.contains("line 2"), "the line is the one at fault: {e}");
 	assert!(e.contains("exit()"), "{e}");
 }
+
+#[test]
+fn the_three_path_questions_are_told_apart() {
+	// `exists()` answers none of them on its own, and a check meant for one
+	// silently passing for the other surfaces much later as a confusing error.
+	let d = std::env::temp_dir().join("runfile-path-kinds");
+	let _ = std::fs::remove_dir_all(&d);
+	std::fs::create_dir_all(d.join("adir")).unwrap();
+	std::fs::write(d.join("afile"), "x").unwrap();
+	let script = d.join("script.sh");
+	std::fs::write(&script, "#!/bin/sh\n").unwrap();
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+	}
+
+	let at = |src: &str| {
+		let mut s = sc();
+		s.base_dir = d.clone();
+		let e = parse_expr(src, 0, 1).unwrap_or_else(|x| panic!("{src}: {x}"));
+		eval(&e, &mut s).unwrap_or_else(|x| panic!("{src}: {x}"))
+	};
+	assert_eq!(at("file_exists(\"afile\")"), Value::Bool(true));
+	assert_eq!(
+		at("file_exists(\"adir\")"),
+		Value::Bool(false),
+		"a directory is not a file"
+	);
+	assert_eq!(at("directory_exists(\"adir\")"), Value::Bool(true));
+	assert_eq!(at("directory_exists(\"afile\")"), Value::Bool(false));
+	assert_eq!(at("file_exists(\"nope\")"), Value::Bool(false));
+	assert_eq!(at("directory_exists(\"nope\")"), Value::Bool(false));
+	#[cfg(unix)]
+	{
+		assert_eq!(at("is_executable(\"script.sh\")"), Value::Bool(true));
+		assert_eq!(at("is_executable(\"afile\")"), Value::Bool(false), "the bit is not set");
+		assert_eq!(
+			at("is_executable(\"adir\")"),
+			Value::Bool(false),
+			"a directory is not a file"
+		);
+	}
+	let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_capture_may_stand_as_a_condition_a_subject_or_a_code() {
+	// The shapes only: what they *do* needs a process host, which the runtime
+	// tests cover. Here it is that they parse to the tree the runtime looks for.
+	use crate::{Expr, Statement};
+	let t = crate::parse("if $ test -f x\n\t$ echo yes\nend\n").unwrap();
+	let Statement::If { cond, .. } = &t.body.statements[0] else {
+		panic!()
+	};
+	assert!(matches!(cond, Expr::Capture { .. }), "{cond:?}");
+
+	let t = crate::parse("match $ grep -q a b\ncase \"0\"\n\t$ echo hit\nend\n").unwrap();
+	let Statement::Match { subject, .. } = &t.body.statements[0] else {
+		panic!()
+	};
+	assert!(matches!(subject, Expr::Capture { .. }), "{subject:?}");
+
+	let t = crate::parse("let c = code_of($ mkdir out)\n").unwrap();
+	let Statement::Let { value, .. } = &t.body.statements[0] else {
+		panic!()
+	};
+	let Expr::Call { name, args, .. } = value else {
+		panic!("{value:?}")
+	};
+	assert_eq!(name, "code_of");
+	assert!(matches!(args[0], Expr::Capture { .. }));
+
+	// And on its own, which is how you run something and ignore the outcome.
+	let t = crate::parse("code_of($ mkdir out)\n").unwrap();
+	assert!(matches!(t.body.statements[0], Statement::Call { .. }));
+}
+
+#[test]
+fn code_of_says_what_it_wants_when_it_is_written_wrongly() {
+	assert!(
+		crate::parse("let c = code_of(\"x\")\n")
+			.unwrap_err()
+			.to_string()
+			.contains("takes a `$` run")
+	);
+	assert!(
+		crate::parse("let c = code_of($ mkdir out\n")
+			.unwrap_err()
+			.to_string()
+			.contains("never closed")
+	);
+}

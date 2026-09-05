@@ -770,9 +770,19 @@ pub const FUNCTIONS: &[Function] = &[
 		doc: "The extension, including its dot.",
 	},
 	Function {
+		name: "directory_exists",
+		signature: "directory_exists(path)",
+		doc: "Whether the path is a directory, relative to the runfiles parent.",
+	},
+	Function {
 		name: "file_exists",
 		signature: "file_exists(path)",
-		doc: "Whether the path exists, relative to the runfiles parent.",
+		doc: "Whether the path is a file, relative to the runfiles parent.",
+	},
+	Function {
+		name: "is_executable",
+		signature: "is_executable(path)",
+		doc: "Whether the path is a file this user may execute.",
 	},
 	Function {
 		name: "exit",
@@ -1051,7 +1061,12 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 				.map(|()| V::Str(String::new()))
 				.map_err(|e| other(format!("could not write {}: {e}", p.display())))
 		})(),
-		"file_exists" if n == 1 => s(0).map(|p| V::Bool(resolve(&sc.base_dir, p).exists())),
+		// Files only, and directories only: `exists()` answers neither question
+		// on its own, and a check meant for one silently passing for the other
+		// is the kind of thing that surfaces as a confusing error much later.
+		"file_exists" if n == 1 => s(0).map(|p| V::Bool(resolve(&sc.base_dir, p).is_file())),
+		"directory_exists" if n == 1 => s(0).map(|p| V::Bool(resolve(&sc.base_dir, p).is_dir())),
+		"is_executable" if n == 1 => s(0).map(|p| V::Bool(is_executable(&resolve(&sc.base_dir, p)))),
 		// Joins with this platform's separator, and lets an absolute later
 		// segment replace what came before, the way `Path::join` does.
 		"join_path" if n >= 1 => (|| {
@@ -1211,4 +1226,21 @@ fn decrypt_file(src: &Path, dst: &Path, keys: &[String]) -> Result<(), String> {
 		out.push('\n');
 	}
 	std::fs::write(dst, out).map_err(|e| format!("could not write {}: {e}", dst.display()))
+}
+
+/// Whether a path is a file this user may execute.
+///
+/// The Unix answer is the executable bit; there is no equivalent question on
+/// Windows, where executability is decided by the extension and by PATHEXT, so
+/// being a file is the whole of it there.
+fn is_executable(p: &std::path::Path) -> bool {
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+	}
+	#[cfg(not(unix))]
+	{
+		p.is_file()
+	}
 }

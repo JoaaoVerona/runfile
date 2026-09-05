@@ -143,6 +143,38 @@ $ cp {{ ARG.src }} {{ ARG.dest }}
 **Never wrap an interpolation in shell quotes.** There is no `shell_quote` function because there is nothing to
 quote: the substitution already did it.
 
+### Asking whether a command worked
+
+A `$` run may stand as a condition or as a `match` subject. The condition is true when the command exits 0;
+the cases are exit codes.
+
+```sh
+if $ command -v docker
+	$ docker info
+else
+	$ echo 'no docker here' >&2
+end
+
+match $ curl -fsS https://example.com
+	case "0"
+		$ echo up
+	case "22"
+		$ echo 'HTTP error'
+	default
+		$ echo 'could not reach it'
+end
+```
+
+Neither stops the target: a non-zero exit is the answer, not a failure. `code_of($ cmd)` is the same thing as
+a number, for when you want to keep it:
+
+```sh
+let made = code_of($ mkdir out)
+```
+
+A `$` run reaches to the end of its line, which is why a capture cannot nest in a call — `code_of` is the one
+exception, and its command may not contain a `)`.
+
 ### Stopping early
 
 A line that is only a value — `exit`, `abc`, `35`, `"hi"` — is a parse error, since it computes something and

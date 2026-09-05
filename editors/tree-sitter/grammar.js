@@ -100,9 +100,21 @@ module.exports = grammar({
 
 		// ---- statements
 
-		let_statement: ($) => seq("let", field("name", $.identifier), "=", field("value", choice($.capture, $._expression)), $._newline),
+		let_statement: ($) =>
+			seq("let", field("name", $.identifier), "=", field("value", choice($.code_of, $.capture, $._expression)), $._newline),
 
-		assignment: ($) => seq(field("name", $.identifier), "=", field("value", choice($.capture, $._expression)), $._newline),
+		// The one call a capture may sit inside: `code_of($ cmd)` is the
+		// command's exit status rather than what it printed. Its shell text
+		// stops at the `)` -- a capture otherwise runs to end of line, which is
+		// why it cannot nest in a call at all -- so a command containing a
+		// parenthesis has to be a statement of its own.
+		code_of: ($) => seq("code_of", "(", "$", optional(alias($._code_of_text, $.shell_text)), ")"),
+		_code_of_text: ($) =>
+			repeat1(choice(alias($._code_of_content, $.shell_content), alias($._lone_brace, $.shell_content), $.interpolation)),
+		_code_of_content: () => token.immediate(prec(-1, /([^{)\\\r\n]|\\[^\r\n])+/)),
+
+		assignment: ($) =>
+			seq(field("name", $.identifier), "=", field("value", choice($.code_of, $.capture, $._expression)), $._newline),
 
 		// `$` or `exec` in value position: what the command prints.
 		capture: ($) => choice($.shell_capture, $.exec_capture),
@@ -113,7 +125,10 @@ module.exports = grammar({
 		if_statement: ($) =>
 			seq(
 				"if",
-				field("condition", $._expression),
+				// A `$` run may stand as the condition: it is true when the
+				// command succeeds. Never an `exec` -- its `end` would be the
+				// one the `if` wants.
+				field("condition", choice($.shell_capture, $._expression)),
 				$._newline,
 				repeat($._line),
 				optional(seq("else", $._newline, repeat($._line))),
@@ -127,7 +142,9 @@ module.exports = grammar({
 		match_statement: ($) =>
 			seq(
 				"match",
-				field("subject", $._expression),
+				// A `$` run may stand as the subject, and the cases are then
+				// exit codes: `case "0"`, `case "1"`.
+				field("subject", choice($.shell_capture, $._expression)),
 				$._newline,
 				repeat(choice($._newline, $.comment)),
 				repeat($.match_case),
@@ -143,7 +160,7 @@ module.exports = grammar({
 
 		run_statement: ($) => seq("run", field("target", alias($.run_word, $.target)), repeat(alias($.run_word, $.argument)), $._newline),
 
-		expression_statement: ($) => seq($._expression, $._newline),
+		expression_statement: ($) => seq(choice($.code_of, $._expression), $._newline),
 
 		// ---- expressions
 

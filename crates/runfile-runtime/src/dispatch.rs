@@ -272,6 +272,15 @@ fn populate_run_context(sc: &mut Scope, t: &runfile_discovery::Target, cat: &Cat
 	sc.run.insert("file".into(), Value::Str(t.path.display().to_string()));
 	sc.run
 		.insert("parent".into(), Value::Str(t.anchor.display().to_string()));
+	// Whoever is running this, which a target otherwise has to shell out for:
+	// `id -un` on Unix, and a different variable on each platform.
+	if let Some(u) = std::env::var_os("USER")
+		.or_else(|| std::env::var_os("USERNAME"))
+		.or_else(|| std::env::var_os("LOGNAME"))
+	{
+		sc.run
+			.insert("user".into(), Value::Str(u.to_string_lossy().into_owned()));
+	}
 	if let Ok(cwd) = std::env::current_dir() {
 		sc.run.insert("cwd".into(), Value::Str(cwd.display().to_string()));
 	}

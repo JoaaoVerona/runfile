@@ -68,7 +68,7 @@ Lists index with `[n]` and work with `first`, `last`, `length`, `join`.
 ### Sources
 
 `ARG.x` (from `--x=value`), `ENV.X`, `FLAG.x` (bool, from `--x`), `ARGS` (a list of positionals), and
-`RUN.os` / `RUN.arch` / `RUN.cwd` / `RUN.file` / `RUN.parent` / `RUN.namespaces`.
+`RUN.os` / `RUN.arch` / `RUN.cwd` / `RUN.file` / `RUN.parent` / `RUN.namespaces` / `RUN.user`.
 
 **Arguments are `--key=value` only.** `--key value` is a flag plus a positional, because nothing declares which
 names take values, so it cannot be disambiguated. It also cannot be silently guessed — so when `ARG.x` is
@@ -95,6 +95,18 @@ interpolation sites in the corpus, 48 would have been unsafe under manual quotin
 
 Quotes inside `{{ }}` need no escaping — an interpolation is opaque to the string containing it. `.confirm =
 "Greet {{ ARG.name ? "world" }}?"` is correct as written.
+
+### A command's exit status
+
+`if $ cmd` is true when the command succeeds, and `match $ cmd` dispatches on the exit code with `case "0"`,
+`case "3"` and so on. Neither stops the target — a non-zero exit is the answer being asked for, not a failure —
+and neither captures stdout, so output reaches the terminal as it would from a `$` line. `code_of($ cmd)` is
+the same status as a number, usable as a `let` value or as a statement of its own (run it, ignore the result).
+
+`code_of` is the **one** call a capture may sit inside. A capture runs to end of line, so the closing `)` is
+found from the right and a command containing a `)` is refused with a message saying to split it out. An
+`exec` block is never a condition: it closes on an `end` at its opener's indentation, which is the same `end`
+the `if` around it would want.
 
 ### `$` and `exec` in value position
 
@@ -441,6 +453,11 @@ functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKil
 
 Every other function from the old surface is present. Seventeen were missing at one point, dropped by
 oversight rather than decision, and all are back. `try` is the one exception, replaced by `a ? b`.
+
+`file_exists` is **files only** and `directory_exists` is directories only; `is_executable` is a file this
+user may execute (the mode bits on Unix, being a file on Windows, where the question has no equivalent).
+`file_exists` used to answer `exists()`, which is neither question — a `.git` is a directory in a normal
+clone and a *file* in a worktree, so a check for one wants `directory_exists(p) || file_exists(p)`.
 
 `now` and `uuid` are read-only, so a preview shows a real value rather than a placeholder: `--dry-run` is
 about not changing anything. `json_get` returns a number, bool or string directly, and an object or array as

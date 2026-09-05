@@ -118,3 +118,53 @@ write_file("out.txt", concat("a", "b"))
               (string_content))
             (string
               (string_content))))))))
+
+================================================================================
+A `$` run as a condition, as a match subject, and inside code_of
+================================================================================
+
+if $ test -f x
+	$ echo yes
+end
+match $ grep -q a b
+case "0"
+	$ echo hit
+default
+	$ echo miss
+end
+let c = code_of($ mkdir out)
+code_of($ false)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    (shell_capture
+      (shell_text
+        (shell_content)))
+    (shell_line
+      (shell_text
+        (shell_content))))
+  (match_statement
+    (shell_capture
+      (shell_text
+        (shell_content)))
+    (match_case
+      (string
+        (string_content))
+      (shell_line
+        (shell_text
+          (shell_content))))
+    (match_default
+      (shell_line
+        (shell_text
+          (shell_content)))))
+  (let_statement
+    (identifier)
+    (code_of
+      (shell_text
+        (shell_content))))
+  (expression_statement
+    (code_of
+      (shell_text
+        (shell_content)))))

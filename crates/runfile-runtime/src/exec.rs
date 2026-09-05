@@ -91,6 +91,20 @@ fn is_shell(program: &Path) -> bool {
 	)
 }
 
+/// Run, and report the exit status rather than failing on it.
+///
+/// A command that exits non-zero is an *answer* here, not a failure -- that is
+/// what `if $ cmd` and `code_of($ cmd)` are for. A command that could not be
+/// started at all still fails: a missing shell is an environment problem, not
+/// something a target asked about.
+pub fn spawn_code(s: Spawn<'_>) -> Result<i32, ExecError> {
+	match spawn(s) {
+		Ok(_) => Ok(0),
+		Err(ExecError::Status { code, .. }) => Ok(code),
+		Err(e) => Err(e),
+	}
+}
+
 pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 	let (program, mut args): (PathBuf, Vec<String>) = match s.command {
 		Some(cmd) => {

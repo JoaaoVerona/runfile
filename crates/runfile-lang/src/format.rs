@@ -256,9 +256,9 @@ fn exec_body(raw: &[&str], from: usize, opener: &str, depth: usize, o: &mut Out)
 fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> Result<usize, ParseError> {
 	let head = trimmed.split_whitespace().next().unwrap_or("");
 	let (text, opens) = match head {
-		"if" => (format!("if {}", spaced(trimmed[2..].trim(), no)?), Some(Frame::Body)),
+		"if" => (format!("if {}", condition(trimmed[2..].trim(), no)?), Some(Frame::Body)),
 		"match" => (
-			format!("match {}", spaced(trimmed[5..].trim(), no)?),
+			format!("match {}", condition(trimmed[5..].trim(), no)?),
 			Some(Frame::Match),
 		),
 		"for" => {
@@ -352,6 +352,9 @@ fn assignment(trimmed: &str, no: usize) -> Result<(String, Option<Frame>), Parse
 		let name = rest[..k].trim();
 		return Ok((format!("let {name} = {}", rhs(rest[k + 1..].trim(), no)?), None));
 	}
+	if trimmed.starts_with("code_of(") {
+		return Ok((rhs(trimmed, no)?, None));
+	}
 	if let Some(k) = assignment_split(trimmed) {
 		let name = trimmed[..k].trim();
 		if is_name(name) {
@@ -361,11 +364,26 @@ fn assignment(trimmed: &str, no: usize) -> Result<(String, Option<Frame>), Parse
 	Ok((spaced(trimmed, no)?, None))
 }
 
+/// A condition or a `match` subject, either of which may be a `$` run.
+///
+/// The text after `$ ` is the shell's, so it is left exactly as written -- the
+/// same rule a `$` line follows.
+fn condition(text: &str, no: usize) -> Result<String, ParseError> {
+	if let Some(cmd) = text.strip_prefix("$ ") {
+		return Ok(format!("$ {}", cmd.trim()));
+	}
+	rhs(text, no)
+}
+
 /// The right-hand side of a binding: a capture runs to end of line and is the
 /// shell's text, so only a plain expression is re-rendered.
 fn rhs(text: &str, no: usize) -> Result<String, ParseError> {
 	if let Some(cmd) = text.strip_prefix("$ ") {
 		return Ok(format!("$ {}", cmd.trim()));
+	}
+	// `code_of($ cmd)` wraps shell text, which is not ours to respace either.
+	if let Some(inner) = text.strip_prefix("code_of(").and_then(|r| r.strip_suffix(')')) {
+		return Ok(format!("code_of({})", inner.trim()));
 	}
 	if let Some(cmd) = text.strip_prefix("exec ") {
 		return Ok(format!("exec {}", cmd.trim()));

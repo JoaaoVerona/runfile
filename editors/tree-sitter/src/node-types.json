@@ -101,6 +101,10 @@
             "named": true
           },
           {
+            "type": "code_of",
+            "named": true
+          },
+          {
             "type": "identifier",
             "named": true
           },
@@ -317,6 +321,21 @@
     }
   },
   {
+    "type": "code_of",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "shell_text",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "command",
     "named": true,
     "fields": {},
@@ -437,6 +456,10 @@
         },
         {
           "type": "chain_expression",
+          "named": true
+        },
+        {
+          "type": "code_of",
           "named": true
         },
         {
@@ -648,6 +671,10 @@
           },
           {
             "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "shell_capture",
             "named": true
           },
           {
@@ -878,6 +905,10 @@
           },
           {
             "type": "chain_expression",
+            "named": true
+          },
+          {
+            "type": "code_of",
             "named": true
           },
           {
@@ -1150,6 +1181,10 @@
           },
           {
             "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "shell_capture",
             "named": true
           },
           {
@@ -1744,6 +1779,10 @@
   },
   {
     "type": "case",
+    "named": false
+  },
+  {
+    "type": "code_of",
     "named": false
   },
   {
