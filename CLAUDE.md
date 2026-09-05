@@ -298,6 +298,13 @@ second time as the global. This replaced `includes` entirely.
   announcements can say which one stopped — but only when the block was traced. A block announced whole has
   no single line above to point at, so it is named instead (*"a command in `for f in a b; do …`"*): pointing
   at output that says something else would be worse than saying less.
+- **A shell gets its script as an argument (`-c`), so stdin stays the terminal.** Handed over on stdin
+  instead — which is how `exec <command>` works, and how this did — every interactive command inside it read
+  a pipe the runner had already written and closed: `ssh` announced *"Pseudo-terminal will not be
+  allocated"* and then sat there unusable, and so would `vim`, a REPL, or anything asking for a password.
+  `exec <command>` keeps the body-as-stdin contract, since that is what `exec tee file` and `exec python3`
+  are for. A detached shell gets `/dev/null`: a background process must not hold the terminal's input after
+  the run that started it is over.
 - **`.detach`** starts the commands and does not wait. Its streams go to null: inherited, they would hold the
   runner's own stdout and stderr open after it exits, so whoever is reading them waits for the very command
   that was meant to outlive the run.

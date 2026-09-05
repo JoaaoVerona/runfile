@@ -116,7 +116,8 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		}
 		None => (crate::shell::default_shell().ok_or(ExecError::NoShell)?, Vec::new()),
 	};
-	if is_shell(&program) {
+	let shell = is_shell(&program);
+	if shell {
 		args.insert(0, "-e".into());
 	}
 	let label = s
@@ -129,8 +130,31 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		// rest of the target evaluable so dry-run reaches every statement.
 		return Ok(String::new());
 	}
+	// Announced from inside the script where that is safe, so each command is
+	// named as it runs rather than all of them before any of them do.
+	let script = if s.announce && shell { traced(s.body) } else { None };
+	if s.announce && script.is_none() {
+		// stderr, so a pipeline reading `run`'s output is unaffected. Bold
+		// cyan when a terminal is watching, plain when it is not.
+		announce(&label, s.body);
+	}
+
 	let mut c = Command::new(&program);
-	c.args(&args).current_dir(s.cwd).stdin(Stdio::piped());
+	c.args(&args).current_dir(s.cwd);
+	if shell {
+		// A shell gets its script as an argument, so **stdin stays the
+		// terminal**. Handing the script over on stdin instead left every
+		// interactive command inside it -- `ssh`, `vim`, a REPL, anything
+		// asking for a password -- reading a pipe that was already at EOF.
+		c.arg("-c").arg(script.as_deref().unwrap_or(s.body));
+		// Except when detached: a background process must not hold the
+		// terminal's input after the run that started it is over.
+		c.stdin(if s.detach { Stdio::null() } else { Stdio::inherit() });
+	} else {
+		// `exec <command>` hands the body to that command's stdin; that is
+		// what `exec tee file` and `exec python3` are for.
+		c.stdin(Stdio::piped());
+	}
 	for (k, v) in s.env {
 		c.env(k, v);
 	}
@@ -147,26 +171,12 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		c.stdout(Stdio::piped());
 		c.stderr(Stdio::piped());
 	}
-	// Announced from inside the script where that is safe, so each command is
-	// named as it runs rather than all of them before any of them do.
-	let script = if s.announce && is_shell(&program) {
-		traced(s.body)
-	} else {
-		None
-	};
-	if s.announce && script.is_none() {
-		// stderr, so a pipeline reading `run`'s output is unaffected. Bold
-		// cyan when a terminal is watching, plain when it is not.
-		announce(&label, s.body);
-	}
 	let mut child = c.spawn().map_err(|e| ExecError::Spawn {
 		cmd: label.clone(),
 		source: e,
 	})?;
-	{
-		let mut stdin = child.stdin.take().expect("stdin was piped");
-		let text = script.as_deref().unwrap_or(s.body);
-		stdin.write_all(text.as_bytes()).map_err(|e| ExecError::Spawn {
+	if let Some(mut stdin) = child.stdin.take() {
+		stdin.write_all(s.body.as_bytes()).map_err(|e| ExecError::Spawn {
 			cmd: label.clone(),
 			source: e,
 		})?;

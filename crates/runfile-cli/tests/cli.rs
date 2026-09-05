@@ -1807,6 +1807,23 @@ fn everything_the_runner_says_while_a_target_runs_is_marked_as_its_own() {
 	assert_eq!(out(&o), "mine\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_shell_gets_its_script_by_argument_not_on_its_stdin() {
+	// The script used to be handed over on stdin, which left every
+	// interactive command inside it -- `ssh`, `vim`, anything asking for a
+	// password -- reading a pipe the runner had already written and closed.
+	// `ssh` said so out loud: "Pseudo-terminal will not be allocated".
+	//
+	// `output()` gives the child a null stdin, so `cat` here reads end-of-file
+	// and prints nothing. Reading back the script would mean stdin is still
+	// the pipe it was written into.
+	let p = project(&[("runfiles/t.run", "$ cat\n$ echo done\n")]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o), "done\n", "the script came back on its own stdin");
+}
+
 #[test]
 fn nothing_is_announced_unless_a_target_asks() {
 	// Off by default, as it was before the rewrite: a target is run for its

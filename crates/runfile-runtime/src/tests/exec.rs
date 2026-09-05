@@ -399,3 +399,15 @@ fn a_failure_names_the_command_and_never_the_shell() {
 	let e = run_src("exec sh\n\texit 3\nend\n", &d).unwrap_err().to_string();
 	assert!(e.contains("exited with status 3"), "{e}");
 }
+
+#[test]
+fn a_named_command_still_receives_the_body_on_stdin() {
+	// `exec tee file` and `exec python3` are what that is for, and a shell
+	// taking its script by argument must not change it.
+	let f = std::env::temp_dir().join("runfile-exec-stdin-probe");
+	let _ = std::fs::remove_file(&f);
+	let d = Recorder::default();
+	run_src(&format!("exec tee {}\n\thello\n\tthere\nend\n", f.display()), &d).unwrap();
+	assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello\nthere");
+	let _ = std::fs::remove_file(&f);
+}
