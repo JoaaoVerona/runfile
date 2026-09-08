@@ -4,6 +4,8 @@
  ; cannot colour a binding that happens to share the name.
  "retry" "every"] @keyword
 
+(structured_format) @keyword
+
 (code_of "code_of" @function)
 
 ; Where values come from

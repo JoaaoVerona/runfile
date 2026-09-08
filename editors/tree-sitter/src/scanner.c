@@ -24,6 +24,7 @@ enum TokenType {
 	CAPTURE_EXEC_KEYWORD,
 	EXEC_CONTENT,
 	RUN_WORD,
+	STRUCTURED_KEYWORD,
 };
 
 #define MAX_INDENT 64
@@ -62,13 +63,26 @@ static uint8_t read_indent(TSLexer *lexer, char *buf) {
 
 // `exec` followed by a blank: the keyword, not an identifier that starts with
 // those letters. Leaves the lexer just past the word.
-static bool read_exec_word(TSLexer *lexer) {
-	const char *kw = "exec";
+static bool read_word(TSLexer *lexer, const char *kw, bool blank_after) {
 	for (int i = 0; kw[i]; i++) {
 		if (lexer->lookahead != kw[i]) return false;
 		advance(lexer);
 	}
-	return is_blank(lexer->lookahead);
+	return blank_after ? is_blank(lexer->lookahead) : !is_blank(lexer->lookahead);
+}
+
+static bool read_exec_word(TSLexer *lexer) {
+	return read_word(lexer, "exec", true);
+}
+
+// `json` alone on the rest of the line: the whole word, with nothing after it
+// but the newline. One more name here is all a second format needs.
+static bool read_structured_word(TSLexer *lexer) {
+	const char *formats[] = {"json", NULL};
+	for (int f = 0; formats[f]; f++) {
+		if (read_word(lexer, formats[f], false)) return true;
+	}
+	return false;
 }
 
 static bool scan_newline(Scanner *s, TSLexer *lexer) {
@@ -129,6 +143,18 @@ static bool scan_capture_exec_keyword(Scanner *s, TSLexer *lexer) {
 	s->exec_indent_len = s->line_indent_len;
 	memcpy(s->exec_indent, s->line_indent, MAX_INDENT);
 	lexer->result_symbol = CAPTURE_EXEC_KEYWORD;
+	return true;
+}
+
+// `json` after `=` in a binding: the same block shape as a capture `exec`,
+// opened from the middle of a line, so it records the same indentation.
+static bool scan_structured_keyword(Scanner *s, TSLexer *lexer) {
+	while (is_blank(lexer->lookahead)) skip(lexer);
+	if (!read_structured_word(lexer)) return false;
+	lexer->mark_end(lexer);
+	s->exec_indent_len = s->line_indent_len;
+	memcpy(s->exec_indent, s->line_indent, MAX_INDENT);
+	lexer->result_symbol = STRUCTURED_KEYWORD;
 	return true;
 }
 
@@ -263,6 +289,7 @@ bool tree_sitter_runfile_external_scanner_scan(void *payload, TSLexer *lexer, co
 	if (valid[NEWLINE] && scan_newline(s, lexer)) return true;
 	if (valid[EXEC_CONTENT]) return scan_exec_content(s, lexer);
 	if (valid[RUN_WORD]) return scan_run_word(lexer);
+	if (valid[STRUCTURED_KEYWORD] && scan_structured_keyword(s, lexer)) return true;
 	if (valid[CAPTURE_EXEC_KEYWORD]) return scan_capture_exec_keyword(s, lexer);
 	if (valid[EXEC_KEYWORD]) return scan_exec_keyword(s, lexer);
 	return false;

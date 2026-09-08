@@ -224,6 +224,29 @@ when the run ends, however it ends, so a target that fails half-way does not lea
 $ fastlane upload
 ```
 
+### Structured text
+
+`json … end` is a block of JSON, as a value. An interpolation inside it renders as **one JSON value** — the
+same rule as a shell line, one layer up — so nothing has to be escaped by hand:
+
+```sh
+let policy = json
+	{
+	  "Version": "2012-10-17",
+	  "Statement": [{ "Effect": "Allow", "Resource": {{ buckets }} }],
+	  "MaxKeys": {{ number(ARG.limit) }}
+	}
+end
+
+run aws -- iam put-user-policy --policy-document {{ policy }}
+```
+
+A string becomes a quoted, escaped string; a number becomes a number; a list becomes an array. **Do not put
+quotes around an interpolation** — `"{{ x }}"` is wrong here for the same reason it is wrong in a `$` line.
+
+The block is checked while the file is read, with each interpolation standing in as a value, so a missing
+brace is an error in the editor rather than one the far end reports later.
+
 ### Capturing output
 
 ```sh

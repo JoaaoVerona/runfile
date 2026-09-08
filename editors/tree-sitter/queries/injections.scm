@@ -20,3 +20,9 @@
    body: (exec_body) @injection.content)
  (#match? @_command "^(sh|bash|dash|ash|ksh|zsh|brush)\\b")
  (#set! injection.language "bash"))
+
+; A `json` block's body is JSON, so it is highlighted as JSON. The format node
+; carries the name, which is what makes a second format need no query of its own.
+((structured
+   format: (structured_format) @injection.language
+   body: (exec_body) @injection.content))

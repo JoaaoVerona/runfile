@@ -191,3 +191,24 @@ end
     (shell_line
       (shell_text
         (shell_content)))))
+
+================================================================================
+A json block with an interpolation
+================================================================================
+
+let doc = json
+	{ "a": 1, "b": {{ x }} }
+end
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (structured
+      (structured_format)
+      (exec_body
+        (exec_content)
+        (interpolation
+          (identifier))
+        (exec_content)))))

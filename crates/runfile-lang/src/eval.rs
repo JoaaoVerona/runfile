@@ -288,6 +288,29 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 			})
 		}
 		Expr::Call { name, args, span } => functions::call(name, args, sc, *span),
+		Expr::Structured { format, body, .. } => {
+			let mut out = String::new();
+			for (i, parts) in body.iter().enumerate() {
+				if i > 0 {
+					out.push('\n');
+				}
+				for p in parts {
+					match p {
+						crate::InterpPart::Literal(t) => out.push_str(t),
+						crate::InterpPart::Expr(e) => out.push_str(&format.render(&eval(e, sc)?)),
+					}
+				}
+			}
+			// Correct by construction, since every value is written as one of
+			// the format's own -- checked anyway, because shipping a malformed
+			// document to whatever consumes it is the failure worth paying a
+			// parse for.
+			format.validate(&out).map_err(|msg| EvalError::Other {
+				msg: format!("this `{}` block came out invalid: {msg}", format.keyword()),
+				line,
+			})?;
+			Ok(Value::Str(out))
+		}
 		Expr::Capture { span, .. } => Err(EvalError::Other {
 			msg: "`$`/`exec` capture needs a process host; not available in pure evaluation".into(),
 			line: span.line,

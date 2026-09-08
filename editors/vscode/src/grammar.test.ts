@@ -35,6 +35,15 @@ const INJECTION = path.join(__dirname, "..", "syntaxes", "runfile-interpolation.
  * embedding needed care, and a stub cannot stand in for that. Tests that use
  * it skip when it is absent, the way the shellcheck ones do.
  */
+function realJsonGrammar(): string | undefined {
+	return [
+		process.env.RUNFILE_JSON_GRAMMAR,
+		"/usr/share/code/resources/app/extensions/json/syntaxes/JSON.tmLanguage.json",
+		"/usr/lib/code/extensions/json/syntaxes/JSON.tmLanguage.json",
+		"/Applications/Visual Studio Code.app/Contents/Resources/app/extensions/json/syntaxes/JSON.tmLanguage.json"
+	].find((c): c is string => !!c && fs.existsSync(c))
+}
+
 function realShellGrammar(): string | undefined {
 	const candidates = [
 		process.env.RUNFILE_SHELL_GRAMMAR,
@@ -70,6 +79,10 @@ async function registry(shellGrammar?: string): Promise<vsctm.Registry> {
 			}
 			if (scope === "runfile.injection.interpolation") {
 				return load(INJECTION)
+			}
+			if (scope === "source.json") {
+				const json = realJsonGrammar()
+				return json ? load(json) : null
 			}
 			return null
 		}
@@ -266,4 +279,30 @@ test("retry and every are keywords, and only inside a retry header", async () =>
 	const [binding] = await tokensOf("let every = 3\n")
 	const name = (binding ?? []).find((t) => t.text === "every")
 	assert.ok(!name?.scopes.includes("keyword.control.run"), `got ${name?.scopes.join(" ")}`)
+})
+
+test("a json block is coloured as JSON, and its interpolations stay ours", async () => {
+	if (!realJsonGrammar()) {
+		return
+	}
+	const lines = await tokensOf('let doc = json\n\t{ "b": {{ ARG.x }} }\nend\n$ echo after\n')
+
+	const opener = (lines[0] ?? []).find((t) => t.text === "json")
+	assert.ok(opener?.scopes.includes("keyword.control.structured.run"), `${opener?.scopes.join(" ")}`)
+
+	const body = lines[1] ?? []
+	assert.ok(
+		body.some((t) => t.scopes.some((s) => s.endsWith(".json") && s.includes("property-name"))),
+		"the key is not JSON: " + body.flatMap((t) => t.scopes).join(" ")
+	)
+	// A JSON object covers its own braces, so `{{` would be read as one of
+	// them without the injection putting the interpolation ahead of it.
+	const interp = body.find((t) => t.text === "{{")
+	assert.ok(interp?.scopes.includes("meta.embedded.expression.run"), `${interp?.scopes.join(" ")}`)
+
+	// And `end` closes it: the line after is the language's again.
+	assert.ok(
+		(lines[3] ?? []).some((t) => t.scopes.includes("keyword.control.shell.run")),
+		"the block did not close"
+	)
 })

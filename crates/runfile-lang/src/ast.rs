@@ -152,6 +152,15 @@ pub enum Expr {
 		args: Vec<Expr>,
 		span: Span,
 	},
+	/// `json … end`: a block of structured text, as one value of that format.
+	///
+	/// Each entry is one line, so an interpolation inside it is an ordinary
+	/// expression the parser has already read.
+	Structured {
+		format: crate::Structured,
+		body: Vec<Vec<InterpPart>>,
+		span: Span,
+	},
 	/// `$ cmd` or `exec cmd … end` in value position: run it, take stdout with
 	/// one trailing newline stripped. Replaces the old `capture()` function --
 	/// `$` and `exec` are now the only way to invoke anything external.
@@ -209,6 +218,7 @@ impl Expr {
 			| Expr::Chain { span: s, .. }
 			| Expr::Index { span: s, .. }
 			| Expr::Call { span: s, .. }
+			| Expr::Structured { span: s, .. }
 			| Expr::Capture { span: s, .. } => *s,
 		}
 	}

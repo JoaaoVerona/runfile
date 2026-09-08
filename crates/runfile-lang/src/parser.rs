@@ -464,6 +464,44 @@ impl<'a> P<'a> {
 				span,
 			}));
 		}
+		// `json … end`, and whatever formats join it: a block of structured
+		// text, closing on an `end` at the opener's own indentation like any
+		// other body.
+		if let Some(format) = crate::Structured::from_keyword(rhs) {
+			let (body, _, end) = self.exec_body(indent, no)?;
+			// Checked here, with each interpolation standing in as a value of
+			// the format: a missing brace is then an error in the editor
+			// rather than one the far end reports hours later. What the values
+			// turn out to be cannot change the shape.
+			let probe = body
+				.iter()
+				.map(|parts| {
+					parts
+						.iter()
+						.map(|p| match p {
+							InterpPart::Literal(t) => t.as_str(),
+							InterpPart::Expr(_) => format.placeholder(),
+						})
+						.collect::<String>()
+				})
+				.collect::<Vec<_>>()
+				.join("\n");
+			if let Err(e) = format.validate(&probe) {
+				return err(
+					no,
+					format!(
+						"this `{}` block is not valid {}: {e}",
+						format.keyword(),
+						format.keyword()
+					),
+				);
+			}
+			return Ok(Some(Expr::Structured {
+				format,
+				body,
+				span: Span::new(offset, end, no),
+			}));
+		}
 		if let Some(cmd) = rhs.strip_prefix("exec ") {
 			let command = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
 			// A capture is an expression: its value is what the command prints,
@@ -512,7 +550,12 @@ fn has_effect(e: &Expr) -> bool {
 		Expr::Binary { lhs, rhs, .. } | Expr::Chain { lhs, rhs, .. } => has_effect(lhs) || has_effect(rhs),
 		Expr::Index { base, index, .. } => has_effect(base) || has_effect(index),
 		Expr::List(items, _) => items.iter().any(has_effect),
-		Expr::Number(..) | Expr::Bool(..) | Expr::Str(..) | Expr::Ident(..) | Expr::Source { .. } => false,
+		Expr::Structured { .. }
+		| Expr::Number(..)
+		| Expr::Bool(..)
+		| Expr::Str(..)
+		| Expr::Ident(..)
+		| Expr::Source { .. } => false,
 	}
 }
 

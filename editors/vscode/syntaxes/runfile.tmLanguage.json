@@ -10,6 +10,9 @@
 			"include": "#property"
 		},
 		{
+			"include": "#structured-block"
+		},
+		{
 			"include": "#exec-block-shell"
 		},
 		{
@@ -395,6 +398,42 @@
 				},
 				{
 					"include": "#expression"
+				}
+			]
+		},
+		"structured-block": {
+			"$comment": "`json \u2026 end`: the body is JSON, so it is coloured as JSON. Closes on an `end` at the opener's own indentation, the same `\\1` backreference the exec rules use. A second format is one more word in the alternation and one more embedded scope.",
+			"begin": "^(\\s*)(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*(json)[ \\t]*$",
+			"beginCaptures": {
+				"2": {
+					"name": "keyword.other.let.run"
+				},
+				"3": {
+					"name": "variable.other.definition.run"
+				},
+				"4": {
+					"name": "variable.other.run"
+				},
+				"5": {
+					"name": "keyword.operator.run"
+				},
+				"6": {
+					"name": "keyword.control.structured.run"
+				}
+			},
+			"end": "^\\1(end)\\b",
+			"endCaptures": {
+				"1": {
+					"name": "keyword.control.structured.run"
+				}
+			},
+			"contentName": "meta.embedded.block.json",
+			"patterns": [
+				{
+					"include": "#interpolation"
+				},
+				{
+					"include": "source.json"
 				}
 			]
 		}

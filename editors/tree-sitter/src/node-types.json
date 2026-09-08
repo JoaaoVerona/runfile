@@ -137,6 +137,10 @@
             "named": true
           },
           {
+            "type": "structured",
+            "named": true
+          },
+          {
             "type": "unary_expression",
             "named": true
           }
@@ -949,6 +953,10 @@
           },
           {
             "type": "string",
+            "named": true
+          },
+          {
+            "type": "structured",
             "named": true
           },
           {
@@ -1795,6 +1803,32 @@
     "fields": {}
   },
   {
+    "type": "structured",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "exec_body",
+            "named": true
+          }
+        ]
+      },
+      "format": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "structured_format",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "unary_expression",
     "named": true,
     "fields": {},
@@ -2056,6 +2090,10 @@
   {
     "type": "run",
     "named": false
+  },
+  {
+    "type": "structured_format",
+    "named": true
   },
   {
     "type": "target",

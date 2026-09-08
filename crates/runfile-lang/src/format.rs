@@ -292,13 +292,12 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 		}
 	};
 
-	// A capture with a body opens a block whose contents are opaque.
+	// A capture or a structured block opens a body that is opaque.
 	if let Some(rest) = text.split(" = ").nth(1)
-		&& let Some(cmd) = rest.strip_prefix("exec ")
+		&& (rest.strip_prefix("exec ").is_some() || crate::Structured::from_keyword(rest).is_some())
 	{
 		let d = o.depth();
-		let head = text[..text.len() - rest.len()].to_string();
-		o.push(d, &format!("{head}exec {}", cmd.trim()), Kind::Open);
+		o.push(d, &text, Kind::Open);
 		return Ok(exec_body(raw, i + 1, raw[i], d, o));
 	}
 
@@ -389,6 +388,10 @@ fn condition(text: &str, no: usize) -> Result<String, ParseError> {
 fn rhs(text: &str, no: usize) -> Result<String, ParseError> {
 	if let Some(cmd) = text.strip_prefix("$ ") {
 		return Ok(format!("$ {}", cmd.trim()));
+	}
+	// `json` and friends open a block whose body is not ours to touch.
+	if crate::Structured::from_keyword(text).is_some() {
+		return Ok(text.to_string());
 	}
 	// `code_of($ cmd)` wraps shell text, which is not ours to respace either.
 	if let Some(inner) = text.strip_prefix("code_of(").and_then(|r| r.strip_suffix(')')) {

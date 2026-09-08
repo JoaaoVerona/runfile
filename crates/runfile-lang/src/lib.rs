@@ -13,6 +13,7 @@ pub mod functions;
 pub mod lexer;
 pub mod parser;
 pub mod span;
+pub mod structured;
 pub mod value;
 
 pub use ast::{Block, Expr, InterpPart, Property, SourceKind, Statement, Target};
@@ -58,6 +59,7 @@ fn strip_between(text: &mut String, open: &str, close: char) {
 	}
 }
 pub use span::Span;
+pub use structured::Structured;
 pub use value::{TypeError, Value};
 
 #[cfg(test)]

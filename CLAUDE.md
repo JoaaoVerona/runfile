@@ -47,6 +47,7 @@ Line-oriented. Every line is one of:
 | `.name = value` | A property. |
 | `$ <line>` | Hand this line to a shell. |
 | `exec <cmd>` … `end` | Run `<cmd>`, with the block's body as its stdin. |
+| `json` … `end` | A block of structured text, as one value of that format. |
 | `let x = expr`, `x = expr` | Bind and rebind. |
 | `if` / `else` / `end`, `for x in …`, `match` / `case` / `default`, `retry n [every s]` | Control flow. |
 | `run <target> [args]` | Dispatch another target, in-process. |
@@ -95,6 +96,23 @@ interpolation sites in the corpus, 48 would have been unsafe under manual quotin
 
 Quotes inside `{{ }}` need no escaping — an interpolation is opaque to the string containing it. `.confirm =
 "Greet {{ ARG.name ? "world" }}?"` is correct as written.
+
+### Structured blocks
+
+`json … end` is a block of JSON in value position. **An interpolation inside renders as one value of the
+format** — a string quoted and escaped, a whole number written whole, a list as an array — which is the shell
+rule one layer up, and the reason the block is worth having rather than a multi-line string: `"{{ x }}"` is as
+wrong here as it is in a `$` line. It is validated at **parse** time with each interpolation replaced by a
+quoted-string placeholder (valid as a key *and* as a value, which a bare `null` is not), so a missing brace
+underlines in the editor and the values cannot change the shape; and again after rendering, since shipping a
+malformed document is the failure worth paying a parse for.
+
+`structured.rs` holds one enum: a format answers what its keyword is, how a value is written, what stands in
+while checking, whether a document is well-formed, and what an editor should highlight the body as. Adding
+YAML or TOML is a variant and those arms, plus a word in the tree-sitter scanner's format list and one
+alternation in the TextMate rule. `create-buckets.run` was the case for it — 674 characters with 54 `\"` —
+and converting it found the escaping had been hiding a bug: `run` arguments are values, so a `"…"` word keeps
+its quotes, and the AWS CLI was being handed a JSON *string* where an object was required.
 
 ### `retry`
 

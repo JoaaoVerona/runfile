@@ -33,6 +33,7 @@ module.exports = grammar({
 		$._capture_exec_keyword,
 		$.exec_content,
 		$.run_word,
+		$._structured_keyword,
 	],
 
 	word: ($) => $.identifier,
@@ -102,7 +103,7 @@ module.exports = grammar({
 		// ---- statements
 
 		let_statement: ($) =>
-			seq("let", field("name", $.identifier), "=", field("value", choice($.code_of, $.capture, $._expression)), $._newline),
+			seq("let", field("name", $.identifier), "=", field("value", choice($.code_of, $.structured, $.capture, $._expression)), $._newline),
 
 		// The one call a capture may sit inside: `code_of($ cmd)` is the
 		// command's exit status rather than what it printed. Its shell text
@@ -115,7 +116,19 @@ module.exports = grammar({
 		_code_of_content: () => token.immediate(prec(-1, /([^{)\\\r\n]|\\[^\r\n])+/)),
 
 		assignment: ($) =>
-			seq(field("name", $.identifier), "=", field("value", choice($.code_of, $.capture, $._expression)), $._newline),
+			seq(field("name", $.identifier), "=", field("value", choice($.code_of, $.structured, $.capture, $._expression)), $._newline),
+
+		// `json … end`: a block of structured text, as one value of that format.
+		// Its body closes on an `end` at the opener's indentation, like every
+		// other body here, so the scanner needs nothing new. Adding YAML or
+		// TOML later is one more word in `structured_format`.
+		structured: ($) =>
+			seq(
+				field("format", alias($._structured_keyword, $.structured_format)),
+				$._newline,
+				optional(field("body", $.exec_body)),
+				"end",
+			),
 
 		// `$` or `exec` in value position: what the command prints.
 		capture: ($) => choice($.shell_capture, $.exec_capture),

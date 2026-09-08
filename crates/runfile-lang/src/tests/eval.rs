@@ -715,3 +715,65 @@ fn retry_parses_its_count_its_delay_and_its_else() {
 			.contains("needs a number")
 	);
 }
+
+#[test]
+fn a_json_block_writes_each_value_as_json() {
+	// The point is the escaping, not the layout: an interpolation renders as
+	// one JSON value, the same way it renders as one shell word in a `$` line.
+	let mut s = sc();
+	s.vars
+		.insert("who".into(), Value::Str("it's \"quoted\"\nand long".into()));
+	s.vars.insert("port".into(), Value::Num(4003.0));
+	s.vars.insert("ratio".into(), Value::Num(1.5));
+	s.vars.insert("on".into(), Value::Bool(true));
+	s.vars.insert(
+		"tags".into(),
+		Value::List(vec![Value::Str("a".into()), Value::Num(2.0)]),
+	);
+
+	let src = "let d = json\n\t{\n\t  \"who\": {{ who }},\n\t  \"port\": {{ port }},\n\t  \"ratio\": {{ ratio }},\n\t  \"on\": {{ on }},\n\t  \"tags\": {{ tags }}\n\t}\nend\n";
+	let t = crate::parse(src).unwrap();
+	let crate::Statement::Let { value, .. } = &t.body.statements[0] else {
+		panic!()
+	};
+	let out = eval(value, &mut s).unwrap();
+	let Value::Str(text) = out else { panic!("{out:?}") };
+
+	// Whatever it looks like, it parses, which is the guarantee.
+	let doc: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+	assert_eq!(doc["who"], "it's \"quoted\"\nand long", "quotes and newlines escaped");
+	assert_eq!(doc["port"], 4003, "a whole number is written whole, not 4003.0");
+	assert_eq!(doc["ratio"], 1.5);
+	assert_eq!(doc["on"], true);
+	assert_eq!(doc["tags"][0], "a");
+	assert_eq!(doc["tags"][1], 2);
+}
+
+#[test]
+fn a_json_block_that_is_not_json_is_a_parse_error() {
+	// Caught while the file is read, so an editor underlines it -- and without
+	// knowing any of the values, since they cannot change the shape.
+	for (src, want) in [
+		("let d = json\n\t{ \"a\": 1\nend\n", "not valid json"),
+		("let d = json\n\t{ \"a\": 1, }\nend\n", "trailing comma"),
+		("let d = json\n\t{ \"a\": }\nend\n", "expected value"),
+	] {
+		let e = crate::parse(src).unwrap_err().to_string();
+		assert!(e.contains(want), "{src:?}: wanted {want:?}, got {e}");
+	}
+}
+
+#[test]
+fn an_interpolation_may_be_a_key_and_is_checked_as_a_string() {
+	// The placeholder has to be valid wherever an interpolation may stand. A
+	// bare `null` is not a legal object key; a quoted string is.
+	crate::parse("let d = json\n\t{ {{ k }}: 1 }\nend\n").expect("a key interpolates");
+	crate::parse("let d = json\n\t[{{ a }}, {{ b }}]\nend\n").expect("and so do array items");
+}
+
+#[test]
+fn a_json_block_is_a_value_and_not_a_statement() {
+	// It computes something; a line that only computes is a mistake.
+	let e = crate::parse("json\n\t{}\nend\n").unwrap_err().to_string();
+	assert!(!e.is_empty(), "{e}");
+}

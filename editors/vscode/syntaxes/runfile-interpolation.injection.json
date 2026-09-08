@@ -1,7 +1,7 @@
 {
-	"$comment": "An interpolation is the language's, wherever it lands. Inside an embedded shell region the shell grammar's own rules start earlier on the line and swallow it -- a command statement covers its arguments, a quoted string covers its contents -- and a pattern listed beside them cannot win, because TextMate takes the earliest match and not the first-listed one. An injection is the mechanism for exactly this: `L:` puts it ahead of the host grammar's patterns at every position.",
+	"$comment": "An interpolation is the language's, wherever it lands. Inside an embedded shell region the shell grammar's own rules start earlier on the line and swallow it -- a command statement covers its arguments, a quoted string covers its contents, a JSON object covers its braces -- and a pattern listed beside them cannot win, because TextMate takes the earliest match and not the first-listed one. An injection is the mechanism for exactly this: `L:` puts it ahead of the host grammar's patterns at every position.",
 	"scopeName": "runfile.injection.interpolation",
-	"injectionSelector": "L:meta.embedded.line.shell, L:meta.embedded.block.shell",
+	"injectionSelector": "L:meta.embedded.line.shell, L:meta.embedded.block.shell, L:meta.embedded.block.json",
 	"patterns": [
 		{
 			"include": "source.run#interpolation"

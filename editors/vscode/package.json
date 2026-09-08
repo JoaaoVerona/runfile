@@ -229,7 +229,8 @@
 				"path": "./syntaxes/runfile.tmLanguage.json",
 				"embeddedLanguages": {
 					"meta.embedded.line.shell": "shellscript",
-					"meta.embedded.block.shell": "shellscript"
+					"meta.embedded.block.shell": "shellscript",
+					"meta.embedded.block.json": "json"
 				}
 			},
 			{
