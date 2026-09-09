@@ -2017,7 +2017,13 @@ fn a_profile_hook_names_the_binary_rather_than_trusting_the_path() {
 	let rc = std::fs::read_to_string(p.home.path().join(".zshrc")).unwrap();
 	assert!(rc.contains("# runfile completions"), "{rc}");
 	assert!(rc.contains(":completions output zsh"), "{rc}");
-	assert!(rc.contains('/'), "the hook names a path, not a bare `run`: {rc}");
+	// Normalized: the path is written with the platform's own separator, and
+	// Windows' is `\`. `/run` rather than a bare separator, so the assertion
+	// is about the binary being named and not merely about some path appearing.
+	assert!(
+		rc.replace('\\', "/").contains("/run"),
+		"the hook names the binary, not a bare `run`: {rc}"
+	);
 }
 
 #[test]

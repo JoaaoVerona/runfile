@@ -107,6 +107,69 @@ fn is_shell(program: &Path) -> bool {
 	)
 }
 
+/// Keeps this process's own standard handles out of a detached child.
+///
+/// `Stdio::null()` says what a child *uses*, not what it *holds*. Windows
+/// spawns with `bInheritHandles: TRUE`, so every inheritable handle here is
+/// duplicated into the child -- including the pipes our own stdout and stderr
+/// were handed on. A detached command then holds them open after the run is
+/// over, and whoever is reading them waits for exactly the command that was
+/// meant to outlive it: `.detach` returned at once and the caller still sat
+/// there for the full thirty seconds.
+///
+/// Unix needs none of this: everything but the three descriptors a child is
+/// given is close-on-exec.
+///
+/// Clearing the flag is safe for the children spawned meanwhile, `.parallel`
+/// included, because `Stdio::inherit()` does not rely on it -- the standard
+/// library duplicates the handle it passes with `bInheritHandle` set, whatever
+/// the original says. It is restored on drop all the same.
+#[cfg(windows)]
+struct KeepHandles([(windows_sys::Win32::Foundation::HANDLE, u32); 3]);
+
+#[cfg(windows)]
+impl KeepHandles {
+	fn clear() -> Self {
+		use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation};
+		use windows_sys::Win32::System::Console::{
+			GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+		};
+		let mut saved = [(std::ptr::null_mut(), 0u32); 3];
+		for (slot, id) in saved
+			.iter_mut()
+			.zip([STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE])
+		{
+			// SAFETY: `GetStdHandle` answers with a handle this process owns or
+			// with null, and both calls only read or set one flag on it.
+			unsafe {
+				let h = GetStdHandle(id);
+				let mut flags = 0u32;
+				// A handle we cannot ask about is one we must not change: a
+				// redirected-to-nothing stream has none to restore.
+				if !h.is_null() && GetHandleInformation(h, &mut flags) != 0 {
+					SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+					*slot = (h, flags & HANDLE_FLAG_INHERIT);
+				}
+			}
+		}
+		Self(saved)
+	}
+}
+
+#[cfg(windows)]
+impl Drop for KeepHandles {
+	fn drop(&mut self) {
+		use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+		for (h, flag) in self.0 {
+			if !h.is_null() {
+				// SAFETY: the handle came from `GetStdHandle` above and is put
+				// back exactly as it was found.
+				unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, flag) };
+			}
+		}
+	}
+}
+
 /// Run, and report the exit status rather than failing on it.
 ///
 /// A command that exits non-zero is an *answer* here, not a failure -- that is
@@ -185,6 +248,9 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		c.stdout(Stdio::piped());
 		c.stderr(Stdio::piped());
 	}
+	// Held across the spawn only: see `KeepHandles`.
+	#[cfg(windows)]
+	let _keep = s.detach.then(KeepHandles::clear);
 	let mut child = c.spawn().map_err(|e| ExecError::Spawn {
 		cmd: label.clone(),
 		source: e,

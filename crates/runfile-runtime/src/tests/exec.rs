@@ -275,28 +275,35 @@ fn a_bare_code_of_runs_the_command_and_ignores_how_it_went() {
 fn the_shell_property_decides_what_runs_a_line() {
 	// It was parsed, stored, documented and offered in completion, and read by
 	// nothing: `.shell = "sh"` ran under bash and said nothing about it.
+	//
+	// Asked as `$0` -- the name the runner launched -- rather than by looking
+	// for `BASH_VERSION`, which asks a different question and cannot answer
+	// this one at all on macOS, where `/bin/sh` *is* bash and sets it. What
+	// the property promises is which program is started, and `$0` is that
+	// program's own name for itself, whatever binary happens to be behind it.
 	let d = Recorder::default();
-	let trace = run_src(".shell = \"sh\"\n$ test -z \"$BASH_VERSION\"\n", &d);
-	assert!(trace.is_ok(), "sh has no BASH_VERSION: {trace:?}");
+	let trace = run_src(".shell = \"sh\"\n$ test \"${0##*/}\" = sh\n", &d);
+	assert!(trace.is_ok(), "`.shell = \"sh\"` did not start sh: {trace:?}");
 
 	let d = Recorder::default();
 	assert!(
-		run_src(".shell = \"bash\"\n$ test -n \"$BASH_VERSION\"\n", &d).is_ok(),
-		"and bash does"
+		run_src(".shell = \"bash\"\n$ test \"${0##*/}\" = bash\n", &d).is_ok(),
+		"nor `.shell = \"bash\"` bash"
 	);
 }
 
 #[test]
 fn a_capture_condition_uses_the_same_shell_as_a_line() {
 	// `if $ cmd` is a `$` line asked a question; it must not quietly be a
-	// different shell from the lines around it.
+	// different shell from the lines around it. `$0` for the same reason as
+	// the test above.
 	let d = Recorder::default();
 	run_src(
-		".shell = \"sh\"\nif $ test -z \"$BASH_VERSION\"\n\trun sh\nelse\n\trun bash\nend\n",
+		".shell = \"sh\"\nif $ test \"${0##*/}\" = sh\n\trun same\nelse\n\trun other\nend\n",
 		&d,
 	)
 	.unwrap();
-	assert_eq!(d.calls(), vec!["sh"]);
+	assert_eq!(d.calls(), vec!["same"]);
 }
 
 #[test]

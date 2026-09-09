@@ -419,7 +419,14 @@ second time as the global. This replaced `includes` entirely.
   the run that started it is over.
 - **`.detach`** starts the commands and does not wait. Its streams go to null: inherited, they would hold the
   runner's own stdout and stderr open after it exits, so whoever is reading them waits for the very command
-  that was meant to outlive the run.
+  that was meant to outlive the run. **On Windows that is not enough** -- `Stdio::null()` says what a child
+  *uses*, not what it *holds*, and `CreateProcessW` is called with `bInheritHandles: TRUE`, so every
+  inheritable handle in the runner is duplicated into the child anyway, the pipes its own stdout and stderr
+  arrived on included. `exec::KeepHandles` clears `HANDLE_FLAG_INHERIT` on the three standard handles across a
+  detached spawn and restores it after. Safe for whatever else is spawning at the time, `.parallel` included,
+  because `Stdio::inherit()` does not depend on that flag: the standard library duplicates the handle it passes
+  with `bInheritHandle` set regardless. Unix needs none of it -- everything but the three descriptors a child
+  is handed is close-on-exec.
 - **`.parallel` on a `for` body fans out the iterations**, not just each body's statements. Leaves are
   collected across every iteration first, so they form one batch. Without that the property read as
   "parallel" and behaved as "in turn".
