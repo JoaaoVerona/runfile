@@ -42,7 +42,13 @@ fn every_branch_completes_even_when_one_fails() {
 	let f = std::env::temp_dir().join("runfile-parallel-completion");
 	let _ = std::fs::remove_file(&f);
 	let d = Recorder::default();
-	let src = format!(".parallel\n$ false\n\nlet a = 1\n$ touch {}\n", f.display());
+	// Forward slashes, because this goes into a *shell* line and a backslash
+	// is an escape there: on Windows `touch C:\Users\…` makes one file with
+	// the separators eaten out of its name. The language does not have this
+	// problem -- `{{ p }}` quotes what it interpolates -- but this builds the
+	// shell text by hand, so it has to do the quoting by hand too.
+	let path = f.display().to_string().replace('\\', "/");
+	let src = format!(".parallel\n$ false\n\nlet a = 1\n$ touch {path}\n");
 	let e = run_src(&src, &d).unwrap_err();
 	assert!(e.to_string().contains("status 1"), "the failure still surfaces: {e}");
 	assert!(f.exists(), "the sibling branch ran to completion anyway");

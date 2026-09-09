@@ -107,6 +107,60 @@ fn is_shell(program: &Path) -> bool {
 	)
 }
 
+/// Hand a shell its script as the argument after `-c`.
+///
+/// Its own function because Windows needs one script quoted that the standard
+/// library leaves bare; everything else takes the path it always took.
+fn push_script(c: &mut Command, body: &str) {
+	#[cfg(windows)]
+	if body.contains('\n') && !body.contains([' ', '\t']) {
+		use std::os::windows::process::CommandExt;
+		c.arg("-c").raw_arg(windows_quoted(body));
+		return;
+	}
+	c.arg("-c").arg(body);
+}
+
+/// One Windows command-line argument, quoted.
+///
+/// The standard library quotes an argument that holds a space or a tab, and
+/// nothing else -- a newline does not count. So a block whose every line is a
+/// bare word (`true`, then `false`) reached the command line unquoted, and the
+/// shell's own parser, which does treat a newline as a separator, saw several
+/// arguments and ran only the first: everything below line one was dropped and
+/// a block that should have failed succeeded. A block with a space anywhere in
+/// it -- almost every real one, which is why this went unnoticed -- was quoted
+/// by the standard library and worked, so only the scripts that are already
+/// broken take this path.
+///
+/// The rules are `CommandLineToArgvW`'s, which is what the standard library
+/// implements too: a run of backslashes is doubled only where a quote follows
+/// it or ends the argument.
+#[cfg(any(windows, test))]
+fn windows_quoted(arg: &str) -> String {
+	let mut out = String::with_capacity(arg.len() + 2);
+	out.push('"');
+	let mut backslashes = 0usize;
+	for c in arg.chars() {
+		match c {
+			'\\' => backslashes += 1,
+			'"' => {
+				for _ in 0..=backslashes {
+					out.push('\\');
+				}
+				backslashes = 0;
+			}
+			_ => backslashes = 0,
+		}
+		out.push(c);
+	}
+	for _ in 0..backslashes {
+		out.push('\\');
+	}
+	out.push('"');
+	out
+}
+
 /// Keeps this process's own standard handles out of a detached child.
 ///
 /// `Stdio::null()` says what a child *uses*, not what it *holds*. Windows
@@ -223,7 +277,7 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		// terminal**. Handing the script over on stdin instead left every
 		// interactive command inside it -- `ssh`, `vim`, a REPL, anything
 		// asking for a password -- reading a pipe that was already at EOF.
-		c.arg("-c").arg(script.as_deref().unwrap_or(s.body));
+		push_script(&mut c, script.as_deref().unwrap_or(s.body));
 		// Except when detached: a background process must not hold the
 		// terminal's input after the run that started it is over.
 		c.stdin(if s.detach { Stdio::null() } else { Stdio::inherit() });
@@ -448,8 +502,27 @@ fn announce(program: &str, body: &str) {
 
 #[cfg(test)]
 mod tests {
-	use super::is_shell;
+	use super::{is_shell, windows_quoted};
 	use std::path::Path;
+
+	#[test]
+	fn a_script_is_quoted_the_way_windows_reads_one_back() {
+		// `CommandLineToArgvW`'s rules, which the standard library implements
+		// too: a run of backslashes is doubled only where a quote follows it
+		// or ends the argument. Tested on every platform, because the encoding
+		// is a pure question about text and the platform that needs it is the
+		// one this cannot run on.
+		assert_eq!(windows_quoted("true\nfalse"), "\"true\nfalse\"");
+		assert_eq!(windows_quoted(""), "\"\"");
+		// A lone backslash is literal: nothing follows it to escape.
+		assert_eq!(windows_quoted("a\\b"), "\"a\\b\"");
+		// Before a quote it doubles, and the quote itself takes one more.
+		assert_eq!(windows_quoted("a\\\"b"), "\"a\\\\\\\"b\"");
+		assert_eq!(windows_quoted("a\"b"), "\"a\\\"b\"");
+		// And at the end, where the closing quote would otherwise be escaped.
+		assert_eq!(windows_quoted("a\\"), "\"a\\\\\"");
+		assert_eq!(windows_quoted("a\\\\"), "\"a\\\\\\\\\"");
+	}
 
 	#[test]
 	fn a_bash_compatible_shell_is_recognised_as_one() {

@@ -410,6 +410,14 @@ second time as the global. This replaced `includes` entirely.
   announcements can say which one stopped — but only when the block was traced. A block announced whole has
   no single line above to point at, so it is named instead (*"a command in `for f in a b; do …`"*): pointing
   at output that says something else would be worse than saying less.
+- **On Windows that argument has to be quoted by hand when it holds no space.** The standard library quotes
+  an argument containing a space or a tab and nothing else -- a newline does not count -- so a block whose
+  every line is a bare word (`true`, then `false`) reached the command line bare, and the shell's own parser,
+  which *does* treat a newline as a separator, saw several arguments and ran only the first. Everything below
+  line one was dropped and a block that should have failed succeeded. `exec::windows_quoted` applies
+  `CommandLineToArgvW`'s rules, and only where the standard library would leave the script bare: a block with
+  a space anywhere in it -- almost every real one, which is why this went unseen -- was already quoted and
+  keeps the path it had.
 - **A shell gets its script as an argument (`-c`), so stdin stays the terminal.** Handed over on stdin
   instead — which is how `exec <command>` works, and how this did — every interactive command inside it read
   a pipe the runner had already written and closed: `ssh` announced *"Pseudo-terminal will not be
