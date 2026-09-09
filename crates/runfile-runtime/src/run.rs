@@ -19,6 +19,16 @@ pub enum RunError {
 	Env(#[from] crate::env::EnvError),
 	#[error("line {line}: `for` needs a list, got {actual}")]
 	ForNeedsList { actual: &'static str, line: usize },
+	/// A `--flag` or `--key=value` the target never reads. Exact rather than a
+	/// guess, because what a target reads is walked from its tree, so this can
+	/// refuse rather than warn.
+	#[error("{}", unknown_input(name, key, target, reads))]
+	UnknownInput {
+		name: String,
+		key: String,
+		target: String,
+		reads: Box<runfile_lang::Inputs>,
+	},
 	#[error("line {line}: no case matched `{subject}`; valid cases: {cases}")]
 	NoCase {
 		subject: String,
@@ -37,6 +47,29 @@ pub enum RunError {
 	Host(Box<dyn std::error::Error + Send + Sync>),
 }
 
+/// What to say about an input a target does not read.
+///
+/// One line, because everything the runner says while a target runs carries
+/// the `[runfile]` prefix and a continuation line would not. Written with
+/// `push_str` rather than one long literal, so rustfmt cannot fold a line
+/// continuation into the message itself -- which it did, twice, leaving tabs
+/// in the middle of a sentence.
+fn unknown_input(name: &str, key: &str, target: &str, reads: &runfile_lang::Inputs) -> String {
+	let mut out = format!("`{name}` was passed to `{target}`, which never reads `FLAG.{key}` or `ARG.{key}`; ");
+	// A target reading `ARGS` is exactly the case where `--` is the answer:
+	// the value was meant for the command it wraps, not for the target.
+	if reads.positional {
+		out.push_str(&format!(
+			"`{target}` passes its positional arguments through, so `{name}` needs a `--` before it: run {target} -- {name} …"
+		));
+	} else if reads.args.is_empty() && reads.flags.is_empty() {
+		out.push_str(&format!("`{target}` reads no arguments or flags at all"));
+	} else {
+		out.push_str(&format!("run `run {target} --help` to see what it does read"));
+	}
+	out
+}
+
 impl RunError {
 	/// The status `exit(code)` asked for, if this is that rather than a
 	/// failure. `.ignore-errors` consults it: a target may shrug off a command
@@ -46,6 +79,29 @@ impl RunError {
 			RunError::Eval(EvalError::Exit { code, .. }) => Some(*code),
 			_ => None,
 		}
+	}
+
+	/// Whether this is an instruction to stop rather than a failure. A target
+	/// may shrug off a command that failed; it does not get to shrug off
+	/// `exit()`, or someone answering no to `confirm()`.
+	pub fn is_stop(&self) -> bool {
+		matches!(
+			self,
+			RunError::Eval(EvalError::Exit { .. } | EvalError::Cancelled { .. }) | RunError::Cancelled
+		)
+	}
+
+	/// Whether a *person* stopped the run, rather than a target reporting how
+	/// it went: Ctrl+C, or someone answering no to a `.confirm`.
+	///
+	/// `code_of(run …)` scores every other outcome, `exit(3)` included -- that
+	/// number is what it was asked for. Someone who declined has not asked the
+	/// caller to carry on regardless and write down a 1.
+	pub fn is_refusal(&self) -> bool {
+		matches!(
+			self,
+			RunError::Eval(EvalError::Cancelled { .. }) | RunError::Cancelled | RunError::Interrupted
+		)
 	}
 }
 
@@ -111,10 +167,6 @@ pub struct Runner<'a> {
 	/// resolves against it.
 	pub anchor: PathBuf,
 	pub dispatch: &'a dyn Dispatch,
-	pub assume_yes: bool,
-	/// Asked when a target declares `.confirm`. `None` means never prompt,
-	/// which is what CI detection and `-y` reduce to.
-	pub prompt: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
 	/// Whether the run has been interrupted. Injected rather than read from a
 	/// global so the runtime reaches for no process state of its own, and so a
 	/// test can interrupt one run without touching another.
@@ -146,25 +198,8 @@ pub fn run_target_with(target: &Target, base: Props, r: &mut Runner<'_>) -> Resu
 	let props = base.extend(&target.body, &mut r.scope, false)?;
 
 	// Env before the body: `.env-file` has to be readable by `{{ ENV.x }}`.
-	let workdir = cwd(&props, &r.anchor);
-	// The same deferred pool the `decrypt` function uses, so an encrypted
-	// `.env-file` value resolves -- and an unencrypted one still never touches
-	// the credential store.
-	let keys = crate::env::Provider(r.scope.private_keys.clone());
-	let built = crate::env::build(&props, &r.anchor, &workdir, Some(&keys))?;
-	r.scope.env = built.clone();
-	r.env = built.into_iter().collect();
-	r.env.sort();
+	build_env(&props, r)?;
 
-	// After the env exists, so the message can interpolate, and after argument
-	// validation, so nobody confirms and is then asked for a missing argument.
-	if let Some(msg) = props.confirm.clone() {
-		let allowed = r.assume_yes || r.prompt.map(|p| p(&msg)).unwrap_or(false);
-		if !allowed {
-			r.trace.push(format!("confirm: {msg}"));
-			return Err(RunError::Cancelled);
-		}
-	}
 	walk(&target.body, &props, r)
 }
 
@@ -181,7 +216,7 @@ fn walk(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError
 			return Err(RunError::Interrupted);
 		}
 		if let Err(e) = statement(st, props, r)
-			&& (!props.ignore_errors || e.exit_code().is_some())
+			&& (!props.ignore_errors || e.is_stop())
 		{
 			return Err(e);
 		}
@@ -207,6 +242,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			value_of(expr, props, r)?;
 			Ok(())
 		}
+		Statement::Do { body, .. } => nested(body, props, r),
 		Statement::If {
 			cond,
 			then,
@@ -243,26 +279,10 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			let mut inner = props.extend(body, &mut r.scope, true)?;
 			inner.ignore_errors = false;
 
-			let mut last = None;
-			for attempt in 0..n {
-				if r.interrupted.is_some_and(|f| f()) {
-					return Err(RunError::Interrupted);
-				}
-				match walk(body, &inner, r) {
-					Ok(()) => {
-						last = None;
-						break;
-					}
-					// `exit` is an instruction to stop, not a failure to retry.
-					Err(e) if e.exit_code().is_some() => return Err(e),
-					Err(e) => {
-						last = Some(e);
-						if attempt + 1 < n && secs > 0.0 && !r.dry_run {
-							std::thread::sleep(std::time::Duration::from_secs_f64(secs));
-						}
-					}
-				}
-			}
+			// The `else` runs outside the body's environment: it is what to do
+			// when the block never worked, not part of it.
+			let last = with_block_env(props, &inner, r, |r| retry_attempts(body, &inner, n, secs, r))?;
+
 			match (last, otherwise) {
 				(None, _) => Ok(()),
 				(Some(_), Some(b)) => nested(b, props, r),
@@ -270,7 +290,9 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			}
 		}
 		Statement::For { name, iter, body, span } => {
-			let it = eval_boundary(iter, &mut r.scope)?;
+			// Through `value_of`, so `for f in lines($ git ls-files)` can run
+			// its command -- the pure evaluator has no process to run it in.
+			let it = value_of(iter, props, r)?;
 			let items = match it {
 				Value::List(v) => v,
 				other => {
@@ -282,29 +304,11 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			};
 			let prior = r.scope.vars.remove(name);
 			let inner = props.extend(body, &mut r.scope, true)?;
-			// `.parallel` on a loop body means the *iterations* are the
-			// branches, not just each body's own statements. Collecting across
-			// every iteration first is what makes them one batch.
-			if inner.parallel {
-				let mut leaves = Vec::new();
-				for item in items {
-					r.scope.bind(name, item);
-					collect(body, &inner, r, &mut leaves)?;
-				}
-				r.scope.restore(name, prior);
-				return run_leaves(leaves, &inner, r);
-			}
-			for item in items {
-				r.scope.bind(name, item);
-				if let Err(e) = walk(body, &inner, r)
-					&& (!inner.ignore_errors || e.exit_code().is_some())
-				{
-					r.scope.restore(name, prior);
-					return Err(e);
-				}
-			}
+			let out = with_block_env(props, &inner, r, |r| {
+				for_body(name, items, body, &inner, prior.clone(), r)
+			});
 			r.scope.restore(name, prior);
-			Ok(())
+			out
 		}
 		Statement::Match {
 			subject,
@@ -355,9 +359,117 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 }
 
 /// A nested block layers its own properties over the enclosing ones.
+/// Build the environment these properties describe, into the runner and into
+/// the scope -- the second is what lets `{{ ENV.x }}` read what a `.env-file`
+/// brought in.
+fn build_env(props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
+	let workdir = cwd(props, &r.anchor);
+	// The same deferred pool the `decrypt` function uses, so an encrypted
+	// `.env-file` value resolves -- and an unencrypted one still never touches
+	// the credential store.
+	let keys = crate::env::Provider(r.scope.private_keys.clone());
+	let built = crate::env::build(props, &r.anchor, &workdir, Some(&keys))?;
+	r.scope.env = built.clone();
+	r.env = built.into_iter().collect();
+	r.env.sort();
+	Ok(())
+}
+
+/// Run `f` with the environment `inner` describes, putting back the one that
+/// was there when it returns.
+///
+/// `.env-file` and `.add-path` are block-scoped, and both append -- so a block
+/// that named one has a longer list than the block around it, which is how
+/// this tells. Rebuilt only then: reading and decrypting the files again for
+/// every `if` would be work nothing asked for. Restoring afterwards is what
+/// keeps a loop from carrying one iteration's files into the next, and is why
+/// every block form has to come through here rather than calling `walk`.
+fn with_block_env<T>(
+	props: &Props,
+	inner: &Props,
+	r: &mut Runner<'_>,
+	f: impl FnOnce(&mut Runner<'_>) -> Result<T, RunError>,
+) -> Result<T, RunError> {
+	if inner.env_files.len() == props.env_files.len() && inner.add_paths.len() == props.add_paths.len() {
+		return f(r);
+	}
+	let saved_env = std::mem::take(&mut r.env);
+	let saved_scope_env = std::mem::take(&mut r.scope.env);
+	let out = build_env(inner, r).and_then(|()| f(r));
+	r.env = saved_env;
+	r.scope.env = saved_scope_env;
+	out
+}
+
+/// The attempts of a `retry`. `Ok(None)` when one of them succeeded, and
+/// `Ok(Some(e))` when every one failed -- which is the question an `else`
+/// answers.
+fn retry_attempts(
+	body: &Block,
+	inner: &Props,
+	n: u64,
+	secs: f64,
+	r: &mut Runner<'_>,
+) -> Result<Option<RunError>, RunError> {
+	let mut last = None;
+	for attempt in 0..n {
+		if r.interrupted.is_some_and(|f| f()) {
+			return Err(RunError::Interrupted);
+		}
+		match walk(body, inner, r) {
+			Ok(()) => {
+				last = None;
+				break;
+			}
+			// `exit` is an instruction to stop, not a failure to retry.
+			Err(e) if e.is_stop() => return Err(e),
+			Err(e) => {
+				last = Some(e);
+				if attempt + 1 < n && secs > 0.0 && !r.dry_run {
+					std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+				}
+			}
+		}
+	}
+	Ok(last)
+}
+
+/// The iterations of a `for`. The loop variable is restored by the caller,
+/// which also owns the block's environment.
+fn for_body(
+	name: &str,
+	items: Vec<Value>,
+	body: &Block,
+	inner: &Props,
+	prior: Option<Value>,
+	r: &mut Runner<'_>,
+) -> Result<(), RunError> {
+	// `.parallel` on a loop body means the *iterations* are the branches, not
+	// just each body's own statements. Collecting across every iteration first
+	// is what makes them one batch.
+	if inner.parallel {
+		let mut leaves = Vec::new();
+		for item in items {
+			r.scope.bind(name, item);
+			collect(body, inner, r, &mut leaves)?;
+		}
+		r.scope.restore(name, prior);
+		return run_leaves(leaves, inner, r);
+	}
+	for item in items {
+		r.scope.bind(name, item);
+		if let Err(e) = walk(body, inner, r)
+			&& (!inner.ignore_errors || e.is_stop())
+		{
+			return Err(e);
+		}
+	}
+	Ok(())
+}
+
 fn nested(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
 	let inner = props.extend(block, &mut r.scope, true)?;
-	walk(block, &inner, r)
+	with_block_env(props, &inner, r, |r| walk(block, &inner, r))
 }
 
 /// `$`/`exec` in value position runs and yields stdout; anything else is a
@@ -368,6 +480,18 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		&& args.len() == 1
 	{
 		return Ok(Value::Num(f64::from(exit_code(&args[0], props, r)?)));
+	}
+	// A call whose last argument is a `$` run -- `lines($ git ls-files)`. The
+	// capture needs a process to run in, which the pure evaluator has none of,
+	// so it is run here and the call is applied to the value.
+	if let Expr::Call { name, args, span } = e
+		&& matches!(args.last(), Some(Expr::Capture { .. }))
+	{
+		let mut values = Vec::with_capacity(args.len());
+		for a in args {
+			values.push(value_of(a, props, r)?);
+		}
+		return Ok(runfile_lang::functions::call_with(name, values, &mut r.scope, *span)?);
 	}
 	let Expr::Capture { command, body, .. } = e else {
 		return Ok(eval_boundary(e, &mut r.scope)?);
@@ -408,8 +532,18 @@ fn command_for<'a>(cmd: Option<&'a str>, props: &'a Props) -> Option<&'a str> {
 /// what `$ mkdir out` says about why it failed would be the wrong default for
 /// the one form whose whole purpose is to keep going afterwards.
 fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunError> {
+	if let Expr::Dispatch { target, args, .. } = e {
+		return dispatch_code(target, args, r);
+	}
 	let Expr::Capture { command, body, .. } = e else {
-		return Ok(0);
+		// The parser used to guarantee this, back when `code_of` was the only
+		// call a capture could sit inside. Now that any call may hold one,
+		// answering 0 for `code_of("x")` would be a silent wrong number.
+		return Err(RunError::Eval(runfile_lang::eval::EvalError::Other {
+			msg: "`code_of` takes a `$` run or a `run` dispatch, as `code_of($ mkdir out)` or `code_of(run build)`"
+				.into(),
+			line: e.span().line,
+		}));
 	};
 	let (cmd, text) = render(command.as_deref(), body, r)?;
 	let env = merged_env(r, props);
@@ -425,6 +559,33 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 		detach: false,
 		announce: props.logging && !r.dry_run,
 	})?)
+}
+
+/// `code_of(run <target>)`: the status the dispatch would have exited with.
+///
+/// The number is the one `$ run <target>` yields, because dispatching
+/// in-process is meant to stop re-execing the binary, not to mean something
+/// else: a target that calls `exit(3)` is scored 3, and every other failure is
+/// the 1 the CLI reports. The failure is printed the way that re-exec would
+/// have printed it, since this is where it stops -- a status is an answer, so
+/// nothing further up will say what went wrong.
+///
+/// A refusal is not a status and is passed on, which is also what a re-exec
+/// does: Ctrl+C reaches the whole process group.
+fn dispatch_code(target: &[InterpPart], args: &[Vec<InterpPart>], r: &mut Runner<'_>) -> Result<i32, RunError> {
+	let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
+	let a = run_args(args, &mut r.scope)?;
+	match r.dispatch.run(&t, &a, &r.chain, r.label.as_deref()) {
+		Ok(child) => {
+			r.trace.extend(child);
+			Ok(0)
+		}
+		Err(e) if e.is_refusal() => Err(e),
+		Err(e) => Ok(e.exit_code().unwrap_or_else(|| {
+			eprintln!("{} error: {e}", exec::tag());
+			1
+		})),
+	}
 }
 
 /// A condition, which may be a `$` run: `if $ cmd` is true when it succeeds.
@@ -467,6 +628,16 @@ fn run_args(words: &[Vec<InterpPart>], sc: &mut Scope) -> Result<Vec<String>, Ru
 	Ok(out)
 }
 
+/// Interpolate an `exec`'s command line and its body.
+///
+/// The command line is always shell-quoted: it is split into arguments, so a
+/// value with a space in it has to stay one. **The body is quoted only when
+/// the command is a shell.** Anybody else's body is their language, and shell
+/// quoting is the wrong quoting for it -- `'it'\''s'` is not Python, a list
+/// flattens to bare words, and a path comes through unquoted because nothing
+/// in it needed quoting. Left alone, a value arrives as itself and the author
+/// quotes it the way that language wants, which is the only thing that can be
+/// right for every language.
 fn render(
 	command: Option<&[InterpPart]>,
 	body: &[Vec<InterpPart>],
@@ -476,9 +647,14 @@ fn render(
 		Some(c) => Some(interpolate_shell(c, &mut r.scope)?),
 		None => None,
 	};
+	let shell = exec::body_is_shell(cmd.as_deref());
 	let mut lines = Vec::with_capacity(body.len());
 	for l in body {
-		lines.push(interpolate_shell(l, &mut r.scope)?);
+		lines.push(if shell {
+			interpolate_shell(l, &mut r.scope)?
+		} else {
+			runfile_lang::eval::interpolate_plain(l, &mut r.scope)?
+		});
 	}
 	Ok((cmd, lines.join("\n")))
 }
@@ -540,6 +716,7 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 				out.push(Leaf::Run { target: t, args: a });
 			}
 			// Control flow is expanded here so its leaves join the same batch.
+			Statement::Do { body, .. } => collect(body, props, r, out)?,
 			Statement::If {
 				cond,
 				then,
@@ -693,7 +870,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 	// Every branch runs to completion before a failure surfaces -- stopping the
 	// others would leave a half-started fan-out behind.
 	match first_error {
-		Some(e) if !props.ignore_errors || e.exit_code().is_some() => Err(e),
+		Some(e) if !props.ignore_errors || e.is_stop() => Err(e),
 		_ => Ok(()),
 	}
 }

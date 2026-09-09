@@ -181,10 +181,15 @@ fn list_shows_descriptions_and_groups_subprojects() {
 }
 
 #[test]
-fn a_hidden_target_is_absent_from_list_but_still_runnable() {
-	let p = project(&[("runfiles/helper.run", ".hide\n$ printf hi > out.txt\n")]);
+fn a_leading_underscore_hides_a_target_without_disabling_it() {
+	// The file name is the whole of it: there is no property to disagree with.
+	let p = project(&[("runfiles/_helper.run", "# A helper.\n$ printf hi > out.txt\n")]);
 	assert!(!out(&p.run(&[":list"])).contains("helper"));
-	assert!(p.run(&["helper"]).status.success(), "hiding is not disabling");
+	assert!(p.run(&["_helper"]).status.success(), "hiding is not disabling");
+	assert!(
+		!out(&p.run(&[":list", "--names"])).contains("_helper"),
+		"nor offered in completion"
+	);
 }
 
 #[test]
@@ -290,7 +295,10 @@ fn skip_prepare_bypasses_the_gate() {
 #[test]
 fn confirm_cancels_when_stdin_is_not_a_terminal() {
 	// A test harness has no terminal, so an unconsented target must not run.
-	let p = project(&[("runfiles/risky.run", ".confirm = \"proceed?\"\n$ printf x > out.txt\n")]);
+	let p = project(&[(
+		"runfiles/risky.run",
+		"# Risky.\nconfirm(\"proceed?\")\n$ printf x > out.txt\n",
+	)]);
 	let o = p.run(&["risky"]);
 	assert!(!o.status.success());
 	assert!(!p.dir.path().join("out.txt").exists());
@@ -298,14 +306,17 @@ fn confirm_cancels_when_stdin_is_not_a_terminal() {
 
 #[test]
 fn yes_skips_the_confirmation() {
-	let p = project(&[("runfiles/risky.run", ".confirm = \"proceed?\"\n$ printf x > out.txt\n")]);
+	let p = project(&[(
+		"runfiles/risky.run",
+		"# Risky.\nconfirm(\"proceed?\")\n$ printf x > out.txt\n",
+	)]);
 	assert!(p.run(&["-y", "risky"]).status.success());
 	assert!(p.dir.path().join("out.txt").exists());
 }
 
 #[test]
 fn ci_is_treated_as_consent() {
-	let p = project(&[("runfiles/risky.run", ".confirm = \"proceed?\"\n$ true\n")]);
+	let p = project(&[("runfiles/risky.run", "# Risky.\nconfirm(\"proceed?\")\n$ true\n")]);
 	let o = Command::new(env!("CARGO_BIN_EXE_run"))
 		.args(["risky"])
 		.current_dir(p.dir.path())
@@ -522,7 +533,7 @@ fn list_names_prints_one_bare_name_per_line() {
 	let p = project(&[
 		("runfiles/a.run", "# A\n$ true\n"),
 		("runfiles/b.run", "# B\n$ true\n"),
-		("runfiles/c.run", ".hide = true\n$ true\n"),
+		("runfiles/_c.run", "# Hidden by its name.\n$ true\n"),
 	]);
 	let o = p.run(&[":list", "--names"]);
 	let text = out(&o);
@@ -826,7 +837,7 @@ fn a_flag_used_as_a_flag_is_unaffected() {
 fn list_json_describes_every_visible_target() {
 	let p = project(&[
 		("runfiles/build.run", "# Builds it\n$ true\n"),
-		("runfiles/secret.run", ".hide = true\n$ true\n"),
+		("runfiles/_secret.run", "# Hidden by its name.\n$ true\n"),
 	]);
 	let o = p.run(&[":list", "--json"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -857,7 +868,7 @@ fn list_json_escapes_text_that_would_break_the_document() {
 fn list_json_with_no_visible_targets_is_still_a_valid_document() {
 	// An empty array, not a truncated document: tooling parses this on every
 	// refresh and must not have to special-case "nothing to show".
-	let p = project(&[("runfiles/h.run", ".hide = true\n$ true\n")]);
+	let p = project(&[("runfiles/_h.run", "# Hidden by its name.\n$ true\n")]);
 	let v: serde_json::Value = serde_json::from_str(&out(&p.run(&[":list", "--json"]))).expect("valid JSON");
 	assert_eq!(v["targets"].as_array().unwrap().len(), 0);
 }
@@ -1012,19 +1023,30 @@ fn a_double_dash_forwards_the_rest_of_the_line_untouched() {
 }
 
 #[test]
-fn a_forgotten_double_dash_is_warned_about_on_stderr() {
-	// The command still runs -- the runner cannot know the flag was meant for
-	// the wrapped tool -- but it no longer fails silently.
+fn a_forgotten_double_dash_is_refused() {
+	// It used to warn and run anyway, because the check was textual guesswork.
+	// Walked from the tree it is exact, so the flag that would have gone
+	// nowhere stops the run instead of being discovered later.
 	let p = project(&[("runfiles/wrap.run", "$ echo {{ ARGS }}\n")]);
 	let o = p.run(&["wrap", "s3api", "--bucket", "x"]);
-	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(out(&o).trim(), "s3api x");
+	assert!(!o.status.success());
 	assert!(
-		err(&o).starts_with("[runfile] warning: `--bucket` was passed to `wrap`"),
+		err(&o).starts_with("[runfile] error: `--bucket` was passed to `wrap`"),
 		"{}",
 		err(&o)
 	);
-	assert!(err(&o).contains("put `--` before it"), "{}", err(&o));
+	// A wrapper is exactly where `--` is the answer, so the message says so
+	// rather than pointing at `--help`.
+	assert!(
+		err(&o).contains("passes its positional arguments through"),
+		"{}",
+		err(&o)
+	);
+	assert!(err(&o).contains("run wrap -- --bucket"), "{}", err(&o));
+	// And written the documented way, it goes through untouched.
+	let o = p.run(&["wrap", "--", "s3api", "--bucket", "x"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "s3api --bucket x");
 }
 
 #[test]
@@ -1053,7 +1075,7 @@ fn a_crlf_file_runs_the_same_as_an_lf_one() {
 const GEN: &[(&str, &str)] = &[
 	("runfiles/build.run", "# Builds it\n$ true\n"),
 	("runfiles/deploy.run", "# Ships it\n$ echo {{ ARG.env }}\n"),
-	("runfiles/secret.run", ".hide = true\n$ true\n"),
+	("runfiles/_secret.run", "# Hidden by its name.\n$ true\n"),
 	("web/runfiles/dev.run", "$ true\n"),
 ];
 
@@ -1263,6 +1285,33 @@ fn an_exit_inside_a_called_target_ends_the_whole_run() {
 	let o = p.run(&["parent"]);
 	assert_eq!(code_of(&o), 7, "{}", err(&o));
 	assert!(!out(&o).contains("after"), "{}", out(&o));
+}
+
+#[test]
+fn code_of_scores_a_called_target_instead_of_stopping() {
+	// The same numbers `$ run <target>` gives, without the re-exec: this is
+	// the shape a coverage or check target has, where every half must run and
+	// the verdict comes at the end.
+	let p = project(&[
+		(
+			"runfiles/both.run",
+			"let a = code_of(run one)\nlet b = code_of(run two)\n$ echo scores {{ a }} {{ b }}\nexit(a + b)\n",
+		),
+		("runfiles/one.run", "$ echo ran-one\nexit(3)\n"),
+		("runfiles/two.run", "$ echo ran-two\n$ exit 9\n"),
+	]);
+	let o = p.run(&["both"]);
+	// `exit(3)` is 3; a failing command is the 1 the binary itself exits with.
+	assert!(out(&o).contains("scores 3 1"), "{}\n{}", out(&o), err(&o));
+	assert!(
+		out(&o).contains("ran-one") && out(&o).contains("ran-two"),
+		"{}",
+		out(&o)
+	);
+	assert_eq!(code_of(&o), 4, "{}", err(&o));
+	// The failure is reported where the re-exec would have printed it --
+	// nothing further up is going to say what went wrong.
+	assert!(err(&o).contains("status 9"), "{}", err(&o));
 }
 
 #[test]
@@ -1796,15 +1845,24 @@ fn everything_the_runner_says_while_a_target_runs_is_marked_as_its_own() {
 	// A person reading a terminal is watching two things talk at once. Without
 	// the prefix, `error: …` could as easily be the target's own output.
 	let p = project(&[("runfiles/e.run", "$ echo mine\n$ false\n")]);
+	let o = p.run(&["e"]);
+	assert!(!o.status.success());
+	for line in err(&o).lines().filter(|l| !l.trim().is_empty()) {
+		assert!(line.starts_with("[runfile] "), "unmarked: {line:?}\nin {}", err(&o));
+	}
+	assert!(err(&o).contains("[runfile] error: "), "{}", err(&o));
+	// The target's own output is untouched, on its own stream.
+	assert_eq!(out(&o), "mine\n");
+
+	// The same holds for what it says instead of running at all -- one line,
+	// so there is no continuation to go unmarked.
 	let o = p.run(&["e", "--stray"]);
 	assert!(!o.status.success());
 	for line in err(&o).lines().filter(|l| !l.trim().is_empty()) {
 		assert!(line.starts_with("[runfile] "), "unmarked: {line:?}\nin {}", err(&o));
 	}
-	assert!(err(&o).contains("[runfile] warning: `--stray`"), "{}", err(&o));
-	assert!(err(&o).contains("[runfile] error: "), "{}", err(&o));
-	// The target's own output is untouched, on its own stream.
-	assert_eq!(out(&o), "mine\n");
+	assert!(err(&o).contains("[runfile] error: `--stray`"), "{}", err(&o));
+	assert_eq!(out(&o), "", "and nothing ran");
 }
 
 #[cfg(unix)]
@@ -2092,4 +2150,497 @@ fn there_is_no_version_command_any_more() {
 	let o = p.run(&[":version"]);
 	assert!(!o.status.success());
 	assert!(err(&o).contains("unknown command"), "{}", err(&o));
+}
+
+#[test]
+fn print_writes_a_line_and_printf_does_not() {
+	// The exact bytes: `print` ends the line, `printf` ends nothing, and
+	// neither adds a space the source did not ask for.
+	let p = project(&[(
+		"runfiles/say.run",
+		"# Say.\nprintf(\"%s-%d:\", \"a\", 2)\nprint(\"b\", 3, true)\nprintf(\"tail\")\n",
+	)]);
+	let o = p.run(&["say"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o),
+		format!("a-2:b 3 true{}tail", if cfg!(windows) { "\r\n" } else { "\n" })
+	);
+}
+
+#[test]
+fn print_goes_to_stdout_and_not_to_the_runners_own_stream() {
+	// It is the target's output, so a pipeline reading `run`'s stdout gets it
+	// and nothing the runner says is mixed in.
+	let p = project(&["runfiles/say.run"].map(|f| (f, "# Say.\nprint(\"just this\")\n")));
+	let o = p.run(&["say"]);
+	assert_eq!(
+		out(&o),
+		format!("just this{}", if cfg!(windows) { "\r\n" } else { "\n" })
+	);
+	assert_eq!(err_from_commands(&o).trim(), "");
+}
+
+#[test]
+fn printing_happens_under_dry_run_because_it_changes_nothing() {
+	// The same reason `now` and `uuid` answer with real values there: a
+	// preview that hides what a run would say is a worse preview.
+	let p = project(&[("runfiles/say.run", "# Say.\nprint(\"would say this\")\n$ echo ran\n")]);
+	let o = p.run(&["--dry-run", "say"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("would say this"), "{}", out(&o));
+	// And the command it previewed did not actually run.
+	assert!(!out(&o).lines().any(|l| l == "ran"), "{}", out(&o));
+}
+
+#[test]
+fn print_keeps_its_place_among_the_commands_around_it() {
+	// Its own buffer is flushed, so it cannot arrive after output from a
+	// child process that holds the same descriptor and writes later.
+	let p = project(&[(
+		"runfiles/say.run",
+		"# Say.\nprint(\"one\")\n$ echo two\nprint(\"three\")\n$ echo four\n",
+	)]);
+	let o = p.run(&["say"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).lines().collect::<Vec<_>>(), ["one", "two", "three", "four"]);
+}
+
+#[test]
+fn a_printf_that_does_not_match_its_values_stops_the_run() {
+	let p = project(&[("runfiles/say.run", "# Say.\nprintf(\"%s %s\", \"only one\")\n")]);
+	let o = p.run(&["say"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("more substitutions"), "{}", err(&o));
+}
+
+// ------------------------------------------- block-scoped env-file / add-path
+
+/// A project with two `.env` files and an executable on a relative path, which
+/// is what the block-scoping tests below all need.
+fn env_project(files: &[(&str, &str)]) -> Project {
+	let mut all: Vec<(&str, &str)> = vec![
+		(".env.base", "BASE=from-base\nSHARED=base-wins\n"),
+		(".env.extra", "EXTRA=from-extra\nSHARED=extra-wins\n"),
+		("tools/mytool", "#!/bin/sh\nprintf tool-ran\n"),
+	];
+	all.extend_from_slice(files);
+	let p = project(&all);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		let exe = p.dir.path().join("tools/mytool");
+		std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+	}
+	p
+}
+
+#[test]
+fn a_blocks_env_file_applies_inside_it_and_nowhere_else() {
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\nprint(\"before:\", ENV.EXTRA ? \"unset\")\n\nif true\n\t.env-file = \".env.extra\"\n\n\tprint(\"inside:\", ENV.EXTRA)\nend\n\nprint(\"after:\", ENV.EXTRA ? \"unset\")\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o).lines().collect::<Vec<_>>(),
+		["before: unset", "inside: from-extra", "after: unset"]
+	);
+}
+
+#[test]
+fn a_blocks_env_file_reaches_the_commands_in_it_too() {
+	// Not just `{{ ENV.x }}`: the child process gets it as a real variable.
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\nif true\n\t.env-file = \".env.extra\"\n\n\t$ printf '%s' \"$EXTRA\" > inside.txt\nend\n\n$ printf '%s' \"${EXTRA:-unset}\" > after.txt\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("inside.txt")).unwrap(),
+		"from-extra"
+	);
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("after.txt")).unwrap(),
+		"unset"
+	);
+}
+
+#[test]
+fn a_block_inherits_the_env_file_around_it_and_adds_to_it() {
+	// It appends rather than replaces, so the outer file is not lost -- and a
+	// key in both is the later file's.
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\n.env-file = \".env.base\"\n\nif true\n\t.env-file = \".env.extra\"\n\n\tprint(ENV.BASE, ENV.EXTRA, ENV.SHARED)\nend\n\nprint(ENV.BASE, ENV.SHARED)\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o).lines().collect::<Vec<_>>(),
+		["from-base from-extra extra-wins", "from-base base-wins"]
+	);
+}
+
+#[test]
+fn a_blocks_add_path_applies_inside_it_and_nowhere_else() {
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\nif true\n\t.add-path = \"tools\"\n\n\t$ mytool > inside.txt\nend\n\n$ mytool > after.txt 2>/dev/null || printf gone > after.txt\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("inside.txt")).unwrap(),
+		"tool-ran"
+	);
+	assert_eq!(std::fs::read_to_string(p.dir.path().join("after.txt")).unwrap(), "gone");
+}
+
+#[test]
+fn a_loop_does_not_accumulate_one_iterations_env_file_into_the_next() {
+	// The environment a block inherited comes back when it closes, so three
+	// iterations layer one file each rather than one, two, three.
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\nfor i in [1, 2, 3]\n\t.env-file = \".env.extra\"\n\n\tprint(i, ENV.SHARED, ENV.BASE ? \"no-base\")\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o).lines().collect::<Vec<_>>(),
+		["1 extra-wins no-base", "2 extra-wins no-base", "3 extra-wins no-base"]
+	);
+}
+
+#[test]
+fn a_blocks_env_file_can_be_chosen_by_a_binding_the_body_computed() {
+	// This is what block scoping buys: a header property resolves before any
+	// statement runs, so it can only read sources. Inside a block, the file
+	// can be named by something the target worked out first.
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\nlet which = ARG.which ? \"base\"\n\nif true\n\t.env-file = \".env.{{ which }}\"\n\n\tprint(ENV.SHARED)\nend\n",
+	)]);
+	assert_eq!(out(&p.run(&["t"])).trim(), "base-wins");
+	assert_eq!(out(&p.run(&["t", "--which=extra"])).trim(), "extra-wins");
+}
+
+#[test]
+fn nested_blocks_layer_their_env_files() {
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\nif true\n\t.env-file = \".env.base\"\n\n\tif true\n\t\t.env-file = \".env.extra\"\n\n\t\tprint(\"deep:\", ENV.SHARED, ENV.BASE)\n\tend\n\n\tprint(\"mid:\", ENV.SHARED)\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o).lines().collect::<Vec<_>>(),
+		["deep: extra-wins from-base", "mid: base-wins"]
+	);
+}
+
+#[test]
+fn a_block_env_file_that_is_not_there_is_skipped_exactly_as_a_header_one_is() {
+	// A `.env-file` naming a file that is not there is tolerated -- a project
+	// whose `.env` is git-ignored still has to run. The block form does not
+	// get to disagree with the header form about that.
+	let p = env_project(&[
+		(
+			"runfiles/block.run",
+			"# Block.\nif true\n\t.env-file = \".env.missing\"\n\n\tprint(\"ran\")\nend\n",
+		),
+		(
+			"runfiles/header.run",
+			"# Header.\n.env-file = \".env.missing\"\n\nprint(\"ran\")\n",
+		),
+	]);
+	for target in ["block", "header"] {
+		let o = p.run(&[target]);
+		assert!(o.status.success(), "{target}: {}", err(&o));
+		assert_eq!(out(&o).trim(), "ran", "{target}");
+	}
+}
+
+#[test]
+fn a_blocks_env_key_and_env_file_both_reach_the_block() {
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\nif true\n\t.env-file = \".env.extra\"\n\t.env.DIRECT = \"set-here\"\n\n\t$ printf '%s %s' \"$EXTRA\" \"$DIRECT\" > out.txt\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("out.txt")).unwrap(),
+		"from-extra set-here"
+	);
+}
+
+#[test]
+fn a_match_arm_and_a_retry_body_scope_them_too() {
+	// Every block form goes through the same entry point, so this is really a
+	// check that none of them takes a different path.
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\nmatch \"a\"\n\tcase \"a\"\n\t\t.env-file = \".env.extra\"\n\n\t\tprint(\"match:\", ENV.EXTRA)\nend\n\nretry 1\n\t.env-file = \".env.base\"\n\n\tprint(\"retry:\", ENV.BASE, ENV.EXTRA ? \"no-extra\")\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o).lines().collect::<Vec<_>>(),
+		["match: from-extra", "retry: from-base no-extra"]
+	);
+}
+
+// ------------------------------------------------------------- target --help
+
+#[test]
+fn help_after_a_target_name_does_not_run_it() {
+	// `run deploy --help` used to warn about an unread flag and then deploy.
+	let p = project(&[("runfiles/dep.run", "# Deploy.\n$ printf ran > ran.txt\n")]);
+	for form in [["dep", "--help"], ["dep", "-h"]] {
+		let o = p.run(&form);
+		assert!(o.status.success(), "{}", err(&o));
+		assert!(out(&o).contains("run dep"), "{}", out(&o));
+		assert!(!p.dir.path().join("ran.txt").exists(), "{form:?} ran the target");
+	}
+}
+
+#[test]
+fn help_shows_the_whole_description_not_just_its_first_line() {
+	// The reason forty descriptions in the corpus had grown past three hundred
+	// characters with nowhere to be read.
+	let p = project(&[(
+		"runfiles/dep.run",
+		"# Deploy to an environment.\n#\n# The second paragraph was invisible before: `:list` shows one line.\n\n$ true\n",
+	)]);
+	let o = p.run(&["dep", "--help"]);
+	assert!(out(&o).contains("Deploy to an environment."), "{}", out(&o));
+	assert!(out(&o).contains("second paragraph"), "{}", out(&o));
+}
+
+#[test]
+fn help_lists_the_inputs_the_target_reads() {
+	let p = project(&[(
+		"runfiles/dep.run",
+		"# Deploy.\n.alias = \"ship\"\n\nlet e = ARG.env ? \"dev\"\n\nif FLAG.force\n\t$ echo {{ ARGS }}\nend\n",
+	)]);
+	let o = p.run(&["dep", "--help"]);
+	let text = out(&o);
+	assert!(text.contains("--env=<value>"), "{text}");
+	assert!(text.contains("defaults to dev"), "what happens without it: {text}");
+	assert!(text.contains("--force"), "{text}");
+	assert!(text.contains("positional"), "{text}");
+	assert!(text.contains("ship"), "aliases are undiscoverable otherwise: {text}");
+	assert!(text.contains("run dep [--env=<value>] [--force] [args…]"), "{text}");
+}
+
+#[test]
+fn a_target_can_still_be_handed_help_after_a_passthrough() {
+	let p = project(&[("runfiles/w.run", "# Wrapper.\n$ printf '%s' {{ ARGS }} > got.txt\n")]);
+	let o = p.run(&["w", "--", "--help"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(std::fs::read_to_string(p.dir.path().join("got.txt")).unwrap(), "--help");
+}
+
+#[test]
+fn help_works_before_setup_has_run() {
+	// Asking what a target does must not require the project to be set up.
+	let p = project(&[
+		("runfiles/setup.run", "# Setup.\n$ true\n"),
+		("runfiles/dep.run", "# Deploy.\n$ true\n"),
+	]);
+	assert!(!p.run(&["dep"]).status.success(), "the gate is in force");
+	let o = p.run(&["dep", "--help"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("Deploy."), "{}", out(&o));
+}
+
+#[test]
+fn an_interpolation_in_a_non_shell_exec_body_is_not_shell_quoted() {
+	// Shell quoting is the wrong quoting for anybody else's language: it made
+	// `'it'\''s'` out of a string with an apostrophe, flattened a list to bare
+	// words, and left a path unquoted because nothing in it needed quoting.
+	// The value arrives as itself now, and the author quotes it their way.
+	let p = project(&[(
+		"runfiles/t.run",
+		"# T.\nlet s = \"a b\"\nlet q = \"it's\"\nlet n = [1, 2]\n\nexec cat\n\t[{{ s }}][{{ q }}][{{ n }}]\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "[a b][it's][1 2]");
+}
+
+#[test]
+fn a_shell_exec_body_is_still_shell_quoted() {
+	// The rule that makes `$ cp {{ src }} {{ dst }}` safe has not moved.
+	let p = project(&[(
+		"runfiles/t.run",
+		"# T.\nlet s = \"a b\"\n\nexec sh\n\tprintf '[%s]' {{ s }}\nend\n\n$ printf '[%s]' {{ s }}\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o), "[a b][a b]", "one argument, not two");
+}
+
+#[test]
+fn a_capture_may_be_the_last_argument_of_a_call() {
+	let p = project(&[(
+		"runfiles/t.run",
+		"# T.\nlet files = lines($ printf 'a\\nb\\nc')\n\nprint(length(files), first(files), last(files))\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "3 a c");
+}
+
+#[test]
+fn a_bare_block_scopes_a_property_to_the_commands_in_it() {
+	// The reason it exists: `.workdir` for two commands used to need an
+	// `if true`, or a `cd X &&` on every line.
+	let p = project(&[
+		(
+			"runfiles/t.run",
+			"# T.\n$ pwd > root.txt\n\ndo\n\t.workdir = \"web\"\n\n\t$ pwd > inside.txt\n\t$ printf second >> inside.txt\nend\n\n$ pwd >> root.txt\n",
+		),
+		("web/.keep", ""),
+	]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let inside = std::fs::read_to_string(p.dir.path().join("web/inside.txt")).unwrap();
+	assert!(
+		inside.trim_end().ends_with("second"),
+		"both commands ran there: {inside}"
+	);
+	assert!(inside.lines().next().unwrap().ends_with("web"), "{inside}");
+	assert!(!p.dir.path().join("inside.txt").exists(), "it did not run at the root");
+	let root = std::fs::read_to_string(p.dir.path().join("root.txt")).unwrap();
+	assert_eq!(root.lines().count(), 2, "the block gave the directory back: {root}");
+}
+
+#[test]
+fn a_mention_in_a_comment_does_not_hide_a_mistyped_flag() {
+	// The check exists to catch a typo. Scanning the text for `ARG.legacy`
+	// meant a comment mentioning it turned the check off entirely.
+	let p = project(&[(
+		"runfiles/t.run",
+		"# Deploy. Set ARG.legacy if you are on the old path.\n\nprint(ARG.env)\n",
+	)]);
+	let o = p.run(&["t", "--env=x", "--legacy"]);
+	assert!(!o.status.success(), "an input the target cannot read is a mistake");
+	assert!(err(&o).contains("`--legacy` was passed"), "{}", err(&o));
+	assert!(err(&o).contains("--help"), "and says where to look: {}", err(&o));
+}
+
+#[test]
+fn help_lists_only_what_the_target_really_reads() {
+	let p = project(&[(
+		"runfiles/t.run",
+		"# Deploy. Mentions ARG.legacy and FLAG.verbose.\n\nlet hint = \"pass ARG.region to override\"\n\nprint(ARG.env)\n$ echo 'ARG.cluster is deprecated'\n",
+	)]);
+	let text = out(&p.run(&["t", "--help"]));
+	// Scoped to the Reads section: the description legitimately quotes those
+	// names, because it is the author's own prose.
+	let reads = text
+		.split_once("Arguments")
+		.map(|(_, rest)| rest.split("\n\n").next().unwrap_or("").to_string())
+		.expect("a Reads section");
+	assert!(reads.contains("--env=<value>"), "{reads}");
+	for absent in ["legacy", "verbose", "region", "cluster"] {
+		assert!(!reads.contains(absent), "{absent} is not read: {reads}");
+	}
+	// Read bare, so a run fails without it -- the usage line says so.
+	assert!(text.contains("run t --env=<value>"), "{text}");
+	assert!(reads.contains("required"), "{reads}");
+}
+
+#[test]
+fn a_shared_files_inputs_count_for_every_target_under_it() {
+	let p = project(&[
+		("runfiles/_shared.run", "# Shared.\n.env.MODE = ARG.mode ? \"dev\"\n"),
+		("runfiles/t.run", "# T.\nprint(ENV.MODE)\n"),
+	]);
+	let o = p.run(&["t", "--mode=prod"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(err_from_commands(&o).trim(), "", "no warning: the shared file reads it");
+	assert!(
+		out(&p.run(&["t", "--help"])).contains("--mode=<value>"),
+		"and --help says so"
+	);
+}
+
+#[test]
+fn help_says_what_happens_without_each_input() {
+	// Both facts come from the tree: a `?` chain catches the failure, so a
+	// name with one is optional, and the literal it ends in is the fallback.
+	let p = project(&[(
+		"runfiles/t.run",
+		"# T.\nlet e = ARG.env ? \"staging\"\nlet p = ARG.port ? ENV.PORT ? \"3000\"\n\nprint(e, p, ARG.token, ENV.HOME)\n\nif FLAG.force\n\tprint(\"forced\")\nend\n",
+	)]);
+	let text = out(&p.run(&["t", "--help"]));
+	for want in [
+		"--env=<value>",
+		"defaults to staging",
+		"--port=<value>",
+		"defaults to 3000",
+		"--token=<value>",
+		"required",
+		"--force",
+		"off unless passed",
+		"Environment",
+		"HOME",
+		"PORT",
+	] {
+		assert!(text.contains(want), "missing {want:?} in:\n{text}");
+	}
+	// Required first in the usage line: that is the half a run fails without.
+	assert!(
+		text.contains("run t [--env=<value>] [--port=<value>] --token=<value>"),
+		"{text}"
+	);
+}
+
+#[test]
+fn stdin_args_without_a_terminal_asks_nothing_and_does_not_hang() {
+	// It cannot consent for you. The run fails the way it would without the
+	// flag, rather than waiting on a pipe that will never answer.
+	let p = project(&[("runfiles/t.run", "# T.\nprint(ARG.token)\n")]);
+	let o = p.run(&["--stdin-args", "t"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("--token"), "{}", err(&o));
+}
+
+#[test]
+fn stdin_args_does_not_ask_for_what_was_already_given() {
+	let p = project(&[("runfiles/t.run", "# T.\nprint(ARG.token)\n")]);
+	let o = p.run(&["--stdin-args", "t", "--token=given"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "given");
+}
+
+#[test]
+fn the_refusal_says_the_thing_that_helps_for_this_target() {
+	// Three shapes, because the useful sentence differs: a wrapper wants
+	// `--`, a target with inputs wants `--help`, and one with neither should
+	// say so plainly instead of sending someone to an empty page.
+	let p = project(&[
+		("runfiles/wrap.run", "# Wrap.\n$ echo {{ ARGS }}\n"),
+		("runfiles/opts.run", "# Opts.\nprint(ARG.env ? \"dev\")\n"),
+		("runfiles/plain.run", "# Plain.\n$ true\n"),
+	]);
+	let wrap = err(&p.run(&["wrap", "--x"]));
+	assert!(wrap.contains("passes its positional arguments through"), "{wrap}");
+
+	let opts = err(&p.run(&["opts", "--x"]));
+	assert!(opts.contains("run `run opts --help`"), "{opts}");
+
+	let plain = err(&p.run(&["plain", "--x"]));
+	assert!(plain.contains("reads no arguments or flags at all"), "{plain}");
+
+	// One line each: a continuation would not carry the `[runfile]` prefix.
+	for m in [&wrap, &opts, &plain] {
+		assert_eq!(m.trim().lines().count(), 1, "{m}");
+	}
 }

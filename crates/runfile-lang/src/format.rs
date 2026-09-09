@@ -172,7 +172,7 @@ fn render(src: &str) -> Result<String, ParseError> {
 		if let Some(cmd) = trimmed.strip_prefix("exec ") {
 			let d = o.depth();
 			o.push(d, &format!("exec {}", cmd.trim()), Kind::Open);
-			i = exec_body(&raw, i + 1, line, d, &mut o);
+			i = exec_body(&raw, i + 1, line, d, None, &mut o);
 			continue;
 		}
 
@@ -220,7 +220,21 @@ fn render(src: &str) -> Result<String, ParseError> {
 /// The terminator is found the way the parser finds it -- an `end` at the
 /// opener's own indentation -- so a body containing its own `end` (ruby, lua)
 /// is left whole here too.
-fn exec_body(raw: &[&str], from: usize, opener: &str, depth: usize, o: &mut Out) -> usize {
+/// The body of an `exec` or of a structured block.
+///
+/// An `exec` body is opaque -- it is somebody else's language, and only its
+/// base indent moves. A structured block is not: the format is one this
+/// runner knows, so it is laid out like everything else, with its tokens
+/// copied from the source so a string keeps its own escapes and `{{ … }}`
+/// survives whole. A body that will not tokenise is left exactly as written.
+fn exec_body(
+	raw: &[&str],
+	from: usize,
+	opener: &str,
+	depth: usize,
+	fmt: Option<crate::Structured>,
+	o: &mut Out,
+) -> usize {
 	let indent = &opener[..opener.len() - opener.trim_start().len()];
 	let closer = format!("{indent}end");
 	let mut j = from;
@@ -238,8 +252,16 @@ fn exec_body(raw: &[&str], from: usize, opener: &str, depth: usize, o: &mut Out)
 		.map(|l| l.len() - l.trim_start().len())
 		.min()
 		.unwrap_or(0);
-	for l in &body {
-		let text = if l.len() >= base { &l[base..] } else { "" };
+	let dedented: Vec<&str> = body
+		.iter()
+		.map(|l| if l.len() >= base { &l[base..] } else { "" })
+		.collect();
+	let laid_out = fmt.and_then(|f| f.pretty(&dedented.join("\n"), INDENT));
+	let lines: Vec<String> = match &laid_out {
+		Some(s) => s.lines().map(str::to_string).collect(),
+		None => dedented.iter().map(|l| (*l).to_string()).collect(),
+	};
+	for text in &lines {
 		if text.trim().is_empty() {
 			o.opaque(String::new());
 		} else {
@@ -256,6 +278,7 @@ fn exec_body(raw: &[&str], from: usize, opener: &str, depth: usize, o: &mut Out)
 fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> Result<usize, ParseError> {
 	let head = trimmed.split_whitespace().next().unwrap_or("");
 	let (text, opens) = match head {
+		"do" => ("do".to_string(), Some(Frame::Body)),
 		"if" => (format!("if {}", condition(trimmed[2..].trim(), no)?), Some(Frame::Body)),
 		// `retry n every s` -- two ordinary expressions around a keyword.
 		"retry" => {
@@ -273,8 +296,10 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 		"for" => {
 			let rest = trimmed[3..].trim();
 			match rest.find(" in ") {
+				// The list may be a call holding a `$` run, which `rhs` knows
+				// not to re-space.
 				Some(k) => (
-					format!("for {} in {}", rest[..k].trim(), spaced(rest[k + 4..].trim(), no)?),
+					format!("for {} in {}", rest[..k].trim(), rhs(rest[k + 4..].trim(), no)?),
 					Some(Frame::Body),
 				),
 				None => (trimmed.to_string(), Some(Frame::Body)),
@@ -293,12 +318,13 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 	};
 
 	// A capture or a structured block opens a body that is opaque.
-	if let Some(rest) = text.split(" = ").nth(1)
-		&& (rest.strip_prefix("exec ").is_some() || crate::Structured::from_keyword(rest).is_some())
-	{
-		let d = o.depth();
-		o.push(d, &text, Kind::Open);
-		return Ok(exec_body(raw, i + 1, raw[i], d, o));
+	if let Some(rest) = text.split(" = ").nth(1) {
+		let fmt = crate::Structured::from_keyword(rest);
+		if fmt.is_some() || rest.strip_prefix("exec ").is_some() {
+			let d = o.depth();
+			o.push(d, &text, Kind::Open);
+			return Ok(exec_body(raw, i + 1, raw[i], d, fmt, o));
+		}
 	}
 
 	let d = o.depth();
@@ -307,13 +333,16 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 	// parser, so they are indented as a run rather than as statements -- and
 	// against the *opener's* depth, since `for x in [` spills its list before
 	// the loop body starts, not inside it.
-	let mut open = brackets(&text, no)?;
+	let (mut open, _) = lexer::brackets(&text, no);
 	let mut j = i + 1;
 	while open > 0 && j < raw.len() {
 		let t = raw[j].trim();
 		let rendered = if t.is_empty() { String::new() } else { spaced(t, no)? };
-		let delta = brackets(&rendered, no)?;
-		o.push(if open + delta <= 0 { d } else { d + 1 }, &rendered, Kind::Opaque);
+		let (delta, leading) = lexer::brackets(&rendered, no);
+		// One level per bracket still open, less the ones this line closes:
+		// a `]` sits with the `[` it answers, not with what was inside it.
+		let level = d + usize::try_from((open - leading).max(0)).unwrap_or(0);
+		o.push(level, &rendered, Kind::Opaque);
 		open += delta;
 		j += 1;
 	}
@@ -321,25 +350,6 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 		o.stack.push(f);
 	}
 	Ok(j)
-}
-
-/// `[` minus `]` among a line's tokens -- strings and interpolations excluded,
-/// since a bracket inside one is text.
-fn brackets(text: &str, no: usize) -> Result<i32, ParseError> {
-	let Some(rhs) = text.split_once(" = ").map(|(_, r)| r).or(Some(text)) else {
-		return Ok(0);
-	};
-	let Ok(toks) = lexer::tokenize(rhs, 0, no) else {
-		return Ok(0);
-	};
-	Ok(toks
-		.iter()
-		.map(|t| match &t.token {
-			Token::Punct("[") => 1,
-			Token::Punct("]") => -1,
-			_ => 0,
-		})
-		.sum())
 }
 
 fn property(trimmed: &str, no: usize) -> Result<String, ParseError> {
@@ -360,7 +370,7 @@ fn assignment(trimmed: &str, no: usize) -> Result<(String, Option<Frame>), Parse
 		let name = rest[..k].trim();
 		return Ok((format!("let {name} = {}", rhs(rest[k + 1..].trim(), no)?), None));
 	}
-	if trimmed.starts_with("code_of(") {
+	if crate::parser::is_capture_call(trimmed) {
 		return Ok((rhs(trimmed, no)?, None));
 	}
 	if let Some(k) = assignment_split(trimmed) {
@@ -393,9 +403,18 @@ fn rhs(text: &str, no: usize) -> Result<String, ParseError> {
 	if crate::Structured::from_keyword(text).is_some() {
 		return Ok(text.to_string());
 	}
-	// `code_of($ cmd)` wraps shell text, which is not ours to respace either.
-	if let Some(inner) = text.strip_prefix("code_of(").and_then(|r| r.strip_suffix(')')) {
-		return Ok(format!("code_of({})", inner.trim()));
+	// `code_of(run build)`: a dispatch's arguments are words, not an
+	// expression, so they are spaced the way a `run` statement's are.
+	if let Some(inner) = text.trim().strip_prefix("code_of(").and_then(|t| t.strip_suffix(')'))
+		&& let Some(tail) = crate::parser::dispatch_arg(inner)
+	{
+		return Ok(format!("code_of(run {})", spaced_words(tail)));
+	}
+	// A call holding a `$` run -- `lines($ git ls-files)`, `code_of($ cmd)`.
+	// Everything from the `$` on is the shell's text, so the call is left as
+	// written rather than re-spaced.
+	if crate::parser::is_capture_call(text) {
+		return Ok(text.trim().to_string());
 	}
 	if let Some(cmd) = text.strip_prefix("exec ") {
 		return Ok(format!("exec {}", cmd.trim()));

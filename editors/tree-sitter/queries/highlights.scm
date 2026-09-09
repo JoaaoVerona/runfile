@@ -31,6 +31,7 @@
 (call_expression function: (identifier) @function.call)
 
 (run_statement target: (target) @function.call)
+(dispatch target: (target) @function.call)
 (argument) @string.special
 
 (string) @string

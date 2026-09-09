@@ -18,3 +18,9 @@ case "minor"
 default
 	error("unknown")
 end
+
+do
+	.workdir = "web"
+
+	$ pnpm install
+end

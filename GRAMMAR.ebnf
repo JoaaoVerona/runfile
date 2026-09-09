@@ -19,22 +19,43 @@ exec_block  = WS , "exec" , " " , shell_text , NEWLINE ,
 
 (* ---- statements ---- *)
 statement   = let | assign | if | else | for | match | case | default
-            | run | end | call ;
+            | run | retry | do | end | call ;
 
-let         = "let" , ident , "=" , expr ;
-assign      = ident , "=" , expr ;
-if          = "if" , expr ;
+let         = "let" , ident , "=" , value ;
+assign      = ident , "=" , value ;
+if          = "if" , ( expr | capture ) ;                   (* `if $ cmd` is true when it succeeds *)
 else        = "else" ;
-for         = "for" , ident , "in" , expr ;
-match       = "match" , expr ;
-case        = "case" , string ;
+for         = "for" , ident , "in" , ( expr | capture ) ;
+match       = "match" , ( expr | capture ) ;                (* over a capture, the cases are exit codes *)
+case        = "case" , string ;                             (* a label is a value, so it is quoted *)
 default     = "default" ;
+retry       = "retry" , number , [ "every" , number ] ;
+do          = "do" ;                                        (* opens a block, so a property has somewhere to go *)
 end         = "end" ;
 run         = "run" , target_ref , { WS , arg_word } ;
-call        = postfix ;                                     (* bare call, e.g. decrypt(a,b) *)
+call        = postfix | capture_call ;                      (* bare call, e.g. decrypt(a,b) *)
 
 target_ref  = { ident_char | ":" | interp } ;
 arg_word    = { ANY - WS - NEWLINE | interp } ;
+
+(* ---- values ---- *)
+(* A capture or a structured block stands where a value is wanted. Each ends at
+   a boundary a line-oriented grammar cannot state: a `$` capture at the
+   newline, an `exec` or structured body at an `end` at its *opener's*
+   indentation. *)
+value       = expr | capture | structured | capture_call ;
+capture     = "$" , " " , shell_text
+            | "exec" , " " , shell_text , NEWLINE , exec_body , WS , "end" ;
+structured  = struct_kw , NEWLINE , exec_body , WS , "end" ;
+struct_kw   = "json" ;
+exec_body   = { ANY - ( WS , "end" , NEWLINE ) } ;
+
+(* A call whose last argument is a `$` run: the capture reaches the `)`, which
+   has to be the last character of the line. `code_of` is the one call that may
+   take a `run` dispatch instead — a dispatched target reports a status, not
+   output, so a status is the only value it has to give. *)
+capture_call = ident , "(" , { expr , "," } , ( "$" , " " , shell_text | dispatch ) , ")" ;
+dispatch    = "run" , target_ref , { WS , arg_word } ;
 
 (* ---- expressions ---- *)
 expr        = chain ;
@@ -50,7 +71,7 @@ arglist     = expr , { "," , expr } , [ "," ] ;
 primary     = number | string | rawstring | bool | list | source | ident
             | "(" , expr , ")" ;
 
-list        = "[" , [ expr , { "," , expr } , [ "," ] ] , "]" ;   (* may span lines *)
+list        = "[" , [ expr , { "," , expr } , [ "," ] ] , "]" ;   (* may span lines; an element is any expr, so lists nest *)
 source      = ( "ARG" | "ENV" | "FLAG" | "RUN" ) , "." , ident | "ARGS" ;
 bool        = "true" | "false" ;
 number      = digit , { digit } , [ "." , digit , { digit } ] ;

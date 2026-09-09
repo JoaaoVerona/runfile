@@ -96,8 +96,6 @@ fn an_env_file_is_loaded_before_the_body_is_evaluated() {
 		env: Vec::new(),
 		anchor: dir.clone(),
 		dispatch: &d,
-		assume_yes: true,
-		prompt: None,
 		interrupted: None,
 		label: None,
 		dry_run: false,
@@ -117,8 +115,6 @@ fn confirm_cancels_when_there_is_nobody_to_ask() {
 		env: Vec::new(),
 		anchor: std::env::temp_dir(),
 		dispatch: &d,
-		assume_yes: false,
-		prompt: None,
 		interrupted: None,
 		label: None,
 		dry_run: false,
@@ -131,42 +127,73 @@ fn confirm_cancels_when_there_is_nobody_to_ask() {
 }
 
 #[test]
-fn confirm_interpolates_its_message() {
-	let asked = std::sync::Mutex::new(String::new());
-	let ask = |m: &str| {
-		*asked.lock().expect("asked") = m.to_string();
+fn confirm_asks_the_question_it_was_given() {
+	// A static rather than a captured closure: `Scope::confirm` is a function
+	// pointer, the same shape `ask` has, so the prompt cannot close over a
+	// test's state.
+	static ASKED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+	fn record(question: &str) -> bool {
+		*ASKED.lock().expect("asked") = question.to_string();
 		true
-	};
-	let target = runfile_lang::parse(".confirm = \"wipe {{ ARG.env }}?\"\n$ true\n").unwrap();
+	}
+	let target = runfile_lang::parse("confirm(\"wipe {{ ARG.env }}?\")\n$ true\n").unwrap();
 	let d = Recorder::default();
 	let mut scope = runfile_lang::eval::Scope::new();
 	scope.args.insert("env".into(), "production".into());
+	scope.confirm = Some(record);
 	let mut r = crate::run::Runner {
 		chain: Vec::new(),
 		scope,
 		env: Vec::new(),
 		anchor: std::env::temp_dir(),
 		dispatch: &d,
-		assume_yes: false,
-		prompt: Some(&ask),
 		interrupted: None,
 		label: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};
 	crate::run::run_target(&target, &mut r).expect("consent given");
-	assert_eq!(
-		*asked.lock().expect("asked"),
-		"wipe production?",
-		"the field could not interpolate before"
-	);
+	assert_eq!(*ASKED.lock().expect("asked"), "wipe production?");
+}
+
+#[test]
+fn declining_stops_the_run_and_nothing_catches_it() {
+	fn refuse(_: &str) -> bool {
+		false
+	}
+	// `.ignore-errors` forgives a command that failed. It does not get to
+	// forgive someone answering no.
+	for src in [
+		"confirm(\"ok?\")\n$ true\n",
+		".ignore-errors\n\nconfirm(\"ok?\")\n$ true\n",
+		"let x = confirm(\"ok?\") ? \"fallback\"\n",
+	] {
+		let target = runfile_lang::parse(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+		let d = Recorder::default();
+		let mut scope = runfile_lang::eval::Scope::new();
+		scope.confirm = Some(refuse);
+		let mut r = crate::run::Runner {
+			chain: Vec::new(),
+			scope,
+			env: Vec::new(),
+			anchor: std::env::temp_dir(),
+			dispatch: &d,
+			interrupted: None,
+			label: None,
+			dry_run: false,
+			trace: Vec::new(),
+		};
+		let e = crate::run::run_target(&target, &mut r).expect_err(src);
+		assert!(e.to_string().contains("cancelled"), "{src:?}: {e}");
+		assert!(e.is_stop(), "{src:?}: a decline is an instruction to stop");
+	}
 }
 
 #[test]
 fn a_header_property_cannot_see_a_body_binding() {
 	// Header properties resolve before any statement runs -- that ordering is
 	// what lets `.env-file` feed `{{ ENV.x }}` -- so they see sources, not lets.
-	let target = runfile_lang::parse("let e = \"x\"\n.confirm = \"{{ e }}?\"\n$ true\n").unwrap();
+	let target = runfile_lang::parse("let e = \"x\"\n.watch = \"{{ e }}\"\n$ true\n").unwrap();
 	let d = Recorder::default();
 	let mut r = crate::run::Runner {
 		chain: Vec::new(),
@@ -174,8 +201,6 @@ fn a_header_property_cannot_see_a_body_binding() {
 		env: Vec::new(),
 		anchor: std::env::temp_dir(),
 		dispatch: &d,
-		assume_yes: true,
-		prompt: None,
 		interrupted: None,
 		label: None,
 		dry_run: false,

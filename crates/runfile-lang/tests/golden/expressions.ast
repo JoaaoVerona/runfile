@@ -207,6 +207,58 @@ Target {
                 ),
                 span: Span,
             },
+            Let {
+                name: "nested",
+                value: List(
+                    [
+                        List(
+                            [
+                                Number(
+                                    1.0,
+                                    Span,
+                                ),
+                                Number(
+                                    2.0,
+                                    Span,
+                                ),
+                            ],
+                            Span,
+                        ),
+                        List(
+                            [
+                                Number(
+                                    3.0,
+                                    Span,
+                                ),
+                                List(
+                                    [
+                                        Number(
+                                            4.0,
+                                            Span,
+                                        ),
+                                        Number(
+                                            5.0,
+                                            Span,
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                            ],
+                            Span,
+                        ),
+                        Str(
+                            [
+                                Literal(
+                                    "a",
+                                ),
+                            ],
+                            Span,
+                        ),
+                    ],
+                    Span,
+                ),
+                span: Span,
+            },
         ],
     },
 }

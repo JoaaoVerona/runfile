@@ -16,6 +16,8 @@ mod init;
 mod list;
 mod prepare;
 mod prompt;
+mod stdin_args;
+mod target_help;
 mod watch;
 
 use runfile_discovery::{Catalog, discover};
@@ -127,7 +129,7 @@ fn real_main() -> Result<ExitCode, String> {
 		print!("{}", usage());
 		return Ok(ExitCode::SUCCESS);
 	};
-	let args: Vec<String> = rest[1..].to_vec();
+	let mut args: Vec<String> = rest[1..].to_vec();
 
 	match first.as_str() {
 		":env" => return cmd_env::dispatch(&args),
@@ -209,6 +211,14 @@ fn real_main() -> Result<ExitCode, String> {
 	let cat = catalog(&flags)?;
 	let target = cat.resolve(&first).ok_or_else(|| list::unknown(&cat, &first))?;
 
+	// Before anything else, and before the prepare gate: asking what a target
+	// does must not require the project to be set up, and must never be the
+	// thing that runs it. `run deploy --help` used to deploy.
+	if target_help::wants_help(&args) {
+		print!("{}", target_help::render(&cat, target));
+		return Ok(ExitCode::SUCCESS);
+	}
+
 	// The gate runs before anything else, so a target cannot half-run and then
 	// be told its setup was missing. A preview is exempt: it changes nothing,
 	// and reading what a target would do is a reasonable thing to want before
@@ -217,17 +227,19 @@ fn real_main() -> Result<ExitCode, String> {
 		prepare::enforce(&cat, target)?;
 	}
 
-	let ask = prompt::confirmer();
 	let warn = |m: &str| eprintln!("{} warning: {m}", runfile_runtime::exec::tag());
 	let interrupted = || runfile_runtime::interrupt::interrupted();
 	let mut host = Host::new(&cat);
 	host.warn = Some(&warn);
 	host.interrupted = Some(&interrupted);
 	host.assume_yes = flags.assume_yes || ci_detect::is_ci();
-	if !host.assume_yes {
-		host.prompt = Some(&ask);
-	}
+	host.confirm = Some(prompt::confirm);
 	if flags.stdin_args {
+		// Asked before anything runs, from the list the tree gives. The lazy
+		// prompt stays as a backstop for a value the walk cannot see -- there
+		// should be none, and a missing one must still be askable rather than
+		// fatal.
+		stdin_args::collect(&cat, target, &mut args);
 		host.ask = Some(prompt::ask_value);
 	}
 	host.dry_run = flags.dry_run;

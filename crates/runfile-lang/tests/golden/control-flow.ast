@@ -204,6 +204,43 @@ Target {
                 ),
                 span: Span,
             },
+            Do {
+                body: Block {
+                    properties: [
+                        Property {
+                            path: [
+                                "workdir",
+                            ],
+                            value: Some(
+                                Str(
+                                    [
+                                        Literal(
+                                            "web",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                            ),
+                            span: Span,
+                        },
+                    ],
+                    statements: [
+                        Exec {
+                            command: None,
+                            body: [
+                                [
+                                    Literal(
+                                        "pnpm install",
+                                    ),
+                                ],
+                            ],
+                            lines,
+                            span: Span,
+                        },
+                    ],
+                },
+                span: Span,
+            },
         ],
     },
 }

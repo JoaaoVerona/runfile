@@ -4,6 +4,7 @@
 mod eval;
 mod exec;
 mod expr;
+mod inputs;
 mod io;
 mod lines;
 mod parser;

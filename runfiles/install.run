@@ -20,4 +20,4 @@ for name in ["run", "runfile-lsp"]
 	$ mv -f ~/.local/bin/.{{ name }}.new{{ ext }} ~/.local/bin/{{ name }}{{ ext }}
 end
 
-$ printf 'Installed run and runfile-lsp to ~/.local/bin\n'
+print("Installed run and runfile-lsp to ~/.local/bin")

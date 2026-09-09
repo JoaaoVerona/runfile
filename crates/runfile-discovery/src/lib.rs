@@ -44,6 +44,20 @@ pub struct Target {
 	pub origin: Origin,
 }
 
+/// Whether a target is kept out of listings: its **file name starts with `_`**.
+///
+/// This replaced a `.hide` property, which said the same thing in a second
+/// place and let the two disagree. A helper other targets call is already
+/// spelled with a leading underscore by convention -- fifteen of the sixteen
+/// targets that set `.hide` were already named that way, and every
+/// `_`-prefixed target set it. One spelling, no property.
+///
+/// The namespace is not part of the question: `backup:_aws` is hidden because
+/// the file is `_aws.run`, not because of where it sits.
+pub fn is_hidden(name: &str) -> bool {
+	name.rsplit(':').next().is_some_and(|file| file.starts_with('_'))
+}
+
 #[derive(Debug, Default)]
 pub struct Catalog {
 	pub targets: BTreeMap<String, Target>,

@@ -68,7 +68,7 @@ fn dotted_property_names_address_a_namespace() {
 
 #[test]
 fn bare_property_has_no_value() {
-	let x = t(".hide\n$ echo hi\n");
+	let x = t(".parallel\n$ echo hi\n");
 	assert!(x.body.properties[0].value.is_none());
 }
 
@@ -136,4 +136,53 @@ fn exec_in_value_position_captures_a_block() {
 		panic!("not a capture")
 	};
 	assert_eq!(body.len(), 1);
+}
+
+#[test]
+fn a_list_spanning_lines_may_nest() {
+	// The bracket count is what says where the logical line ends, so it has
+	// to be a count of real brackets at every level.
+	let x = t("let rows = [\n\t[\n\t\t\"a\",\n\t\t\"b\"\n\t],\n\t[\"c\"],\n]\n$ echo done\n");
+	assert_eq!(x.body.statements.len(), 2);
+	let Statement::Let {
+		value: Expr::List(rows, _),
+		..
+	} = &x.body.statements[0]
+	else {
+		panic!("{:?}", x.body.statements[0])
+	};
+	assert_eq!(rows.len(), 2);
+}
+
+#[test]
+fn a_bracket_inside_a_string_is_text() {
+	// It used to be counted, so this swallowed the line after it and the file
+	// stopped parsing somewhere else entirely.
+	let x = t("let globs = [\"src/*[0-9]\", \"x[y\"]\n$ echo done\n");
+	assert_eq!(x.body.statements.len(), 2, "{:?}", x.body.statements);
+	assert!(matches!(x.body.statements[1], Statement::Exec { .. }));
+}
+
+#[test]
+fn a_bracket_inside_an_interpolation_is_not_the_lists_either() {
+	let x = t("let rows = [\"{{ ARG.x }}\", \"b\"]\n$ echo done\n");
+	assert_eq!(x.body.statements.len(), 2, "{:?}", x.body.statements);
+}
+
+#[test]
+fn a_bare_block_is_a_block_and_nothing_else() {
+	let x = t("do\n\t.workdir = \"web\"\n\n\t$ pnpm install\nend\n");
+	let Statement::Do { body, .. } = &x.body.statements[0] else {
+		panic!("{:?}", x.body.statements[0])
+	};
+	assert_eq!(body.properties.len(), 1);
+	assert_eq!(body.statements.len(), 1);
+}
+
+#[test]
+fn do_takes_nothing() {
+	// It opens a block so a property has somewhere to go; anything after it
+	// would read as a condition it does not have.
+	let e = crate::parse("do true\n\t$ x\nend\n").unwrap_err().to_string();
+	assert!(e.contains("takes nothing"), "{e}");
 }

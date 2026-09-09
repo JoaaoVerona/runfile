@@ -1,4 +1,5 @@
 use super::{Recorder, host_run, project, run_src};
+use crate::RunError;
 
 #[test]
 fn run_dispatches_in_process_with_interpolated_target() {
@@ -63,8 +64,12 @@ fn block_properties_are_scoped_to_their_block() {
 #[test]
 fn a_header_only_property_is_rejected_inside_a_block() {
 	let d = Recorder::default();
-	let e = run_src("for n in [\"a\"]\n\t.confirm = \"really?\"\n\trun {{ n }}\nend\n", &d).unwrap_err();
+	let e = run_src("for n in [\"a\"]\n\t.watch = \"src/**\"\n\trun {{ n }}\nend\n", &d).unwrap_err();
 	assert!(e.to_string().contains("header-only"), "{e}");
+	// And a name that is not a property at all says so, rather than being
+	// reported as a scope rule it was never subject to.
+	let e = run_src("for n in [\"a\"]\n\t.ignore-error\n\trun {{ n }}\nend\n", &d).unwrap_err();
+	assert!(e.to_string().contains("unknown property"), "{e}");
 }
 
 #[test]
@@ -150,4 +155,79 @@ fn every_exported_property_name_is_actually_known() {
 		let allowed = !matches!(nested, Err(crate::props::PropError::NotBlockScoped { .. }));
 		assert_eq!(allowed, *block_ok, "`.{name}` block-scoping is mislabelled");
 	}
+}
+
+// ---- `code_of(run …)`: a dispatch, scored
+
+/// Dispatches nothing and fails the way it was told to.
+struct Fails(fn() -> RunError);
+impl crate::run::Dispatch for Fails {
+	fn run(&self, _t: &str, _a: &[String], _c: &[String], _l: Option<&str>) -> Result<Vec<String>, RunError> {
+		Err((self.0)())
+	}
+}
+
+#[test]
+fn a_scored_dispatch_answers_with_the_status_the_target_would_have_exited_with() {
+	// The same numbers `$ run <target>` yields, because dispatching in-process
+	// is meant to stop re-execing the binary, not to mean something else.
+	let d = project(&[
+		("runfiles/ok.run", "$ true\n"),
+		("runfiles/broken.run", "$ exit 7\n"),
+		("runfiles/quits.run", "exit(3)\n"),
+		(
+			"runfiles/score.run",
+			"let a = code_of(run ok)\nlet b = code_of(run broken)\nlet c = code_of(run quits)\n\
+			 $ test {{ a }}{{ b }}{{ c }} = 013\n",
+		),
+	]);
+	// A failing command is the 1 the CLI reports -- a target is not its last
+	// command, so there is no other status it could honestly carry -- and
+	// `exit(3)` is the 3 it asked for. Neither stops the caller: the `$ test`
+	// below them runs, and it is what proves the numbers.
+	host_run(&d, "score").expect("a status is an answer, not a failure");
+}
+
+#[test]
+fn a_refusal_inside_a_scored_dispatch_still_stops_the_caller() {
+	// Ctrl+C and someone answering no to `confirm()` are a person stopping the
+	// run, not a target reporting how it went. Scoring those 1 and carrying on
+	// would be doing the very thing that was declined.
+	for make in [
+		(|| RunError::Cancelled) as fn() -> RunError,
+		|| RunError::Interrupted,
+		|| RunError::Eval(runfile_lang::eval::EvalError::Cancelled { line: 1 }),
+	] {
+		let e = run_src("let c = code_of(run deploy)\n$ true\n", &Fails(make)).unwrap_err();
+		assert!(e.is_refusal(), "{e}");
+	}
+	// Everything else is a number, so the run goes on.
+	let d = Fails(|| RunError::ForNeedsList {
+		actual: "string",
+		line: 1,
+	});
+	run_src("let c = code_of(run deploy)\n$ test {{ c }} = 1\n", &d).expect("a failure is scored 1");
+}
+
+#[test]
+fn a_scored_dispatch_passes_its_arguments_and_splices_its_trace() {
+	let d = Recorder::default();
+	run_src("let n = \"web\"\nlet c = code_of(run build:{{ n }} --env=prod)\n", &d).expect("dispatches");
+	assert_eq!(d.calls(), ["build:web --env=prod"]);
+
+	// Under `--dry-run` the child's trace belongs where the call appeared, the
+	// same as a `run` statement's.
+	let p = project(&[
+		("runfiles/dep.run", "$ echo hi\n"),
+		("runfiles/top.run", "let c = code_of(run dep)\n$ echo bye\n"),
+	]);
+	let cat = runfile_discovery::discover(p.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.dry_run = true;
+	h.run("top", &[]).expect("previews");
+	let trace = h.trace.lock().expect("trace").join("\n");
+	assert!(
+		trace.find("echo hi") < trace.find("echo bye"),
+		"the dependency's trace comes first: {trace}"
+	);
 }

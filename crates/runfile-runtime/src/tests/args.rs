@@ -1,4 +1,4 @@
-//! How a target's command line is read, and the one warning it can produce.
+//! How a target's command line is read, and what it refuses.
 
 use std::sync::Mutex;
 
@@ -6,6 +6,20 @@ use super::project;
 
 /// Run a target and collect what it printed and what it warned.
 fn run_with(files: &[(&str, &str)], target: &str, args: &[&str]) -> (Vec<String>, Vec<String>) {
+	let (trace, warned) = try_run(files, target, args).expect("ran");
+	(trace, warned)
+}
+
+/// The same, for a run that is expected to be refused.
+fn refused(files: &[(&str, &str)], target: &str, args: &[&str]) -> String {
+	try_run(files, target, args).expect_err("refused").to_string()
+}
+
+fn try_run(
+	files: &[(&str, &str)],
+	target: &str,
+	args: &[&str],
+) -> Result<(Vec<String>, Vec<String>), crate::run::RunError> {
 	let d = project(files);
 	let cat = runfile_discovery::discover(d.path(), None).unwrap();
 	let warnings: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -15,10 +29,10 @@ fn run_with(files: &[(&str, &str)], target: &str, args: &[&str]) -> (Vec<String>
 	h.dry_run = true;
 	h.warn = Some(&warn);
 	let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-	h.run(target, &args).unwrap();
+	h.run(target, &args)?;
 	let trace = h.trace.lock().unwrap().clone();
 	let warned = warnings.into_inner().unwrap();
-	(trace, warned)
+	Ok((trace, warned))
 }
 
 const WRAP: &str = "$ tool {{ ARGS }}\n";
@@ -52,27 +66,33 @@ fn a_key_value_after_the_double_dash_is_not_an_argument() {
 }
 
 #[test]
-fn a_flag_the_target_never_reads_is_warned_about() {
-	// Forgetting `--` drops the flag silently; this is what makes it not silent.
-	let (trace, warned) = run_with(&[("runfiles/w.run", WRAP)], "w", &["s3api", "--bucket", "x"]);
-	assert_eq!(trace, ["tool s3api x"], "the flag is gone from the command");
-	assert_eq!(warned.len(), 1, "{warned:?}");
-	assert!(warned[0].contains("`--bucket` was passed to `w`"), "{}", warned[0]);
-	assert!(warned[0].contains("put `--` before it"), "{}", warned[0]);
+fn a_flag_the_target_never_reads_is_refused() {
+	// Forgetting `--` drops the flag silently. It warned while the check was
+	// textual guesswork; walked from the tree it is exact, so it refuses.
+	let e = refused(&[("runfiles/w.run", WRAP)], "w", &["s3api", "--bucket", "x"]);
+	assert!(e.contains("`--bucket` was passed to `w`"), "{e}");
+	assert!(e.contains("needs a `--` before it"), "{e}");
 }
 
 #[test]
-fn a_flag_the_target_reads_is_not_warned_about() {
+fn a_flag_the_target_reads_is_fine() {
 	let src = "if FLAG.verbose\n\t$ tool -v\nelse\n\t$ tool\nend\n";
 	let (_, warned) = run_with(&[("runfiles/w.run", src)], "w", &["--verbose"]);
 	assert!(warned.is_empty(), "{warned:?}");
 }
 
 #[test]
-fn an_argument_the_target_never_reads_is_warned_about_too() {
-	let (_, warned) = run_with(&[("runfiles/w.run", WRAP)], "w", &["--region=eu"]);
-	assert_eq!(warned.len(), 1, "{warned:?}");
-	assert!(warned[0].contains("`--region`"), "{}", warned[0]);
+fn an_argument_the_target_never_reads_is_refused_too() {
+	let e = refused(&[("runfiles/w.run", WRAP)], "w", &["--region=eu"]);
+	assert!(e.contains("`--region`"), "{e}");
+}
+
+#[test]
+fn a_name_read_only_in_a_comment_is_not_read() {
+	// The tree has no comments in it. Scanning the text, this passed.
+	let src = "# --region is no longer used; ARG.region was dropped in v2.\n$ tool\n";
+	let e = refused(&[("runfiles/w.run", src)], "w", &["--region=eu"]);
+	assert!(e.contains("`--region`"), "{e}");
 }
 
 #[test]
@@ -87,22 +107,20 @@ fn a_flag_read_by_the_shared_file_counts_as_read() {
 }
 
 #[test]
-fn the_warning_fires_once_per_run_not_once_per_lookup() {
-	// `header_props` is consulted before a run; it must not warn as well.
+fn a_header_lookup_does_not_refuse_on_its_own() {
+	// `header_props` is consulted before a run -- to read `.watch` -- and must
+	// not be the thing that rejects the command line.
 	let files = &[("runfiles/w.run", ".watch = \"src/**\"\n$ tool {{ ARGS }}\n")];
 	let d = project(files);
 	let cat = runfile_discovery::discover(d.path(), None).unwrap();
-	let warnings: Mutex<Vec<String>> = Mutex::new(Vec::new());
-	let warn = |m: &str| warnings.lock().unwrap().push(m.to_string());
 	let mut h = crate::dispatch::Host::new(&cat);
 	h.assume_yes = true;
 	h.dry_run = true;
-	h.warn = Some(&warn);
 	let args = vec!["--oops".to_string()];
 	let t = cat.resolve("w").unwrap();
-	h.header_props(t, &args).unwrap();
-	h.run("w", &args).unwrap();
-	assert_eq!(warnings.into_inner().unwrap().len(), 1);
+	h.header_props(t, &args)
+		.expect("a probe reads properties, nothing more");
+	h.run("w", &args).expect_err("the run itself refuses");
 }
 
 #[test]
@@ -112,10 +130,8 @@ fn a_dispatched_target_is_checked_the_same_way() {
 		("runfiles/outer.run", "run w s3api --bucket x\n"),
 		("runfiles/w.run", WRAP),
 	];
-	let (trace, warned) = run_with(files, "outer", &[]);
-	assert_eq!(trace, ["tool s3api x"]);
-	assert_eq!(warned.len(), 1, "{warned:?}");
-	assert!(warned[0].contains("`--bucket` was passed to `w`"), "{}", warned[0]);
+	let e = refused(files, "outer", &[]);
+	assert!(e.contains("`--bucket` was passed to `w`"), "{e}");
 }
 
 #[test]

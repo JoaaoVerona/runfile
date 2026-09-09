@@ -22,12 +22,12 @@ pub struct Props {
 	pub logging: bool,
 	pub workdir: Option<String>,
 	pub env: BTreeMap<String, String>,
-	// header-only
+	/// Both append rather than replace, so a block adds to what it inherited
+	/// and a `_shared.run` entry is never lost by a target naming its own.
 	pub env_files: Vec<String>,
 	pub add_paths: Vec<String>,
-	pub confirm: Option<String>,
+	// header-only
 	pub watch: Vec<String>,
-	pub hide: bool,
 	/// Start the commands and do not wait; see `Spawn::detach`.
 	pub detach: bool,
 	pub aliases: Vec<String>,
@@ -36,7 +36,16 @@ pub struct Props {
 
 /// Properties a nested block may set. Everything else is header-only, because
 /// the runner has to know it before any statement runs.
-const BLOCK_SCOPED: &[&str] = &["shell", "parallel", "ignore-errors", "logging", "workdir", "env"];
+const BLOCK_SCOPED: &[&str] = &[
+	"shell",
+	"parallel",
+	"ignore-errors",
+	"logging",
+	"workdir",
+	"env",
+	"env-file",
+	"add-path",
+];
 
 /// Every property name, and whether it may appear inside a block.
 ///
@@ -50,78 +59,84 @@ pub struct KnownProperty {
 	/// than only at the top of a file.
 	pub block_scoped: bool,
 	pub doc: &'static str,
+	/// What it looks like in a file. A property is a line someone writes
+	/// rather than a value they compute, so the useful thing to show is the
+	/// line.
+	pub example: &'static str,
 }
 
 pub const PROPERTIES: &[KnownProperty] = &[
 	KnownProperty {
 		name: "add-path",
-		block_scoped: false,
+		block_scoped: true,
 		doc: "Prepend a directory to `PATH`, relative to the runfiles parent.",
+		example: ".add-path = \"node_modules/.bin\"",
 	},
 	KnownProperty {
 		name: "alias",
 		block_scoped: false,
 		doc: "Another name this target answers to. Carries the target's namespace.",
+		example: ".alias = \"build:release\"\n\n# `run build:release` now reaches this file.",
 	},
 	KnownProperty {
 		name: "detach",
 		block_scoped: false,
 		doc: "Start the commands and do not wait. For something meant to outlive the run.",
-	},
-	KnownProperty {
-		name: "confirm",
-		block_scoped: false,
-		doc: "Ask before running. Skipped by `-y` and in CI.",
+		example: ".detach = true\n\n$ cargo run --bin server",
 	},
 	KnownProperty {
 		name: "env",
 		block_scoped: true,
 		doc: "Set an environment variable, addressed by sub-key: `.env.NAME = \"value\"`.",
+		example: ".env.PORT = ARG.port ? \"3000\"\n.env.DATABASE_URL = \"postgres://localhost/app\"",
 	},
 	KnownProperty {
 		name: "env-file",
-		block_scoped: false,
+		block_scoped: true,
 		doc: "Load a `.env` file. Encrypted values are decrypted in memory.",
-	},
-	KnownProperty {
-		name: "hide",
-		block_scoped: false,
-		doc: "Keep this target out of `run :list`. It still runs.",
+		example: ".env-file = \".env.{{ one_of(ARG.env, \\\"dev\\\", \\\"prod\\\") }}\"",
 	},
 	KnownProperty {
 		name: "ignore-errors",
 		block_scoped: true,
 		doc: "Keep going when a command fails.",
+		example: ".ignore-errors\n\n# Creating a volume that exists is an error worth ignoring.\n$ docker volume create app-data",
 	},
 	KnownProperty {
 		name: "logging",
 		block_scoped: true,
 		doc: "Announce each command on stderr before it runs.",
+		example: ".logging = true\n\n# Each command announces itself on stderr as it runs.",
 	},
 	KnownProperty {
 		name: "only-in-directories",
 		block_scoped: false,
 		doc: "For the machine-wide directory: offer these targets only inside these directories.",
+		example: ".only-in-directories = \"~/work/acme\"",
 	},
 	KnownProperty {
 		name: "parallel",
 		block_scoped: true,
 		doc: "Run this block's commands at once, each branch labelled in the output.",
+		example: "for compose in glob(\"**/docker-compose.yml\")\n\t.parallel\n\n\t$ docker compose -f {{ compose }} pull\nend",
 	},
 	KnownProperty {
 		name: "shell",
 		block_scoped: true,
 		doc: "Which shell `$` lines use.",
+		example: ".shell = \"sh\"",
 	},
 	KnownProperty {
 		name: "watch",
 		block_scoped: false,
 		doc: "Re-run whenever a matching file changes. A `!` prefix excludes.",
+		example: ".watch = \"src/**/*.rs\"\n.watch = \"!src/generated/**\"",
 	},
 	KnownProperty {
 		name: "workdir",
 		block_scoped: true,
 		doc: "Where commands run, relative to the runfiles parent.",
+		example: ".workdir = \"web\"",
 	},
 ];
 
@@ -142,12 +157,10 @@ impl Props {
 	pub fn extend(&self, block: &Block, sc: &mut Scope, nested: bool) -> Result<Props, PropError> {
 		let mut out = self.clone();
 		// A nested block inherits behaviour but never a parent's one-shot header
-		// state -- a confirm must not fire again per loop iteration.
+		// state.
 		if nested {
-			out.confirm = None;
 			out.watch.clear();
 			out.aliases.clear();
-			out.hide = false;
 			out.detach = false;
 		}
 		for p in &block.properties {
@@ -159,6 +172,16 @@ impl Props {
 	fn apply(&mut self, p: &Property, sc: &mut Scope, nested: bool) -> Result<(), PropError> {
 		let head = p.path[0].as_str();
 		let line = p.span.line;
+		// Whether it exists comes first. `BLOCK_SCOPED` is a subset of the
+		// known names, so asking about scope first told someone who typed
+		// `.ignore-error` inside a `for` that it was header-only -- sending
+		// them after a rule instead of a spelling mistake.
+		if !PROPERTIES.iter().any(|k| k.name == head) {
+			return Err(PropError::Unknown {
+				name: p.path.join("."),
+				line,
+			});
+		}
 		if nested && !BLOCK_SCOPED.contains(&head) {
 			return Err(PropError::NotBlockScoped {
 				name: p.path.join("."),
@@ -186,9 +209,7 @@ impl Props {
 			"parallel" => self.parallel = flag(p, sc)?,
 			"ignore-errors" => self.ignore_errors = flag(p, sc)?,
 			"workdir" => self.workdir = Some(value(p, sc)?.to_string()),
-			"hide" => self.hide = flag(p, sc)?,
 			"detach" => self.detach = flag(p, sc)?,
-			"confirm" => self.confirm = Some(value(p, sc)?.to_string()),
 			"env" => {
 				if p.path.len() != 2 {
 					return Err(PropError::Unknown {

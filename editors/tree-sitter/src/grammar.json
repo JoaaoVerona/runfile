@@ -43,6 +43,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "do_statement"
+        },
+        {
+          "type": "SYMBOL",
           "name": "if_statement"
         },
         {
@@ -387,6 +391,28 @@
           "value": "("
         },
         {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "_code_of_shell"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "dispatch"
+            }
+          ]
+        },
+        {
+          "type": "STRING",
+          "value": ")"
+        }
+      ]
+    },
+    "_code_of_shell": {
+      "type": "SEQ",
+      "members": [
+        {
           "type": "STRING",
           "value": "$"
         },
@@ -406,10 +432,40 @@
               "type": "BLANK"
             }
           ]
-        },
+        }
+      ]
+    },
+    "dispatch": {
+      "type": "SEQ",
+      "members": [
         {
           "type": "STRING",
-          "value": ")"
+          "value": "run"
+        },
+        {
+          "type": "FIELD",
+          "name": "target",
+          "content": {
+            "type": "ALIAS",
+            "content": {
+              "type": "SYMBOL",
+              "name": "dispatch_word"
+            },
+            "named": true,
+            "value": "target"
+          }
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "ALIAS",
+            "content": {
+              "type": "SYMBOL",
+              "name": "dispatch_word"
+            },
+            "named": true,
+            "value": "argument"
+          }
         }
       ]
     },
@@ -619,6 +675,34 @@
         {
           "type": "STRING",
           "value": "end"
+        }
+      ]
+    },
+    "do_statement": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "do"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_newline"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_line"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "end"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_newline"
         }
       ]
     },
@@ -1757,6 +1841,10 @@
     {
       "type": "SYMBOL",
       "name": "run_word"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "dispatch_word"
     },
     {
       "type": "SYMBOL",

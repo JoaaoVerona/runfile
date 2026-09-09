@@ -198,6 +198,84 @@ fn go_to_definition_lands_on_the_targets_own_file() {
 }
 
 #[test]
+fn go_to_definition_follows_a_dispatch_inside_code_of() {
+	// The same jump as the statement form, through the whole server: a scored
+	// dispatch is still a call to that target's file.
+	let d = tempfile::TempDir::new().unwrap();
+	let dir = d.path().join("runfiles");
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(dir.join("build.run"), "$ true\n").unwrap();
+	let doc = dir.join("gate.run");
+	let src = "let c = code_of(run build)\n";
+	std::fs::write(&doc, src).unwrap();
+	let uri = path_to_uri(&doc);
+
+	let out = converse(&[
+		did_open(&uri, src),
+		json!({
+			"jsonrpc": "2.0", "id": 3, "method": "textDocument/definition",
+			"params": {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 22}},
+		}),
+	]);
+	let target = out[1]["result"]["uri"].as_str().expect("a location");
+	assert!(target.ends_with("build.run"), "{target}");
+}
+
+#[test]
+fn go_to_definition_lands_on_a_binding_in_the_same_file() {
+	let d = tempfile::TempDir::new().unwrap();
+	let dir = d.path().join("runfiles");
+	std::fs::create_dir_all(&dir).unwrap();
+	let doc = dir.join("t.run");
+	let src = "let region = \"eu\"\n\n$ deploy {{ region }}\n";
+	std::fs::write(&doc, src).unwrap();
+	let uri = path_to_uri(&doc);
+
+	let out = converse(&[
+		did_open(&uri, src),
+		json!({
+			"jsonrpc": "2.0", "id": 3, "method": "textDocument/definition",
+			"params": {"textDocument": {"uri": uri}, "position": {"line": 2, "character": 13}},
+		}),
+	]);
+	let r = &out[1]["result"];
+	assert_eq!(r["uri"].as_str().unwrap(), uri, "the same document");
+	assert_eq!(r["range"]["start"]["line"], 0);
+	assert_eq!(r["range"]["start"]["character"], 4, "on the name, not the `let`");
+}
+
+#[test]
+fn go_to_definition_follows_a_binding_into_the_shared_file() {
+	// The one a reader cannot find by looking: a `_shared.run` binding applies
+	// to every target in its directory and appears nowhere in the file using
+	// it.
+	let d = tempfile::TempDir::new().unwrap();
+	let dir = d.path().join("runfiles");
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(
+		dir.join("_shared.run"),
+		"# Shared.\n\nlet osvImage = \"ghcr.io/google/osv-scanner:v2\"\n",
+	)
+	.unwrap();
+	let doc = dir.join("audit.run");
+	let src = "# Audit.\n$ docker run {{ osvImage }}\n";
+	std::fs::write(&doc, src).unwrap();
+	let uri = path_to_uri(&doc);
+
+	let out = converse(&[
+		did_open(&uri, src),
+		json!({
+			"jsonrpc": "2.0", "id": 3, "method": "textDocument/definition",
+			"params": {"textDocument": {"uri": uri}, "position": {"line": 1, "character": 18}},
+		}),
+	]);
+	let r = &out[1]["result"];
+	assert!(r["uri"].as_str().expect("a location").ends_with("_shared.run"), "{r}");
+	assert_eq!(r["range"]["start"]["line"], 2);
+	assert_eq!(r["range"]["start"]["character"], 4);
+}
+
+#[test]
 fn a_uri_with_escapes_round_trips() {
 	let p = std::path::Path::new("/tmp/a b/runfiles/x.run");
 	let uri = path_to_uri(p);
@@ -299,10 +377,15 @@ fn hover_is_advertised_and_answered() {
 		}),
 	]);
 	assert_eq!(out[0]["result"]["capabilities"]["hoverProvider"], true);
+	// A card: a fenced heading, prose, and a worked example -- the last is what
+	// makes the popup worth opening.
 	let property = out[2]["result"]["contents"]["value"].as_str().expect("markdown");
-	assert!(property.contains("`.watch`"), "{property}");
+	assert!(property.contains("```runfile\n.watch\n```"), "{property}");
+	assert!(property.contains("**Example**"), "{property}");
+	assert!(property.contains("Header-only"), "{property}");
 	let source = out[3]["result"]["contents"]["value"].as_str().expect("markdown");
-	assert!(source.contains("`RUN.os`"), "{source}");
+	assert!(source.contains("```runfile\nRUN.os\n```"), "{source}");
+	assert!(source.contains("**Example**"), "{source}");
 }
 
 #[test]

@@ -10,6 +10,8 @@ pub mod ast;
 pub mod eval;
 pub mod format;
 pub mod functions;
+pub mod inputs;
+pub mod keywords;
 pub mod lexer;
 pub mod parser;
 pub mod span;
@@ -58,6 +60,8 @@ fn strip_between(text: &mut String, open: &str, close: char) {
 		from = at + open.len();
 	}
 }
+pub use inputs::Inputs;
+pub use keywords::{KEYWORDS, Keyword};
 pub use span::Span;
 pub use structured::Structured;
 pub use value::{TypeError, Value};

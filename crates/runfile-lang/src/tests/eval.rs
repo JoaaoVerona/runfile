@@ -202,16 +202,17 @@ fn every_dispatched_function_name_is_also_exported() {
 	// worked but was absent from the list, so completion never offered it and
 	// nothing noticed. Reads the dispatchers' own match arms.
 	//
-	// Bounded to `call` and `call_io`, because other functions in the file match
-	// on strings too -- `now_formatted` on its format names -- and those are not
-	// function names.
+	// Bounded to the three functions that dispatch, because others in the file
+	// match on strings too -- `now_formatted` on its format names -- and those
+	// are not function names. `call` handles `try`, hands the rest to
+	// `call_with`, and `call_io` takes what needs the outside world.
 	let src = include_str!("../functions.rs");
 	let mut missing: Vec<String> = Vec::new();
 	let mut seen = 0usize;
 	let mut inside = false;
 	for line in src.lines() {
 		if line.starts_with("fn ") || line.starts_with("pub fn ") || line.starts_with("pub(crate) fn ") {
-			inside = line.contains(" call(") || line.contains(" call_io(");
+			inside = line.contains(" call(") || line.contains(" call_with(") || line.contains(" call_io(");
 			continue;
 		}
 		if !inside {
@@ -669,19 +670,97 @@ fn a_capture_may_stand_as_a_condition_a_subject_or_a_code() {
 }
 
 #[test]
-fn code_of_says_what_it_wants_when_it_is_written_wrongly() {
-	assert!(
-		crate::parse("let c = code_of(\"x\")\n")
-			.unwrap_err()
-			.to_string()
-			.contains("takes a `$` run")
-	);
+fn an_unclosed_call_holding_a_capture_says_so() {
 	assert!(
 		crate::parse("let c = code_of($ mkdir out\n")
 			.unwrap_err()
 			.to_string()
 			.contains("never closed")
 	);
+	// `code_of("x")` is no longer a parse error -- it is an ordinary call now,
+	// and the runtime is what says it wanted a `$` run.
+	assert!(crate::parse("let c = code_of(\"x\")\n").is_ok());
+}
+
+#[test]
+fn a_capture_may_be_the_last_argument_of_any_call() {
+	use crate::{Expr, Statement};
+	for src in [
+		"let f = lines($ git ls-files)\n",
+		"let n = length($ git ls-files)\n",
+		"let t = trim($ git rev-parse HEAD)\n",
+	] {
+		let t = crate::parse(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+		let Statement::Let {
+			value: Expr::Call { args, .. },
+			..
+		} = &t.body.statements[0]
+		else {
+			panic!("{src:?}: not a call")
+		};
+		assert!(
+			matches!(args.last(), Some(Expr::Capture { .. })),
+			"{src:?}: the last argument is not a capture"
+		);
+	}
+}
+
+#[test]
+fn a_capture_that_is_not_last_or_holds_a_paren_is_refused() {
+	// A capture runs to the end of its line, so anything after it on the line
+	// would be part of the command rather than the call.
+	let e = crate::parse("let x = join($ git ls-files, \",\")\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("has to be the last argument"), "{e}");
+	let e = crate::parse("let x = lines($ echo (a))\n").unwrap_err().to_string();
+	assert!(e.contains("cannot be told from"), "{e}");
+}
+
+#[test]
+fn code_of_takes_a_dispatch_and_no_other_call_does() {
+	use crate::{Expr, Statement};
+	for src in [
+		"let c = code_of(run test)\n",
+		"let c = code_of(run web:build --env=prod)\n",
+		"code_of(run test)\n",
+	] {
+		let t = crate::parse(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+		let (Statement::Let {
+			value: Expr::Call { args, .. },
+			..
+		}
+		| Statement::Call {
+			expr: Expr::Call { args, .. },
+			..
+		}) = &t.body.statements[0]
+		else {
+			panic!("{src:?}: not a call")
+		};
+		assert!(
+			matches!(args.last(), Some(Expr::Dispatch { .. })),
+			"{src:?}: the argument is not a dispatch"
+		);
+	}
+	// A dispatched target writes to the terminal, so there is no output for
+	// another call to read: a status is the only value it has.
+	let e = crate::parse("let x = lines(run build)\n").unwrap_err().to_string();
+	assert!(e.contains("cannot take a `run` dispatch"), "{e}");
+	let e = crate::parse("let x = code_of(1, run build)\n").unwrap_err().to_string();
+	assert!(e.contains("on its own"), "{e}");
+	let e = crate::parse("let x = code_of(run)\n").unwrap_err().to_string();
+	assert!(e.contains("needs a target"), "{e}");
+	// Elsewhere `run` is only a dispatch when a target follows it: a binding
+	// called `run` is oddly named but legal, and stays a name.
+	let t = crate::parse("let x = length(run)\n").unwrap();
+	let Statement::Let {
+		value: Expr::Call { args, .. },
+		..
+	} = &t.body.statements[0]
+	else {
+		panic!("not a call")
+	};
+	assert!(matches!(args.last(), Some(Expr::Ident(n, _)) if n == "run"), "{args:?}");
 }
 
 #[test]
@@ -776,4 +855,141 @@ fn a_json_block_is_a_value_and_not_a_statement() {
 	// It computes something; a line that only computes is a mistake.
 	let e = crate::parse("json\n\t{}\nend\n").unwrap_err().to_string();
 	assert!(!e.is_empty(), "{e}");
+}
+
+#[test]
+fn a_nested_list_keeps_its_shape() {
+	assert_eq!(
+		v(r#"[[1, 2], ["a"]]"#),
+		Value::List(vec![
+			Value::List(vec![Value::Num(1.0), Value::Num(2.0)]),
+			Value::List(vec![Value::Str("a".into())]),
+		])
+	);
+}
+
+#[test]
+fn indexing_reaches_any_depth() {
+	assert_eq!(v("[[1, [2, 3]]][0][1][0]"), Value::Num(2.0));
+	assert_eq!(v(r#"[[["deep"]]][0][0][0]"#), Value::Str("deep".into()));
+}
+
+#[test]
+fn length_and_the_ends_are_of_the_level_they_are_asked_about() {
+	// A nested list is one element, not the several it holds.
+	assert_eq!(v("length([[1, 2], [3, 4, 5]])"), Value::Num(2.0));
+	assert_eq!(v("length([[1, 2], [3, 4, 5]][1])"), Value::Num(3.0));
+	assert_eq!(
+		v("first([[1, 2], [3]])"),
+		Value::List(vec![Value::Num(1.0), Value::Num(2.0)])
+	);
+	assert_eq!(
+		v("last([[1], [2, 3]])"),
+		Value::List(vec![Value::Num(2.0), Value::Num(3.0)])
+	);
+}
+
+#[test]
+fn a_row_can_be_bound_and_taken_apart() {
+	// What a `for` over a nested list gives its body.
+	assert_eq!(
+		v(r#"[["skiley-kvrocks-data", "999:999"]][0][1]"#),
+		Value::Str("999:999".into())
+	);
+}
+
+#[test]
+fn an_index_past_the_end_says_so_at_the_level_it_failed() {
+	assert!(
+		crate::parser::parse_expr("[[1]][0][9]", 0, 1)
+			.map(|e| eval_boundary(&e, &mut sc()))
+			.unwrap()
+			.is_err()
+	);
+}
+
+#[test]
+fn the_list_functions_answer_with_a_new_list() {
+	// A list was read-only before: it could be received and looked at, and
+	// anything that wanted to build one had to go out to a shell.
+	assert_eq!(v("append([1], 2, 3)"), v("[1, 2, 3]"));
+	assert_eq!(v("prepend([3], 1, 2)"), v("[1, 2, 3]"));
+	assert_eq!(v("concat_lists([1], [2, 3], [])"), v("[1, 2, 3]"));
+	assert_eq!(v("reverse([1, 2, 3])"), v("[3, 2, 1]"));
+	assert_eq!(v("unique([1, 2, 1, 3, 2])"), v("[1, 2, 3]"));
+	assert_eq!(v("without([1, 2, 3, 2], 2)"), v("[1, 3]"));
+	assert_eq!(v("flatten([[1, 2], [3], 4])"), v("[1, 2, 3, 4]"));
+	assert_eq!(v("slice([1, 2, 3, 4], 1)"), v("[2, 3, 4]"));
+	assert_eq!(v("slice([1, 2, 3, 4], 1, 2)"), v("[2, 3]"));
+	assert_eq!(v("zip([1, 2], [\"a\", \"b\", \"c\"])"), v("[[1, \"a\"], [2, \"b\"]]"));
+	assert_eq!(v("index_of([\"a\", \"b\"], \"b\")"), Value::Num(1.0));
+	assert_eq!(v("index_of([\"a\"], \"z\")"), Value::Num(-1.0));
+}
+
+#[test]
+fn the_list_functions_leave_what_they_were_given_alone() {
+	// The whole point of answering with a new list: a binding must not change
+	// behind another name.
+	assert_eq!(v("concat_lists(append([1], 2), reverse([1]))"), v("[1, 2, 1]"));
+}
+
+#[test]
+fn sort_orders_numbers_by_value_and_everything_else_by_its_text() {
+	assert_eq!(v("sort([10, 2, 33])"), v("[2, 10, 33]"), "not by text");
+	assert_eq!(v("sort([\"b\", \"a\", \"C\"])"), v("[\"C\", \"a\", \"b\"]"));
+	// A mixed list sorts rather than refusing: `sort(ARGS)` should not be a
+	// type puzzle. Numbers come first.
+	assert_eq!(v("sort([\"b\", 2, \"a\", 1])"), v("[1, 2, \"a\", \"b\"]"));
+}
+
+#[test]
+fn slicing_past_the_end_is_empty_rather_than_an_error() {
+	assert_eq!(v("slice([1, 2], 9)"), v("[]"));
+	assert_eq!(v("slice([1, 2], 1, 99)"), v("[2]"));
+	assert_eq!(v("slice([], 0, 3)"), v("[]"));
+}
+
+#[test]
+fn esc_is_an_escape_the_language_has() {
+	// Colour is what `printf` is for, and without this every coloured line had
+	// to stay a shell line.
+	assert_eq!(v(r#""\e[31mred\e[0m""#), Value::Str("\u{1b}[31mred\u{1b}[0m".into()));
+}
+
+#[test]
+fn every_documented_example_parses() {
+	// These are what hover and completion show, and what a person copies out
+	// of them. `code_of` shipped an example that could not parse at all --
+	// `if code_of($ …) != 0`, which the `)`-at-end-of-line rule refuses --
+	// because nothing had ever fed one back through the parser.
+	//
+	// An example is a fragment, so it is parsed inside a target: a bare `case`
+	// or `$` line is legal there and legal nowhere else. A result annotation
+	// -- two or more spaces, then `#` -- is dropped first: a comment here is a
+	// whole line, so `abs(-4)   # 4` says what the value is the way a REPL
+	// transcript does rather than being code. Two spaces, so a `#` written as
+	// code still has to parse.
+	let mut bad = Vec::new();
+	for (what, name, example) in crate::functions::FUNCTIONS
+		.iter()
+		.map(|f| ("function", f.name, f.example))
+		.chain(crate::keywords::KEYWORDS.iter().map(|k| ("keyword", k.name, k.example)))
+	{
+		if example.is_empty() {
+			continue;
+		}
+		let code = example
+			.lines()
+			.map(|l| match l.find("  #") {
+				Some(k) if !l.trim_start().starts_with('$') => &l[..k],
+				_ => l,
+			})
+			.collect::<Vec<_>>()
+			.join("\n");
+		let src = format!("# what {name} does\n\n{code}\n");
+		if let Err(e) = crate::parse(&src) {
+			bad.push(format!("{what} `{name}`: {e}\n    {}", code.replace('\n', "\n    ")));
+		}
+	}
+	assert!(bad.is_empty(), "examples that do not parse:\n\n{}", bad.join("\n\n"));
 }

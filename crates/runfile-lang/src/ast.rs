@@ -38,6 +38,12 @@ pub enum Statement {
 	Assign { name: String, value: Expr, span: Span },
 	/// A bare call evaluated for its effect, e.g. `decrypt(a, b)`.
 	Call { expr: Expr, span: Span },
+	/// `do … end`: a block with no condition.
+	///
+	/// Properties are block-scoped, and every block form until now also asked
+	/// a question. Somewhere to put `.workdir` for two commands should not
+	/// require inventing an `if true`.
+	Do { body: Block, span: Span },
 	/// `if cond … else … end`
 	If {
 		cond: Expr,
@@ -110,6 +116,41 @@ pub enum InterpPart {
 	Expr(Expr),
 }
 
+/// The body of a structured block, and which format it is in.
+///
+/// Its `Debug` is the block's *tokens* rather than its text, so a fingerprint
+/// says what the block contains and not how it is laid out. That is the same
+/// reason spans are stripped from one: reformatting a file is not an edit to
+/// it, and both the prepare gate and the formatter's own check compare
+/// fingerprints. The format is part of it, so changing `json` to something
+/// else still counts.
+#[derive(Clone, PartialEq)]
+pub struct StructuredBody {
+	pub format: crate::Structured,
+	pub lines: Vec<Vec<InterpPart>>,
+}
+
+impl std::fmt::Debug for StructuredBody {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}(", self.format)?;
+		for parts in &self.lines {
+			for p in parts {
+				match p {
+					// A fragment that will not tokenise is written out as it
+					// stands: layout then counts, which is the safe way to be
+					// wrong.
+					InterpPart::Literal(text) => match self.format.canonical(text) {
+						Some(c) => write!(f, "{c}")?,
+						None => write!(f, "{text}\u{1}")?,
+					},
+					InterpPart::Expr(e) => write!(f, "{e:?}\u{1}")?,
+				}
+			}
+		}
+		write!(f, ")")
+	}
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
 	Number(f64, Span),
@@ -157,8 +198,7 @@ pub enum Expr {
 	/// Each entry is one line, so an interpolation inside it is an ordinary
 	/// expression the parser has already read.
 	Structured {
-		format: crate::Structured,
-		body: Vec<Vec<InterpPart>>,
+		body: StructuredBody,
 		span: Span,
 	},
 	/// `$ cmd` or `exec cmd … end` in value position: run it, take stdout with
@@ -167,6 +207,17 @@ pub enum Expr {
 	Capture {
 		command: Option<Vec<InterpPart>>,
 		body: Vec<Vec<InterpPart>>,
+		span: Span,
+	},
+	/// `run <target> [args]` in value position, which only `code_of` may hold.
+	///
+	/// A dispatched target writes to the terminal like any other, so the only
+	/// value it has to give back is its status -- and that is exactly what
+	/// `code_of` asks for. Spelled the same as the statement, because it is the
+	/// same dispatch: `code_of(run test)` is `run test`, scored.
+	Dispatch {
+		target: Vec<InterpPart>,
+		args: Vec<Vec<InterpPart>>,
 		span: Span,
 	},
 }
@@ -219,7 +270,8 @@ impl Expr {
 			| Expr::Index { span: s, .. }
 			| Expr::Call { span: s, .. }
 			| Expr::Structured { span: s, .. }
-			| Expr::Capture { span: s, .. } => *s,
+			| Expr::Capture { span: s, .. }
+			| Expr::Dispatch { span: s, .. } => *s,
 		}
 	}
 }

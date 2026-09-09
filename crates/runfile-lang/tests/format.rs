@@ -250,3 +250,143 @@ fn the_authors_own_blank_lines_are_kept() {
 	let src = "let a = 1\n\nlet b = 2\n";
 	assert_eq!(format(src).unwrap(), src);
 }
+
+#[test]
+fn a_json_block_is_laid_out_rather_than_left_alone() {
+	// An `exec` body is somebody else's language and stays as written; a
+	// `json` body is a format this runner knows, so it gets the same
+	// treatment as everything else in the file.
+	let src = "let p = json\n  {\"a\":[1,2],\"b\":{\"c\":true},\"d\":[],\"e\":{}}\nend\n";
+	assert_eq!(
+		format(src).unwrap(),
+		"let p = json\n\t{\n\t\t\"a\": [\n\t\t\t1,\n\t\t\t2\n\t\t],\n\t\t\"b\": {\n\t\t\t\"c\": true\n\t\t},\n\t\t\"d\": [],\n\t\t\"e\": {}\n\t}\nend\n"
+	);
+}
+
+#[test]
+fn laying_out_a_json_block_is_idempotent() {
+	let src = "let p = json\n{\"a\":[1,{\"b\":[[]]}],\"c\":null}\nend\n";
+	let once = format(src).unwrap();
+	assert_eq!(format(&once).unwrap(), once);
+}
+
+#[test]
+fn an_interpolation_survives_the_layout_whole() {
+	// It is one JSON value, and a value is a token like any other -- but its
+	// insides are the language's, not the format's, so nothing inside the
+	// braces may be touched.
+	let src = "let p = json\n{\"n\":{{ number(ARG.n) }},\"s\":{{ ARG.a ? \"x, y\" }}}\nend\n";
+	let out = format(src).unwrap();
+	assert!(out.contains("\"n\": {{ number(ARG.n) }}"), "{out}");
+	assert!(out.contains("\"s\": {{ ARG.a ? \"x, y\" }}"), "{out}");
+}
+
+#[test]
+fn a_string_keeps_its_own_escapes_and_spacing() {
+	// Tokens are copied from the source, never re-serialised, so a `\u0041`
+	// escape is not rewritten as the letter it stands for and the spaces
+	// inside a string are left alone.
+	let src = "let p = json\n{\"a\":\"x  y\\u0041\\\"z\"}\nend\n";
+	let out = format(src).unwrap();
+	assert!(out.contains("\"a\": \"x  y\\u0041\\\"z\""), "{out}");
+}
+
+#[test]
+fn an_exec_body_that_looks_like_json_is_still_left_alone() {
+	let src = "let p = exec cat\n  {\"a\":1}\nend\n";
+	assert_eq!(format(src).unwrap(), "let p = exec cat\n\t{\"a\":1}\nend\n");
+}
+
+#[test]
+fn a_json_blocks_layout_is_not_part_of_its_fingerprint() {
+	// This is what lets the formatter lay one out at all: it checks its own
+	// work by comparing fingerprints, and the prepare gate uses the same
+	// number, so reformatting a `setup.run` must not re-trigger it.
+	let a = parse("let p = json\n{\"a\":[1,2]}\nend\n").unwrap();
+	let b = parse("let p = json\n\t{\n\t\t\"a\": [\n\t\t\t1,\n\t\t\t2\n\t\t]\n\t}\nend\n").unwrap();
+	assert_eq!(fingerprint(&a), fingerprint(&b));
+}
+
+#[test]
+fn but_what_a_json_block_says_is() {
+	let a = parse("let p = json\n{\"a\": [1, 2]}\nend\n").unwrap();
+	for other in [
+		"let p = json\n{\"a\": [1, 3]}\nend\n",
+		"let p = json\n{\"b\": [1, 2]}\nend\n",
+		"let p = json\n{\"a\": [1, 2, 3]}\nend\n",
+		"let p = json\n{\"a\": [12]}\nend\n",
+		"let p = json\n{\"a\": [{{ ARG.x }}, 2]}\nend\n",
+	] {
+		let b = parse(other).unwrap();
+		assert_ne!(fingerprint(&a), fingerprint(&b), "{other}");
+	}
+}
+
+#[test]
+fn a_spilled_list_is_indented_by_how_deep_it_is() {
+	// One level per bracket still open. A `]` sits with the `[` it answers,
+	// not with what was inside it.
+	let src = "let deep = [\n[\n1,\n2\n],\n[3, [4]],\n]\n";
+	assert_eq!(
+		format(src).unwrap(),
+		"let deep = [\n\t[\n\t\t1,\n\t\t2\n\t],\n\t[3, [4]],\n]\n"
+	);
+}
+
+#[test]
+fn a_flat_spilled_list_is_unchanged_by_that() {
+	let src = "let xs = [\n\"a\",\n\"b\",\n]\n";
+	assert_eq!(format(src).unwrap(), "let xs = [\n\t\"a\",\n\t\"b\",\n]\n");
+}
+
+#[test]
+fn laying_out_a_nested_list_is_idempotent() {
+	let src = "let deep = [\n[[1], [2, [3]]],\n[\n4\n],\n]\n";
+	let once = format(src).unwrap();
+	assert_eq!(format(&once).unwrap(), once);
+}
+
+#[test]
+fn a_bracket_inside_a_string_does_not_indent_the_rest_of_the_list() {
+	let src = "let xs = [\n\"a[b\",\n\"c\",\n]\n";
+	assert_eq!(format(src).unwrap(), "let xs = [\n\t\"a[b\",\n\t\"c\",\n]\n");
+}
+
+#[test]
+fn a_for_header_spills_its_nested_list_at_the_headers_level() {
+	// The list belongs to the header, not to the body it opens.
+	let src = "for row in [\n[\"a\", \"1\"],\n[\"b\", \"2\"],\n]\n$ echo {{ row[0] }}\nend\n";
+	assert_eq!(
+		format(src).unwrap(),
+		"for row in [\n\t[\"a\", \"1\"],\n\t[\"b\", \"2\"],\n]\n\t$ echo {{ row[0] }}\nend\n"
+	);
+}
+
+#[test]
+fn a_call_holding_a_capture_is_left_as_written() {
+	// Everything from the `$` on is the shell's text. The formatter knew this
+	// about `code_of` and had to be told about every other call.
+	for src in [
+		"let files = lines($ git diff --cached --name-only -- \"*.rs\")\n",
+		"code_of($ docker volume create app-data)\n",
+		"for f in lines($ git ls-files '*.sh')\n\t$ sh -n {{ f }}\nend\n",
+	] {
+		assert_eq!(format(src).unwrap(), src, "{src:?}");
+	}
+}
+
+#[test]
+fn a_scored_dispatch_is_spaced_like_a_run_statement() {
+	// `code_of(run …)` holds the same words a `run` statement does, not an
+	// expression, so they are separated by one space and otherwise untouched.
+	assert_eq!(
+		format("let c = code_of(run  web:build   --env={{ e }})\n").unwrap(),
+		"let c = code_of(run web:build --env={{ e }})\n"
+	);
+	for src in [
+		"code_of(run test)\n",
+		"let c = code_of(run test --filter={{ ARG.filter }})\n",
+	] {
+		assert_eq!(format(src).unwrap(), src, "{src:?}");
+	}
+}

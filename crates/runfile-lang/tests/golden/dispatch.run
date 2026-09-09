@@ -3,3 +3,5 @@
 run build
 run web:{{ target }} --env=prod
 run _aws -- s3api --bucket {{ name }}
+
+let failed = code_of(run test --filter={{ name }})

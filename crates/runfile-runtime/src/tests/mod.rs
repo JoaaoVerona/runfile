@@ -48,14 +48,14 @@ pub fn run_src(src: &str, d: &dyn Dispatch) -> Result<Vec<String>, RunError> {
 	let mut scope = Scope::new();
 	scope.run.insert("os".into(), Value::Str("linux".into()));
 	let dir = std::env::temp_dir();
+	let mut scope = scope;
+	scope.assume_yes = true;
 	let mut r = Runner {
 		scope,
 		chain: Vec::new(),
 		env: Vec::new(),
 		anchor: dir,
 		dispatch: d,
-		assume_yes: true,
-		prompt: None,
 		interrupted: None,
 		label: None,
 		dry_run: false,

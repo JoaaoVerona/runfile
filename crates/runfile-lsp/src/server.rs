@@ -226,31 +226,50 @@ impl Server {
 	/// "definition" is exact rather than a search.
 	fn definition(&self, params: &Value) -> Value {
 		let uri = uri_of(&params["textDocument"]);
-		let line = params["position"]["line"].as_u64().unwrap_or(0) as usize;
+		let no = params["position"]["line"].as_u64().unwrap_or(0) as usize;
+		let col = params["position"]["character"].as_u64().unwrap_or(0) as usize;
 		let src = self.docs.get(&uri).map(String::as_str).unwrap_or_default();
-		let Some(text) = src.lines().nth(line) else {
-			return Value::Null;
-		};
-		let Some(name) = text.trim().strip_prefix("run ") else {
-			return Value::Null;
-		};
-		let Some(name) = name.split_whitespace().next() else {
-			return Value::Null;
-		};
 		let Some(here) = uri_to_path(&uri) else {
 			return Value::Null;
 		};
-		let Some(dir) = here.parent() else { return Value::Null };
-		let Ok(cat) = runfile_discovery::discover(dir, dirs_home().as_deref()) else {
-			return Value::Null;
-		};
-		match cat.resolve(name) {
-			Some(t) => json!({
-				"uri": path_to_uri(&t.path),
-				"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
-			}),
+		match analysis::definition(src, no, col) {
+			Some(analysis::Ref::Here { line, character }) => at(&uri, line, character),
+			Some(analysis::Ref::Target(name)) => self
+				.catalog(&here)
+				.and_then(|cat| cat.resolve(&name).map(|t| at(&path_to_uri(&t.path), 0, 0)))
+				.unwrap_or(Value::Null),
+			// A name this file does not bind: look up the `_shared.run` chain,
+			// innermost first, which is the order they layer in.
+			Some(analysis::Ref::Shared(name)) => self.in_shared(&here, &name),
 			None => Value::Null,
 		}
+	}
+
+	fn catalog(&self, here: &std::path::Path) -> Option<runfile_discovery::Catalog> {
+		let dir = here.parent()?;
+		runfile_discovery::discover(dir, dirs_home().as_deref()).ok()
+	}
+
+	/// Where a `_shared.run` above this file binds `name`.
+	///
+	/// The one place a reader most needs taking to: a shared binding applies to
+	/// every target in its directory and appears nowhere in the file using it.
+	fn in_shared(&self, here: &std::path::Path, name: &str) -> Value {
+		let Some(cat) = self.catalog(here) else {
+			return Value::Null;
+		};
+		let Some(target) = cat.targets.values().find(|t| t.path == here) else {
+			return Value::Null;
+		};
+		for path in cat.shared_chain(target).into_iter().rev() {
+			let Ok(src) = std::fs::read_to_string(&path) else {
+				continue;
+			};
+			if let Some((line, character)) = analysis::binding_in(&src, name, None) {
+				return at(&path_to_uri(&path), line, character);
+			}
+		}
+		Value::Null
 	}
 }
 
@@ -332,6 +351,17 @@ fn publish(uri: &str, diagnostics: Vec<Value>) -> Value {
 		"jsonrpc": "2.0",
 		"method": "textDocument/publishDiagnostics",
 		"params": {"uri": uri, "diagnostics": diagnostics},
+	})
+}
+
+/// One LSP location, which is all a jump needs.
+fn at(uri: &str, line: usize, character: usize) -> Value {
+	json!({
+		"uri": uri,
+		"range": {
+			"start": {"line": line, "character": character},
+			"end": {"line": line, "character": character},
+		},
 	})
 }
 

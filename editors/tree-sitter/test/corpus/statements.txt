@@ -212,3 +212,47 @@ end
         (interpolation
           (identifier))
         (exec_content)))))
+
+================================================================================
+A bare block
+================================================================================
+
+do
+	.workdir = "web"
+
+	$ pnpm install
+end
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (do_statement
+    (property
+      name: (property_name
+        (identifier))
+      value: (string
+        (string_content)))
+    (shell_line
+      (shell_text
+        (shell_content)))))
+
+================================================================================
+A dispatch inside code_of
+================================================================================
+
+let c = code_of(run test)
+code_of(run web:build --env={{ e }})
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (code_of
+      (dispatch
+        (target))))
+  (expression_statement
+    (code_of
+      (dispatch
+        (target)
+        (argument)))))

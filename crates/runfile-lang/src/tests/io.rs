@@ -132,3 +132,78 @@ fn a_single_star_does_not_cross_a_directory_boundary() {
 		"a/**/*.yml reaches both -- ** also matches zero directories"
 	);
 }
+
+mod printf {
+	use crate::functions::render_format;
+	use crate::span::Span;
+	use crate::value::Value;
+
+	fn f(fmt: &str, args: &[Value]) -> Result<String, String> {
+		render_format(fmt, args, Span::new(0, 0, 1)).map_err(|e| e.to_string())
+	}
+
+	fn s(x: &str) -> Value {
+		Value::Str(x.into())
+	}
+
+	#[test]
+	fn the_substitutions_it_has() {
+		assert_eq!(f("%s", &[s("a")]).unwrap(), "a");
+		assert_eq!(f("%d", &[Value::Num(42.0)]).unwrap(), "42");
+		assert_eq!(f("%d", &[Value::Num(-7.0)]).unwrap(), "-7");
+		assert_eq!(f("%f", &[Value::Num(1.5)]).unwrap(), "1.500000");
+		assert_eq!(f("%.2f", &[Value::Num(1.005)]).unwrap(), "1.00");
+		assert_eq!(f("%.0f", &[Value::Num(2.6)]).unwrap(), "3");
+	}
+
+	#[test]
+	fn percent_escapes_itself_and_takes_no_value() {
+		assert_eq!(f("100%%", &[]).unwrap(), "100%");
+		assert_eq!(f("%d%% of %s", &[Value::Num(50.0), s("them")]).unwrap(), "50% of them");
+	}
+
+	#[test]
+	fn text_around_the_substitutions_is_kept_as_it_stands() {
+		assert_eq!(f("a\tb\n", &[]).unwrap(), "a\tb\n");
+		assert_eq!(f("[%s]", &[s("")]).unwrap(), "[]");
+	}
+
+	#[test]
+	fn any_value_has_an_s_form() {
+		assert_eq!(f("%s", &[Value::Bool(true)]).unwrap(), "true");
+		assert_eq!(f("%s", &[Value::Num(2.0)]).unwrap(), "2");
+		assert_eq!(
+			f("%s", &[Value::List(vec![s("a"), Value::List(vec![s("b")])])]).unwrap(),
+			"a b"
+		);
+	}
+
+	#[test]
+	fn the_count_has_to_match_in_both_directions() {
+		// A `%s` with nothing to put in it, or a value with no `%` to go to,
+		// is a typo every time.
+		assert!(f("%s %s", &[s("one")]).is_err());
+		assert!(f("%s", &[s("a"), s("b")]).is_err());
+		assert!(f("no substitutions", &[s("a")]).is_err());
+	}
+
+	#[test]
+	fn a_wrong_type_is_refused_rather_than_coerced() {
+		assert!(f("%d", &[s("12")]).is_err());
+		assert!(f("%f", &[Value::Bool(true)]).is_err());
+		assert!(f("%d", &[Value::Num(2.5)]).is_err());
+	}
+
+	#[test]
+	fn a_malformed_format_says_what_is_wrong() {
+		for (fmt, want) in [
+			("%", "nothing to substitute"),
+			("%q", "not a substitution"),
+			("%.2d", "only for `%f`"),
+			("%.f", "followed by a number"),
+		] {
+			let e = f(fmt, &[s("a")]).unwrap_err();
+			assert!(e.contains(want), "{fmt:?} said {e:?}");
+		}
+	}
+}

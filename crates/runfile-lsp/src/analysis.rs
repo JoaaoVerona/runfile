@@ -4,7 +4,7 @@
 //! so an editor can never disagree with what `run` does. Keeping this layer
 //! free of protocol types is what lets it be tested without a client.
 
-use runfile_lang::{InterpPart, Statement};
+use runfile_lang::{InterpPart, KEYWORDS, Statement};
 use runfile_runtime::props::PROPERTIES;
 
 /// A zero-based, half-open range, the way LSP counts.
@@ -214,27 +214,82 @@ pub enum Completions {
 
 /// What `RUN.` offers, and what each one means. The only source with a fixed
 /// set of keys: `ARG`, `ENV` and `FLAG` are whatever the caller passed.
-pub const RUN_KEYS: &[(&str, &str)] = &[
-	("os", "`linux`, `mac` or `windows`."),
-	("arch", "The CPU architecture, normalised."),
-	("cwd", "The directory `run` was invoked from."),
-	("file", "This target's own file."),
+pub const RUN_KEYS: &[(&str, &str, &str)] = &[
+	(
+		"os",
+		"`linux`, `mac` or `windows`.",
+		"if RUN.os == \"windows\"\n\t$ ./build.ps1\nend",
+	),
+	(
+		"arch",
+		"The CPU architecture, normalised.",
+		"if RUN.arch == \"x86-64\"\n\tlet image = \"amd64\"\nend",
+	),
+	(
+		"cwd",
+		"The directory `run` was invoked from — which is not the anchor. A machine-wide target uses 		 it to act on the project in front of it.",
+		".workdir = RUN.cwd",
+	),
+	(
+		"file",
+		"This target's own file.",
+		"print(\"defined in {{ RUN.file }}\")",
+	),
 	(
 		"parent",
-		"The parent of `runfiles/`: the anchor every relative path resolves against.",
+		"The parent of `runfiles/`: the anchor every relative path resolves against — `glob`, 		 `read_file`, `.env-file`, `.add-path` and the working directory.",
+		"$ ln -sfn {{ RUN.parent }}/extension ~/.local/share/gnome-shell/extensions/mine",
 	),
-	("namespaces", "The subproject namespaces in this project, as a list."),
-	("user", "The name of the user running this."),
+	(
+		"namespaces",
+		"The subproject namespaces in this project, as a list — one per `*/runfiles/` directory found 		 below the anchor.",
+		"for ns in RUN.namespaces\n\trun {{ ns }}:build\nend",
+	),
+	(
+		"user",
+		"The name of the user running this.",
+		"$ loginctl show-user {{ RUN.user }} -p Linger",
+	),
 ];
 
 /// The five roots a value can come from.
-pub const SOURCES: &[(&str, &str)] = &[
-	("ARG", "A `--name=value` argument."),
-	("ENV", "An environment variable."),
-	("FLAG", "Whether `--name` was passed, as a bool."),
-	("RUN", "Context about this run."),
-	("ARGS", "The positional arguments, as a list."),
+pub const SOURCES: &[(&str, &str, &str)] = &[
+	(
+		"ARG",
+		"A `--name=value` argument. Only that spelling: `--name value` is a flag plus a positional, 		 because nothing declares which names take a value. Pair it with `?` to give it a default.",
+		"let port = ARG.port ? ENV.PORT ? \"3000\"",
+	),
+	(
+		"ENV",
+		"An environment variable, including anything an `.env-file` or `.env.NAME` put there.",
+		"let home = ENV.HOME\n\n.env-file = \".env.production\"\n$ deploy --token {{ ENV.API_TOKEN }}",
+	),
+	(
+		"FLAG",
+		"Whether `--name` was passed, as a bool. A flag needs no value and defaults to false.",
+		"if FLAG.apk\n\t$ ./gradlew :app:assembleRelease\nelse\n\t$ ./gradlew :app:bundleRelease\nend",
+	),
+	(
+		"RUN",
+		"Context about this run: `os`, `arch`, `cwd`, `file`, `parent`, `namespaces`, `user`.",
+		"match RUN.os\n\tcase \"linux\"\n\t\t$ ./install.sh\n\tcase \"windows\"\n\t\t$ ./install.ps1\nend",
+	),
+	(
+		"ARGS",
+		"The positional arguments, as a list — everything that was not a `--flag` or `--key=value`, 		 plus everything after a bare `--`.",
+		"let part = one_of(first(ARGS), \"major\", \"minor\", \"patch\")\n\n$ cargo test {{ ARGS }}",
+	),
 ];
+
+/// A completion's documentation: the prose, then the same worked example the
+/// hover shows. The label and detail already carry the name and signature, so
+/// this does not repeat them.
+fn with_example(doc: &str, example: &str) -> String {
+	if example.is_empty() {
+		return doc.into();
+	}
+	format!("{doc}\n\n```runfile\n{example}\n```")
+}
 
 /// Completion depends only on the line so far, which is what makes it usable
 /// on a document that does not currently parse.
@@ -254,7 +309,7 @@ pub fn complete(line_prefix: &str) -> Completions {
 						} else {
 							"property, header-only"
 						},
-						p.doc,
+						&with_example(p.doc, p.example),
 					)
 				})
 				.collect(),
@@ -266,7 +321,12 @@ pub fn complete(line_prefix: &str) -> Completions {
 			.next()
 			.is_some_and(|w| w.starts_with("RUN."))
 	{
-		return Completions::Sources(RUN_KEYS.iter().map(|(k, d)| Item::new(k, "run context", d)).collect());
+		return Completions::Sources(
+			RUN_KEYS
+				.iter()
+				.map(|(k, d, e)| Item::new(k, "run context", &with_example(d, e)))
+				.collect(),
+		);
 	}
 	// `run ` wants a target name; `run x ` is already past it.
 	if let Some(rest) = t.strip_prefix("run ")
@@ -282,9 +342,13 @@ pub fn complete(line_prefix: &str) -> Completions {
 	// an expression can start with.
 	let mut items: Vec<Item> = runfile_lang::functions::FUNCTIONS
 		.iter()
-		.map(|f| Item::new(f.name, f.signature, f.doc))
+		.map(|f| Item::new(f.name, f.signature, &with_example(f.doc, f.example)))
 		.collect();
-	items.extend(SOURCES.iter().map(|(n, d)| Item::new(n, "source", d)));
+	items.extend(
+		SOURCES
+			.iter()
+			.map(|(n, d, e)| Item::new(n, "source", &with_example(d, e))),
+	);
 	Completions::Functions(items)
 }
 
@@ -293,35 +357,217 @@ pub fn complete(line_prefix: &str) -> Completions {
 /// Everything a person can hover has a fixed meaning -- a property, a function,
 /// a source -- so this reads the word under the cursor rather than the tree,
 /// and keeps working while the document does not parse.
+/// What ctrl+click on a word should open.
+///
+/// Split this way so the analysis stays pure: finding the *name* is a question
+/// about one document, and finding the *file* it lives in needs discovery,
+/// which the server has.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ref {
+	/// `run <target>`: another target's file.
+	Target(String),
+	/// A binding in this document, at a zero-based position.
+	Here { line: usize, character: usize },
+	/// A name this document does not bind. It may come from a `_shared.run`
+	/// above it, which is exactly where a reader cannot see it and most wants
+	/// to be taken.
+	Shared(String),
+}
+
+/// Where the word at `col` on line `no` is defined, if anywhere.
+///
+/// Reads the tree, so a name inside a comment or a string is not mistaken for
+/// a use -- and the nearest binding **at or above** the cursor wins, which is
+/// what shadowing and rebinding mean when they happen.
+pub fn definition(src: &str, no: usize, col: usize) -> Option<Ref> {
+	let line = src.lines().nth(no)?;
+
+	// `run <target>` is a jump to a file. Tested by position rather than by
+	// word: a namespaced name like `build:release` is two words to anything
+	// that treats `:` as a separator, and clicking either half means the same
+	// thing. So does clicking the keyword.
+	//
+	// Asked before `word_at`, because the `:` between the halves is not part
+	// of a word at all: reading the word first meant that clicking the one
+	// character in the middle of a namespaced target answered nothing.
+	if let Some((at, name)) = dispatch_on(line)
+		&& at.contains(&col)
+	{
+		return Some(Ref::Target(name.trim_matches('"').to_string()));
+	}
+	let word = word_at(line, col)?;
+	if !is_name(word) {
+		return None;
+	}
+	match binding_in(src, word, Some(no)) {
+		Some((line, character)) => Some(Ref::Here { line, character }),
+		// Not bound here: a `_shared.run` above may bind it.
+		None => Some(Ref::Shared(word.to_string())),
+	}
+}
+
+/// The clickable span of a dispatch on this line, and the target it names.
+///
+/// Both spellings, because they are the same dispatch and clicking either
+/// means the same thing: the `run` statement, and the one `code_of` may hold.
+/// The span runs from the keyword through the target, so the space between
+/// them counts too -- and for a statement it reaches back to column zero,
+/// since clicking an indented line's indentation means that line.
+fn dispatch_on(line: &str) -> Option<(std::ops::Range<usize>, &str)> {
+	let indent = line.len() - line.trim_start().len();
+	// A statement is the whole line; a `code_of` holds one anywhere on it,
+	// where the `)` closing the call also ends the target.
+	let (kw, start, paren) = if line.trim_start().starts_with("run ") {
+		(indent, 0, false)
+	} else {
+		let k = line.find("code_of(run ")? + "code_of(".len();
+		(k, k, true)
+	};
+	let rest = line.get(kw + 3..)?;
+	let word = rest.trim_start();
+	let end = word
+		.find(|c: char| c.is_whitespace() || (paren && c == ')'))
+		.unwrap_or(word.len());
+	let name = &word[..end];
+	let from = kw + 3 + (rest.len() - word.len());
+	(!name.is_empty()).then(|| (start..from + name.len(), name))
+}
+
+/// Where `name` is bound in this document, as a zero-based position.
+///
+/// `before` is the line the cursor is on, when there is one: the nearest
+/// binding at or above it wins, which is what shadowing and rebinding mean.
+/// Without one -- reading a `_shared.run` as a whole -- the last binding wins.
+pub fn binding_in(src: &str, name: &str, before: Option<usize>) -> Option<(usize, usize)> {
+	let ast = runfile_lang::parse(src).ok()?;
+	let ceiling = before.map_or(usize::MAX, |n| n + 1);
+	let mut found: Option<usize> = None;
+	bindings(&ast.body, name, &mut |at| {
+		if at <= ceiling && found.is_none_or(|best| at > best) {
+			found = Some(at);
+		}
+	});
+	let at = found?;
+	let text = src.lines().nth(at - 1)?;
+	Some((at - 1, text.find(name).unwrap_or(0)))
+}
+
+/// Every line that binds `name`, reported to `hit` as a one-based line number.
+///
+/// `let` and `for` both bind; a bare reassignment does not, since the `let` is
+/// where the name was introduced and is what a reader is looking for.
+fn bindings(b: &runfile_lang::ast::Block, name: &str, hit: &mut impl FnMut(usize)) {
+	use runfile_lang::ast::Statement;
+	for s in &b.statements {
+		match s {
+			Statement::Let { name: n, span, .. } if n == name => hit(span.line),
+			Statement::For {
+				name: n, body, span, ..
+			} => {
+				if n == name {
+					hit(span.line);
+				}
+				bindings(body, name, hit);
+			}
+			Statement::Do { body, .. } => bindings(body, name, hit),
+			Statement::If { then, otherwise, .. } => {
+				bindings(then, name, hit);
+				if let Some(o) = otherwise {
+					bindings(o, name, hit);
+				}
+			}
+			Statement::Retry { body, otherwise, .. } => {
+				bindings(body, name, hit);
+				if let Some(o) = otherwise {
+					bindings(o, name, hit);
+				}
+			}
+			Statement::Match { cases, default, .. } => {
+				for c in cases {
+					bindings(&c.body, name, hit);
+				}
+				if let Some(d) = default {
+					bindings(d, name, hit);
+				}
+			}
+			_ => {}
+		}
+	}
+}
+
+fn is_name(word: &str) -> bool {
+	!word.is_empty()
+		&& word.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+		&& word.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+}
+
+/// A hover: a heading someone can read as a signature, a sentence or two of
+/// prose, and a worked example.
+///
+/// The example is the part that earns the popup. A signature says the shape of
+/// a call and a sentence says its purpose; neither answers "what do I type
+/// here", which is what a person hovering a name is usually asking. Fenced as
+/// `runfile`, so an editor colours it with the same grammar as the file.
+fn card(heading: &str, doc: &str, example: &str, footer: Option<&str>) -> String {
+	let mut out = format!("```runfile\n{heading}\n```\n\n{doc}");
+	if !example.is_empty() {
+		out.push_str(&format!("\n\n**Example**\n\n```runfile\n{example}\n```"));
+	}
+	if let Some(f) = footer {
+		out.push_str(&format!("\n\n---\n\n{f}"));
+	}
+	out
+}
+
 pub fn hover(line: &str, col: usize) -> Option<String> {
+	// `$` is punctuation rather than a word, so it is found by looking at the
+	// character rather than by `word_at`. It is the first thing anyone meets
+	// in a runfile and had nothing to say for itself.
+	if line.chars().nth(col) == Some('$') && is_shell_marker(line, col) {
+		let k = KEYWORDS.iter().find(|k| k.name == "$")?;
+		return Some(card(k.syntax, k.doc, k.example, None));
+	}
 	let word = word_at(line, col)?;
 	// `.name`, possibly dotted: `.env.PORT` is the `env` property.
 	if let Some(rest) = word.strip_prefix('.') {
 		let head = rest.split('.').next().unwrap_or(rest);
 		let p = PROPERTIES.iter().find(|p| p.name == head)?;
 		let scope = if p.block_scoped {
-			"May be set inside an `if` / `for` / `match` block."
+			"Block-scoped: it may also be set inside an `if` / `for` / `match` block, and applies to that block."
 		} else {
-			"Header-only: it belongs at the top of the file."
+			"Header-only: it belongs at the top of the file, before any statement."
 		};
-		return Some(format!("`.{}`\n\n{}\n\n{scope}", p.name, p.doc));
+		return Some(card(&format!(".{}", p.name), p.doc, p.example, Some(scope)));
 	}
 	// `ARG.name`, or a bare source root.
 	if let Some((root, key)) = word.split_once('.')
-		&& let Some((_, doc)) = SOURCES.iter().find(|(n, _)| *n == root)
+		&& let Some((_, doc, example)) = SOURCES.iter().find(|(n, _, _)| *n == root)
 	{
 		if root == "RUN"
-			&& let Some((k, d)) = RUN_KEYS.iter().find(|(k, _)| *k == key)
+			&& let Some((k, d, e)) = RUN_KEYS.iter().find(|(k, _, _)| *k == key)
 		{
-			return Some(format!("`RUN.{k}`\n\n{d}"));
+			return Some(card(&format!("RUN.{k}"), d, e, None));
 		}
-		return Some(format!("`{root}.{key}`\n\n{doc}"));
+		return Some(card(&format!("{root}.{key}"), doc, example, None));
 	}
-	if let Some((n, doc)) = SOURCES.iter().find(|(n, _)| *n == word) {
-		return Some(format!("`{n}`\n\n{doc}"));
+	if let Some((n, doc, example)) = SOURCES.iter().find(|(n, _, _)| *n == word) {
+		return Some(card(n, doc, example, None));
 	}
-	let f = runfile_lang::functions::FUNCTIONS.iter().find(|f| f.name == word)?;
-	Some(format!("`{}`\n\n{}", f.signature, f.doc))
+	if let Some(f) = runfile_lang::functions::FUNCTIONS.iter().find(|f| f.name == word) {
+		return Some(card(f.signature, f.doc, f.example, None));
+	}
+	let k = KEYWORDS.iter().find(|k| k.name == word)?;
+	Some(card(k.syntax, k.doc, k.example, None))
+}
+
+/// Whether the `$` at `col` is the shell marker rather than a `$` inside a
+/// command -- `$HOME`, `$(date)` and the `$` in a regex are not this one.
+///
+/// It is the marker when only whitespace precedes it, or when it follows `if`
+/// or `match`, which is where the other two `$` forms live.
+fn is_shell_marker(line: &str, col: usize) -> bool {
+	let before = line[..line.char_indices().nth(col).map_or(line.len(), |(i, _)| i)].trim_end();
+	before.is_empty() || before.ends_with("if") || before.ends_with("match")
 }
 
 /// The identifier-ish word around `col`, including a leading `.` and any dots
@@ -385,7 +631,7 @@ mod tests {
 
 	#[test]
 	fn a_header_only_property_inside_a_block_is_reported() {
-		let m = messages("if FLAG.x\n\t.confirm = \"sure?\"\n\t$ true\nend\n");
+		let m = messages("if FLAG.x\n\t.watch = \"src/**\"\n\t$ true\nend\n");
 		assert_eq!(m.len(), 1, "{m:?}");
 		assert!(m[0].contains("header-only"), "{}", m[0]);
 	}
@@ -486,20 +732,119 @@ mod tests {
 		assert!(!labels.contains(&"nonsense"));
 	}
 
+	// ---- go to definition
+
+	#[test]
+	fn a_binding_is_found_where_it_was_let() {
+		let src = "let region = \"eu\"\n\n$ deploy {{ region }}\n";
+		assert_eq!(definition(src, 2, 13), Some(Ref::Here { line: 0, character: 4 }));
+	}
+
+	#[test]
+	fn a_loop_variable_points_at_its_for() {
+		let src = "for compose in glob(\"*.yml\")\n\t$ docker compose -f {{ compose }} pull\nend\n";
+		assert_eq!(definition(src, 1, 24), Some(Ref::Here { line: 0, character: 4 }));
+	}
+
+	#[test]
+	fn the_nearest_binding_at_or_above_the_cursor_wins() {
+		// A later `let` of the same name is a different binding, and is not
+		// what an earlier use refers to.
+		let src = "let x = 1\nprint(x)\nlet x = 2\nprint(x)\n";
+		assert_eq!(definition(src, 1, 6), Some(Ref::Here { line: 0, character: 4 }));
+		assert_eq!(definition(src, 3, 6), Some(Ref::Here { line: 2, character: 4 }));
+	}
+
+	#[test]
+	fn a_binding_inside_a_block_is_found_from_below_it() {
+		let src = "if true\n\tlet inner = 1\n\tprint(inner)\nend\n";
+		assert_eq!(definition(src, 2, 8), Some(Ref::Here { line: 1, character: 5 }));
+	}
+
+	#[test]
+	fn a_name_this_file_does_not_bind_is_looked_for_in_the_shared_chain() {
+		// Where a reader most needs taking: a `_shared.run` binding applies to
+		// every target in its directory and appears nowhere in the file using
+		// it.
+		let src = "$ docker run {{ osvImage }}\n";
+		assert_eq!(definition(src, 0, 18), Some(Ref::Shared("osvImage".into())));
+	}
+
+	#[test]
+	fn clicking_a_run_statement_opens_that_target() {
+		let src = "run build:release --locked\n";
+		// 9 is the `:`, which is no part of a word: reading the word first
+		// made the one character in the middle of the name answer nothing.
+		for col in [0, 2, 5, 9, 12] {
+			assert_eq!(
+				definition(src, 0, col),
+				Some(Ref::Target("build:release".into())),
+				"at {col}"
+			);
+		}
+	}
+
+	#[test]
+	fn clicking_a_dispatch_inside_code_of_opens_that_target_too() {
+		// `code_of(run x)` is the same dispatch the statement spells, so it is
+		// the same jump. The statement's rule is anchored to the start of the
+		// line, which this is not.
+		let src = "let c = code_of(run build:release)\n";
+		//         0123456789...      ^16   ^20
+		for col in [16, 18, 20, 25, 30, 32] {
+			assert_eq!(
+				definition(src, 0, col),
+				Some(Ref::Target("build:release".into())),
+				"at {col}"
+			);
+		}
+		// The call around it is not the dispatch, and neither is the binding.
+		assert_eq!(definition(src, 0, 4), Some(Ref::Here { line: 0, character: 4 }));
+		assert_ne!(definition(src, 0, 10), Some(Ref::Target("build:release".into())));
+		// With arguments, and as a statement of its own.
+		assert_eq!(
+			definition("code_of(run web:build --env=prod)\n", 0, 12),
+			Some(Ref::Target("web:build".into()))
+		);
+	}
+
+	#[test]
+	fn a_name_in_a_comment_or_a_string_is_not_a_binding() {
+		// The tree has no comments in it, and a `let` written inside a string
+		// binds nothing.
+		let src = "# let region = \"eu\"\nlet hint = \"let region = x\"\n\nprint(region)\n";
+		assert_eq!(definition(src, 3, 7), Some(Ref::Shared("region".into())));
+	}
+
+	#[test]
+	fn definition_on_nothing_in_particular_says_nothing() {
+		assert!(definition("$ echo hi\n", 0, 0).is_none(), "punctuation");
+		assert!(definition("let x = 1\n", 0, 40).is_none(), "past the end");
+		assert!(definition("", 0, 0).is_none(), "an empty document");
+	}
+
+	#[test]
+	fn binding_in_reads_a_whole_document_when_there_is_no_cursor() {
+		// How a `_shared.run` is read: as a file, not relative to a cursor in
+		// some other document, so the last binding wins.
+		let src = "let a = 1\nlet a = 2\n";
+		assert_eq!(binding_in(src, "a", None), Some((1, 4)));
+	}
+
 	#[test]
 	fn hover_explains_a_property_and_says_where_it_may_go() {
 		let h = hover(".watch = \"src/**\"", 3).expect("hovers");
-		assert!(h.contains("`.watch`"), "{h}");
+		assert!(h.contains(".watch"), "{h}");
 		assert!(h.contains("Header-only"), "{h}");
 		let h = hover(".shell = \"bash\"", 3).expect("hovers");
-		assert!(h.contains("May be set inside"), "{h}");
+		assert!(h.contains("Block-scoped"), "{h}");
 	}
 
 	#[test]
 	fn hover_reads_a_dotted_property_as_its_head() {
 		// `.env.PORT` is the `env` property with a sub-key.
 		let h = hover(".env.PORT = \"3000\"", 6).expect("hovers");
-		assert!(h.contains("`.env`"), "{h}");
+		assert!(h.contains(".env"), "{h}");
 	}
 
 	#[test]
@@ -511,11 +856,92 @@ mod tests {
 	#[test]
 	fn hover_explains_a_source_and_its_key() {
 		let h = hover("$ echo {{ RUN.os }}", 15).expect("hovers");
-		assert!(h.contains("`RUN.os`") && h.contains("linux"), "{h}");
+		assert!(h.contains("RUN.os") && h.contains("linux"), "{h}");
 		let h = hover("let e = ARG.env", 10).expect("hovers");
-		assert!(h.contains("`ARG.env`") && h.contains("--name=value"), "{h}");
+		assert!(h.contains("ARG.env") && h.contains("--name=value"), "{h}");
 		let h = hover("let a = ARGS", 10).expect("hovers");
 		assert!(h.contains("positional"), "{h}");
+	}
+
+	#[test]
+	fn completion_carries_the_example_too() {
+		// The same question, one keystroke earlier.
+		let Completions::Functions(items) = complete("let x = to_") else {
+			panic!("expected functions")
+		};
+		let up = items.iter().find(|i| i.label == "to_upper").expect("to_upper");
+		assert_eq!(up.detail, "to_upper(s)");
+		assert!(up.doc.contains("```runfile"), "{}", up.doc);
+		let Completions::Properties(props) = complete(".par") else {
+			panic!("expected properties")
+		};
+		let par = props.iter().find(|i| i.label == "parallel").expect("parallel");
+		assert!(par.doc.contains("```runfile"), "{}", par.doc);
+	}
+
+	#[test]
+	fn every_hover_carries_a_worked_example() {
+		// The example is what earns the popup: a signature says the shape of a
+		// call and a sentence says its purpose, and neither answers "what do I
+		// type here".
+		for (src, col) in [
+			("let x = substring(s, 1)", 12),
+			(".watch = \"src/**\"", 3),
+			("$ echo {{ RUN.parent }}", 15),
+			("let e = ARG.env", 10),
+			("for f in xs", 1),
+			("$ echo hi", 0),
+		] {
+			let h = hover(src, col).unwrap_or_else(|| panic!("{src:?} at {col} hovers nothing"));
+			assert!(h.contains("**Example**"), "{src:?}: {h}");
+			// Fenced as the language, so an editor colours it like the file.
+			assert!(h.matches("```runfile").count() >= 2, "{src:?}: {h}");
+		}
+	}
+
+	#[test]
+	fn the_line_forms_explain_themselves() {
+		// `$`, `exec` and `run` are what a person meets first, and had nothing
+		// to say for themselves before.
+		let h = hover("$ docker build .", 0).expect("hovers the marker");
+		assert!(h.contains("still set on the next"), "{h}");
+		let h = hover("exec python3", 2).expect("hovers exec");
+		assert!(h.contains("stdin"), "{h}");
+		let h = hover("run build --env=prod", 1).expect("hovers run");
+		assert!(h.contains("in this process"), "{h}");
+		for (src, col, want) in [
+			("retry 30 every 2", 2, "again while it fails"),
+			("retry 30 every 2", 10, "between attempts"),
+			("match RUN.os", 2, "quoted string"),
+			("\tcase \"linux\"", 2, "quoted string"),
+			("\tdefault", 3, "no `case` matched"),
+			("let x = 1", 1, "Bind a value"),
+			("end", 1, "Closes the nearest open block"),
+			("let p = json", 9, "one JSON value"),
+			("if code_of($ mkdir x) != 0", 6, "exit status"),
+			// A dispatch inside it hovers as both: the call and the keyword.
+			("let c = code_of(run test)", 12, "exit status"),
+			("let c = code_of(run test)", 18, "in this process"),
+		] {
+			let h = hover(src, col).unwrap_or_else(|| panic!("{src:?} hovers nothing"));
+			assert!(h.contains(want), "{src:?} did not mention {want:?}: {h}");
+		}
+	}
+
+	#[test]
+	fn only_the_shell_marker_hovers_as_one() {
+		// A `$` inside a command is the shell's, not ours.
+		assert!(
+			hover("  $ echo hi", 2).is_some(),
+			"leading whitespace is still the marker"
+		);
+		assert!(hover("if $ test -f x", 3).is_some(), "a condition's marker");
+		assert!(hover("match $ curl -fsS url", 6).is_some(), "a subject's marker");
+		assert!(hover("$ echo $HOME", 7).is_none(), "a shell variable is not the marker");
+		assert!(
+			hover("$ d=$(date)", 4).is_none(),
+			"a command substitution is not the marker"
+		);
 	}
 
 	#[test]

@@ -49,7 +49,7 @@ Line-oriented. Every line is one of:
 | `exec <cmd>` … `end` | Run `<cmd>`, with the block's body as its stdin. |
 | `json` … `end` | A block of structured text, as one value of that format. |
 | `let x = expr`, `x = expr` | Bind and rebind. |
-| `if` / `else` / `end`, `for x in …`, `match` / `case` / `default`, `retry n [every s]` | Control flow. |
+| `if` / `else` / `end`, `for x in …`, `match` / `case` / `default`, `retry n [every s]`, `do` | Control flow. |
 | `run <target> [args]` | Dispatch another target, in-process. |
 | `expr` | Evaluated for effect, e.g. `write_file(…)`. |
 
@@ -64,7 +64,28 @@ design would have collided with 69.
 String, number (one `f64`), bool, list. **Strict, with no coercion**: `"a" + 1` is an error naming `concat`,
 `"1" == 1` is false, `number(ARG.x)` is required before arithmetic, and `1 / 2 == 0.5`.
 
-Lists index with `[n]` and work with `first`, `last`, `length`, `join`.
+Lists index with `[n]` and work with `first`, `last`, `length`, `join` — and with `append`, `prepend`,
+`concat_lists`, `sort`, `reverse`, `unique`, `slice`, `flatten`, `zip`, `index_of` and `without`, **every one
+of which answers with a new list**. A list used to be read-only: it could be received from `split`, `lines`,
+`glob` or a literal and then only looked at, so anything that wanted to *collect* had to go out to a shell and
+come back. Answering with a new list rather than mutating is what keeps a binding from changing behind another
+name. `sort` compares numbers by value and everything else by its text, and puts numbers first in a mixed list
+rather than refusing — `sort(ARGS)` should not be a type puzzle. `slice` clamps rather than erroring, the way
+every language with one does.
+
+**A list nests to any depth**: `[[1, 2], [3, [4]], "a"]`. An element is a whole expression, so nothing about a
+list restricts what may sit in one at any level, and `xs[1][2]` is an index of an index. `length`, `first` and
+`last` answer about the level they are asked about, since a nested list is *one* element. This replaced the
+`"a b c"` + `split()` idiom the corpus used to pack several fields into a loop's list — four files carried it,
+and one of them then had to `number()` its way back out of the strings it had just made.
+
+Nesting needs the bracket count to be a count of *real* brackets, which is what `lexer::brackets` is for: it
+says how a line moves the depth, and how many of the brackets it closes were opened before it. Counted from
+the tokens, so `["x[y"]` is one complete line rather than the start of one — it used to swallow the line after
+it and the file stopped parsing somewhere else entirely. The whole line often will not tokenise (a bare `=` is
+not an operator this language has), so the right-hand side is tried next and the characters last. The second
+number is what indents a spilled list by depth: a `]` sits with the `[` it answers, not with what was inside
+it.
 
 ### Sources
 
@@ -78,9 +99,29 @@ missing and a flag `x` was passed, the error says exactly that.
 **A bare `--` ends parsing**: everything after it is a positional exactly as typed, flags included. That is how
 a wrapper forwards a command line (`run _aws -- s3api --bucket X`). Chosen over an `ARGV` source or making
 `ARGS` mean everything, so `ARGS` keeps one meaning. Because forgetting the `--` drops the flag silently, `Host`
-warns (via `Host::warn`) when a target is handed a `--flag` or `--key=value` that its text never reads as
-`FLAG.x` / `ARG.x`. The check is textual — the keys have no dynamic form — and includes `_shared.run`; it runs
-once per real run, not per `header_props` lookup.
+warns (via `Host::warn`) when a target is handed a `--flag` or `--key=value` it never reads. What a target
+reads is answered by **`inputs::of`, which walks the tree** — `ARG.x`, `FLAG.x`, `ENV.X` and `ARGS`, from every
+position one can sit in, and from every `_shared.run` above it, since a name a shared file reads is read for
+every target under it. It runs once per real run, not per `header_props` lookup.
+
+It scanned the **text** for `ARG.` until it did not. The keys have no dynamic form — `ARG[k]`, `ARG.{{ k }}`
+and `ARG."k"` are all refused by the parser — so every use is spelled out, which made scanning look exact. But
+text is not only the program: a name in a comment, in a string, or in the literal half of a `$` line counted
+as a use. So `run <target> --help` listed inputs the target never reads, and, worse, the check *suppressed
+itself* — a comment saying `ARG.legacy` was enough for a mistyped `--legacy` to pass without a word. A tree has
+no comments in it and no strings to confuse.
+
+Because it is exact, **an input a target cannot read is now an error** rather than a warning: a flag that
+warns is a flag that did not take effect, found out later. The message is one line — everything the runner
+says while a target runs carries the `[runfile]` prefix, and a continuation line would not — so it points at
+`run <target> --help` rather than listing what the target does read.
+
+`Use` carries the other two things the tree knows: **whether a name can fail** (read bare, with no `?` chain
+or `try` around it) and **what it falls back to** (the literal a chain ends in). `a ? b ? c` is
+left-associative, so the outermost fallback is what is reached once everything before it is missing, and that
+is what is shown. One guarded use does not excuse a bare one. This is what `--help` prints and what
+`--stdin-args` asks from — **no declaration syntax was added, and none is needed**: a `?` chain already says
+"optional, and here is the default", in the place a reader is already looking.
 
 **`run` statement arguments are values, not shell text.** A `{{ x }}` in `run w {{ x }}` arrives at `w` as one
 positional even with spaces, and a list expands to one positional per item — there is no shell in between to
@@ -94,8 +135,8 @@ quote for.
 list. **Never wrap an interpolation in shell quotes.** This is why there is no `shell_quote` function: of 49
 interpolation sites in the corpus, 48 would have been unsafe under manual quoting.
 
-Quotes inside `{{ }}` need no escaping — an interpolation is opaque to the string containing it. `.confirm =
-"Greet {{ ARG.name ? "world" }}?"` is correct as written.
+Quotes inside `{{ }}` need no escaping — an interpolation is opaque to the string containing it.
+`confirm("Greet {{ ARG.name ? "world" }}?")` is correct as written.
 
 ### Structured blocks
 
@@ -107,10 +148,25 @@ quoted-string placeholder (valid as a key *and* as a value, which a bare `null` 
 underlines in the editor and the values cannot change the shape; and again after rendering, since shipping a
 malformed document is the failure worth paying a parse for.
 
+**`:format` lays a block out**, unlike an `exec` body. An `exec` body is somebody else's language and only its
+base indent moves; a structured block is a format this runner knows, so it gets the same treatment as
+everything else in the file — one member to a line, nested a level in, tabs like the language around it, and
+an empty `{}` or `[]` left on its line. It is laid out **from tokens copied out of the source**, not by
+re-serializing a parsed document: a string keeps its own escapes (`\u0041` is not rewritten as `A`), key order
+holds by construction rather than by a `preserve_order` feature flag, and `{{ … }}` survives whole as one
+token. A body that will not tokenise is left exactly as written, the same fallback the shell tracing takes.
+
+That layout is only possible because **a block's fingerprint is its tokens, not its text**. `ast::StructuredBody`
+carries the format and hand-writes `Debug` as the canonical token stream, which is what `fingerprint` hashes —
+so reformatting is not an edit, and neither the formatter's own before/after check nor the prepare gate on
+`setup.run` sees one. Tokens are separated, so `[1, 2]` and `[12]` still differ. It is the same reasoning that
+strips spans: a change of layout is not a change of meaning, and a change of content still is.
+
 `structured.rs` holds one enum: a format answers what its keyword is, how a value is written, what stands in
-while checking, whether a document is well-formed, and what an editor should highlight the body as. Adding
-YAML or TOML is a variant and those arms, plus a word in the tree-sitter scanner's format list and one
-alternation in the TextMate rule. `create-buckets.run` was the case for it — 674 characters with 54 `\"` —
+while checking, whether a document is well-formed, how it is laid out, what its canonical form is, and what an
+editor should highlight the body as. A format whose whitespace is significant would answer the last two with
+the text unchanged. Adding YAML or TOML is a variant and those arms, plus a word in the tree-sitter scanner's
+format list and one alternation in the TextMate rule. `create-buckets.run` was the case for it — 674 characters with 54 `\"` —
 and converting it found the escaping had been hiding a bug: `run` arguments are values, so a `"…"` word keeps
 its quotes, and the AWS CLI was being handed a JSON *string* where an object was required.
 
@@ -135,11 +191,41 @@ found from the right and a command containing a `)` is refused with a message sa
 `exec` block is never a condition: it closes on an `end` at its opener's indentation, which is the same `end`
 the `if` around it would want.
 
+**`code_of(run <target> [args])` scores a target**, and is the only call that may hold a `run` — a dispatched
+target writes to the terminal like any other, so its status is the only value it has to give, and
+`lines(run x)` would have nothing to read. It is refused at *parse* time, so an editor says so while it is
+being written. The number is the one `$ run <target>` yields, because dispatching in-process is meant to stop
+re-execing the binary and not to mean something else: a target that calls `exit(3)` is scored 3, and every
+other failure is the 1 the CLI reports (a target is not its last command, so there is no other status it could
+honestly carry). The failure is printed where the re-exec's own `[runfile] error:` would have appeared —
+a status is an answer, so nothing further up will say what went wrong. A **refusal** is not a status and is
+passed on: `RunError::is_refusal` covers Ctrl+C and a declined `confirm()`, which are a person stopping the
+run rather than a target reporting how it went, and a re-exec propagates them too since Ctrl+C reaches the
+whole process group. This is what `coverage.run` is for — run both halves, report one verdict — and what
+`$ run x` was standing in for.
+
 ### `$` and `exec` in value position
 
-`let files = $ git diff --cached --name-only` captures stdout. This replaced a `capture()` function. **It cannot
-nest inside a call**: a `$` capture runs to end of line, so a closing `)` would be ambiguous. Split it into two
-statements.
+`let files = $ git diff --cached --name-only` captures stdout. This replaced a `capture()` function.
+
+**A capture may be a call's last argument** — `lines($ git ls-files)`, `for f in lines($ git ls-files '*.sh')`
+— because it runs to end of line, so the `)` that closes the call has to be the last character of the line.
+Anything after it would be part of the command. A `$` in any earlier argument says so (*"a `$` run has to be
+the last argument"*), and a `)` inside the command is refused rather than guessed at. `code_of` was the only
+call allowed to hold one; the rule is general now and `code_of` is an ordinary call, which cost it its
+parse-time check — `code_of("x")` is caught by `exit_code` instead, because answering 0 would be a silent
+wrong number. Three places had to learn the rule together: `capture_rhs` and the `for` header (parsing),
+`value_of` (running it, since the pure evaluator has no process host — hence `functions::call_with`, the same
+call with its arguments already evaluated), and `format::rhs` via `parser::is_capture_call`, since everything
+from the `$` on is the shell's text and must not be re-spaced.
+
+**An interpolation in a non-shell `exec` body is not shell-quoted.** `exec::body_is_shell` decides, and
+`render` picks `interpolate_shell` or `interpolate_plain` accordingly. Shell quoting is the wrong quoting for
+anybody else's language: it made `'it'\''s'` out of an apostrophe, flattened a list to bare words, and left a
+path unquoted because nothing in it needed quoting — so a Python body read `/tmp/x.json` as division. Left
+alone, the value arrives as itself and the author quotes it the way that language wants, which is the only
+thing that can be right for every language. A shell body still self-quotes, which is what keeps `$ cp
+{{ src }} {{ dst }}` safe.
 
 ### Three context-sensitive lexer rules
 
@@ -183,8 +269,9 @@ quoting.
 - `Scope.private_keys` is a `Keys`: a **deferred, memoized** key pool. Loading is deferred because the pool
   comes from an OS credential store, and a locked keyring blocks on an interactive unlock prompt — an eager load
   turned every `run <target>` into a hang. Memoized so a run that decrypts twice still prompts once.
-- `Scope.dry_run` exists so `write_file` and `decrypt` can refuse to write. A preview that edits the working
-  tree is worse than no preview.
+- `Scope.dry_run` exists so `write_file` and `decrypt` can refuse to write, and so `confirm` does not ask. A
+  preview that edits the working tree is worse than no preview, and one that stops to ask permission for what
+  it is not going to do is not a preview at all.
 - `FUNCTIONS` is exported and driven into editor completion, with tests in **both** directions: every listed
   name must dispatch, and every dispatch arm must be listed. Only the first existed at one point, and `min`
   sat implemented but unlisted, so completion never offered it.
@@ -283,6 +370,13 @@ second time as the global. This replaced `includes` entirely.
 - **A subproject calls its own siblings.** `run compile` inside `web/runfiles/` resolves `web:compile` first,
   falling through to a root `compile` when there is no sibling — so a file spells its neighbours the same way
   wherever `run` was invoked from.
+- **`--stdin-args` asks before anything runs** (`stdin_args.rs`), from that same list. It asked lazily, when
+  an `ARG.x` resolved to nothing — so it could only ask about inputs a run happened to *reach*, it asked after
+  earlier statements had already done their work, and it never asked about anything with a fallback at all,
+  because a chain that resolves raises no error to catch. A flag was never asked about either: an absent one
+  is `false`, not a failure. Answers for arguments and flags are appended to the command line, which is where
+  the runner reads them from; an environment answer is set in this process, which the target's environment is
+  built on top of. The lazy prompt stays as a backstop.
 - `Host::header_props` **probes**: it evaluates the declaration region only to read `.watch`, so it neither
   warns about unread inputs nor lets a writing function write. Without the second half, `.env.X =
   temp_file(...)` made two files per run, one an orphan nothing referenced.
@@ -355,10 +449,38 @@ second time as the global. This replaced `includes` entirely.
   async runtime this rewrite removed, for a server that answers one client, one message at a time.
 - Full document sync, deliberately: these files are small, and an incremental applier is a source of drift.
 - Every request is answered — an unanswered one hangs the client — and every notification is silent.
-- `FUNCTIONS` and `PROPERTIES` carry a signature and a one-sentence doc, so completion shows detail and
-  hover has something to say. Hover reads the word under the cursor rather than the tree, so it keeps working
+- `FUNCTIONS` and `PROPERTIES` carry a signature, a one-sentence doc **and a worked example**; `SOURCES` and
+  `RUN_KEYS` carry the same three. The example is the part that earns the popup: a signature says the shape
+  of a call and a sentence says its purpose, and neither answers *"what do I type here"*, which is what
+  someone hovering a name is asking. `analysis::card` renders all four the same way — a fenced heading, the
+  prose, an **Example** block, and for a property a rule and whether it may sit inside a block — fenced as
+  `runfile`, which is the extension's own language id, so an editor colours the example with the same grammar
+  as the file. Completion sends the example too, in its markdown `documentation`.
+- **`keywords::KEYWORDS` documents the line forms** — `$`, `exec`, `run`, `let`, `if`, `else`, `for`, `in`,
+  `match`, `case`, `default`, `retry`, `every`, `json`, `code_of`, `end`. These are what a person meets first
+  and the only things in the language with no signature to read and no completion entry to hover. `$` is
+  matched as a *character* rather than a word, and only where it is the marker: `is_shell_marker` accepts it
+  at the start of a line or after `if` / `match`, so `$HOME` and `$(date)` inside a command are left alone.
+- Hover reads the word under the cursor rather than the tree, so it keeps working
   while the document does not parse. `RUN.` is the only source whose keys are known ahead of time; `ARG`,
   `ENV` and `FLAG` are whatever the caller passed, so there is nothing to offer for them.
+- **Go to definition** answers for a `run <target>` *and* for a binding. A `run` target is matched by
+  **position** rather than by word, because `word_at` stops at `:` and a namespaced `build:release` is two
+  words to it -- clicking either half, the `:` between them, or the keyword, means the same thing. The span
+  is checked **before** `word_at`, which is what makes the `:` work: it is no part of a word, so reading the
+  word first made the one character in the middle of a namespaced target answer nothing. `dispatch_on` covers
+  **both
+  spellings**, since `code_of(run build)` is the same dispatch and so the same jump: the statement's span
+  reaches back to column zero, because clicking an indented line's indentation means that line, while a
+  `code_of`'s starts at its own `run` -- otherwise clicking the call, or the binding being assigned, would
+  jump to the target instead of explaining itself. A binding is found in the tree
+  (`analysis::binding_in`), so a name inside a comment or a string is not mistaken for one, and the nearest
+  binding **at or above** the cursor wins, which is what shadowing and rebinding mean. A name the document
+  does not bind comes back as `Ref::Shared`, and the server walks the `_shared.run` chain innermost-first --
+  that is the case worth having: a shared binding applies to every target in its directory and appears
+  nowhere in the file using it, so it is the one definition a reader cannot find by looking. A shared file is
+  read as a whole rather than relative to a cursor, so its last binding wins. The extension already forwarded
+  `textDocument/definition`; nothing there had to change.
 - **`textDocument/formatting`** returns one edit covering the whole document, because sync is whole-document:
   a minimal diff would be a second description of the same change and a chance for the two to disagree. A
   document that does not parse is answered with `null` rather than an error — a file is unfinished for most of
@@ -379,6 +501,31 @@ comments and brackets to use, so for a long time a shell line came out one flat 
 listed before the include, so `{{ … }}` stays the language's. `exec` bodies are split in two rules —
 `exec sh|bash|…` delegates, anything else does not, since a Python body is not shell — and both close on an
 `end` at the opener's own indentation via a `\1` backreference to the captured indent.
+
+**A capture in value position is coloured too.** `shell-line` is anchored at `^\s*(\$)`, so `let rs = $ git
+diff … -- "*.rs"` matched no rule at all and the shell text was read as a runfile *expression*: `--name-only`
+came out two operators and `"*.rs"` a runfile string. `shell-capture` is `shell-condition` one line form over,
+and the exec rules grew an optional assignment in front of the keyword — `let out = exec sh … end` was not a
+block either, so its body was not shell and its `end` closed nothing. All three share the left-hand side
+`structured-block` already spelled out (`(?:(let)\s+(name)|(name))\s*(=)\s*`), so the four capture forms are
+written one way. The test is the sharpest one available: `let x = $ <line>` must colour `<line>` **exactly** as
+`$ <line>` does, token for token.
+
+**The command after `exec` is coloured as a command line**, like the text after `$ `. It could not be done in
+a capture: `\G` has no anchor to reach for there, so the patterns never fired and the command came out flat
+white. It is a region instead — `#exec-command`, `\G`-anchored to the position just after `exec` and ending
+at the line's end, which is also what keeps it off the body below. The rules' lookaheads were made
+non-capturing at the same time: the alternation inside one was silently taking group 3, the number the
+command needed, so a `{{ … }}` in an `exec` command had never been coloured either.
+
+**Every embedded region ends at the end of its line**, and that bound is not decoration. The shell grammar
+happily runs a rule to end of line, so in `code_of($ xcode-select --install)` its option rule swallowed the
+`)` — and with nothing left to match `end`, the region never closed and *every line below it* was coloured as
+shell: `default` stopped being a keyword, a string stopped being a string. `shell-line`, `shell-condition` and
+`exec-command` were already bound that way; `code-of` ended only on `\)` and was the one that leaked. Each of
+these is a single line by construction — the parser requires `code_of(`'s `)` on the same line — so the bound
+is correct rather than a fallback. The regression test uses **VS Code's real shell grammar**: a stub does not
+over-consume, so nothing weaker can see this.
 
 Two things the shell grammar's own anchoring forces. It starts a statement only after `^`, `;`, `|`, `&`,
 `!`, `(`, `{` or a backtick — and the text after `$ ` is none of those, so the **first** command on a line
@@ -419,7 +566,9 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 - `src/scanner.c` carries the rules an EBNF cannot: an `exec` body closes only on an `end` at the opener's
   indentation, a `$` or `exec` body stops at `{{` so an interpolation is a node the grammar parses, and a
   `run` argument is one whitespace-delimited word with its interpolations kept whole. The string rule needs no
-  scanner: the interpolation's expression is parsed as an expression, quotes and all.
+  scanner: the interpolation's expression is parsed as an expression, quotes and all. A dispatch's word inside
+  `code_of(…)` is a second token, because there the `)` closing the call ends it — unless a `(` in the word
+  opened it, which is how the parser reads one too.
 - **Scanner state is carried forward only by a successful token**; what a false return records is discarded.
   The indentation a capture `exec` needs is therefore recorded on the newline token that precedes its line, by
   looking past the token's marked end — not in the column-0 check, which says no to every non-`exec` line.
@@ -485,12 +634,43 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 
 ## Properties
 
-Header-only: `alias`, `confirm`, `env-file`, `add-path`, `hide`, `watch`, `only-in-directories`, `detach`.
+Header-only: `alias`, `watch`, `only-in-directories`, `detach`.
 Block-scoped (may also appear inside `if` / `for` / `match`): `shell`, `parallel`, `ignore-errors`, `logging`,
-`workdir`, `env` (addressed by sub-key, `.env.NAME = "value"`).
+`workdir`, `env` (addressed by sub-key, `.env.NAME = "value"`), `env-file`, `add-path`.
 
-A nested block inherits behaviour but never a parent's one-shot header state — a `confirm` must not fire again
-per loop iteration.
+**`env-file` and `add-path` are block-scoped, and both append.** A block that names one has a longer list than
+the block around it, which is how `with_block_env` tells it has to rebuild -- reading and decrypting the files
+again for every `if` would be work nothing asked for. The environment the block inherited is put back when it
+closes, which is what stops a loop carrying one iteration's files into the next, and is why **every** block
+form goes through that one function: `if` and `match` via `nested`, and `for` and `retry` via their own arms,
+whose bodies were extracted into `for_body` and `retry_attempts` so the wrapper has something to wrap. A
+`retry`'s `else` runs *outside* the body's environment -- it is what to do when the block never worked, not
+part of it. What this buys over the header form is that a block's file can be named by something the body
+computed, since a header property resolves before any statement runs. A `.env-file` naming a file that is not
+there is skipped, the same as a header one: a project whose `.env` is git-ignored still has to run.
+
+**`.confirm` and `.hide` are gone**, each replaced by something that could not disagree with itself.
+
+`confirm(question)` is a function, so it can be called anywhere -- inside an `if`, after the value it asks
+about has been worked out. Declining raises `EvalError::Cancelled`, which travels exactly like `Exit`: every
+catcher re-raises it, because someone who said no has not asked to be second-guessed by a `?` fallback or by
+`.ignore-errors`. `RunError::is_stop()` is what those catchers now consult -- `exit_code()` still answers only
+the status question, so a cancel keeps printing `cancelled` rather than exiting silently. The prompt reaches
+it as `Scope::confirm`, a plain `fn(&str) -> bool` like `Scope::ask`, which is why `prompt::confirmer()`
+became `prompt::confirm`: the closure captured nothing. It is skipped by `-y`, in CI, and under `--dry-run`,
+where there is nothing to approve -- previously a guarded target could not be previewed at all.
+
+**A target is hidden when its file name starts with `_`** (`discovery::is_hidden`, which reads the last `:`
+segment so a namespace is not part of the question). Fifteen of the sixteen targets that set `.hide` were
+already named that way, and every `_`-prefixed target set it -- the property only let the two disagree. The
+sixteenth, `kico/runfiles/test.run`, is now visible.
+
+A nested block inherits behaviour but never a parent's one-shot header state.
+
+**`do … end` is a block with no condition** (`Statement::Do`, one arm in `walk` and one in `collect`). Every
+block form until it asked a question, so a property covering two commands meant inventing an `if true` — or
+writing `cd web &&` on every line, which is what 35 sites in the corpus did. It takes nothing after the
+keyword, and says so: anything there would read as a condition it does not have.
 
 ## Preparation targets
 
@@ -511,14 +691,45 @@ functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKil
 Every other function from the old surface is present. Seventeen were missing at one point, dropped by
 oversight rather than decision, and all are back. `try` is the one exception, replaced by `a ? b`.
 
+**`run <target> --help`** prints the target's whole description, every input it reads — with what happens
+without each one — its aliases and its path (`target_help.rs`). Two things made it necessary: `--help` after a target name is the
+target's own argument, so `run deploy --help` warned about an unread flag and then **deployed**; and a
+description was only ever visible as its first line in `:list`, which is why forty of them in the corpus had
+grown past three hundred characters and one to sixteen hundred, with nowhere to be read. It is checked before
+the prepare gate, since asking what a target does must not require the project to be set up, and only before a
+`--` — `run w -- --help` still forwards it, which is how a wrapper hands `--help` to what it wraps. The inputs
+are `inputs::of`'s, over the target and every `_shared.run` above it — walked from the tree, so a name in a
+comment or a string is not mistaken for one the target reads.
+
 `file_exists` is **files only** and `directory_exists` is directories only; `is_executable` is a file this
 user may execute (the mode bits on Unix, being a file on Windows, where the question has no equivalent).
 `file_exists` used to answer `exists()`, which is neither question — a `.git` is a directory in a normal
 clone and a *file* in a worktree, so a check for one wants `directory_exists(p) || file_exists(p)`.
 
+`\e` is ESC, beside `\n`, `\t`, `\r`, `\"` and `\\`. Colour is what `printf` is for, and without it every
+coloured line had to stay a shell line — twelve of them in the corpus did.
+
 `now` and `uuid` are read-only, so a preview shows a real value rather than a placeholder: `--dry-run` is
 about not changing anything. `json_get` returns a number, bool or string directly, and an object or array as
 its compact JSON text, since the language has no map type.
+
+**`print` and `printf` write to stdout**, and replaced 142 `$ echo` and `$ printf` lines across the corpus —
+each of which was a shell process started to say one sentence. `print` takes one or more values, separates
+them with a space the way `echo` does, and ends the line with `\n`, or `\r\n` on Windows: it is the one place
+the language emits a line ending of its own. `printf` writes exactly what it is given, with `%s`, `%d`, `%f`,
+`%.Nf` and `%%` — no widths or flags. The count of substitutions has to match the count of values **in both
+directions**, since a `%s` with nothing to put in it, and a value with no `%` to go to, are each a typo every
+time. Types are not coerced: `%d` refuses a string and refuses 2.5.
+
+Both write under `--dry-run`, for the same reason `now` and `uuid` answer with real values there — printing
+changes nothing, and a preview that hides what a run would say is a worse preview. Both take a locked handle
+and flush, because a target dispatched into a `.parallel` branch may be printing at the same moment, and
+because the next thing to write is usually a child process holding the same descriptor. A `print` is never
+itself a parallel branch: `collect` evaluates `Statement::Call` in source order before any leaf fans out.
+
+What did *not* convert is as much the point: a pipe, a redirect, `>&2`, a `~` the shell would expand, and the
+ANSI-coloured `printf`s in `~/.runfiles/check-git-status.run` — the language has `\n`, `\t`, `\r`, `\"` and
+`\\`, and no escape for ESC. Those stayed shell lines.
 
 ## Testing Requirements
 
@@ -544,14 +755,38 @@ tests that assert the mechanism rather than the symptom.
    does not see a broken build. One of them is a gate: `runfile-lsp/tests/repo_shell.rs` shellchecks every
    `.run` file in this repository through the same extraction an editor uses, so the repo's own shell cannot
    rot. It caught an unbalanced `if` in a golden fixture the first time it ran.
-6. `runfile-lang/tests/golden/` holds one file per AST shape beside the tree it parses to, with source
+6. **Every documented example is parsed.** `FUNCTIONS` and `KEYWORDS` carry an `example`, which is what hover
+   and completion show and what a person copies out. `code_of` shipped one that could not parse at all
+   (`if code_of($ …) != 0` — a capture's `)` has to be the last character of the line), and four others opened
+   an `if` they never closed, because nothing had ever fed one back through the parser. A trailing result
+   annotation — two spaces, then `#` — is dropped first: a comment is a whole line here, so `abs(-4)   # 4`
+   says what the value is the way a REPL transcript does rather than being code.
+7. `runfile-lang/tests/golden/` holds one file per AST shape beside the tree it parses to, with source
    positions stripped so a diff is about structure rather than whitespace. Regenerate a deliberate change
    with `UPDATE_GOLDEN=1 cargo test -p runfile-lang --test golden`.
-7. Watch tests poll rather than sleep; a fixed sleep is either flaky or slow.
-8. Cross-platform: normalize backslashes in path assertions. A test that can only hold on one platform should
+8. Watch tests poll rather than sleep; a fixed sleep is either flaky or slow.
+9. Cross-platform: normalize backslashes in path assertions. A test that can only hold on one platform should
    be `#[cfg]`-gated there rather than weakened.
 
 ## Documentation
 
-`README.md` is the public documentation. `GRAMMAR.ebnf` is the normative grammar. Update this file with any new
-design decision, crate, or behaviour change.
+`README.md` is the public documentation, and is written for someone deciding whether to use this rather than
+for someone working on it: it opens with a gallery of **complete** runfiles — cross-platform setup, a gate
+that loops, `retry`, `.parallel`, a `json` block, secrets, a pre-commit hook, watch mode — each captioned with
+the one capability it shows. Rationale lives at the end, under *Why a language*.
+
+**Every ```sh block in it is a runfile, and is gated**: `runfile-lang/tests/readme.rs` parses each one and
+re-formats it, so an example cannot go stale against the language and cannot show a shape `run :format` would
+immediately undo. Documentation that has drifted is worse than none — a reader copies it, it does not parse,
+and they conclude the tool is broken. Shell transcripts are ```bash and output is untagged, so neither is
+swept up by the gate.
+
+**After any change to behaviour, ask whether `README.md` needs it too — before calling the work done.** It is
+the public documentation, so a change that lands in the code and not in it is a change that silently makes the
+docs wrong. Anything a reader could act on counts: a new function, property, keyword or CLI flag; a changed
+default; a renamed thing; a new capability worth an example. The `readme.rs` gate catches an example that
+stops *parsing*, and cannot catch one that still parses and is now merely untrue — which is the more common
+way documentation rots.
+
+`GRAMMAR.ebnf` is the normative grammar. Update this file with any new design decision, crate, or behaviour
+change.

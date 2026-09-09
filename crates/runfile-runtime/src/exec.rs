@@ -82,6 +82,20 @@ fn split_command(cmd: &str) -> Vec<String> {
 /// too. Detection is on the *first* word only, which is what keeps
 /// `exec docker run -i alpine sh` and `exec ssh host bash` out of it: there
 /// the program is docker and ssh, and the inner shell is not ours to flag.
+/// Whether this command line names a shell, and so whether its body is shell
+/// text. `None` is the default shell, which always is one.
+///
+/// Public because `render` has to ask before it interpolates: a shell body is
+/// shell-quoted, and anybody else's is not.
+pub fn body_is_shell(command: Option<&str>) -> bool {
+	match command {
+		None => true,
+		Some(cmd) => split_command(cmd)
+			.first()
+			.is_some_and(|program| is_shell(Path::new(program))),
+	}
+}
+
 fn is_shell(program: &Path) -> bool {
 	let Some(name) = program.file_name().and_then(|n| n.to_str()) else {
 		return false;

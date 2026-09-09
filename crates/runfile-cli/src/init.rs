@@ -12,10 +12,10 @@ const EXAMPLE: &str = r#"# Say hello
 #
 # The first comment block is this target's description.
 
-.confirm = "Greet {{ ARG.name ? "world" }}?"
-
 let who = ARG.name ? "world"
-$ echo "hello, {{ who }}"
+
+confirm("Greet {{ who }}?")
+print("hello, {{ who }}")
 "#;
 
 pub fn init(dir: &Path) -> Result<String, String> {

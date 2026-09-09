@@ -163,6 +163,9 @@ fn unescape(t: &str, line: usize) -> Result<String, LexError> {
 			Some('n') => out.push('\n'),
 			Some('t') => out.push('\t'),
 			Some('r') => out.push('\r'),
+			// ESC. Colour is what `printf` is for, and without this every
+			// coloured line had to stay a shell line.
+			Some('e') => out.push('\u{1b}'),
 			Some(other) => return Err(LexError::UnknownEscape { ch: other, line }),
 			None => return Err(LexError::UnterminatedString { line }),
 		}
@@ -230,4 +233,49 @@ fn sp(token: Token, base: usize, start: usize, end: usize, line: usize) -> Spann
 		token,
 		span: Span::new(base + start, base + end, line),
 	}
+}
+
+/// How a line moves the `[` depth, and how many of the brackets it closes were
+/// opened before it.
+///
+/// Counted from the *tokens*, so a bracket inside a string is text rather than
+/// structure: `["x[y"]` is one complete line, not the start of one. Counting
+/// characters was close enough while a list held only short words, and stops
+/// being so the moment one holds a path or a glob.
+///
+/// The second number is what lets a nested list be laid out: a line starting
+/// with `]` belongs to the level it closes, not to the one its contents were
+/// in.
+///
+/// A whole line often will not tokenise -- a bare `=` is not an operator this
+/// language has -- so the right-hand side is tried next, and the characters
+/// last, which is what this always did.
+pub fn brackets(text: &str, no: usize) -> (i32, i32) {
+	let toks = tokenize(text, 0, no)
+		.ok()
+		.or_else(|| text.split_once(" = ").and_then(|(_, r)| tokenize(r, 0, no).ok()));
+	let Some(toks) = toks else {
+		let open = i32::try_from(text.matches('[').count()).unwrap_or(0);
+		let close = i32::try_from(text.matches(']').count()).unwrap_or(0);
+		return (open - close, 0);
+	};
+	let (mut delta, mut leading, mut still_leading) = (0, 0, true);
+	for t in &toks {
+		match &t.token {
+			Token::Punct("[") => {
+				delta += 1;
+				still_leading = false;
+			}
+			Token::Punct("]") => {
+				delta -= 1;
+				if still_leading {
+					leading += 1;
+				}
+			}
+			// A `,` after a closer is part of closing it, not a new thing.
+			Token::Punct(",") => {}
+			_ => still_leading = false,
+		}
+	}
+	(delta, leading)
 }

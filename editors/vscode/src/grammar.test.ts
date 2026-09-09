@@ -171,7 +171,14 @@ test("a flag and an argument are told apart", async () => {
  * `normal_statement`, the rule whose anchor we cannot satisfy. No theme
  * shipped with VS Code targets `meta.statement`, so nothing is coloured by it.
  */
-const STRUCTURAL = new Set(["source.shell", "meta.embedded.line.shell", "meta.statement.shell"])
+// Embedding markers and the scope the anchored rule forces on us, none of
+// which any shipped theme colours -- what is being compared is colour.
+const STRUCTURAL = new Set([
+	"source.shell",
+	"meta.embedded.line.shell",
+	"meta.embedded.block.shell",
+	"meta.statement.shell"
+])
 
 /** The scopes that decide colour, in order. */
 function coloured(scopes: string[]): string {
@@ -207,6 +214,75 @@ async function sameAsShellFile(line: string, shell: string): Promise<void> {
 	assert.deepEqual(ours, real, `\`${line}\` is not coloured the way a .sh file colours it`)
 }
 
+/**
+ * Assert that `exec <cmd>` colours `<cmd>` the way a .sh file colours it.
+ *
+ * The body of an `exec` is that command's input and stays uncoloured, but the
+ * command itself is a program with flags and arguments, exactly like the text
+ * after `$ ` -- and it came out flat white, because the alternation inside the
+ * rule's lookahead was silently taking the capture number the command needed.
+ */
+async function execSameAsShellFile(line: string, shell: string): Promise<void> {
+	const reg = await registry(shell)
+	const sh = await reg.loadGrammar("source.shell")
+	const run = await reg.loadGrammar("source.run")
+	assert.ok(sh && run, "both grammars loaded")
+
+	const real = sh
+		.tokenizeLine(line, vsctm.INITIAL)
+		.tokens.map((t) => ({ text: line.slice(t.startIndex, t.endIndex), scopes: coloured(t.scopes) }))
+		.filter((t) => t.text.trim())
+
+	const wrapped = `exec ${line}`
+	const ours = run
+		.tokenizeLine(wrapped, vsctm.INITIAL)
+		.tokens.map((t) => ({ text: wrapped.slice(t.startIndex, t.endIndex), scopes: coloured(t.scopes) }))
+		// Drop the `exec` keyword itself, which is ours and has no counterpart
+		// -- by position, since a command may well take `exec` as an argument.
+		.slice(1)
+		.filter((t) => t.text.trim())
+
+	assert.deepEqual(ours, real, `\`${line}\` after \`exec\` is not coloured the way a .sh file colours it`)
+}
+
+test("an `exec` command is coloured exactly as the same command in a .sh file", async () => {
+	const shell = realShellGrammar()
+	if (!shell) {
+		return
+	}
+	for (const line of [
+		"sudo tee /etc/systemd/journald.conf.d/skiley.conf",
+		"python3",
+		"tee -a 'a file.txt'",
+		"docker exec -i db psql -U postgres"
+	]) {
+		await execSameAsShellFile(line, shell)
+	}
+})
+
+test("an `exec sh` command is coloured too, and its body stays shell", async () => {
+	const shell = realShellGrammar()
+	if (!shell) {
+		return
+	}
+	await execSameAsShellFile("bash -eu", shell)
+	const scopes = await scopesOf("exec bash -eu\n\techo hi\nend\n", shell)
+	assert.ok(
+		scopes[1].some((s) => s.includes("meta.embedded.block.shell")),
+		"the body of an `exec bash` is still shell"
+	)
+})
+
+test("an interpolation in an `exec` command is still ours", async () => {
+	// It sits inside the region now coloured as shell, so the injection has to
+	// win there the way it does on a `$` line.
+	const scopes = await scopesOf("exec tee {{ ARG.path }}\n\tx\nend\n")
+	assert.ok(
+		scopes[0].some((s) => s === "meta.embedded.expression.run"),
+		`no interpolation scope in ${JSON.stringify(scopes[0])}`
+	)
+})
+
 test("a shell line is coloured exactly as the same command in a .sh file", async () => {
 	const shell = realShellGrammar()
 	if (!shell) {
@@ -227,6 +303,105 @@ test("a shell line is coloured exactly as the same command in a .sh file", async
 		'r() { sed -e \'s|a|b|g\' "$1"; }; r x > "$d/out"'
 	]) {
 		await sameAsShellFile(line, shell)
+	}
+})
+
+test("a capture in value position is coloured as the same `$` line", async () => {
+	// `let x = $ cmd` had no rule at all: the shell text was read as a runfile
+	// expression, so `--name-only` came out two operators and `"*.rs"` a
+	// runfile string.
+	const shell = realShellGrammar()
+	if (!shell) {
+		return
+	}
+	const reg = await registry(shell)
+	const run = await reg.loadGrammar("source.run")
+	assert.ok(run)
+	const line = 'git diff --cached --name-only -- "*.rs" | wc -l'
+	const scopes = (src: string, skip: number) =>
+		run
+			.tokenizeLine(src, vsctm.INITIAL)
+			.tokens.map((t) => ({ text: src.slice(t.startIndex, t.endIndex), scopes: coloured(t.scopes) }))
+			.filter((t) => t.text.trim())
+			.slice(skip)
+
+	// `$ <line>` is the shape already known to be right, so it is the standard.
+	assert.deepEqual(scopes(`let rs = $ ${line}`, 4), scopes(`$ ${line}`, 1))
+	assert.deepEqual(scopes(`rs = $ ${line}`, 3), scopes(`$ ${line}`, 1), "a reassignment too")
+})
+
+test("an exec bound to a name is still an exec block", async () => {
+	// `let x = exec sh` … `end` matched nothing: the body was not shell, and
+	// the block was not a block.
+	const shell = realShellGrammar()
+	if (!shell) {
+		return
+	}
+	const bound = await scopesOf("let out = exec sh\n\techo hi\nend\n", shell)
+	assert.ok(bound[0].includes("keyword.control.exec.run"), `${bound[0].join(" ")}`)
+	assert.ok(bound[1].some((s) => s.includes("meta.embedded.block.shell")), `${bound[1].join(" ")}`)
+	assert.ok(bound[2].includes("keyword.control.exec.run"), `end closes it: ${bound[2].join(" ")}`)
+
+	// A body that is not shell stays the command's own.
+	const other = await scopesOf("let out = exec python3\n\tprint(1)\nend\n", shell)
+	assert.ok(
+		!other[1].some((s) => s.includes("embedded.block.shell")),
+		`a python body is not shell: ${other[1].join(" ")}`
+	)
+})
+
+test("an embedded region never outlives its line", async () => {
+	// The failure this catches: the shell grammar runs a rule to the end of a
+	// line, so `code_of($ xcode-select --install)` had its `)` swallowed by the
+	// option rule. With nothing to close the region, every line below it was
+	// coloured as shell -- `default` stopped being a keyword and a string
+	// stopped being a string. A stub shell grammar cannot show this; only the
+	// real one over-consumes.
+	const shell = realShellGrammar()
+	if (!shell) {
+		return
+	}
+	const reg = await registry(shell)
+	const run = await reg.loadGrammar("source.run")
+	assert.ok(run)
+	const lines = [
+		"match RUN.os",
+		'\tcase "macos"',
+		"\t\tcode_of($ xcode-select --install)",
+		"\tdefault",
+		'\t\tprint("no setup for {{ RUN.os }}")',
+		"end"
+	]
+	let rules = vsctm.INITIAL
+	const scopesOf: Record<string, string[]> = {}
+	for (const line of lines) {
+		const r = run.tokenizeLine(line, rules)
+		rules = r.ruleStack
+		for (const tok of r.tokens) {
+			const text = line.slice(tok.startIndex, tok.endIndex).trim()
+			if (text && !(text in scopesOf)) {
+				scopesOf[text] = tok.scopes
+			}
+		}
+	}
+	for (const word of ["default", "match", "end"]) {
+		assert.ok(
+			scopesOf[word]?.includes("keyword.control.run"),
+			`${word} is not a keyword: ${scopesOf[word]?.join(" ")}`
+		)
+	}
+	assert.ok(
+		scopesOf["print"]?.includes("support.function.run"),
+		`print: ${scopesOf["print"]?.join(" ")}`
+	)
+	for (const [text, scopes] of Object.entries(scopesOf)) {
+		if (text === "xcode-select" || text.startsWith("-") || text === ")") {
+			continue
+		}
+		assert.ok(
+			!scopes.some((s) => s.includes("embedded.line.shell")),
+			`${text} leaked into the shell region: ${scopes.join(" ")}`
+		)
 	}
 })
 
@@ -304,5 +479,25 @@ test("a json block is coloured as JSON, and its interpolations stay ours", async
 	assert.ok(
 		(lines[3] ?? []).some((t) => t.scopes.includes("keyword.control.shell.run")),
 		"the block did not close"
+	)
+})
+
+test("a dispatch inside code_of is coloured like a run statement", async () => {
+	// `code_of(run build)` is the same dispatch the statement spells, so the
+	// keyword and the target read the same way. Without a rule for it both
+	// came out plain identifiers, since the statement's is anchored to `^`.
+	const lines = await tokensOf("let c = code_of(run web:build --env=prod)\n")
+	const tokens = lines[0] ?? []
+	const scopeOf = (text: string) => tokens.find((t) => t.text === text)?.scopes ?? []
+	assert.ok(scopeOf("code_of").includes("support.function.run"), `code_of: ${scopeOf("code_of").join(" ")}`)
+	assert.ok(scopeOf("run").includes("keyword.control.run.run"), `run: ${scopeOf("run").join(" ")}`)
+	assert.ok(
+		scopeOf("web:build").includes("entity.name.function.target.run"),
+		`web:build: ${scopeOf("web:build").join(" ")}`
+	)
+	// And nothing was mistaken for shell: there is no `$` here.
+	assert.ok(
+		!tokens.some((t) => t.scopes.some((s) => s.includes("embedded.line.shell"))),
+		"a dispatch is not shell"
 	)
 })

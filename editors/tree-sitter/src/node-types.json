@@ -333,6 +333,10 @@
       "required": false,
       "types": [
         {
+          "type": "dispatch",
+          "named": true
+        },
+        {
           "type": "shell_text",
           "named": true
         }
@@ -366,6 +370,95 @@
     "type": "comment",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "dispatch",
+    "named": true,
+    "fields": {
+      "target": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "target",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "argument",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "do_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "assignment",
+          "named": true
+        },
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "do_statement",
+          "named": true
+        },
+        {
+          "type": "exec_block",
+          "named": true
+        },
+        {
+          "type": "expression_statement",
+          "named": true
+        },
+        {
+          "type": "for_statement",
+          "named": true
+        },
+        {
+          "type": "if_statement",
+          "named": true
+        },
+        {
+          "type": "let_statement",
+          "named": true
+        },
+        {
+          "type": "match_statement",
+          "named": true
+        },
+        {
+          "type": "property",
+          "named": true
+        },
+        {
+          "type": "retry_statement",
+          "named": true
+        },
+        {
+          "type": "run_statement",
+          "named": true
+        },
+        {
+          "type": "shell_line",
+          "named": true
+        }
+      ]
+    }
   },
   {
     "type": "exec_block",
@@ -591,6 +684,10 @@
           "named": true
         },
         {
+          "type": "do_statement",
+          "named": true
+        },
+        {
           "type": "exec_block",
           "named": true
         },
@@ -710,6 +807,10 @@
         },
         {
           "type": "comment",
+          "named": true
+        },
+        {
+          "type": "do_statement",
           "named": true
         },
         {
@@ -1058,6 +1159,10 @@
           "named": true
         },
         {
+          "type": "do_statement",
+          "named": true
+        },
+        {
           "type": "exec_block",
           "named": true
         },
@@ -1114,6 +1219,10 @@
         },
         {
           "type": "comment",
+          "named": true
+        },
+        {
+          "type": "do_statement",
           "named": true
         },
         {
@@ -1550,6 +1659,10 @@
           "named": true
         },
         {
+          "type": "do_statement",
+          "named": true
+        },
+        {
           "type": "exec_block",
           "named": true
         },
@@ -1729,6 +1842,10 @@
         },
         {
           "type": "comment",
+          "named": true
+        },
+        {
+          "type": "do_statement",
           "named": true
         },
         {
@@ -2017,6 +2134,10 @@
   },
   {
     "type": "default",
+    "named": false
+  },
+  {
+    "type": "do",
     "named": false
   },
   {

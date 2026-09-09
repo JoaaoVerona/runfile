@@ -90,3 +90,53 @@ fn index_and_call_bind_tightest() {
 fn a_bare_source_prefix_is_rejected() {
 	assert!(parse_expr("ARG", 0, 1).is_err());
 }
+
+#[test]
+fn a_list_nests_to_any_depth() {
+	let Expr::List(items, _) = p(r#"[[1, 2], [3, 4, [5, 6]], 7, "a"]"#) else {
+		panic!()
+	};
+	assert_eq!(items.len(), 4);
+	let Expr::List(row, _) = &items[1] else { panic!() };
+	assert_eq!(row.len(), 3);
+	assert!(matches!(row[2], Expr::List(..)));
+	assert!(matches!(items[2], Expr::Number(..)));
+	assert!(matches!(items[3], Expr::Str(..)));
+}
+
+#[test]
+fn an_empty_list_nests_too() {
+	let Expr::List(items, _) = p("[[], [[]]]") else {
+		panic!()
+	};
+	let Expr::List(inner, _) = &items[0] else { panic!() };
+	assert!(inner.is_empty());
+	let Expr::List(outer, _) = &items[1] else { panic!() };
+	assert!(matches!(outer[0], Expr::List(..)));
+}
+
+#[test]
+fn an_element_is_a_whole_expression() {
+	// Nothing about a list restricts what may sit in one, and that holds at
+	// every level.
+	let Expr::List(items, _) = p(r#"[[1 + 2, concat("a", "b")], [ARG.x ? "d"]]"#) else {
+		panic!()
+	};
+	let Expr::List(row, _) = &items[0] else { panic!() };
+	assert!(matches!(row[0], Expr::Binary { .. }));
+	assert!(matches!(row[1], Expr::Call { .. }));
+}
+
+#[test]
+fn indexing_chains_through_the_levels() {
+	// `xs[1][2]` is an index of an index, not a two-argument form.
+	let Expr::Index { base, .. } = p("xs[1][2]") else {
+		panic!()
+	};
+	assert!(matches!(*base, Expr::Index { .. }));
+}
+
+#[test]
+fn a_list_literal_can_be_indexed_where_it_stands() {
+	assert!(matches!(p("[[1, 2]][0][1]"), Expr::Index { .. }));
+}

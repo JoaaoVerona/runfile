@@ -3,10 +3,7 @@
 use runfile_discovery::{Catalog, Origin, Target};
 
 /// What listing needs from a target file: the first line of its leading
-/// comment block, and whether it opted out of being listed.
-///
-/// One read and one parse per target -- descriptions and `.hide` used to cost
-/// two of each.
+/// comment block, and whether its name keeps it out of the listing.
 pub(crate) struct Facts {
 	pub(crate) description: String,
 	pub(crate) hidden: bool,
@@ -45,13 +42,7 @@ pub(crate) fn facts(t: &Target) -> Facts {
 			.and_then(|d| d.lines().next())
 			.unwrap_or_default()
 			.to_string(),
-		// `.hide` is the only way to hide a target; the old `_` filename prefix
-		// carries no meaning.
-		hidden: ast
-			.body
-			.properties
-			.iter()
-			.any(|p| p.path.first().is_some_and(|h| h == "hide")),
+		hidden: runfile_discovery::is_hidden(&t.name),
 	}
 }
 

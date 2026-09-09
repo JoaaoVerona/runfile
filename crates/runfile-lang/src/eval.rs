@@ -50,6 +50,12 @@ pub enum EvalError {
 	/// not something a target gets to shrug off.
 	#[error("exit {code}")]
 	Exit { code: i32, line: usize },
+	/// `confirm(…)` was declined. Not a failure -- an answer, and the only
+	/// answer that means stop. It travels like `Exit` and every catcher
+	/// re-raises it for the same reason: someone who said no has not asked to
+	/// be second-guessed by a `?` fallback or by `.ignore-errors`.
+	#[error("cancelled")]
+	Cancelled { line: usize },
 }
 
 impl EvalError {
@@ -74,6 +80,10 @@ pub struct Scope {
 	/// finds a default resolves without ever asking, because the chain catches
 	/// the error before it surfaces here.
 	pub ask: Option<fn(&str, &str) -> Option<String>>,
+	/// Asked by `confirm(…)`. `None` means never prompt, which is what a
+	/// non-terminal reduces to; `assume_yes` is `-y` and CI, and skips it.
+	pub confirm: Option<fn(&str) -> bool>,
+	pub assume_yes: bool,
 	/// The anchor: relative paths in `glob`, `read_file` and friends resolve
 	/// against it, the same rule cwd and `.env-file` follow.
 	pub base_dir: std::path::PathBuf,
@@ -169,6 +179,8 @@ impl Scope {
 			run: HashMap::new(),
 			in_try: false,
 			ask: None,
+			confirm: None,
+			assume_yes: false,
 			base_dir: std::path::PathBuf::from("."),
 			private_keys: Keys::default(),
 			dry_run: false,
@@ -268,8 +280,8 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 			sc.in_try = was;
 			match left {
 				Ok(v) => Ok(v),
-				// `exit` is not a failure to fall back from.
-				Err(e @ EvalError::Exit { .. }) => Err(e),
+				// Neither `exit` nor a decline is a failure to fall back from.
+				Err(e @ (EvalError::Exit { .. } | EvalError::Cancelled { .. })) => Err(e),
 				Err(_) => eval(rhs, sc),
 			}
 		}
@@ -288,9 +300,10 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 			})
 		}
 		Expr::Call { name, args, span } => functions::call(name, args, sc, *span),
-		Expr::Structured { format, body, .. } => {
+		Expr::Structured { body, .. } => {
+			let format = body.format;
 			let mut out = String::new();
-			for (i, parts) in body.iter().enumerate() {
+			for (i, parts) in body.lines.iter().enumerate() {
 				if i > 0 {
 					out.push('\n');
 				}
@@ -313,6 +326,10 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 		}
 		Expr::Capture { span, .. } => Err(EvalError::Other {
 			msg: "`$`/`exec` capture needs a process host; not available in pure evaluation".into(),
+			line: span.line,
+		}),
+		Expr::Dispatch { span, .. } => Err(EvalError::Other {
+			msg: "`run` needs a target resolver; not available in pure evaluation".into(),
 			line: span.line,
 		}),
 	}

@@ -34,12 +34,21 @@ pub fn call(name: &str, args: &[Expr], sc: &mut Scope, sp: Span) -> Result<Value
 		let out = eval(&args[0], sc);
 		sc.in_try = was;
 		return out.map_err(|e| match e {
-			e @ EvalError::Exit { .. } => e,
+			e @ (EvalError::Exit { .. } | EvalError::Cancelled { .. }) => e,
 			_ => EvalError::Caught { line: sp.line },
 		});
 	}
 
 	let v: Vec<Value> = args.iter().map(|a| eval(a, sc)).collect::<Result<_, _>>()?;
+	call_with(name, v, sc, sp)
+}
+
+/// The same call, with its arguments already evaluated.
+///
+/// Split out for the runtime: a `$` run as the last argument has to be spawned
+/// by something that owns a process host, so the value arrives here rather
+/// than the expression.
+pub fn call_with(name: &str, v: Vec<Value>, sc: &mut Scope, sp: Span) -> Result<Value, EvalError> {
 	let n = v.len();
 	let s = |i: usize| v[i].as_str().map_err(|e| ty(sp, e));
 	let num = |i: usize| v[i].as_num().map_err(|e| ty(sp, e));
@@ -328,6 +337,110 @@ pub fn call(name: &str, args: &[Expr], sc: &mut Scope, sp: Span) -> Result<Value
 		"last" => {
 			want!(1, "1 argument");
 			list(0)?.last().cloned().unwrap_or(Value::Str(String::new()))
+		}
+		// A list was read-only: it could be received from `split`, `lines`,
+		// `glob` or a literal and then only looked at. Everything below
+		// answers with a **new** list, so nothing here mutates what it was
+		// given and a binding never changes behind another name.
+		"append" => {
+			if n < 2 {
+				return Err(arity(name, "a list and at least one value", n, sp));
+			}
+			let mut out = list(0)?.to_vec();
+			out.extend(v[1..].iter().cloned());
+			Value::List(out)
+		}
+		"prepend" => {
+			if n < 2 {
+				return Err(arity(name, "a list and at least one value", n, sp));
+			}
+			let mut out: Vec<Value> = v[1..].to_vec();
+			out.extend(list(0)?.iter().cloned());
+			Value::List(out)
+		}
+		"concat_lists" => {
+			if n < 1 {
+				return Err(arity(name, "at least one list", n, sp));
+			}
+			let mut out = Vec::new();
+			for i in 0..n {
+				out.extend(list(i)?.iter().cloned());
+			}
+			Value::List(out)
+		}
+		// Compares as the language compares: numbers by value, everything
+		// else by its text. A mixed list sorts numbers before the rest rather
+		// than refusing, since refusing would make `sort(ARGS)` a type puzzle.
+		"sort" => {
+			want!(1, "1 argument");
+			let mut out = list(0)?.to_vec();
+			out.sort_by(compare);
+			Value::List(out)
+		}
+		"reverse" => {
+			want!(1, "1 argument");
+			let mut out = list(0)?.to_vec();
+			out.reverse();
+			Value::List(out)
+		}
+		"unique" => {
+			want!(1, "1 argument");
+			// Order is the order first seen, which is the only one that does
+			// not surprise: `unique(sort(x))` is how you ask for sorted.
+			let mut out: Vec<Value> = Vec::new();
+			for item in list(0)? {
+				if !out.contains(item) {
+					out.push(item.clone());
+				}
+			}
+			Value::List(out)
+		}
+		// Counted in items, and clamped rather than refused: a slice past the
+		// end of a list is an empty list, the way it is in every language that
+		// has one.
+		"slice" => {
+			if !(2..=3).contains(&n) {
+				return Err(arity(name, "a list, a start and an optional length", n, sp));
+			}
+			let items = list(0)?;
+			let start = (num(1)?.max(0.0) as usize).min(items.len());
+			let end = match n {
+				3 => (start + num(2)?.max(0.0) as usize).min(items.len()),
+				_ => items.len(),
+			};
+			Value::List(items[start..end].to_vec())
+		}
+		// One level, which is the one anybody means: a list of rows becomes
+		// the fields, and a deeper structure stays visible.
+		"flatten" => {
+			want!(1, "1 argument");
+			let mut out = Vec::new();
+			for item in list(0)? {
+				match item {
+					Value::List(inner) => out.extend(inner.iter().cloned()),
+					other => out.push(other.clone()),
+				}
+			}
+			Value::List(out)
+		}
+		"index_of" => {
+			want!(2, "a list and a value");
+			let at = list(0)?.iter().position(|x| *x == v[1]);
+			Value::Num(at.map_or(-1.0, |i| i as f64))
+		}
+		"without" => {
+			if n < 2 {
+				return Err(arity(name, "a list and at least one value", n, sp));
+			}
+			let drop = &v[1..];
+			Value::List(list(0)?.iter().filter(|x| !drop.contains(x)).cloned().collect())
+		}
+		// Pairs, so two lists read together become the rows a `for` walks.
+		// Stops at the shorter, rather than inventing a value for the gap.
+		"zip" => {
+			want!(2, "two lists");
+			let (a, b) = (list(0)?.to_vec(), list(1)?.to_vec());
+			Value::List(a.into_iter().zip(b).map(|(x, y)| Value::List(vec![x, y])).collect())
 		}
 		// ---- numbers
 		"number" => {
@@ -696,6 +809,11 @@ pub struct Function {
 	/// One sentence. Long enough to answer "what does this do", short enough
 	/// to sit in a popup.
 	pub doc: &'static str,
+	/// A worked line or two: the call, and what it answers with. A signature
+	/// says the shape of a call and a sentence says its purpose; neither
+	/// answers "what do I type here", which is the question someone hovering
+	/// a name is usually asking.
+	pub example: &'static str,
 }
 
 pub const FUNCTIONS: &[Function] = &[
@@ -703,321 +821,469 @@ pub const FUNCTIONS: &[Function] = &[
 		name: "abs",
 		signature: "abs(n)",
 		doc: "Magnitude, without the sign.",
+		example: "let d = abs(-4)                              # 4",
 	},
 	Function {
 		name: "base64_decode",
 		signature: "base64_decode(s)",
 		doc: "Decode standard base64 to text.",
+		example: "let json = base64_decode(ENV.CREDS_BASE64)",
 	},
 	Function {
 		name: "base64_encode",
 		signature: "base64_encode(s)",
 		doc: "Encode text as standard base64.",
+		example: "let b = base64_encode(\"hi\")                  # \"aGk=\"",
 	},
 	Function {
 		name: "basename",
 		signature: "basename(path)",
 		doc: "The final component of a path.",
+		example: "let f = basename(\"/srv/app/main.rs\")         # \"main.rs\"",
 	},
 	Function {
 		name: "capitalize",
 		signature: "capitalize(s)",
 		doc: "Upper-case the first letter of every word.",
+		example: "let t = capitalize(\"hello wide world\")       # \"Hello Wide World\"",
 	},
 	Function {
 		name: "ceil",
 		signature: "ceil(n)",
 		doc: "Round up to a whole number.",
+		example: "let n = ceil(2.1)                            # 3",
+	},
+	Function {
+		name: "confirm",
+		signature: "confirm(question)",
+		doc: "Ask before going on. Answering no stops the run, the way `exit()` does — nothing catches it. Skipped by `-y` and in CI, and never asked under `--dry-run`. Call it anywhere, including inside an `if`, so the question can depend on what is about to happen.",
+		example: "if env == \"production\"\n\tconfirm(\"Deploy to production?\")\nend\n\n$ terraform apply -auto-approve",
 	},
 	Function {
 		name: "concat",
 		signature: "concat(a, b, …)",
 		doc: "Join values into one string. Strings do not add with `+`.",
+		example: "let tag = concat(\"v\", 1, \".\", 2)             # \"v1.2\"",
 	},
 	Function {
 		name: "contains",
 		signature: "contains(s, needle)",
 		doc: "Whether `needle` appears in `s`.",
+		example: "if !contains(ENV.PATH, \"/usr/local/bin\")\n\terror(\"/usr/local/bin is not on PATH\")\nend",
 	},
 	Function {
 		name: "decrypt",
 		signature: "decrypt(source, dest)",
 		doc: "Decrypt an encrypted `.env` file. Does nothing under `--dry-run`.",
+		example: "decrypt(\".env.production\", \".env\")",
 	},
 	Function {
 		name: "dirname",
 		signature: "dirname(path)",
 		doc: "Everything before the final component.",
+		example: "let d = dirname(\"/srv/app/main.rs\")          # \"/srv/app\"",
 	},
 	Function {
 		name: "ends_with",
 		signature: "ends_with(s, suffix)",
 		doc: "Whether `s` ends with `suffix`.",
+		example: "for f in glob(\"src/*.ts\")\n\tif ends_with(f, \".test.ts\")\n\t\t$ npx vitest run {{ f }}\n\tend\nend",
 	},
 	Function {
 		name: "error",
 		signature: "error(message)",
 		doc: "Fail the target with this message.",
+		example: "error(\"--token is required; mint one in Settings > Actions\")",
 	},
 	Function {
 		name: "escape",
 		signature: "escape(s)",
 		doc: "Render control characters and quotes as backslash escapes. Not shell quoting: interpolation already does that.",
+		example: "let shown = escape(\"a\\tb\")                   # \"a\\\\tb\"",
 	},
 	Function {
 		name: "extname",
 		signature: "extname(path)",
 		doc: "The extension, including its dot.",
+		example: "let e = extname(\"archive.tar.gz\")            # \".gz\"",
 	},
 	Function {
 		name: "directory_exists",
 		signature: "directory_exists(path)",
 		doc: "Whether the path is a directory, relative to the runfiles parent.",
+		example: "if directory_exists(\".git\") || file_exists(\".git\")\n\t# a worktree keeps a *file* there\nend",
 	},
 	Function {
 		name: "file_exists",
 		signature: "file_exists(path)",
 		doc: "Whether the path is a file, relative to the runfiles parent.",
+		example: "if !file_exists(\"Cargo.lock\")\n\t$ cargo generate-lockfile\nend",
 	},
 	Function {
 		name: "is_executable",
 		signature: "is_executable(path)",
 		doc: "Whether the path is a file this user may execute.",
+		example: "if !is_executable(\"scripts/deploy.sh\")\n\terror(\"scripts/deploy.sh is not executable\")\nend",
 	},
 	Function {
 		name: "exit",
 		signature: "exit(code?)",
 		doc: "Stop the run with this exit status, or 0.",
+		example: "if length(ARGS) == 0\n\tprint(\"nothing to do\")\n\texit()\nend",
 	},
 	Function {
 		name: "first",
 		signature: "first(list)",
 		doc: "The first item, or an empty string.",
+		example: "let part = first(ARGS)                       # \"major\"",
 	},
 	Function {
 		name: "floor",
 		signature: "floor(n)",
 		doc: "Round down to a whole number.",
+		example: "let n = floor(2.9)                           # 2",
 	},
 	Function {
 		name: "glob",
 		signature: "glob(pattern)",
 		doc: "Matching paths as a list. `*` does not cross a directory separator.",
+		example: "for compose in glob(\"**/docker-compose.yml\")\n\t$ docker compose -f {{ compose }} config -q\nend",
 	},
 	Function {
 		name: "is_number",
 		signature: "is_number(s)",
 		doc: "Whether the string parses as a number.",
+		example: "if !is_number(ARG.port)\n\terror(\"--port must be a number\")\nend",
 	},
 	Function {
 		name: "join",
 		signature: "join(separator, list)",
 		doc: "Join a list into one string.",
+		example: "let image = join(\";\", \"system-images\", sdk, arch)",
 	},
 	Function {
 		name: "join_path",
 		signature: "join_path(a, b, …)",
 		doc: "Join path segments with this platform's separator.",
+		example: "let cfg = join_path(ENV.HOME, \".config\", \"app.toml\")",
 	},
 	Function {
 		name: "json_get",
 		signature: "json_get(json, path)",
 		doc: "Read a dotted path. A numeric segment indexes an array.",
+		example: "let name = json_get(read_file(\"package.json\"), \"name\")",
 	},
 	Function {
 		name: "json_set",
 		signature: "json_set(json, path, value)",
 		doc: "Set a dotted path and return the document. Containers are created as needed.",
+		example: "let doc = json_set(doc, \"scripts.build\", \"vite build\")",
+	},
+	Function {
+		name: "append",
+		signature: "append(list, value, …)",
+		doc: "A new list with the values added at the end.",
+		example: "let files = append(sources, \"build.rs\")",
+	},
+	Function {
+		name: "concat_lists",
+		signature: "concat_lists(list, …)",
+		doc: "One new list with every list's items, in order.",
+		example: "let all = concat_lists(glob(\"src/**/*.rs\"), glob(\"tests/**/*.rs\"))",
+	},
+	Function {
+		name: "flatten",
+		signature: "flatten(list)",
+		doc: "One level of nesting removed: a list of rows becomes the fields.",
+		example: "let fields = flatten([[1, 2], [3]])          # [1, 2, 3]",
+	},
+	Function {
+		name: "index_of",
+		signature: "index_of(list, value)",
+		doc: "Where the value first appears, or `-1`.",
+		example: "if index_of(RUN.namespaces, \"web\") != -1\n\trun web:build\nend",
+	},
+	Function {
+		name: "prepend",
+		signature: "prepend(list, value, …)",
+		doc: "A new list with the values added at the front.",
+		example: "let argv = prepend(ARGS, \"--locked\")",
+	},
+	Function {
+		name: "reverse",
+		signature: "reverse(list)",
+		doc: "A new list, back to front.",
+		example: "let newest = first(reverse(sort(tags)))",
+	},
+	Function {
+		name: "slice",
+		signature: "slice(list, start[, length])",
+		doc: "A new list, counted in items. Past the end is empty rather than an error.",
+		example: "let rest = slice(ARGS, 1)                    # everything after the first",
+	},
+	Function {
+		name: "sort",
+		signature: "sort(list)",
+		doc: "A new list in order: numbers by value, everything else by its text.",
+		example: "for f in sort(glob(\"migrations/*.sql\"))\n\t$ psql -f {{ f }}\nend",
+	},
+	Function {
+		name: "unique",
+		signature: "unique(list)",
+		doc: "A new list with repeats dropped, keeping the order first seen.",
+		example: "let dirs = unique(map_dirs)",
+	},
+	Function {
+		name: "without",
+		signature: "without(list, value, …)",
+		doc: "A new list with those values removed.",
+		example: "for ns in without(RUN.namespaces, \"docs\")\n\trun {{ ns }}:test\nend",
+	},
+	Function {
+		name: "zip",
+		signature: "zip(a, b)",
+		doc: "Pairs from two lists, stopping at the shorter — rows a `for` can walk.",
+		example: "for pair in zip(names, uids)\n\t$ chown {{ pair[1] }} /v/{{ pair[0] }}\nend",
 	},
 	Function {
 		name: "last",
 		signature: "last(list)",
 		doc: "The final item, or an empty string.",
+		example: "let newest = last(lines(tags))",
 	},
 	Function {
 		name: "length",
 		signature: "length(value)",
 		doc: "Item count for a list, character count for a string.",
+		example: "if length(files) > 0\n\t$ rustfmt {{ files }}\nend",
 	},
 	Function {
 		name: "lines",
 		signature: "lines(s)",
 		doc: "Split into a list on line endings.",
+		example: "let staged = $ git diff --cached --name-only\nlet files = lines(staged)",
 	},
 	Function {
 		name: "max",
 		signature: "max(a, b, …)",
 		doc: "The largest number given.",
+		example: "let n = max(1, 7, 3)                         # 7",
 	},
 	Function {
 		name: "md5",
 		signature: "md5(s)",
 		doc: "Hex MD5. A fingerprint, not a secure hash.",
+		example: "let key = md5(read_file(\"pnpm-lock.yaml\"))",
 	},
 	Function {
 		name: "min",
 		signature: "min(a, b, …)",
 		doc: "The smallest number given.",
+		example: "let n = min(1, 7, 3)                         # 1",
 	},
 	Function {
 		name: "now",
 		signature: "now([format])",
 		doc: "The current UTC time. One of `unix`, `unix-ms`, `iso`, `iso-date`, `iso-time`, `year`, `month`, `day`, `hour`, `minute`, `second`.",
+		example: "let today = now(\"iso-date\")                  # \"2026-09-08\"",
 	},
 	Function {
 		name: "number",
 		signature: "number(value)",
 		doc: "Parse a string as a number. Required before arithmetic.",
+		example: "let next = number(parts[0]) + 1",
 	},
 	Function {
 		name: "one_of",
 		signature: "one_of(value, a, b, …)",
 		doc: "`value` if it is one of the options, else an error naming them.",
+		example: "let part = one_of(first(ARGS), \"major\", \"minor\", \"patch\")",
 	},
 	Function {
 		name: "power",
 		signature: "power(base, exponent)",
 		doc: "`base` raised to `exponent`.",
+		example: "let n = power(2, 10)                         # 1024",
+	},
+	Function {
+		name: "print",
+		signature: "print(value, …)",
+		doc: "Write values to stdout, separated by spaces, and end the line.",
+		example: "print(\"Bumped\", cur, \"->\", next)",
+	},
+	Function {
+		name: "printf",
+		signature: "printf(format, …)",
+		doc: "Write to stdout with no newline. `%s`, `%d`, `%f`, `%.Nf` and `%%`.",
+		example: "printf(\"  %s -> %s (%d files)\\n\", src, dst, n)",
 	},
 	Function {
 		name: "read_file",
 		signature: "read_file(path)",
 		doc: "The file's contents, relative to the runfiles parent.",
+		example: "let cargo = read_file(\"Cargo.toml\")",
 	},
 	Function {
 		name: "regex_capture",
 		signature: "regex_capture(s, pattern, group)",
 		doc: "One capture group of the first match.",
+		example: "let cur = regex_capture(cargo, \"(?m)^version = \\\"([^\\\"]+)\\\"\", 1)",
 	},
 	Function {
 		name: "regex_capture_all",
 		signature: "regex_capture_all(s, pattern, group)",
 		doc: "That group from every match, as a list.",
+		example: "for image in regex_capture_all(compose, r\"image:\\s*(\\S+)\", 1)\n\t$ trivy image {{ image }}\nend",
 	},
 	Function {
 		name: "regex_matches",
 		signature: "regex_matches(s, pattern)",
 		doc: "Whether the pattern matches anywhere.",
+		example: "if !regex_matches(ARG.instance, r\"^https?://\\S+$\")\n\terror(\"--instance must be a URL\")\nend",
 	},
 	Function {
 		name: "regex_remove",
 		signature: "regex_remove(s, pattern)",
 		doc: "Delete every match.",
+		example: "let bare = regex_remove(out, r\"\\x1b\\[[0-9;]*m\")",
 	},
 	Function {
 		name: "regex_replace",
 		signature: "regex_replace(s, pattern, replacement)",
 		doc: "Replace every match.",
+		example: "let bumped = regex_replace(cargo, \"(?m)^version = .*\", line)",
 	},
 	Function {
 		name: "remove_all",
 		signature: "remove_all(s, needle)",
 		doc: "Delete every occurrence.",
+		example: "let plain = remove_all(source, \".production\")",
 	},
 	Function {
 		name: "remove_prefix",
 		signature: "remove_prefix(s, prefix)",
 		doc: "Drop `prefix` if present.",
+		example: "let rel = remove_prefix(path, \"web/\")",
 	},
 	Function {
 		name: "remove_suffix",
 		signature: "remove_suffix(s, suffix)",
 		doc: "Drop `suffix` if present.",
+		example: "let base = remove_suffix(f, \".production\")",
 	},
 	Function {
 		name: "repeat",
 		signature: "repeat(s, count)",
 		doc: "`s` repeated `count` times.",
+		example: "print(repeat(\"-\", 40))",
 	},
 	Function {
 		name: "replace_all",
 		signature: "replace_all(s, from, to)",
 		doc: "Replace every occurrence.",
+		example: "text = replace_all(text, \"__BIN__\", \"/usr/local/bin/app\")",
 	},
 	Function {
 		name: "round",
 		signature: "round(n)",
 		doc: "Round to the nearest whole number.",
+		example: "let n = round(2.5)                           # 3",
 	},
 	Function {
 		name: "sha256",
 		signature: "sha256(s)",
 		doc: "Hex SHA-256.",
+		example: "let digest = sha256(read_file(\"dist/app.tar.gz\"))",
 	},
 	Function {
 		name: "split",
 		signature: "split(s, separator)",
 		doc: "Split into a list.",
+		example: "let parts = split(cur, \".\")                  # [\"1\", \"2\", \"3\"]",
 	},
 	Function {
 		name: "starts_with",
 		signature: "starts_with(s, prefix)",
 		doc: "Whether `s` starts with `prefix`.",
+		example: "if starts_with(branch, \"release/\")\n\trun deploy --env=prod\nend",
 	},
 	Function {
 		name: "stem",
 		signature: "stem(path)",
 		doc: "The final component without its extension.",
+		example: "let name = stem(\"archive.tar.gz\")            # \"archive.tar\"",
 	},
 	Function {
 		name: "substring",
 		signature: "substring(s, start[, length])",
 		doc: "A slice, counted in characters.",
+		example: "let short = substring(sha, 0, 7)             # \"a1b2c3d\"",
 	},
 	Function {
 		name: "temp_dir",
 		signature: "temp_dir()",
 		doc: "A fresh directory in the OS temp directory, removed when the run ends.",
+		example: "let units = temp_dir()\nwrite_file(join_path(units, \"app.service\"), rendered)",
 	},
 	Function {
 		name: "temp_file",
 		signature: "temp_file([content][, extension])",
 		doc: "A fresh file in the OS temp directory, removed when the run ends however it ends.",
+		example: ".env.GOOGLE_APPLICATION_CREDENTIALS = temp_file(base64_decode(ENV.SA_JSON), \"json\")",
 	},
 	Function {
 		name: "to_lower",
 		signature: "to_lower(s)",
 		doc: "Lower-case.",
+		example: "let os = to_lower(RUN.os)",
 	},
 	Function {
 		name: "to_upper",
 		signature: "to_upper(s)",
 		doc: "Upper-case.",
+		example: "let t = to_upper(\"abc\")                      # \"ABC\"",
 	},
 	Function {
 		name: "trim",
 		signature: "trim(s)",
 		doc: "Drop whitespace from both ends.",
+		example: "let v = trim(read_file(\"VERSION\"))",
 	},
 	Function {
 		name: "trim_end",
 		signature: "trim_end(s)",
 		doc: "Drop trailing whitespace.",
+		example: "let line = trim_end(raw)",
 	},
 	Function {
 		name: "trim_start",
 		signature: "trim_start(s)",
 		doc: "Drop leading whitespace.",
+		example: "let body = trim_start(raw)",
 	},
 	Function {
 		name: "url_decode",
 		signature: "url_decode(s)",
 		doc: "Decode percent-encoding.",
+		example: "let q = url_decode(\"a%20b\")                  # \"a b\"",
 	},
 	Function {
 		name: "url_encode",
 		signature: "url_encode(s)",
 		doc: "Percent-encode for a URL.",
+		example: "let q = url_encode(\"a b\")                    # \"a%20b\"",
 	},
 	Function {
 		name: "uuid",
 		signature: "uuid()",
 		doc: "A fresh version 4 UUID.",
+		example: "let id = uuid()",
 	},
 	Function {
 		name: "write_file",
 		signature: "write_file(path, content)",
 		doc: "Write a file. Does nothing under `--dry-run`.",
+		example: "write_file(\"Cargo.toml\", regex_replace(cargo, pattern, line))",
 	},
 ];
 
@@ -1050,6 +1316,30 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		})(),
 		// Writing functions are the one place a preview could change the world,
 		// so they report the path they would have touched and do nothing.
+		// A question, and the one answer that means stop. Never asked under
+		// `--dry-run`: a preview changes nothing, so there is nothing to
+		// approve, and asking made previewing a guarded target impossible.
+		"confirm" if n == 1 => (|| {
+			let question = s(0)?;
+			let allowed = sc.assume_yes || sc.dry_run || sc.confirm.is_some_and(|ask| ask(question));
+			if allowed {
+				Ok(V::Bool(true))
+			} else {
+				Err(EvalError::Cancelled { line: sp.line })
+			}
+		})(),
+		// Guarded here rather than falling off the end of the table, where a
+		// missed guard reads as "unknown function" and sends the reader after
+		// a spelling mistake they did not make.
+		"print" | "printf" if n == 0 => Err(arity(name, "at least 1 argument", n, sp)),
+		// Output, not a change to anything, so these run under `--dry-run` too
+		// -- the same reason `now` and `uuid` answer with real values there. A
+		// preview that hides what a run would say is a worse preview.
+		"print" if n >= 1 => {
+			let joined = v.iter().map(V::to_string).collect::<Vec<_>>().join(" ");
+			write_stdout(&format!("{joined}{NEWLINE}")).map_err(other)
+		}
+		"printf" if n >= 1 => (|| write_stdout(&render_format(s(0)?, &v[1..], sp)?).map_err(other))(),
 		"write_file" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would write {}>", s(0)?))))(),
 		"decrypt" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would decrypt to {}>", s(1)?))))(),
 		"write_file" if n == 2 => (|| {
@@ -1242,5 +1532,114 @@ fn is_executable(p: &std::path::Path) -> bool {
 	#[cfg(not(unix))]
 	{
 		p.is_file()
+	}
+}
+
+/// What `print` ends a line with. A file written on Windows is expected to
+/// have Windows line endings, and this is the one place the language emits a
+/// line ending of its own.
+#[cfg(windows)]
+const NEWLINE: &str = "\r\n";
+#[cfg(not(windows))]
+const NEWLINE: &str = "\n";
+
+/// One locked write, then a flush.
+///
+/// Locked because a target dispatched into a `.parallel` branch may be
+/// printing at the same moment, and half a line from each is worse than
+/// either. Flushed because the next thing to write is usually a child process
+/// holding the same descriptor, and a buffered line would arrive after output
+/// that came later.
+fn write_stdout(text: &str) -> Result<Value, String> {
+	use std::io::Write;
+	let mut out = std::io::stdout().lock();
+	out.write_all(text.as_bytes())
+		.and_then(|()| out.flush())
+		.map(|()| Value::Str(String::new()))
+		.map_err(|e| format!("could not write to stdout: {e}"))
+}
+
+/// `printf`'s substitutions: `%s`, `%d`, `%f`, `%.Nf` and `%%`.
+///
+/// The count has to match: a `%s` with nothing to put in it, or a value with
+/// no `%` to go to, is a typo every time, and printing something odd rather
+/// than saying so is how a format string quietly rots.
+pub(crate) fn render_format(fmt: &str, args: &[Value], sp: Span) -> Result<String, EvalError> {
+	let bad = |m: String| EvalError::Other { msg: m, line: sp.line };
+	let chars: Vec<char> = fmt.chars().collect();
+	let mut out = String::new();
+	let mut used = 0;
+	let mut i = 0;
+	while i < chars.len() {
+		if chars[i] != '%' {
+			out.push(chars[i]);
+			i += 1;
+			continue;
+		}
+		i += 1;
+		if chars.get(i) == Some(&'%') {
+			out.push('%');
+			i += 1;
+			continue;
+		}
+		let mut precision = None;
+		if chars.get(i) == Some(&'.') {
+			i += 1;
+			let from = i;
+			while chars.get(i).is_some_and(char::is_ascii_digit) {
+				i += 1;
+			}
+			if i == from {
+				return Err(bad("`%.` must be followed by a number of digits".into()));
+			}
+			precision = chars[from..i].iter().collect::<String>().parse::<usize>().ok();
+		}
+		let Some(&verb) = chars.get(i) else {
+			return Err(bad("`%` at the end of the format, with nothing to substitute".into()));
+		};
+		i += 1;
+		if precision.is_some() && verb != 'f' {
+			return Err(bad(format!("a precision is only for `%f`, not `%{verb}`")));
+		}
+		let Some(arg) = args.get(used) else {
+			return Err(bad(format!(
+				"the format has more substitutions than the {} value(s) given",
+				args.len()
+			)));
+		};
+		used += 1;
+		match verb {
+			's' => out.push_str(&arg.to_string()),
+			'd' => {
+				let x = arg.as_num().map_err(|e| ty(sp, e))?;
+				if x.fract() != 0.0 {
+					return Err(bad(format!("`%d` wants a whole number, and {x} is not one")));
+				}
+				out.push_str(&crate::value::format_num(x));
+			}
+			'f' => {
+				let x = arg.as_num().map_err(|e| ty(sp, e))?;
+				out.push_str(&format!("{x:.*}", precision.unwrap_or(6)));
+			}
+			_ => return Err(bad(format!("`%{verb}` is not a substitution; use `%s`, `%d` or `%f`"))),
+		}
+	}
+	if used < args.len() {
+		return Err(bad(format!(
+			"{} value(s) given, but the format substitutes {used}",
+			args.len()
+		)));
+	}
+	Ok(out)
+}
+
+/// How `sort` orders two values: numbers by value, everything else by its
+/// text, and a number before anything that is not one.
+fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
+	match (a, b) {
+		(Value::Num(x), Value::Num(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+		(Value::Num(_), _) => std::cmp::Ordering::Less,
+		(_, Value::Num(_)) => std::cmp::Ordering::Greater,
+		_ => a.to_string().cmp(&b.to_string()),
 	}
 }

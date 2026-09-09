@@ -33,6 +33,7 @@ module.exports = grammar({
 		$._capture_exec_keyword,
 		$.exec_content,
 		$.run_word,
+		$.dispatch_word,
 		$._structured_keyword,
 	],
 
@@ -56,6 +57,7 @@ module.exports = grammar({
 				$.exec_block,
 				$.let_statement,
 				$.assignment,
+				$.do_statement,
 				$.if_statement,
 				$.retry_statement,
 				$.for_statement,
@@ -105,12 +107,20 @@ module.exports = grammar({
 		let_statement: ($) =>
 			seq("let", field("name", $.identifier), "=", field("value", choice($.code_of, $.structured, $.capture, $._expression)), $._newline),
 
-		// The one call a capture may sit inside: `code_of($ cmd)` is the
+		// The one call a capture -- or a dispatch -- may sit inside:
+		// `code_of($ cmd)` is the
 		// command's exit status rather than what it printed. Its shell text
 		// stops at the `)` -- a capture otherwise runs to end of line, which is
 		// why it cannot nest in a call at all -- so a command containing a
 		// parenthesis has to be a statement of its own.
-		code_of: ($) => seq("code_of", "(", "$", optional(alias($._code_of_text, $.shell_text)), ")"),
+		code_of: ($) => seq("code_of", "(", choice($._code_of_shell, $.dispatch), ")"),
+		_code_of_shell: ($) => seq("$", optional(alias($._code_of_text, $.shell_text))),
+
+		// `code_of(run build)`: the same dispatch the statement spells, scored.
+		// Only `code_of` takes one -- a dispatched target writes to the
+		// terminal like any other, so its status is the only value it has.
+		dispatch: ($) =>
+			seq("run", field("target", alias($.dispatch_word, $.target)), repeat(alias($.dispatch_word, $.argument))),
 		_code_of_text: ($) =>
 			repeat1(choice(alias($._code_of_content, $.shell_content), alias($._lone_brace, $.shell_content), $.interpolation)),
 		_code_of_content: () => token.immediate(prec(-1, /([^{)\\\r\n]|\\[^\r\n])+/)),
@@ -135,6 +145,10 @@ module.exports = grammar({
 		shell_capture: ($) => seq("$", optional($.shell_text)),
 		exec_capture: ($) =>
 			seq(alias($._capture_exec_keyword, "exec"), field("command", $.command), $._newline, optional(field("body", $.exec_body)), "end"),
+
+		// `do` … `end`: a block with no condition, so a property has somewhere
+		// to go without inventing a question.
+		do_statement: ($) => seq("do", $._newline, repeat($._line), "end", $._newline),
 
 		if_statement: ($) =>
 			seq(

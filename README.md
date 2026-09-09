@@ -1,61 +1,317 @@
 # Runfile
 
-[Quick start](#quick-start) · [The language](#the-language) · [Why](#why-a-language) · [Editors](#editor-support) · [Platforms](#platform-support)
+[Quick start](#quick-start) · [Examples](#what-a-runfile-looks-like) · [Language](#the-language) · [Properties](#properties) · [Commands](#commands) · [Editors](#editor-support)
 
 **One directory. One binary. Every OS.**
 
 A command runner that replaces Makefiles, shell scripts and `npm run` — without the platform headaches.
 
 ```bash
-$ run dev --port=4000
+run dev --port=4000
 ```
 
-Tasks live in a `runfiles/` directory, one target per file:
+Your project's tasks live in a `runfiles/` directory, **one target per file**:
 
 ```
 runfiles/
-  _shared.run      settings every target here inherits
-  dev.run          → run dev
-  build.run        → run build
-  api/deploy.run   → run api:deploy
+  _shared.run          settings every target here inherits
+  dev.run              → run dev
+  build.run            → run build
+  check.run            → run check
+  api/deploy.run       → run api:deploy
+web/runfiles/build.run → run web:build
 ```
 
-```sh
-# runfiles/build.run
-# Type-check and build
-
-.parallel = true
-.env-file = ".env"
-
-run type-check
-$ vite build
-```
+A target is a file, its name is its path, and its first comment block is its description. There is no central
+file to merge, so two people adding a task never conflict.
 
 ```sh
 # runfiles/dev.run
 # Start the dev server
 
+.env-file = ".env.local"
 .env.PORT = ARG.port ? "3000"
 
 $ vite
 ```
 
-That is the whole idea: **a target is a file**, its first comment block is its description, and its name is its
-path.
+```bash
+$ run :list
+  build    Type-check and build
+  check    Non-mutating gate
+  dev      Start the dev server
+```
 
 ## Quick start
 
 ```bash
 curl -fsSL https://github.com/JoaaoVerona/runfile/releases/latest/download/install.sh | sh
-run :init
-run hello
+run :init             # creates runfiles/ with an example
+run :list             # every target, with descriptions
+run <target> --help   # what one target does, and what it reads
 ```
 
 ```bash
-run :list                 # every target, with descriptions
-run build --env=prod      # arguments
-run build --dry-run       # print what would run, without running it
+run build --env=prod      # an argument for the target
+run --dry-run build       # print what would run, without running it
+run :completions install bash   # tab-completion (or zsh, fish, powershell)
 ```
+
+Runner flags go **before** the target name; everything after it belongs to the target. `run build --dry-run`
+passes `--dry-run` to `build` as `FLAG.dry-run` and runs it for real — so the position is the whole meaning.
+`run` warns when a target is handed a flag it never reads, which is what catches that.
+
+## What a runfile looks like
+
+These are complete files. Nothing is elided.
+
+### One command that works on three operating systems
+
+`match` on `RUN.os` instead of shipping three scripts and a wrapper.
+
+```sh
+# runfiles/setup/system.run
+# Install the OS-level build prerequisites
+
+match RUN.os
+	case "linux"
+		$ sudo apt-get update
+		$ sudo apt-get install -y build-essential libssl-dev pkg-config
+	case "mac"
+		$ xcode-select --install || true
+		$ brew install openssl pkg-config
+	default
+		print("No system setup for {{ RUN.os }} — see docs/prerequisites.md")
+end
+```
+
+### A gate that names the file that failed
+
+The loop is the language's, so a failure reports the one command that broke rather than the whole script.
+
+```sh
+# runfiles/check.run
+# Non-mutating gate: every compose file is valid
+
+for compose in glob("**/docker-compose.yml")
+	$ docker compose -f {{ compose }} config -q
+end
+
+print("check: every docker-compose.yml is valid")
+```
+
+```
+[runfile] error: `docker compose -f observability/loki/docker-compose.yml config -q` exited with status 1
+```
+
+### Waiting for something to come up
+
+`retry` replaces the `until … do sleep … done` loop, and counts the attempts for you.
+
+```sh
+# runfiles/db/wait.run
+# Block until Postgres answers, then load the seed data
+
+retry 120 every 1
+	$ docker exec db pg_isready -U app -h 127.0.0.1
+else
+	error("the database never became ready")
+end
+
+$ docker exec -i db psql -U app < seed.sql
+```
+
+### Doing several things at once
+
+`.parallel` on a `for` fans out its iterations, and labels every line so you can tell them apart.
+
+It is block-scoped, so **where it sits is what it covers**: inside the loop it parallelises the iterations and
+nothing else, and at the top of the file it would cover every command in the target.
+
+```sh
+# runfiles/pull.run
+# Pull every service image
+
+for compose in glob("**/docker-compose.yml")
+	.parallel
+	.ignore-errors
+
+	$ docker compose -f {{ compose }} pull
+end
+```
+
+```
+[docker] api      Pulling
+[docker] web      Pulling
+[docker] postgres Pull complete
+```
+
+### JSON without the backslashes
+
+`json … end` is a block of JSON as a value. An interpolation inside becomes **one JSON value** — quoted and
+escaped if it is a string, an array if it is a list — so nothing is escaped by hand.
+
+```sh
+# runfiles/bucket/policy.run
+# Apply the storage policy to a bucket
+
+let bucket = one_of(ARG.bucket, "app-uploads", "app-backups")
+
+let policy = json
+	{
+		"Version": "2012-10-17",
+		"Statement": [
+			{
+				"Effect": "Allow",
+				"Action": [
+					"s3:PutObject",
+					"s3:GetObject"
+				],
+				"Resource": {{ concat("arn:aws:s3:::", bucket, "/*") }},
+				"MaxKeys": {{ number(ARG.limit ? "1000") }}
+			}
+		]
+	}
+end
+
+run _aws -- s3api put-bucket-policy --bucket {{ bucket }} --policy {{ policy }}
+```
+
+`run :format` lays the block out, and a missing brace is underlined in your editor as you type — not reported
+by the far end an hour later.
+
+### Any language you have installed
+
+`exec <command>` runs that command with the block as its **stdin**, so a target can be a Python script, a Node
+script, a SQL file — whatever is already on the machine. The body is that command's language, not this one.
+
+```sh
+# runfiles/i18n/check.run
+# Check that every translation catalogue has the same keys as the reference
+
+.env.LOCALES = "src/locales"
+
+exec python3
+	import json, os, pathlib, sys
+
+	files = sorted(pathlib.Path(os.environ["LOCALES"]).glob("*.json"))
+	catalogues = {f.stem: set(json.loads(f.read_text())) for f in files}
+	reference = catalogues.pop("en")
+
+	for name, keys in catalogues.items():
+		missing = reference - keys
+		if missing:
+			sys.exit(f"{name}: missing {', '.join(sorted(missing))}")
+
+	print(f"i18n: {len(files)} catalogues agree on {len(reference)} keys")
+end
+```
+
+```sh
+# runfiles/deps/list.run
+# Print the first few runtime dependencies
+
+.env.LIMIT = ARG.limit ? "10"
+
+exec node
+	const { readFileSync } = require("node:fs")
+
+	const pkg = JSON.parse(readFileSync("package.json", "utf8"))
+	const deps = Object.keys(pkg.dependencies ?? {})
+
+	for (const name of deps.slice(0, Number(process.env.LIMIT))) {
+		console.log(`  ${name}`)
+	}
+end
+```
+
+```sh
+# runfiles/db/report.run
+# Row counts for the tables that matter
+
+exec psql --quiet {{ ENV.DATABASE_URL }}
+	select 'accounts' as table, count(*) from accounts
+	union all
+	select 'orders', count(*) from orders
+	order by 1;
+end
+```
+
+In value position it captures what the command printed, so another language can answer a question this one
+then acts on:
+
+```sh
+# runfiles/coverage/gate.run
+# Fail if line coverage dropped below the floor
+
+let percent = exec python3
+	import pathlib, re
+
+	text = pathlib.Path("lcov.info").read_text()
+	hit = len(re.findall(r"^DA:\d+,[1-9]", text, re.M))
+	total = len(re.findall(r"^DA:", text, re.M))
+
+	print(round(100 * hit / total))
+end
+
+if number(percent) < 85
+	error("coverage is {{ percent }}%, below the 85% floor")
+end
+```
+
+One thing to know: the body **is** the command's stdin, so a script cannot also read data from stdin — give it
+what it needs through `.env`, a file, or the command's own arguments.
+
+An interpolation inside the body arrives **as itself**, unquoted, when the command is not a shell — shell
+quoting is the wrong quoting for anybody else's language, so quote it the way that language wants. A shell
+body still self-quotes, and `$ cp {{ src }} {{ dst }}` is as safe as it ever was.
+
+### Secrets that never touch the disk
+
+```sh
+# runfiles/deploy.run
+# Deploy to production
+
+.env-file = ".env.production"
+.env.GOOGLE_APPLICATION_CREDENTIALS = temp_file(base64_decode(ENV.SERVICE_ACCOUNT_B64), "json")
+
+confirm("Deploy to production?")
+$ terraform apply -auto-approve
+```
+
+The temp file is deleted when the run ends, however it ends — including a failure half-way, which is exactly
+when a decoded credential must not be left behind.
+
+### A pre-commit hook
+
+```sh
+# runfiles/precommit.run
+# Format staged files and re-stage them
+
+let staged = $ git diff --cached --name-only --diff-filter=ACMR -- "*.rs"
+let files = lines(staged)
+
+if length(files) > 0
+	$ rustfmt {{ files }}
+	$ git add {{ files }}
+end
+```
+
+`files` is a list, so `{{ files }}` becomes one argument per file — spaces in names and all.
+
+### Re-running on change
+
+```sh
+# runfiles/watch.run
+# Recompile whenever a source file changes
+
+.watch = "src/**/*.rs"
+.watch = "!src/generated/**"
+
+run build
+```
+
+There is no `--watch` flag: the file already said what it wants, so `run watch` watches.
 
 ## The language
 
@@ -67,36 +323,52 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `.name = value` | A property. |
 | `$ echo hi` | Hand this line to a shell. |
 | `exec python3` … `end` | Run a command with the block as its stdin. |
+| `json` … `end` | A block of JSON, as one value. |
 | `let x = 1` | Bind a value. `x = 2` rebinds. |
 | `if` / `else` / `end` | Branch. |
 | `for x in list` / `end` | Loop. |
-| `match` / `case` / `default` / `end` | Dispatch on a value. A `case` label is a quoted string: `case "linux"`. |
+| `match` / `case` / `default` / `end` | Dispatch on a value. A label is a quoted string: `case "linux"`. |
 | `retry n [every s]` … `end` | Run the block again while it fails, up to `n` times. |
+| `do` … `end` | A block with no condition, so a property can cover a few commands. |
 | `run other-target` | Run another target, in this process. |
-
-```sh
-# Deploy to an environment
-
-let env = one_of(first(ARGS), "staging", "production")
-
-if env == "production"
-	.confirm = "Deploy to production?"
-end
-
-$ docker build -t app:{{ env }} .
-$ docker push app:{{ env }}
-```
+| `print(…)` | Anything else is an expression, evaluated for its effect. |
 
 ### Values
 
 Strings, numbers, booleans and lists — **strict, with no coercion.** `"a" + 1` is an error telling you to use
 `concat`. `"1" == 1` is false. `number(ARG.count)` is required before arithmetic. `1 / 2` is `0.5`.
 
+Lists nest as deep as you like, which beats packing several fields into one string and splitting it back out:
+
 ```sh
-let parts = split("1.2.3", ".")
-let major = number(parts[0])
-$ echo "next is {{ major + 1 }}"
+for volume in [
+	["prometheus-data", "65534:65534"],
+	["kvrocks-data", "999:999"],
+]
+	$ docker run --rm -v {{ volume[0] }}:/v alpine chown -R {{ volume[1] }} /v
+end
 ```
+
+`print` writes a line to stdout; `printf` writes exactly what you give it, with `%s`, `%d`, `%f`, `%.Nf` and
+`%%`, and no newline of its own.
+
+Lists are values, and every list function answers with a **new** list, so nothing changes behind another name:
+
+```sh
+let recent = slice(reverse(sort(tags)), 0, 5)
+let targets = without(RUN.namespaces, "docs")
+
+for pair in zip(names, owners)
+	$ chown {{ pair[1] }} /srv/{{ pair[0] }}
+end
+```
+
+`append`, `prepend`, `concat_lists`, `sort`, `reverse`, `unique`, `slice`, `flatten`, `zip`, `index_of` and
+`without`, beside `first`, `last`, `length` and `join`.
+
+There are 78 built-in functions — strings, lists, regex, paths, JSON, hashes, time, files. Your editor lists
+them all with a description and an example; `run :list` is for targets, and the language server is for the
+language.
 
 ### Where values come from
 
@@ -106,9 +378,9 @@ $ echo "next is {{ major + 1 }}"
 | `FLAG.name` | `--name` (a boolean) |
 | `ARGS` | positional arguments, as a list |
 | `ENV.NAME` | the environment |
-| `RUN.os` `RUN.arch` `RUN.cwd` `RUN.file` `RUN.parent` `RUN.namespaces` | the run itself |
+| `RUN.os` `RUN.arch` `RUN.cwd` `RUN.file` `RUN.parent` `RUN.namespaces` `RUN.user` | the run itself |
 
-`a ? b` means "`a`, or `b` if `a` is not there":
+`a ? b` means "`a`, or `b` if `a` is not there", and chains:
 
 ```sh
 let port = ARG.port ? ENV.PORT ? "3000"
@@ -117,20 +389,40 @@ let port = ARG.port ? ENV.PORT ? "3000"
 Arguments are `--key=value`. Writing `--key value` gives you a flag and a positional, because nothing declares
 which names take values — and if you meant an argument, the error says so.
 
+**A flag a target cannot read is an error**, not a typo you find out about later. `run` knows exactly what a
+target reads by walking its parsed tree, so `--forse` stops the run and points at `--help`:
+
+```bash
+$ run deploy --help
+run deploy [--env=<value>] --token=<value> [--force]
+
+  Deploy to an environment.
+
+Arguments
+  --env=<value>                 defaults to staging
+  --token=<value>               required
+  --force                       off unless passed
+
+Environment
+  DEPLOY_KEY                    required
+```
+
+Nothing is declared for that — a `?` chain is what makes a value optional, and the literal it ends in is the
+default. `run --stdin-args deploy` asks for the same list, in the same order, **before anything runs**.
+
 Everything after a bare `--` is passed through untouched, flags included. That is how a wrapper forwards a
 command line it does not understand:
 
 ```sh
 # runfiles/aws.run
+# The AWS CLI, in a container
+
 $ docker run --rm amazon/aws-cli {{ ARGS }}
 ```
 
 ```bash
 run aws -- s3api list-buckets --output json
 ```
-
-Forget the `--` and `--output` would be read as a flag for the target instead. `run` warns when a target is
-handed a flag it never reads, so that mistake does not pass silently.
 
 ### Interpolation quotes itself
 
@@ -141,162 +433,183 @@ safe with any file name, spaces and quotes included:
 $ cp {{ ARG.src }} {{ ARG.dest }}
 ```
 
-**Never wrap an interpolation in shell quotes.** There is no `shell_quote` function because there is nothing to
-quote: the substitution already did it.
+**Never wrap an interpolation in shell quotes.** There is no `shell_quote` function because there is nothing
+left to quote: the substitution already did it. The same rule holds one layer up inside a `json` block, where
+an interpolation becomes one JSON value.
 
 ### Asking whether a command worked
 
 A `$` run may stand as a condition or as a `match` subject. The condition is true when the command exits 0;
-the cases are exit codes.
+the cases are exit codes. Neither stops the target — a non-zero exit is the answer, not a failure.
 
 ```sh
 if $ command -v docker
 	$ docker info
 else
-	$ echo 'no docker here' >&2
+	error("docker is not on PATH")
 end
 
 match $ curl -fsS https://example.com
 	case "0"
-		$ echo up
+		print("up")
 	case "22"
-		$ echo 'HTTP error'
+		error("the endpoint answered 4xx or 5xx")
 	default
-		$ echo 'could not reach it'
+		error("could not reach it")
 end
 ```
 
-Neither stops the target: a non-zero exit is the answer, not a failure. `code_of($ cmd)` is the same thing as
-a number, for when you want to keep it:
+`code_of($ cmd)` is the same status as a number, for when you want to keep it — and `code_of(run other)`
+scores another **target** the same way. That is how one target runs both halves of a check and gives a single
+verdict at the end, instead of stopping at the first thing that failed:
 
 ```sh
-let made = code_of($ mkdir out)
-```
+# runfiles/coverage.run
+# Coverage for both halves, with one verdict
 
-A `$` run reaches to the end of its line, which is why a capture cannot nest in a call — `code_of` is the one
-exception, and its command may not contain a `)`.
+let rust = code_of(run coverage:rust)
+let web = code_of(run web:coverage)
 
-### Waiting for something
+run _verdict --name=Rust --code={{ rust }}
+run _verdict --name=Web --code={{ web }}
 
-`retry` runs its block again while it fails, up to a number of attempts, waiting between them. `else` is what
-to do when it never worked; without one, the last failure is the statement's.
-
-```sh
-retry 120 every 1
-	$ docker exec db pg_isready -h 127.0.0.1 >/dev/null 2>&1
-else
-	$ echo 'ERROR: the database did not come up' >&2
+if rust != 0 || web != 0
 	exit(1)
 end
 ```
 
-The block sees its own failures whatever `.ignore-errors` says around it — a retry that could not tell would
-run exactly once. An `exit()` inside is not retried: it is an instruction to stop. And a `retry` cannot sit
-inside a `.parallel` block, where several bodies sleeping against each other has no useful meaning.
-
-### Stopping early
-
-A line that is only a value — `exit`, `abc`, `35`, `"hi"` — is a parse error, since it computes something and
-throws it away. Most often it is a call with the parentheses left off, and the message says so.
-
-`exit()` ends the run with a status — no argument means 0, and any number is taken as given and truncated to
-a byte the usual way, so `exit(-1)` is 255. Like every call it is written with parentheses; there is no
-bare-word form.
-
-```sh
-if !file_exists(".env")
-	$ echo 'no .env here' >&2
-	exit(1)
-end
-```
-
-Nothing catches it: not `try`, not a `?` fallback, not `.ignore-errors`. A target may forgive a command that
-failed, but being told to stop is not that.
-
-### Temporary files
-
-`temp_file` and `temp_dir` make something in the OS temp directory and hand back the path. Both are deleted
-when the run ends, however it ends, so a target that fails half-way does not leave a decoded secret behind:
-
-```sh
-.env.GOOGLE_APPLICATION_CREDENTIALS = temp_file(base64_decode(ENV.SERVICE_ACCOUNT_B64), "json")
-
-$ fastlane upload
-```
-
-### Structured text
-
-`json … end` is a block of JSON, as a value. An interpolation inside it renders as **one JSON value** — the
-same rule as a shell line, one layer up — so nothing has to be escaped by hand:
-
-```sh
-let policy = json
-	{
-	  "Version": "2012-10-17",
-	  "Statement": [{ "Effect": "Allow", "Resource": {{ buckets }} }],
-	  "MaxKeys": {{ number(ARG.limit) }}
-	}
-end
-
-run aws -- iam put-user-policy --policy-document {{ policy }}
-```
-
-A string becomes a quoted, escaped string; a number becomes a number; a list becomes an array. **Do not put
-quotes around an interpolation** — `"{{ x }}"` is wrong here for the same reason it is wrong in a `$` line.
-
-The block is checked while the file is read, with each interpolation standing in as a value, so a missing
-brace is an error in the editor rather than one the far end reports later.
+A dispatched target is scored the way `run` itself would exit: `exit(3)` is 3, any other failure is 1, and the
+error is printed where it happened. An interrupt, or answering no to a `confirm()`, is not a status — that
+stops the caller too.
 
 ### Capturing output
 
 ```sh
-let staged = $ git diff --cached --name-only
-let files = lines(staged)
+let branch = $ git rev-parse --abbrev-ref HEAD
 
-if length(files) != 0
-	$ rustfmt {{ files }}
+if branch != "main"
+	error("release from main, not {{ branch }}")
 end
 ```
 
-A list interpolates as separate arguments, so `{{ files }}` passes each file as its own.
+A `$` capture runs to the end of its line, so it can only be a call's **last** argument, and the `)` has to be
+the last character of the line:
+
+```sh
+let files = lines($ git diff --cached --name-only)
+
+for f in lines($ git ls-files '*.sh')
+	$ shellcheck {{ f }}
+end
+```
+
+`code_of($ cmd)` and `code_of(run other)` are the same shape: run it and take the status, ignoring how it went
+— which is what `|| true` was doing.
 
 ### Blocks that are not shell
+
+`$ line` is shorthand for a one-line `exec` with the default shell. Name any other command and the block
+becomes its stdin — see [Any language you have installed](#any-language-you-have-installed).
 
 ```sh
 exec python3
 	import json, sys
+
 	print(json.dumps({"ok": True}))
 end
 ```
 
-The body is the command's stdin. `$ line` is shorthand for a one-line `exec` with the default shell.
+### Stopping early
+
+`exit()` ends the run with a status; `error("…")` fails with a message; `confirm("…")` asks, and stops if the
+answer is no. Nothing catches any of them: not a `?` fallback, not `.ignore-errors`. A target may forgive a
+command that failed, but being told to stop is not that.
+
+`confirm` is a function rather than a property, so the question can depend on what is about to happen — and is
+skipped by `-y`, in CI, and under `--dry-run`, where there is nothing to approve.
+
+A line that is only a value — `exit`, `abc`, `35` — is a parse error, since it computes something and throws
+it away. Most often it is a call with the parentheses left off, and the message says so.
 
 ## Properties
 
-Set on the file, or inside a block where marked.
+Set at the top of the file, or inside a block where marked.
 
-| Property | Effect |
-| --- | --- |
-| `.shell` | Which shell `$` lines use. |
-| `.env.NAME` | Set an environment variable. |
-| `.env-file` | Load a `.env` file (encrypted values are decrypted in memory). |
-| `.add-path` | Prepend a directory to `PATH`. |
-| `.workdir` | Where commands run. |
-| `.parallel` | Run this block's commands at once. On a `for`, its iterations. |
-| `.ignore-errors` | Keep going when a command fails. |
-| `.logging` | Announce each command on stderr before it runs. Off unless set. |
-| `.confirm` | Ask before running. |
-| `.watch` | Re-run when matching files change. |
-| `.alias` | Another name for this target. |
-| `.hide` | Keep out of `run :list`. |
-| `.detach` | Start the commands and do not wait. |
-| `.only-in-directories` | For the machine-wide directory: only offer these targets inside these directories. |
+| Property | Effect | In a block? |
+| --- | --- | :-: |
+| `.shell` | Which shell `$` lines use. | ✅ |
+| `.env.NAME` | Set an environment variable. | ✅ |
+| `.workdir` | Where commands run. | ✅ |
+| `.parallel` | Run this block's commands at once. On a `for`, its iterations. | ✅ |
+| `.ignore-errors` | Keep going when a command fails. | ✅ |
+| `.logging` | Announce each command on stderr before it runs. Off unless set. | ✅ |
+| `.env-file` | Load a `.env` file (encrypted values are decrypted in memory). Appends. | ✅ |
+| `.add-path` | Prepend a directory to `PATH`. Appends. | ✅ |
+| `.watch` | Re-run when matching files change. A `!` prefix excludes. | |
+| `.alias` | Another name for this target. | |
+| `.detach` | Start the commands and do not wait. | |
+| `.only-in-directories` | For the machine-wide directory: only offer these targets inside these directories. | |
 
-`shell`, `env`, `workdir`, `parallel` and `ignore-errors` may be set inside an `if` / `for` / `match` block. The
-rest belong at the top of the file.
+`.env-file` and `.add-path` **append**, so a block adds to what it inherited rather than replacing it, and a
+block's file can be named by something the body worked out — which a header property cannot do, because it
+resolves before any statement runs:
 
-`_shared.run` holds properties every target in its directory inherits. A nested one layers over the directory
-above it, so `runfiles/api/_shared.run` adds to `runfiles/_shared.run`.
+```sh
+# runfiles/deploy.run
+# Deploy to an environment
+
+let env = one_of(first(ARGS), "staging", "production")
+
+if env == "production"
+	.env-file = ".env.production"
+	.add-path = "vendor/prod-tools"
+
+	confirm("Deploy to production?")
+end
+
+$ terraform apply -auto-approve
+```
+
+**A target whose file name starts with `_` is hidden** from `run :list`, from completion and from generated
+editor tasks — and still runs when something calls it. That is the whole of it; there is no property to
+disagree with the name.
+
+```
+runfiles/_aws.run       → run _aws     (a helper other targets call)
+runfiles/deploy.run     → run deploy
+```
+
+`do … end` is a block with no condition — somewhere for a property to go when it should cover a few commands
+and not the whole target:
+
+```sh
+# runfiles/setup.run
+# One-time per clone: hooks, then the web dependencies
+
+$ git config core.hooksPath .githooks
+
+do
+	.workdir = "web"
+
+	$ pnpm install
+	$ pnpm exec playwright install chromium
+end
+```
+
+That is what replaced writing `cd web &&` on every line, which the shell would have needed once per command.
+
+`_shared.run` holds properties — and `let` bindings — that every target in its directory inherits. A nested
+one layers over the directory above it, so `runfiles/api/_shared.run` adds to `runfiles/_shared.run`.
+
+```sh
+# runfiles/_shared.run
+# Settings every target here inherits
+
+.add-path = "node_modules/.bin"
+.env.CARGO_TERM_COLOR = "always"
+
+let image = "ghcr.io/example/builder:v2"
+```
 
 ## How targets are found
 
@@ -309,13 +622,12 @@ web/runfiles/build.run      → run web:build
 runfiles/api/deploy.run     → run api:deploy
 ```
 
-`$HOME/.runfiles/` holds machine-wide targets, available in every project. If you would rather see the
-directory than hide it, `$HOME/runfiles/` and `$HOME/Runfiles/` are read too — but only one of the three may
-hold anything. Two populated ones is an error naming both, because a merge would let one target shadow
-another with no way to see it.
-
 Inside a subproject, `run build` means *that* subproject's `build` — so a file reads the same wherever you
 invoke `run` from.
+
+`$HOME/.runfiles/` holds machine-wide targets, available in every project. If you would rather see the
+directory than hide it, `$HOME/runfiles/` and `$HOME/Runfiles/` are read too — but only one of the three may
+hold anything.
 
 Everything relative — `.env-file`, `.add-path`, `glob`, `read_file`, `{{ RUN.parent }}`, the working directory
 — resolves against **the parent of `runfiles/`**. One anchor, one rule.
@@ -343,33 +655,26 @@ exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
 | `run :init` | Create `runfiles/` with an example |
 | `run :format [path…]` | Format runfiles in place (`--check`, `--stdout`) |
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
-| `run :completions <command>` | `install`, `uninstall` or `output` a completion script |
+| `run :completions <command> <shell>` | `install`, `uninstall` or `output` a completion script for `bash`, `zsh`, `fish` or `powershell` |
 | `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
 | `run :update` | Update the binary |
-
-`run :completions install` puts bash and fish completions in the directory each shell loads on demand, and
-adds a line to `.zshrc` or PowerShell's profile for the other two. Open a new shell afterwards.
-
-`run :format` has no settings: one shape, everywhere. It reindents with tabs, spaces expressions, places
-blank lines (after the description, around a run of `let`s, before a block, after an `end`), and leaves the
-three things that are not the language's to touch — strings, the text after `$ `, and `exec` bodies — exactly
-as written. It refuses a file that does not parse, and checks that its own output still means the same thing
-before writing it. `--check` reports what would change and exits 1, which is what a CI step wants.
-
-The language server offers the same formatting, so **format-on-save works in any editor with the extension or
-the LSP configured** — in VS Code, `"editor.formatOnSave": true`. A file is never reformatted while it does
-not parse.
 
 | Flag | |
 | --- | --- |
 | `-y`, `--yes` | Skip confirmation prompts |
-| `--stdin-args` | Prompt for anything a target needs but was not given |
+| `--stdin-args` | Prompt for every input the target reads, before it runs |
 | `--dry-run` | Print what would run, without running it |
 | `--dir <path>` | Start discovery somewhere else |
 | `-h`, `--help` | Show the help for `run` or any of its commands |
 | `-v`, `--version` | Print the version |
 
 Flags belong **before** the target name; everything after it is passed to the target.
+
+`run :format` has no settings: one shape, everywhere. It reindents with tabs, spaces expressions, places blank
+lines, lays out `json` blocks, and leaves the three things that are not the language's to touch — strings, the
+text after `$ `, and `exec` bodies — exactly as written. It refuses a file that does not parse, and checks that
+its own output still means the same thing before writing it. `--check` reports what would change and exits 1,
+which is what a CI step wants.
 
 ## Encrypted environment variables
 
@@ -393,6 +698,47 @@ fallback. In CI, pass them as `RUNFILE_PRIVATE_KEYS` (newline-separated) and no 
 Decryption happens in memory; secrets never reach disk. The credential store is only touched when something
 actually decrypts, so a locked keyring never gets in the way of an unrelated target.
 
+## Editor support
+
+`runfile-lsp` ships beside `run` and gives you diagnostics, completion, formatting, go-to-definition and
+documentation on hover — from the same parser `run` itself uses, so your editor never disagrees with what will
+actually happen.
+
+Hover anything: a function shows its signature, what it does and a worked example; a property adds whether it
+may sit inside a block; `$`, `exec`, `run`, `retry`, `match` and the rest explain the line form itself.
+
+Ctrl+click a `run <target>` to open that target's file, or a variable to jump to where it was bound — including
+into the `_shared.run` above it, which is the one definition you cannot find by reading the file in front of
+you.
+
+It also hands `$` lines and shell `exec` bodies to [shellcheck](https://www.shellcheck.net) when it is
+installed, mapping findings back to the lines you wrote.
+
+**VS Code** — install the `.vsix` from the [latest release](https://github.com/JoaaoVerona/runfile/releases).
+You get a Run button on every target, a task provider, a sidebar tree, and shell lines coloured exactly as the
+same command in a `.sh` file. Set `"editor.formatOnSave": true` and saving formats.
+
+**JetBrains IDEs** read the same grammar: *Settings → Editor → TextMate Bundles*, add the `editors/vscode`
+directory from a checkout.
+
+**Zed, Neovim and Helix** use the tree-sitter grammar in `editors/tree-sitter`, with highlight queries
+included. For Neovim with nvim-treesitter:
+
+```lua
+require("nvim-treesitter.parsers").get_parser_configs().runfile = {
+  install_info = {
+    url = "https://github.com/JoaaoVerona/runfile",
+    location = "editors/tree-sitter",
+    files = { "src/parser.c", "src/scanner.c" },
+  },
+  filetype = "runfile",
+}
+vim.filetype.add({ extension = { run = "runfile" } })
+```
+
+`run :generate zed` writes every target into `.zed/tasks.json`, and `run :generate jetbrains` into
+`.idea/runConfigurations/`; both leave entries you wrote yourself alone and replace only their own.
+
 ## Why a language
 
 The alternative is a config format plus an escape hatch into shell, and every version of that ends up encoding
@@ -412,10 +758,13 @@ Shell is still there. It is just marked.
 | Encrypted env vars, built-in (AES-256-GCM) | ✅ | ❌ | ❌ | ❌ |
 | Inline OS / shell / cwd branching via `RUN.*` | ✅ | ❌ | ❌ | ❌ |
 | Editor diagnostics from the runner's own parser | ✅ | ❌ | ❌ | ❌ |
+| Hover documentation for every function, property and line form | ✅ | ❌ | ❌ | ❌ |
+| One canonical format, in the CLI and on save | ✅ | ❌ | ❌ | ❌ |
 | IDE task generation (VS Code / Zed / JetBrains) | ✅ | ❌ | ❌ | ❌ |
 | Per-target shell override | ✅ | ❌ | ✅ | ❌ |
 | Any interpreter for a block (`exec python3`) | ✅ | ❌ | ✅ | ❌ |
 | Strict parsing (typos are errors) | ✅ | ❌ | ✅ | ❌ |
+| `--help` for one target, built from its own comments | ✅ | ❌ | ✅ | ❌ |
 | Argument substitution with chained fallbacks | ✅ | ❌ | ✅ | ❌ |
 | Watch mode, built-in | ✅ | ❌ | ❌ | ✅ |
 | Shell completions | ✅ | ❌ | ✅ | ✅ |
@@ -424,40 +773,11 @@ Shell is still there. It is just marked.
 | Parallel execution | ✅ | ✅ | ❌ | ✅ |
 | Single static binary | ✅ | ✅ | ✅ | ✅ |
 | Native Windows binary (`$` lines use Git Bash) | ✅ | ❌ | ✅ | ✅ |
-| First-class PowerShell / cmd.exe | ❌ | ❌ | ✅ | ❌ |
 | Output prefixing in parallel mode | ✅ | ❌ | ❌ | ✅ |
+| First-class PowerShell / cmd.exe | ❌ | ❌ | ✅ | ❌ |
 | Pattern rules (`%.o: %.c`) | ❌ | ✅ | ❌ | ❌ |
 | Preconditions / status checks | ❌ | ❌ | ❌ | ✅ |
 | Incremental builds (sources / timestamps / checksums) | ❌ | ✅ | ❌ | ✅ |
-
-## Editor support
-
-The VS Code extension gives you a Run button on every target, a task provider, a sidebar tree, and syntax
-highlighting. Install the `.vsix` from the [latest release](https://github.com/JoaaoVerona/runfile/releases).
-
-`runfile-lsp` provides diagnostics, completion, hover and go-to-target as you type — from the same parser `run` itself uses, so it never disagrees
-with what will actually happen. It also hands `$` lines and shell `exec` bodies to
-[shellcheck](https://www.shellcheck.net) when it is installed, mapping findings back to the lines you wrote.
-
-**JetBrains IDEs** read the same grammar: *Settings → Editor → TextMate Bundles*, add the `editors/vscode`
-directory from a checkout, and `.run` files highlight.
-
-**Zed, Neovim and Helix** use the tree-sitter grammar in `editors/tree-sitter`, with highlight queries
-included. For Neovim with nvim-treesitter, register the parser from this repository and copy `queries/` into
-your runtime path as `queries/runfile/`:
-
-```lua
-require("nvim-treesitter.parsers").get_parser_configs().runfile = {
-  install_info = {
-    url = "https://github.com/JoaaoVerona/runfile",
-    location = "editors/tree-sitter",
-    files = { "src/parser.c", "src/scanner.c" },
-  },
-  filetype = "runfile",
-}
-vim.filetype.add({ extension = { run = "runfile" } })
-``` `run :generate zed` writes every target into `.zed/tasks.json`, and `run :generate jetbrains` into
-`.idea/runConfigurations/`; both leave entries you wrote yourself alone and replace only their own.
 
 ## Platform support
 

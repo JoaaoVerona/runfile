@@ -39,9 +39,10 @@ pub struct Host<'a> {
 	/// Where `decrypt` gets its keys. Injected so the runtime never reaches
 	/// into a credential store itself.
 	pub keys: fn() -> Vec<String>,
+	/// Asked by `confirm(…)`.
 	/// `Sync` so a `.parallel` fan-out can ask; a prompt during one is the
 	/// caller's problem to serialise.
-	pub prompt: Option<&'a (dyn Fn(&str) -> bool + Sync)>,
+	pub confirm: Option<fn(&str) -> bool>,
 	/// Whether the run has been interrupted; see `Runner::interrupted`.
 	pub interrupted: Option<&'a (dyn Fn() -> bool + Sync)>,
 	/// Where non-fatal advice goes. The runtime never prints, so the CLI
@@ -62,7 +63,7 @@ impl<'a> Host<'a> {
 			dry_run: false,
 			ask: None,
 			keys: Vec::new,
-			prompt: None,
+			confirm: None,
 			interrupted: None,
 			warn: None,
 			trace: Mutex::new(Vec::new()),
@@ -158,11 +159,14 @@ impl<'a> Host<'a> {
 		args: &[String],
 		real: bool,
 	) -> Result<(runfile_lang::Target, Scope, Props), RunError> {
-		let (ast, mut text) = parse_file(&target.path)?;
+		let (ast, _) = parse_file(&target.path)?;
+		let mut reads = runfile_lang::inputs::of(&ast);
 		let mut scope = Scope::new();
 		populate_run_context(&mut scope, target, self.catalog);
 		parse_args(&mut scope, args);
 		scope.ask = self.ask;
+		scope.confirm = self.confirm;
+		scope.assume_yes = self.assume_yes;
 		scope.base_dir = target.anchor.clone();
 		scope.dry_run = self.dry_run || !real;
 		scope.temps = self.temps.clone();
@@ -174,22 +178,25 @@ impl<'a> Host<'a> {
 		// over the one above it.
 		let mut shared_props = Props::default();
 		for p in self.catalog.shared_chain(target) {
-			let (shared, shared_text) = parse_file(&p)?;
+			let (shared, _) = parse_file(&p)?;
 			shared_props = shared_props.extend(&shared.body, &mut scope, false)?;
 			crate::run::run_block_bindings(&shared.body, &mut scope)?;
 			// A flag a shared file reads is read for every target under it.
-			text.push_str(&shared_text);
+			reads.extend(runfile_lang::inputs::of(&shared));
 		}
 
-		if real && let Some(warn) = self.warn {
-			for unread in unread_inputs(&scope, &text) {
-				let (_, key) = unread.split_at(2);
-				warn(&format!(
-					"`{unread}` was passed to `{}`, which never reads `FLAG.{key}` or `ARG.{key}`; \
-					 if it is meant for the command `{}` runs, put `--` before it",
-					target.name, target.name,
-				));
-			}
+		// An input the target does not read is a mistake, and used to be a
+		// warning only because the check was textual guesswork. Walked from
+		// the tree it is exact, so it says no -- a mistyped `--forse` that
+		// merely warns is a flag that did not take effect, discovered later.
+		if real && let Some(unread) = unread_inputs(&scope, &reads).first() {
+			let (_, key) = unread.split_at(2);
+			return Err(RunError::UnknownInput {
+				name: unread.clone(),
+				key: key.to_string(),
+				target: target.name.clone(),
+				reads: Box::new(reads),
+			});
 		}
 		Ok((ast, scope, shared_props))
 	}
@@ -220,8 +227,7 @@ impl<'a> Host<'a> {
 			anchor: target.anchor.clone(),
 			dispatch: &adapter,
 			dry_run: self.dry_run,
-			assume_yes: self.assume_yes,
-			prompt: self.prompt,
+
 			interrupted: self.interrupted,
 			label: label.map(str::to_string),
 			trace: Vec::new(),
@@ -333,13 +339,13 @@ fn parse_args(sc: &mut Scope, args: &[String]) {
 /// rather than an AST walk, because `FLAG.x` and `ARG.x` are literal keys with
 /// no dynamic form; a mention inside a comment suppresses the warning, which
 /// is a harmless way for a heuristic to be wrong.
-fn unread_inputs(sc: &Scope, text: &str) -> Vec<String> {
+fn unread_inputs(sc: &Scope, reads: &runfile_lang::Inputs) -> Vec<String> {
 	let mut names: Vec<&String> = sc.flags.iter().chain(sc.args.keys()).collect();
 	names.sort();
 	names
 		.into_iter()
 		.filter(|k| !k.is_empty())
-		.filter(|k| !text.contains(&format!("FLAG.{k}")) && !text.contains(&format!("ARG.{k}")))
+		.filter(|k| !reads.flags.contains(*k) && !reads.args.contains_key(*k))
 		.map(|k| format!("--{k}"))
 		.collect()
 }

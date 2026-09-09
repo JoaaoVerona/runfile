@@ -31,7 +31,7 @@ run _bump-vscode-extension {{ next }}
 
 let tag = concat("v", next)
 
-$ echo "Bumped: {{ cur }} -> {{ next }}, tagging {{ tag }}"
+print("Bumped: {{ cur }} -> {{ next }}, tagging {{ tag }}")
 $ git commit Cargo.toml Cargo.lock editors/vscode/package.json -m "bump to {{ next }}"
 $ git tag {{ tag }}
 $ git push

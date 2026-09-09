@@ -68,6 +68,37 @@ Target {
                 ],
                 span: Span,
             },
+            Let {
+                name: "failed",
+                value: Call {
+                    name: "code_of",
+                    args: [
+                        Dispatch {
+                            target: [
+                                Literal(
+                                    "test",
+                                ),
+                            ],
+                            args: [
+                                [
+                                    Literal(
+                                        "--filter=",
+                                    ),
+                                    Expr(
+                                        Ident(
+                                            "name",
+                                            Span,
+                                        ),
+                                    ),
+                                ],
+                            ],
+                            span: Span,
+                        },
+                    ],
+                    span: Span,
+                },
+                span: Span,
+            },
         ],
     },
 }

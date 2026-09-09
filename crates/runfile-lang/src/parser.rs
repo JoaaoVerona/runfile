@@ -175,13 +175,13 @@ impl<'a> P<'a> {
 	}
 
 	/// Gather a logical line, continuing while `[` are unbalanced so a list may
-	/// span lines.
+	/// span lines -- and nest, since the count is what says where it ends.
 	fn logical(&mut self) -> (String, usize, usize) {
 		let start = &self.lines[self.i];
 		let (no, offset) = (start.no, start.offset);
 		let mut buf = start.trimmed.to_string();
 		self.i += 1;
-		while buf.matches('[').count() > buf.matches(']').count() && self.i < self.lines.len() {
+		while lexer::brackets(&buf, no).0 > 0 && self.i < self.lines.len() {
 			buf.push(' ');
 			buf.push_str(self.lines[self.i].trimmed);
 			self.i += 1;
@@ -220,6 +220,17 @@ impl<'a> P<'a> {
 					None => parse_expr(raw_rhs, base, no)?,
 				};
 				Ok(Statement::Let { name, value, span })
+			}
+			"do" => {
+				if !text[2..].trim().is_empty() {
+					return err(
+						no,
+						"`do` takes nothing; it opens a block so a property has somewhere to go",
+					);
+				}
+				let body = self.block(Some("do"))?;
+				self.expect_end(no)?;
+				Ok(Statement::Do { body, span })
 			}
 			"if" => {
 				let rest = text[2..].trim();
@@ -279,7 +290,13 @@ impl<'a> P<'a> {
 					return err(no, "`for` needs `in`");
 				};
 				let name = rest[..k].trim().to_string();
-				let iter = parse_expr(rest[k + 4..].trim(), offset, no)?;
+				// `for f in lines($ git ls-files)` -- the same rule as a `let`,
+				// and the shape a loop over a command's output actually wants.
+				let list = rest[k + 4..].trim();
+				let iter = match shell_capture(list, offset + 3 + k + 4, no)? {
+					Some(e) => e,
+					None => parse_expr(list, offset + 3 + k + 4, no)?,
+				};
 				let body = self.block(Some("for"))?;
 				self.expect_end(no)?;
 				Ok(Statement::For { name, iter, body, span })
@@ -320,21 +337,9 @@ impl<'a> P<'a> {
 				})
 			}
 			"run" => {
-				let rest = text[3..].trim();
-				let mut words = split_words(rest);
-				if words.is_empty() {
-					return err(no, "`run` needs a target");
-				}
-				let target = lexer::split_interp(&words.remove(0), offset, no)?;
-				let args = words
-					.iter()
-					.map(|w| lexer::split_interp(w, offset, no))
-					.collect::<Result<_, _>>()?;
-				Ok(Statement::Run {
-					target: to_parts(target, no)?,
-					args: to_args(args, no)?,
-					span,
-				})
+				let words = split_words(text[3..].trim());
+				let (target, args) = dispatch_words(words, offset, no)?;
+				Ok(Statement::Run { target, args, span })
 			}
 			_ => {
 				// `code_of($ cmd)` on its own: run it, ignore how it went.
@@ -451,9 +456,16 @@ impl<'a> P<'a> {
 
 	/// A `$ cmd` or `exec cmd … end` used as a value.
 	fn capture_rhs(&mut self, rhs: &str, indent: &str, offset: usize, no: usize) -> Result<Option<Expr>, ParseError> {
-		// `code_of($ …)` is a capture too, wearing a name.
-		if rhs.starts_with("code_of(") {
-			return shell_capture(rhs, offset, no);
+		// A call whose last argument is a `$` run -- `lines($ git ls-files)`,
+		// and `code_of($ cmd)`, which is that same shape wearing a name people
+		// already know -- or a `run` dispatch, which only `code_of` may hold.
+		// `shell_capture` answers `None` when the `$` turns out to be inside a
+		// string, so this only has to be a cheap first look.
+		if !rhs.starts_with("$ ")
+			&& (rhs.contains("$ ") || rhs.contains("run"))
+			&& let Some(e) = shell_capture(rhs, offset, no)?
+		{
+			return Ok(Some(e));
 		}
 		if let Some(cmd) = rhs.strip_prefix("$ ") {
 			let parts = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
@@ -497,8 +509,7 @@ impl<'a> P<'a> {
 				);
 			}
 			return Ok(Some(Expr::Structured {
-				format,
-				body,
+				body: crate::ast::StructuredBody { format, lines: body },
 				span: Span::new(offset, end, no),
 			}));
 		}
@@ -545,7 +556,7 @@ impl<'a> P<'a> {
 /// `f() && g()` are too, since a call is still reached. `35` is not.
 fn has_effect(e: &Expr) -> bool {
 	match e {
-		Expr::Call { .. } | Expr::Capture { .. } => true,
+		Expr::Call { .. } | Expr::Capture { .. } | Expr::Dispatch { .. } => true,
 		Expr::Unary { rhs, .. } => has_effect(rhs),
 		Expr::Binary { lhs, rhs, .. } | Expr::Chain { lhs, rhs, .. } => has_effect(lhs) || has_effect(rhs),
 		Expr::Index { base, index, .. } => has_effect(base) || has_effect(index),
@@ -582,41 +593,217 @@ fn check_has_effect(e: &Expr, no: usize) -> Result<(), ParseError> {
 	err(no, format!("this line does nothing: {what}"))
 }
 
-/// `$ cmd` used as a value, and `code_of($ cmd)` around it.
+/// `$ cmd` used as a value, and a call whose **last argument** is one.
 ///
 /// Only a `$` run, never an `exec` block: an `exec` closes on an `end` at its
 /// opener's indentation, which is the same `end` an `if` around it would want.
 ///
-/// `code_of` is the one call a capture may sit inside, and it takes the rest of
-/// the line up to a final `)`. A capture otherwise runs to end of line -- that
-/// is why it cannot nest in a call in general -- so the closing parenthesis has
-/// to be found from the right, and a shell line ending in one cannot be written
-/// here. Split it into two statements if you need that.
+/// A capture runs to the end of its line, so it can only ever be the last
+/// argument, and the `)` that closes the call has to be the last character of
+/// the line. That leaves one thing it cannot do -- a command containing a `)`
+/// -- and that is refused rather than guessed at. `code_of` was the only call
+/// allowed to hold one; the rule is the same for every call now, so
+/// `lines($ git ls-files)` reads the way it looks.
 fn shell_capture(text: &str, offset: usize, no: usize) -> Result<Option<Expr>, ParseError> {
 	if let Some(cmd) = text.strip_prefix("$ ") {
 		return Ok(Some(capture_of(cmd.trim(), offset, no)?));
 	}
-	let Some(rest) = text.strip_prefix("code_of(") else {
+	let Some(open) = text.find('(') else {
 		return Ok(None);
 	};
-	let Some(inner) = rest.strip_suffix(')') else {
-		return err(no, "`code_of(` is never closed: it takes a `$` run and a final `)`");
+	let name = &text[..open];
+	if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+		return Ok(None);
+	}
+	let Some(inner) = text[open + 1..].strip_suffix(')') else {
+		// Only worth a message when a `$` is plainly what was meant.
+		return if text[open..].contains("$ ") {
+			err(
+				no,
+				format!(
+					"`{name}(` is never closed: a `$` run has to be the last argument, and the `)` the last character of the line"
+				),
+			)
+		} else {
+			Ok(None)
+		};
 	};
-	let Some(cmd) = inner.trim().strip_prefix("$ ") else {
-		return err(no, "`code_of` takes a `$` run, as `code_of($ mkdir out)`");
+	let Some(parts) = split_args(inner) else {
+		return Ok(None);
+	};
+	let Some(last) = parts.last() else {
+		return Ok(None);
+	};
+	// `code_of(run test)`: the same dispatch the statement spells, scored.
+	// Only `code_of` may hold one. A dispatched target writes to the terminal
+	// like any other, so its status is the only value there is to take and
+	// `lines(run x)` would have nothing to read. Refused here rather than at
+	// evaluation, so an editor underlines it while it is being written.
+	if let Some(tail) = dispatch_arg(&inner[last.clone()])
+		// A bare `run` is a dispatch missing its target only where a dispatch
+		// could go. `length(run)` is a binding called `run` -- oddly named,
+		// but legal -- and must not be read as a keyword.
+		&& !(tail.is_empty() && name != "code_of")
+	{
+		if name != "code_of" {
+			return err(
+				no,
+				format!(
+					"`{name}(` cannot take a `run` dispatch: a target reports a status, not \
+					 output, so `code_of(run …)` is the one call that takes one"
+				),
+			);
+		}
+		if parts.len() != 1 {
+			return err(no, "`code_of(run …)` takes the dispatch on its own");
+		}
+		let at = offset + open + 1 + last.start;
+		let (target, args) = dispatch_words(split_words(tail), at, no)?;
+		return Ok(Some(Expr::Call {
+			name: name.into(),
+			args: vec![Expr::Dispatch {
+				target,
+				args,
+				span: Span::new(at, at + inner[last.clone()].len(), no),
+			}],
+			span: Span::new(offset, offset + text.len(), no),
+		}));
+	}
+	let Some(cmd) = inner[last.clone()].trim().strip_prefix("$ ") else {
+		// A `$` anywhere but last is the mistake worth naming: the capture
+		// would swallow the arguments after it, so there is no reading of it
+		// that works.
+		return if parts.iter().any(|r| inner[r.clone()].trim().starts_with("$ ")) {
+			err(
+				no,
+				format!(
+					"a `$` run has to be the last argument of `{name}(`, because it runs to the \
+					 end of the line; bind it first and pass the binding"
+				),
+			)
+		} else {
+			Ok(None)
+		};
 	};
 	if cmd.contains(')') {
 		return err(
 			no,
-			"a `)` inside `code_of` cannot be told from the one that closes it; \
-			 put the command on a `$` line of its own",
+			format!(
+				"a `)` inside this `$` run cannot be told from the one that closes `{name}(`; \
+				 put the command on a line of its own and pass the binding"
+			),
 		);
 	}
+	let mut args = Vec::with_capacity(parts.len());
+	for r in &parts[..parts.len() - 1] {
+		args.push(parse_expr(inner[r.clone()].trim(), offset + open + 1 + r.start, no)?);
+	}
+	args.push(capture_of(cmd.trim(), offset + open + 1 + last.start, no)?);
 	Ok(Some(Expr::Call {
-		name: "code_of".into(),
-		args: vec![capture_of(cmd.trim(), offset, no)?],
+		name: name.into(),
+		args,
 		span: Span::new(offset, offset + text.len(), no),
 	}))
+}
+
+/// The `run …` tail of a dispatch argument, if that is what this text is.
+///
+/// Shared with the formatter, which spaces a dispatch's words the way it
+/// spaces a `run` statement's, because they are the same words.
+pub(crate) fn dispatch_arg(text: &str) -> Option<&str> {
+	let rest = text.trim().strip_prefix("run")?;
+	// A bare `run` is still one: `code_of(run)` is a dispatch missing its
+	// target, and saying so beats reporting a stray token. `running` is not.
+	if !rest.is_empty() && !rest.starts_with(' ') && !rest.starts_with('\t') {
+		return None;
+	}
+	Some(rest.trim())
+}
+
+/// A `run` target and its arguments, from the words after the keyword.
+fn dispatch_words(mut words: Vec<String>, offset: usize, no: usize) -> Result<Dispatched, ParseError> {
+	if words.is_empty() {
+		return err(no, "`run` needs a target");
+	}
+	let target = lexer::split_interp(&words.remove(0), offset, no)?;
+	let args = words
+		.iter()
+		.map(|w| lexer::split_interp(w, offset, no))
+		.collect::<Result<_, _>>()?;
+	Ok((to_parts(target, no)?, to_args(args, no)?))
+}
+
+type Dispatched = (Vec<InterpPart>, Vec<Vec<InterpPart>>);
+
+/// Whether this text is a call whose last argument is a `$` run or a `run`
+/// dispatch.
+///
+/// The formatter asks: both run to the end of the line and are rendered from
+/// their own text, so the call around them is not re-spaced as an expression.
+pub(crate) fn is_capture_call(text: &str) -> bool {
+	let Some(open) = text.find('(') else {
+		return false;
+	};
+	let name = &text[..open];
+	if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+		return false;
+	}
+	let Some(inner) = text[open + 1..].strip_suffix(')') else {
+		return false;
+	};
+	split_args(inner)
+		.and_then(|parts| {
+			parts
+				.last()
+				.map(|r| inner[r.clone()].trim().starts_with("$ ") || dispatch_arg(&inner[r.clone()]).is_some())
+		})
+		.unwrap_or(false)
+}
+
+/// The top-level argument ranges of `inner`, or `None` when it does not look
+/// like an argument list at all.
+///
+/// Scanned rather than lexed: everything from the `$` on is a shell line, and
+/// no expression lexer can read one. Strings are skipped so a comma or a `$`
+/// inside one is left where it is.
+fn split_args(inner: &str) -> Option<Vec<std::ops::Range<usize>>> {
+	let b = inner.as_bytes();
+	let (mut out, mut start, mut depth, mut i) = (Vec::new(), 0usize, 0i32, 0usize);
+	while i < b.len() {
+		match b[i] {
+			// `r"…"` keeps its backslashes; an unescaped `"` still ends it.
+			b'"' => {
+				let raw = i > 0 && b[i - 1] == b'r';
+				i += 1;
+				while i < b.len() && b[i] != b'"' {
+					i += if !raw && b[i] == b'\\' { 2 } else { 1 };
+				}
+				i += 1;
+			}
+			b'(' | b'[' => {
+				depth += 1;
+				i += 1;
+			}
+			b')' | b']' => {
+				depth -= 1;
+				if depth < 0 {
+					return None;
+				}
+				i += 1;
+			}
+			b',' if depth == 0 => {
+				out.push(start..i);
+				i += 1;
+				start = i;
+			}
+			_ => i += 1,
+		}
+	}
+	if depth != 0 {
+		return None;
+	}
+	out.push(start..inner.len());
+	Some(out)
 }
 
 fn capture_of(cmd: &str, offset: usize, no: usize) -> Result<Expr, ParseError> {

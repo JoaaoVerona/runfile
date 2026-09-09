@@ -25,6 +25,16 @@ const DIM: &str = "\x1b[2m";
 const CYAN: &str = "\x1b[36m";
 const RESET: &str = "\x1b[0m";
 
+/// A heading, painted only where painting is wanted. `render` does its own;
+/// this is for pages built a line at a time.
+pub fn bold(text: &str) -> String {
+	if colour() {
+		format!("{BOLD}{text}{RESET}")
+	} else {
+		text.to_string()
+	}
+}
+
 /// One `name  description` pair. An empty description makes a bare line.
 pub struct Row(pub &'static str, pub &'static str);
 

@@ -106,3 +106,33 @@ let xs = [
         (string_content))
       (string
         (string_content)))))
+
+================================================================================
+A list nests, and may spill over lines at any level
+================================================================================
+
+let xs = [
+	[1, 2],
+	[
+		3,
+		[4, "a"],
+	],
+	[],
+]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (list
+      (list
+        (number)
+        (number))
+      (list
+        (number)
+        (list
+          (number)
+          (string
+            (string_content))))
+      (list))))

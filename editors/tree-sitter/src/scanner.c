@@ -24,6 +24,7 @@ enum TokenType {
 	CAPTURE_EXEC_KEYWORD,
 	EXEC_CONTENT,
 	RUN_WORD,
+	DISPATCH_WORD,
 	STRUCTURED_KEYWORD,
 };
 
@@ -260,6 +261,34 @@ static bool scan_run_word(TSLexer *lexer) {
 	return true;
 }
 
+// A `run` word inside `code_of(…)`. The same word, except that the `)` closing
+// the call ends it -- unless a `(` in the word opened it, which is how the
+// parser reads one too.
+static bool scan_dispatch_word(TSLexer *lexer) {
+	while (is_blank(lexer->lookahead)) skip(lexer);
+	if (at_eol(lexer) || lexer->lookahead == ')') return false;
+	int depth = 0;
+	while (!at_eol(lexer) && !is_blank(lexer->lookahead)) {
+		if (lexer->lookahead == ')') {
+			if (depth == 0) break;
+			depth--;
+		} else if (lexer->lookahead == '(') {
+			depth++;
+		} else if (lexer->lookahead == '{') {
+			advance(lexer);
+			if (lexer->lookahead == '{') {
+				advance(lexer);
+				skip_interpolation(lexer);
+			}
+			continue;
+		}
+		advance(lexer);
+	}
+	lexer->mark_end(lexer);
+	lexer->result_symbol = DISPATCH_WORD;
+	return true;
+}
+
 void *tree_sitter_runfile_external_scanner_create(void) {
 	Scanner *s = calloc(1, sizeof(Scanner));
 	return s;
@@ -289,6 +318,7 @@ bool tree_sitter_runfile_external_scanner_scan(void *payload, TSLexer *lexer, co
 	if (valid[NEWLINE] && scan_newline(s, lexer)) return true;
 	if (valid[EXEC_CONTENT]) return scan_exec_content(s, lexer);
 	if (valid[RUN_WORD]) return scan_run_word(lexer);
+	if (valid[DISPATCH_WORD]) return scan_dispatch_word(lexer);
 	if (valid[STRUCTURED_KEYWORD] && scan_structured_keyword(s, lexer)) return true;
 	if (valid[CAPTURE_EXEC_KEYWORD]) return scan_capture_exec_keyword(s, lexer);
 	if (valid[EXEC_KEYWORD]) return scan_exec_keyword(s, lexer);
