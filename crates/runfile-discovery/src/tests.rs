@@ -335,17 +335,23 @@ fn one_directory_under_two_spellings_is_not_a_clash_with_itself() {
 /// The same question, forced on every host.
 ///
 /// The test above reaches `same_dir` only where the filesystem is
-/// case-insensitive, which is the one place CI does not run Linux. A symlink
-/// puts two spellings on one directory anywhere, so the branch that keeps a
-/// macOS home working is exercised on the machine most likely to break it.
+/// case-insensitive, so on Linux the branch that keeps a macOS home working is
+/// never executed. A symlink reaches it everywhere.
+///
+/// `.runfiles` and `runfiles` are the pair, never `runfiles` and `Runfiles`:
+/// two names differing only in case cannot *both* exist where case does not
+/// distinguish them, so building that pair fails on the very filesystem this
+/// is about -- as it did, with `AlreadyExists` on macOS. These two are distinct
+/// names wherever the test runs, and the symlink is what makes them one
+/// directory.
 #[test]
 #[cfg(unix)]
 fn two_paths_to_one_global_directory_are_not_two_directories() {
 	let home = TempDir::new().unwrap();
-	let g = home.path().join("Runfiles");
+	let g = home.path().join("runfiles");
 	std::fs::create_dir_all(&g).unwrap();
 	std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
-	std::os::unix::fs::symlink("Runfiles", home.path().join("runfiles")).unwrap();
+	std::os::unix::fs::symlink("runfiles", home.path().join(".runfiles")).unwrap();
 
 	let elsewhere = TempDir::new().unwrap();
 	std::fs::create_dir_all(elsewhere.path().join("runfiles")).unwrap();
