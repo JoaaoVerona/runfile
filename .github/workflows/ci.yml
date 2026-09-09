@@ -173,3 +173,30 @@ jobs:
       - name: Cleanup Runfile runner state
         if: always()
         uses: ./.github/actions/cleanup
+
+  # The path every consumer takes, and the only one nothing here exercises any
+  # more: every other job builds `run` from source — which is what let a broken
+  # download reach three projects before this repository noticed. `run*` had
+  # matched one binary until 1.0.0 shipped the language server beside it, and
+  # then the version check handed the second to the first as a target name.
+  #
+  # It installs the *published* archive, so it reports on the newest release
+  # rather than on the commit being tested: one push late for the release that
+  # breaks it, and long before the next consumer runs. Blocking, because the
+  # action is how nearly everyone gets this tool.
+  action:
+    name: Install from the published release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Runfile
+        uses: ./.github/actions/setup
+
+      - name: Both binaries are on PATH
+        run: |
+          run --version
+          # Asked with `command -v`, not `--version`: the language server does
+          # not take one and would sit reading stdin for a request instead.
+          command -v runfile-lsp
