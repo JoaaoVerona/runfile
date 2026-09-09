@@ -517,6 +517,10 @@ listed before the include, so `{{ … }}` stays the language's. `exec` bodies ar
 `exec sh|bash|…` delegates, anything else does not, since a Python body is not shell — and both close on an
 `end` at the opener's own indentation via a `\1` backreference to the captured indent.
 
+**A capture call is matched by shape, not by name.** The rule spelled `code_of` out, so every other call had
+its command read as a runfile *expression*: `--cached` came out two operators and `"*.rs"` a string. It takes
+any function name now, which is the same generalisation `capture_call` is in the tree-sitter grammar.
+
 **A capture in value position is coloured too.** `shell-line` is anchored at `^\s*(\$)`, so `let rs = $ git
 diff … -- "*.rs"` matched no rule at all and the shell text was read as a runfile *expression*: `--name-only`
 came out two operators and `"*.rs"` a runfile string. `shell-capture` is `shell-condition` one line form over,
@@ -578,6 +582,13 @@ an extension host. Registering `DocumentFormattingEditProvider` is what makes `e
 `grammar.js` mirrors `GRAMMAR.ebnf`. Newlines are tokens rather than extras, so every line form ends in one;
 a file without a trailing newline gets a zero-width one from the scanner, exactly once.
 
+- **A capture is a call's last argument, whatever the call is called.** `capture_call` takes any name, so
+  `lines($ git ls-files)` parses the way `code_of($ cmd)` always did -- both grammars had only the second,
+  since `code_of` was once the only call a capture could sit inside, and no `.run` file in this repository
+  used the general form until `check.run` did. The `[$.capture_call, $.arguments]` conflict is what lets GLR
+  carry `name(a, b, …` as both an argument list and a capture call until a `$` settles it. Only `code_of` may
+  hold a `run` dispatch, and that stays the *runner's* rule: it is about what a call means rather than what it
+  looks like, so an editor colours `lines(run x)` and the parser is what refuses it.
 - `src/scanner.c` carries the rules an EBNF cannot: an `exec` body closes only on an `end` at the opener's
   indentation, a `$` or `exec` body stops at `{{` so an interpolation is a node the grammar parses, and a
   `run` argument is one whitespace-delimited word with its interpolations kept whole. The string rule needs no

@@ -161,11 +161,13 @@ code_of($ false)
           (shell_content)))))
   (let_statement
     (identifier)
-    (code_of
+    (capture_call
+      (identifier)
       (shell_text
         (shell_content))))
   (expression_statement
-    (code_of
+    (capture_call
+      (identifier)
       (shell_text
         (shell_content)))))
 
@@ -248,11 +250,58 @@ code_of(run web:build --env={{ e }})
 (source_file
   (let_statement
     (identifier)
-    (code_of
+    (capture_call
+      (identifier)
       (dispatch
         (target))))
   (expression_statement
-    (code_of
+    (capture_call
+      (identifier)
       (dispatch
         (target)
         (argument)))))
+
+================================================================================
+A capture as any call's last argument
+================================================================================
+
+let files = lines($ git diff --cached --name-only)
+let n = length(split(",", "a"), $ echo x)
+
+for f in lines($ git ls-files '*.sh')
+	$ shellcheck {{ f }}
+end
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (capture_call
+      (identifier)
+      (shell_text
+        (shell_content))))
+  (let_statement
+    (identifier)
+    (capture_call
+      (identifier)
+      (call_expression
+        (identifier)
+        (arguments
+          (string
+            (string_content))
+          (string
+            (string_content))))
+      (shell_text
+        (shell_content))))
+  (for_statement
+    (identifier)
+    (capture_call
+      (identifier)
+      (shell_text
+        (shell_content)))
+    (shell_line
+      (shell_text
+        (shell_content)
+        (interpolation
+          (identifier))))))

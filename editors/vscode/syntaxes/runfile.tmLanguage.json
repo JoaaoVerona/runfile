@@ -28,7 +28,7 @@
 			"include": "#shell-capture"
 		},
 		{
-			"include": "#code-of"
+			"include": "#capture-call"
 		},
 		{
 			"include": "#shell-line"
@@ -386,9 +386,9 @@
 				}
 			]
 		},
-		"code-of": {
-			"$comment": "`code_of($ cmd)` is the one call holding shell text. It ends at the `)`, which is the same rule the parser and the tree-sitter grammar enforce -- **or at the end of the line**, which is the safety net that matters: the embedded shell grammar happily runs a rule to the end of a line, so `code_of($ xcode-select --install)` had its `)` swallowed by the option rule and the region never closed. Everything below it was then coloured as shell. Every other embedded region here is bound the same way, because each one is a single line by construction.",
-			"begin": "\\b(code_of)(\\()[ \\t]*(\\$)(?=[ \\t]|\\))",
+		"capture-call": {
+			"$comment": "A call whose last argument is a `$` run holds shell text -- `lines($ git ls-files)` as much as `code_of($ cmd)`, which is that same shape wearing a name people know. Matched by shape rather than by name: hardcoding `code_of` left every other call reading its command as a runfile *expression*, so `--cached` came out two operators. It ends at the `)`, which is the same rule the parser and the tree-sitter grammar enforce -- **or at the end of the line**, which is the safety net that matters: the embedded shell grammar happily runs a rule to the end of a line, so `code_of($ xcode-select --install)` had its `)` swallowed by the option rule and the region never closed. Everything below it was then coloured as shell. Every other embedded region here is bound the same way, because each one is a single line by construction.",
+			"begin": "\\b([a-z_][a-z0-9_]*)(\\()[ \\t]*(\\$)(?=[ \\t]|\\))",
 			"beginCaptures": {
 				"1": {
 					"name": "support.function.run"

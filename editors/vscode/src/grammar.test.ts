@@ -415,7 +415,12 @@ test("a `$` condition and a code_of body are coloured as shell", async () => {
 	for (const line of [
 		'if $ launchctl print "gui/$(id -u)/x" >/dev/null 2>&1',
 		"match $ grep -q a b",
-		"let c = code_of($ mkdir out)"
+		"let c = code_of($ mkdir out)",
+		// Any call may hold one, not just `code_of`. Matched by shape rather
+		// than by name: while the rule spelled `code_of` out, every other call
+		// had its command read as a runfile *expression*, so `--cached` came
+		// out as two operators and `"*.rs"` as a string.
+		"let files = lines($ git diff --cached --name-only)"
 	]) {
 		const [tokens] = await tokensOf(`${line}\n`, shell)
 		const marker = (tokens ?? []).findIndex((t) => t.scopes.includes("keyword.control.shell.run"))

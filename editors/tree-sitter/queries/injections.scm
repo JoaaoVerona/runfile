@@ -5,7 +5,7 @@
 ((shell_capture (shell_text) @injection.content)
  (#set! injection.language "bash"))
 
-((code_of (shell_text) @injection.content)
+((capture_call (shell_text) @injection.content)
  (#set! injection.language "bash"))
 
 ; An `exec` body is the command's stdin; it is shell only when the command is.

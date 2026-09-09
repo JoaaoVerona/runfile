@@ -43,7 +43,12 @@ module.exports = grammar({
 	// bracket can belong to either the separator or the closer. Both readings
 	// produce the same tree, since newlines are hidden, so GLR is allowed to
 	// pick either.
-	conflicts: ($) => [[$.list]],
+	//
+	// `name(a, b, …` is an ordinary argument list until a `$` turns out to
+	// follow the last comma, and a capture can only be the last argument, so
+	// nothing before it says which of the two is being read. GLR carries both
+	// and the one that cannot finish dies where it stands.
+	conflicts: ($) => [[$.list], [$.capture_call, $.arguments]],
 
 	rules: {
 		source_file: ($) => repeat($._line),
@@ -105,28 +110,41 @@ module.exports = grammar({
 		// ---- statements
 
 		let_statement: ($) =>
-			seq("let", field("name", $.identifier), "=", field("value", choice($.code_of, $.structured, $.capture, $._expression)), $._newline),
+			seq("let", field("name", $.identifier), "=", field("value", choice($.capture_call, $.structured, $.capture, $._expression)), $._newline),
 
-		// The one call a capture -- or a dispatch -- may sit inside:
-		// `code_of($ cmd)` is the
-		// command's exit status rather than what it printed. Its shell text
-		// stops at the `)` -- a capture otherwise runs to end of line, which is
-		// why it cannot nest in a call at all -- so a command containing a
-		// parenthesis has to be a statement of its own.
-		code_of: ($) => seq("code_of", "(", choice($._code_of_shell, $.dispatch), ")"),
-		_code_of_shell: ($) => seq("$", optional(alias($._code_of_text, $.shell_text))),
+		// A call whose last argument is a `$` run -- `lines($ git ls-files)`,
+		// and `code_of($ cmd)`, which is that same shape wearing a name people
+		// already know. Its shell text stops at the `)`; a capture otherwise
+		// runs to end of line, which is why it can only ever be the *last*
+		// argument, and why a command holding a parenthesis has to be a
+		// statement of its own.
+		//
+		// Only `code_of` may hold a `run` dispatch. That is a rule about what
+		// a call means rather than what it looks like -- a dispatched target
+		// gives back a status and nothing else -- so the runner states it and
+		// this grammar does not: an editor colours `lines(run x)` and the
+		// parser is what refuses it.
+		capture_call: ($) =>
+			seq(
+				field("name", $.identifier),
+				"(",
+				repeat(seq($._expression, ",")),
+				choice($._capture_argument, $.dispatch),
+				")",
+			),
+		_capture_argument: ($) => seq("$", optional(alias($._capture_text, $.shell_text))),
 
 		// `code_of(run build)`: the same dispatch the statement spells, scored.
 		// Only `code_of` takes one -- a dispatched target writes to the
 		// terminal like any other, so its status is the only value it has.
 		dispatch: ($) =>
 			seq("run", field("target", alias($.dispatch_word, $.target)), repeat(alias($.dispatch_word, $.argument))),
-		_code_of_text: ($) =>
-			repeat1(choice(alias($._code_of_content, $.shell_content), alias($._lone_brace, $.shell_content), $.interpolation)),
-		_code_of_content: () => token.immediate(prec(-1, /([^{)\\\r\n]|\\[^\r\n])+/)),
+		_capture_text: ($) =>
+			repeat1(choice(alias($._capture_content, $.shell_content), alias($._lone_brace, $.shell_content), $.interpolation)),
+		_capture_content: () => token.immediate(prec(-1, /([^{)\\\r\n]|\\[^\r\n])+/)),
 
 		assignment: ($) =>
-			seq(field("name", $.identifier), "=", field("value", choice($.code_of, $.structured, $.capture, $._expression)), $._newline),
+			seq(field("name", $.identifier), "=", field("value", choice($.capture_call, $.structured, $.capture, $._expression)), $._newline),
 
 		// `json … end`: a block of structured text, as one value of that format.
 		// Its body closes on an `end` at the opener's indentation, like every
@@ -179,7 +197,7 @@ module.exports = grammar({
 			),
 
 		for_statement: ($) =>
-			seq("for", field("variable", $.identifier), "in", field("iterable", $._expression), $._newline, repeat($._line), "end", $._newline),
+			seq("for", field("variable", $.identifier), "in", field("iterable", choice($.capture_call, $._expression)), $._newline, repeat($._line), "end", $._newline),
 
 		match_statement: ($) =>
 			seq(
@@ -202,7 +220,7 @@ module.exports = grammar({
 
 		run_statement: ($) => seq("run", field("target", alias($.run_word, $.target)), repeat(alias($.run_word, $.argument)), $._newline),
 
-		expression_statement: ($) => seq(choice($.code_of, $._expression), $._newline),
+		expression_statement: ($) => seq(choice($.capture_call, $._expression), $._newline),
 
 		// ---- expressions
 

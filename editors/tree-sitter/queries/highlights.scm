@@ -6,7 +6,7 @@
 
 (structured_format) @keyword
 
-(code_of "code_of" @function)
+(capture_call name: (identifier) @function)
 
 ; Where values come from
 ["ARG" "ENV" "FLAG" "RUN" "ARGS"] @variable.builtin
