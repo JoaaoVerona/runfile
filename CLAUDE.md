@@ -14,7 +14,7 @@ NEVER use `cargo` commands directly. ALWAYS use `run <target>`; read `runfiles/`
 ```
 run setup                  # One-time per clone: activates the committed git hooks. Gates everything else.
 run build                  # Debug build
-run check                  # Non-mutating gate: fmt --check + clippy (deny warnings)
+run check                  # Non-mutating gate: fmt --check + clippy (deny warnings) + every release target compiles
 run lint                   # Formats, then lints
 run test                   # All workspace tests
 run install                # Builds release and installs BOTH binaries to ~/.local/bin
@@ -751,21 +751,26 @@ tests that assert the mechanism rather than the symptom.
    (`crates/runfile-lsp/tests/protocol.rs`), and the compiled binary is started as a subprocess
    (`tests/binary.rs`) — nothing in the former would notice a broken `main.rs` or a renamed binary, and it
    is what ships.
-5. Tests that need an external tool (shellcheck) skip cleanly when it is absent, so a contributor without it
+5. **`run check` cross-checks the six release triples**, so a break that only shows on another platform is
+   found before CI. `windows-sys` 0.61 moving `BOOL` out of `Win32::Foundation` cost a release run: nothing
+   local compiled for Windows, and `cargo check --target` needs no linker, so nothing had to. Targets `rustup`
+   does not have are skipped and **named** -- a gate that passes is worth less when you cannot tell what it
+   did not look at.
+6. Tests that need an external tool (shellcheck) skip cleanly when it is absent, so a contributor without it
    does not see a broken build. One of them is a gate: `runfile-lsp/tests/repo_shell.rs` shellchecks every
    `.run` file in this repository through the same extraction an editor uses, so the repo's own shell cannot
    rot. It caught an unbalanced `if` in a golden fixture the first time it ran.
-6. **Every documented example is parsed.** `FUNCTIONS` and `KEYWORDS` carry an `example`, which is what hover
+7. **Every documented example is parsed.** `FUNCTIONS` and `KEYWORDS` carry an `example`, which is what hover
    and completion show and what a person copies out. `code_of` shipped one that could not parse at all
    (`if code_of($ …) != 0` — a capture's `)` has to be the last character of the line), and four others opened
    an `if` they never closed, because nothing had ever fed one back through the parser. A trailing result
    annotation — two spaces, then `#` — is dropped first: a comment is a whole line here, so `abs(-4)   # 4`
    says what the value is the way a REPL transcript does rather than being code.
-7. `runfile-lang/tests/golden/` holds one file per AST shape beside the tree it parses to, with source
+8. `runfile-lang/tests/golden/` holds one file per AST shape beside the tree it parses to, with source
    positions stripped so a diff is about structure rather than whitespace. Regenerate a deliberate change
    with `UPDATE_GOLDEN=1 cargo test -p runfile-lang --test golden`.
-8. Watch tests poll rather than sleep; a fixed sleep is either flaky or slow.
-9. Cross-platform: normalize backslashes in path assertions. A test that can only hold on one platform should
+9. Watch tests poll rather than sleep; a fixed sleep is either flaky or slow.
+10. Cross-platform: normalize backslashes in path assertions. A test that can only hold on one platform should
    be `#[cfg]`-gated there rather than weakened.
 
 ## Documentation

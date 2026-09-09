@@ -12,14 +12,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
 
+      # See release.yml: `rustflags: ""` keeps `.cargo/config.toml` in effect,
+      # and keeps `-D warnings` off the bootstrap build below -- a warning is
+      # not what this job is here to report.
       - name: Install pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
+        with:
+          rustflags: ""
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
-      - name: Setup Runfile
+      # From source: the released CLI is a previous version of this
+      # repository's own task files, so driving them with it breaks whenever
+      # the language changes.
+      - name: Setup Runfile (from source)
         uses: ./.github/actions/setup
+        with:
+          from-source: true
 
       - name: Audit dependencies
         run: run audit

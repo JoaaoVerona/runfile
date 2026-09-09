@@ -1164,8 +1164,12 @@ fn global_runfiles_may_use_any_of_the_three_names() {
 
 #[test]
 fn two_populated_global_directories_stop_the_run_and_name_both() {
+	// `.runfiles` and `runfiles`, never `Runfiles`: the two spellings that
+	// differ only in case are one directory on a case-insensitive filesystem,
+	// so on macOS the pair would not be two directories at all -- and the
+	// error would name the directory by the spelling that found it.
 	let p = project(&[("runfiles/local.run", "$ true\n")]);
-	for name in [".runfiles", "Runfiles"] {
+	for name in [".runfiles", "runfiles"] {
 		let g = p.home.path().join(name);
 		std::fs::create_dir_all(&g).unwrap();
 		std::fs::write(g.join("mine.run"), "$ true\n").unwrap();
@@ -1174,7 +1178,7 @@ fn two_populated_global_directories_stop_the_run_and_name_both() {
 	assert!(!o.status.success(), "a silent winner is the thing being avoided");
 	let e = err(&o);
 	assert!(e.contains(".runfiles"), "{e}");
-	assert!(e.contains("Runfiles"), "{e}");
+	assert!(e.contains("runfiles"), "{e}");
 	assert!(e.contains("keep one of them"), "the error must say what to do: {e}");
 }
 

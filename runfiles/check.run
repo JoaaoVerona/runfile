@@ -1,4 +1,42 @@
-# Non-mutating gate: format check + Clippy (deny warnings; also type/borrow-checks)
+# Non-mutating gate: format check, Clippy (deny warnings), and every release target still compiles
+#
+# The six triples the release workflow builds are checked too, so a break that
+# only shows on another platform is found here rather than three jobs into CI.
+# `BOOL` moving out of `windows-sys`' `Win32::Foundation` cost a release run
+# before this existed, and nothing local would have caught it.
+#
+# Only the targets `rustup` actually has installed are checked -- a contributor
+# without them pays nothing, and CI compiles all six natively regardless -- but
+# the ones that were skipped are named, since a gate that passes is worth less
+# when you cannot tell what it did not look at.
+
+let missing = []
 
 $ cargo fmt --all -- --check
 $ cargo clippy --all-targets --all-features --locked -- -D warnings
+
+if $ command -v rustup > /dev/null
+	let installed = lines($ rustup target list --installed)
+
+	for target in [
+		"aarch64-apple-darwin",
+		"aarch64-pc-windows-msvc",
+		"aarch64-unknown-linux-musl",
+		"x86_64-apple-darwin",
+		"x86_64-pc-windows-msvc",
+		"x86_64-unknown-linux-musl",
+	]
+		if index_of(installed, target) != -1
+			print("checking {{ target }}")
+			$ cargo check --all-targets --all-features --locked --target {{ target }}
+		else
+			missing = append(missing, target)
+		end
+	end
+else
+	print("rustup not found, so only this host was checked")
+end
+
+if length(missing) != 0
+	print("not checked, not installed: rustup target add {{ join(" ", missing) }}")
+end

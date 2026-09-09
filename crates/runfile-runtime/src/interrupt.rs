@@ -77,8 +77,13 @@ fn install_inner() {
 
 #[cfg(windows)]
 fn install_inner() {
-	use windows_sys::Win32::Foundation::{BOOL, FALSE, TRUE};
+	// `BOOL` is `windows_sys::core`'s, not `Win32::Foundation`'s: 0.61 stopped
+	// re-exporting it there, while `TRUE` and `FALSE` -- which are typed by it
+	// -- stayed. Taking it from where it is defined is the spelling that holds
+	// either way.
+	use windows_sys::Win32::Foundation::{FALSE, TRUE};
 	use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler};
+	use windows_sys::core::BOOL;
 
 	unsafe extern "system" fn on_ctrl(kind: u32) -> BOOL {
 		if kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT {

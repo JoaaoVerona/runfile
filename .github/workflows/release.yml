@@ -29,8 +29,6 @@ jobs:
             target: x86_64-pc-windows-msvc
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-    env:
-      CARGO_BUILD_TARGET: ${{ matrix.platform.target }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
@@ -58,14 +56,26 @@ jobs:
         if: contains(matrix.platform.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Setup Runfile
+      # From source, never the released CLI. This job runs *during* the release
+      # that publishes it, so `latest` is always the previous version -- and a
+      # release that changes the task-file format could otherwise never ship.
+      # 1.0.0 could not: 0.47.0 reads `Runfile.json` and finds no targets in
+      # `runfiles/`. `CARGO_BUILD_TARGET` is deliberately not set for this step,
+      # so the bootstrap build is for the host that has to run it.
+      - name: Setup Runfile (from source)
         uses: ./.github/actions/setup
+        with:
+          from-source: true
 
       - name: Build release binary
         run: run ci:build
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.platform.target }}
 
       - name: Package archive
         shell: bash
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.platform.target }}
         run: |
           bin=run
           case "$CARGO_BUILD_TARGET" in *windows*) bin=run.exe ;; esac
@@ -138,11 +148,23 @@ jobs:
           echo "extension version: $version | tag: ${TAG#v}"
           test "$version" = "${TAG#v}"
 
-      - name: Setup Runfile
+      # `rustflags: ""` for the same reason as the build job above.
+      - name: Install pinned Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
+        with:
+          rustflags: ""
+
+      # From source, never the released CLI: this job runs *during* the release
+      # that publishes it, so `latest` is always the previous version. A release
+      # that changes the task-file format could otherwise never ship — 1.0.0
+      # could not, since 0.47.0 reads `Runfile.json`.
+      - name: Setup Runfile (from source)
         uses: ./.github/actions/setup
+        with:
+          from-source: true
 
       - name: Install extension dependencies
-        run: run vscode:deps
+        run: run vscode:setup
 
       - name: Compile and package extension
         run: run vscode:package --out=runfile-vscode-${TAG#v}.vsix

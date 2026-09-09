@@ -312,6 +312,50 @@ fn two_populated_global_directories_are_an_error_naming_both() {
 }
 
 #[test]
+fn one_directory_under_two_spellings_is_not_a_clash_with_itself() {
+	// `runfiles` and `Runfiles` are the same directory on a case-insensitive
+	// filesystem, so both probes find the one a person actually made. Reporting
+	// that as two places at once would make every macOS and Windows home with a
+	// `~/Runfiles` refuse to run. `same_dir` canonicalizes, which is what this
+	// exercises there; where the filesystem is case-sensitive only one probe
+	// matches and the assertion holds for the plainer reason.
+	let home = TempDir::new().unwrap();
+	let g = home.path().join("Runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
+
+	let elsewhere = TempDir::new().unwrap();
+	std::fs::create_dir_all(elsewhere.path().join("runfiles")).unwrap();
+	std::fs::write(elsewhere.path().join("runfiles/x.run"), "$ true\n").unwrap();
+
+	let c = discover(elsewhere.path(), Some(home.path())).expect("one directory, however it is spelled");
+	assert!(c.resolve("deploy").is_some(), "the global directory was not read");
+}
+
+/// The same question, forced on every host.
+///
+/// The test above reaches `same_dir` only where the filesystem is
+/// case-insensitive, which is the one place CI does not run Linux. A symlink
+/// puts two spellings on one directory anywhere, so the branch that keeps a
+/// macOS home working is exercised on the machine most likely to break it.
+#[test]
+#[cfg(unix)]
+fn two_paths_to_one_global_directory_are_not_two_directories() {
+	let home = TempDir::new().unwrap();
+	let g = home.path().join("Runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
+	std::os::unix::fs::symlink("Runfiles", home.path().join("runfiles")).unwrap();
+
+	let elsewhere = TempDir::new().unwrap();
+	std::fs::create_dir_all(elsewhere.path().join("runfiles")).unwrap();
+	std::fs::write(elsewhere.path().join("runfiles/x.run"), "$ true\n").unwrap();
+
+	let c = discover(elsewhere.path(), Some(home.path())).expect("one directory, reached two ways");
+	assert!(c.resolve("deploy").is_some(), "the global directory was not read");
+}
+
+#[test]
 fn an_empty_global_directory_never_clashes() {
 	// An empty one is indistinguishable from a leftover `mkdir`, and refusing
 	// to run because of one would be absurd.

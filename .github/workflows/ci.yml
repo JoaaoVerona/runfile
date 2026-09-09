@@ -125,13 +125,25 @@ jobs:
           cache: pnpm
           cache-dependency-path: editors/vscode/pnpm-lock.yaml
 
-      # The extension only needs a working `run` to drive its own targets, so the
-      # released CLI is enough — no reason to compile the workspace for a `tsc` run.
-      - name: Setup Runfile
+      # See release.yml: `rustflags: ""` keeps `.cargo/config.toml` in effect.
+      - name: Install pinned Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
+        with:
+          rustflags: ""
+
+      # From source, like every other job here. This one used the released CLI,
+      # on the reasoning that driving a few `tsc` targets did not justify
+      # compiling the workspace — but the released CLI is a *previous* version
+      # of this repository's own task files, so the job breaks exactly when the
+      # language changes, which is when CI is most worth having. It did: 0.47.0
+      # reads `Runfile.json` and reported no targets at all in `runfiles/`.
+      - name: Setup Runfile (from source)
         uses: ./.github/actions/setup
+        with:
+          from-source: true
 
       - name: Install extension dependencies
-        run: run vscode:deps
+        run: run vscode:setup
 
       - name: Test the extension
         run: run vscode:test
