@@ -61,6 +61,19 @@ Runner flags go **before** the target name; everything after it belongs to the t
 passes `--dry-run` to `build` as `FLAG.dry-run` and runs it for real — so the position is the whole meaning.
 `run` warns when a target is handed a flag it never reads, which is what catches that.
 
+In CI, the setup action installs `run` and puts it on PATH, so every step after it is a target name:
+
+```yaml
+- name: Setup Runfile
+  uses: JoaaoVerona/runfile/.github/actions/setup@v1
+
+- run: run check
+- run: run test
+```
+
+`@v1` is the major alias, moved to each release as it ships — so a fix arrives without editing every
+workflow, and a new major never arrives unannounced. Pin `@v1.0.0` instead to hold one exact version.
+
 ## What a runfile looks like
 
 These are complete files. Nothing is elided.

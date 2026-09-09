@@ -1,6 +1,11 @@
 # Bump the workspace version, tag the commit, and push so CI runs the release
 #
 # Takes one of major / minor / patch.
+#
+# Only the exact `vX.Y.Z` is pushed here. The `vX` alias that consumers of the
+# setup action pin -- `…/actions/setup@v1` -- is moved by the release workflow
+# once the release is built, since a tag meaning "the newest v1" must not point
+# at a release that never finished.
 
 let part = one_of(first(ARGS), "major", "minor", "patch")
 let cargo = read_file("Cargo.toml")

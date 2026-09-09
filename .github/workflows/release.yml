@@ -206,6 +206,52 @@ jobs:
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
+  # `…/actions/setup@v1` is what a consumer writes, so the major tag has to
+  # follow the releases -- the same alias `shared-actions` keeps, which its own
+  # `release.run` moves as it tags. Here it is a job instead, because the tag
+  # only *starts* a release: six platform builds and an npm publish come after
+  # it, and a tag meaning "the newest v1" must not point at a release that
+  # never finished. `needs` is the only thing that knows whether it did.
+  major-tag:
+    name: Move the major tag
+    needs: [release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          # The whole history, for the tags the step below compares against.
+          fetch-depth: 0
+
+      - name: Point the major tag at this release
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # This workflow's `v*.*.*` also matches a pre-release like
+          # `v1.0.0-rc.1`, and `v1` has to keep meaning the newest stable one.
+          # Skipping is the answer rather than failing: a pre-release is not a
+          # mistake, it just is not what the major tag points at.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "$TAG is not a plain release tag; leaving the major tag alone"
+            exit 0
+          fi
+          major="${TAG%%.*}"
+          # An alias only ever moves forward. `workflow_dispatch` takes any tag,
+          # so re-running an old release to re-upload its assets would otherwise
+          # drag every consumer of `@v1` back to it.
+          newest=$(git tag --list "$major.*.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          if [ "$newest" != "$TAG" ]; then
+            echo "$TAG is not the newest $major release ($newest); leaving $major alone"
+            exit 0
+          fi
+          echo "moving $major to $TAG"
+          git tag -f "$major"
+          git push --force origin "refs/tags/$major"
+
   npm:
     name: Publish npm package
     needs: [build, release]
