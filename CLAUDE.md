@@ -901,7 +901,13 @@ tests that assert the mechanism rather than the symptom.
 8. `runfile-lang/tests/golden/` holds one file per AST shape beside the tree it parses to, with source
    positions stripped so a diff is about structure rather than whitespace. Regenerate a deliberate change
    with `UPDATE_GOLDEN=1 cargo test -p runfile-lang --test golden`.
-9. Watch tests poll rather than sleep; a fixed sleep is either flaky or slow.
+9. Watch tests poll rather than sleep; a fixed sleep is either flaky or slow. They **settle first and then
+   assert a delta**, never an exact run count: a watcher starts moments after its fixture wrote the project,
+   and on macOS it hears about those writes -- FSEvents gives an event its id when the daemon flushes rather
+   than when the write lands, so a stream created "from now" still reports writes from just before it
+   existed. `cli.rs`'s `settled` waits for the counter to hold still, which is what makes the assertion
+   below it about the write the test just made. Asserting `== b"x"` blamed a stale event about a *watched*
+   file on the unwatched write that happened to follow it, and failed on macOS CI.
 10. Cross-platform: normalize backslashes in path assertions. A test that can only hold on one platform should
    be `#[cfg]`-gated there rather than weakened.
 

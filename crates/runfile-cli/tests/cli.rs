@@ -100,6 +100,42 @@ fn until(what: &str, mut f: impl FnMut() -> bool) {
 	panic!("timed out waiting for {what}");
 }
 
+/// How long the run counter has to hold still to count as settled. Longer than
+/// the watcher's own debounce, so a change it is already sitting on has had
+/// time to become a run.
+const QUIET: std::time::Duration = std::time::Duration::from_millis(900);
+
+/// Runs so far: a counter target appends one byte per run.
+fn runs(counter: &Path) -> usize {
+	std::fs::read(counter).map(|b| b.len()).unwrap_or(0)
+}
+
+/// Wait until the counter stops moving, and answer where it stopped.
+///
+/// A watcher starts moments after its project's files were written, and on
+/// macOS it hears about them: FSEvents gives an event its id when the daemon
+/// flushes rather than when the write lands, so a stream created "from now"
+/// still reports writes from just before it existed -- which, in a test, are
+/// the fixture's own. Settling first is what makes an assertion about a later
+/// write about *that* write, and it is why a re-run is asserted as a delta
+/// rather than as an exact count.
+fn settled(counter: &Path) -> usize {
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+	let mut last = runs(counter);
+	let mut since = std::time::Instant::now();
+	while std::time::Instant::now() < deadline {
+		std::thread::sleep(std::time::Duration::from_millis(25));
+		let now = runs(counter);
+		if now != last {
+			last = now;
+			since = std::time::Instant::now();
+		} else if since.elapsed() >= QUIET {
+			return last;
+		}
+	}
+	panic!("the run counter never settled; it is at {last}");
+}
+
 fn out(o: &Output) -> String {
 	String::from_utf8_lossy(&o.stdout).into_owned()
 }
@@ -480,12 +516,13 @@ const COUNTER: &str = "# Counts its own runs\n.watch = \"src/**\"\n$ printf x >>
 #[test]
 fn a_watch_target_reruns_when_a_watched_file_changes() {
 	let p = project(&[("runfiles/tick.run", COUNTER), ("src/a.txt", "1")]);
-	let runs = p.dir.path().join("runs.txt");
+	let counter = p.dir.path().join("runs.txt");
 	let mut child = p.spawn(&["tick"]);
 
-	until("the first run", || std::fs::read(&runs).is_ok_and(|b| b == b"x"));
+	until("the first run", || runs(&counter) >= 1);
+	let before = settled(&counter);
 	std::fs::write(p.dir.path().join("src/a.txt"), "2").unwrap();
-	until("the re-run", || std::fs::read(&runs).is_ok_and(|b| b.len() >= 2));
+	until("the re-run", || runs(&counter) > before);
 
 	child.kill().unwrap();
 	child.wait().unwrap();
@@ -494,17 +531,19 @@ fn a_watch_target_reruns_when_a_watched_file_changes() {
 #[test]
 fn a_change_outside_the_watched_patterns_does_not_rerun() {
 	let p = project(&[("runfiles/tick.run", COUNTER), ("src/a.txt", "1"), ("docs/b.txt", "1")]);
-	let runs = p.dir.path().join("runs.txt");
+	let counter = p.dir.path().join("runs.txt");
 	let mut child = p.spawn(&["tick"]);
 
-	until("the first run", || std::fs::read(&runs).is_ok_and(|b| b == b"x"));
+	until("the first run", || runs(&counter) >= 1);
+	let before = settled(&counter);
 	std::fs::write(p.dir.path().join("docs/b.txt"), "2").unwrap();
 	// Prove the watcher is alive and merely uninterested: an unwatched write
-	// changes nothing, a watched one does.
-	std::thread::sleep(std::time::Duration::from_millis(600));
-	assert_eq!(std::fs::read(&runs).unwrap(), b"x", "docs/ is not watched");
+	// changes nothing, a watched one does. Both halves are measured against
+	// `before` rather than against 1, since the count a settled watcher has
+	// reached is not the test's business -- only whether a write moves it.
+	assert_eq!(settled(&counter), before, "docs/ is not watched");
 	std::fs::write(p.dir.path().join("src/a.txt"), "2").unwrap();
-	until("the re-run", || std::fs::read(&runs).is_ok_and(|b| b.len() >= 2));
+	until("the re-run", || runs(&counter) > before);
 
 	child.kill().unwrap();
 	child.wait().unwrap();
@@ -519,14 +558,13 @@ fn watch_keeps_going_after_a_failing_run() {
 		),
 		("src/a.txt", "1"),
 	]);
-	let runs = p.dir.path().join("runs.txt");
+	let counter = p.dir.path().join("runs.txt");
 	let mut child = p.spawn(&["tick"]);
 
-	until("the first run", || std::fs::read(&runs).is_ok_and(|b| b == b"x"));
+	until("the first run", || runs(&counter) >= 1);
+	let before = settled(&counter);
 	std::fs::write(p.dir.path().join("src/a.txt"), "2").unwrap();
-	until("a re-run after failure", || {
-		std::fs::read(&runs).is_ok_and(|b| b.len() >= 2)
-	});
+	until("a re-run after failure", || runs(&counter) > before);
 	assert!(
 		child.try_wait().unwrap().is_none(),
 		"a failing run must not end the session"
