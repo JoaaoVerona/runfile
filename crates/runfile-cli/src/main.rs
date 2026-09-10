@@ -307,5 +307,26 @@ fn catalog(flags: &Flags) -> Result<Catalog, String> {
 		Some(d) => d.clone(),
 		None => std::env::current_dir().map_err(|e| e.to_string())?,
 	};
-	discover(&from, runfile_discovery::home_dir().as_deref()).map_err(|e| e.to_string())
+	discover(&from, discovery_home().as_deref()).map_err(|e| e.to_string())
+}
+
+/// The home directory discovery folds a machine-wide `runfiles/` in from --
+/// and **`None` in CI**.
+///
+/// A runner's home directory is nobody's: on a hosted one it holds whatever the
+/// image happened to ship, and on a self-hosted one it belongs to the machine's
+/// owner rather than to this job. Either way a target that no reader of the
+/// repository can see must not join the run, and must not shadow one that is
+/// checked in. Passing no home is the whole gate -- there is no second place
+/// that decides, so the catalog, `:list`, `:format`, `:generate` and
+/// `:complete` are covered by this one call rather than by an `is_ci` each.
+///
+/// It is also why nothing has to *clean* `$HOME/.runfiles` on a runner any
+/// more: a directory that is never read is not a leak, and deleting a
+/// self-hosted runner's own would be pure destruction.
+pub fn discovery_home() -> Option<std::path::PathBuf> {
+	if ci_detect::is_ci() {
+		return None;
+	}
+	runfile_discovery::home_dir()
 }

@@ -8,9 +8,12 @@ use std::path::Path;
 use std::process;
 
 /// Environment variable that supplies a default env file path for `:env inject`
-/// and `:env decrypt` when no positional path is given. Set by the `setup`
-/// GitHub Action when `env-file-source` is passed, so open-source repos can
-/// keep their encrypted `.env` in a secret instead of committing the ciphertext.
+/// and `:env decrypt` when no positional path is given. The `setup` GitHub
+/// Action used to export it from an `env-file-source` input; that input is gone
+/// -- a workflow that wants this writes the file and points at it itself, which
+/// is one step in the workflow rather than a capability in the action -- but the
+/// variable stays, because pointing at a file without repeating the path at
+/// every call site is useful wherever it is set from.
 pub const RUNFILE_ENV_FILE_TARGET_ENV_VAR: &str = "RUNFILE_ENV_FILE_TARGET";
 
 /// Read [`RUNFILE_ENV_FILE_TARGET_ENV_VAR`] and return the path it points to,
@@ -294,8 +297,7 @@ pub fn cmd_inject(files: &[String], command_args: &[String]) {
 
 	// File resolution order:
 	//   1. Explicit positional paths (one or more)
-	//   2. RUNFILE_ENV_FILE_TARGET — set by the setup action's `env-file-source` so
-	//      open-source repos can keep their encrypted .env in a secret
+	//   2. RUNFILE_ENV_FILE_TARGET — whatever the caller pointed it at
 	//   3. Error — there's no implicit `.env` fallback; the user must opt in
 	//
 	// Once a source is chosen, missing files are a hard error (no silent skipping).

@@ -7,6 +7,8 @@
 //!
 //! The hash covers the setup file's own text, so editing what setup *does*
 //! re-triggers the requirement while runtime values do not.
+//!
+//! None of it applies in CI -- see [`ci`].
 
 use runfile_discovery::{Catalog, Origin, Target};
 use runfile_state::PrepareState;
@@ -31,8 +33,25 @@ fn digest(t: &Target) -> Option<String> {
 	Some(format!("{:x}", runfile_lang::fingerprint(&ast)))
 }
 
+/// CI has no gate and keeps no record of one.
+///
+/// A runner is built from scratch and thrown away; there is no earlier session
+/// whose `setup` this one could be relying on, so asking whether one happened
+/// is asking about a machine that did not exist. The consequence worth spelling
+/// out is that [`record`] consults this too: a runner that never *reads*
+/// `state.json` has no business *writing* one, and the file used to be created
+/// on every CI run purely to be deleted by a cleanup step afterwards.
+///
+/// `RUNFILE_SKIP_PREPARE` is deliberately not the same thing. It turns the gate
+/// off on a machine whose state is still worth keeping, so a `setup` run under
+/// it is still recorded -- otherwise unsetting the variable would report a
+/// setup that plainly did run as never having run.
+fn ci() -> bool {
+	crate::ci_detect::is_ci()
+}
+
 pub fn enforce(cat: &Catalog, t: &Target) -> Result<(), String> {
-	if std::env::var_os("RUNFILE_SKIP_PREPARE").is_some_and(|v| !v.is_empty()) || crate::ci_detect::is_ci() {
+	if ci() || std::env::var_os("RUNFILE_SKIP_PREPARE").is_some_and(|v| !v.is_empty()) {
 		return Ok(());
 	}
 	let Some(gate) = gate_for(cat, t) else { return Ok(()) };
@@ -50,6 +69,9 @@ pub fn enforce(cat: &Catalog, t: &Target) -> Result<(), String> {
 
 /// Called after a gate target succeeds, so the next run passes.
 pub fn record(cat: &Catalog, t: &Target) {
+	if ci() {
+		return; // nothing reads it there, so nothing writes it
+	}
 	if gate_for(cat, t).is_some() {
 		return; // not a gate itself
 	}

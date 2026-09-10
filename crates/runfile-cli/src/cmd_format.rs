@@ -38,7 +38,9 @@ pub(crate) fn usage() -> String {
 
 /// Every `.run` file the catalog knows about, `_shared.run` included.
 pub fn project_files(cat: &Catalog, include_global: bool) -> Vec<PathBuf> {
-	let global = runfile_discovery::home_dir().and_then(|h| runfile_discovery::global_dir(&h).ok().flatten());
+	// Through the gate, not `home_dir()` directly: in CI there is no
+	// machine-wide directory to leave out, because none was read in.
+	let global = crate::discovery_home().and_then(|h| runfile_discovery::global_dir(&h).ok().flatten());
 	let is_global = |p: &Path| global.as_ref().is_some_and(|g| p.starts_with(g));
 
 	let mut out: Vec<PathBuf> = cat

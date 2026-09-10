@@ -1,9 +1,8 @@
 use super::*;
 
 /// Decrypt an encrypted env file. Writes to `output` if provided, otherwise prints to stdout.
-/// When `source` is `None`, falls back to [`RUNFILE_ENV_FILE_TARGET_ENV_VAR`] — set by the
-/// `setup` action's `env-file-source` input so CI can decrypt a secret-supplied file
-/// without writing the path into the workflow.
+/// When `source` is `None`, falls back to [`RUNFILE_ENV_FILE_TARGET_ENV_VAR`], so a
+/// caller that has already pointed at a file need not repeat the path.
 pub fn cmd_decrypt_file(source: Option<&str>, output: Option<&str>) {
 	let source_owned = match source {
 		Some(s) => s.to_string(),

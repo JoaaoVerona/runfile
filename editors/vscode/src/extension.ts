@@ -447,9 +447,11 @@ function makeFolderNode(folder: vscode.WorkspaceFolder, entries: TargetEntry[]):
 }
 
 /**
- * The trailing **Globals** folder — the machine-wide targets registered via
- * `run :config global-files`. Always present as the last tree-root item so its position
- * is stable; when no globals are registered it simply expands to nothing.
+ * The trailing **Globals** folder — the machine-wide targets, which are nothing more
+ * than the `.run` files in `~/.runfiles/` (or `~/runfiles/`, or `~/Runfiles/`; only one
+ * of the three may hold anything). There is no registry to add to, so the tooltip names
+ * the directory rather than a command. Always present as the last tree-root item so its
+ * position is stable; when the directory holds nothing it simply expands to nothing.
  */
 function makeGlobalsNode(entries: TargetEntry[]): GroupNode {
 	const item = new vscode.TreeItem("Globals", vscode.TreeItemCollapsibleState.Collapsed)
@@ -458,8 +460,8 @@ function makeGlobalsNode(entries: TargetEntry[]): GroupNode {
 	item.contextValue = "runfileGlobals"
 	item.tooltip = new vscode.MarkdownString(
 		entries.length > 0
-			? `${entries.length} machine-wide global target${entries.length === 1 ? "" : "s"} (\`run :config global-files\`)`
-			: "No global targets registered (`run :config global-files add`)"
+			? `${entries.length} machine-wide target${entries.length === 1 ? "" : "s"} from \`~/.runfiles/\``
+			: "No machine-wide targets — put a `.run` file in `~/.runfiles/`"
 	)
 	return { kind: "group", item, children: groupByNamespace(entries, "globals::") }
 }

@@ -56,15 +56,36 @@ impl Project {
 			.env("XDG_CONFIG_HOME", self.home.path())
 			.env("XDG_STATE_HOME", self.home.path())
 			.env("APPDATA", self.home.path())
-			.env_remove("CI")
-			.env_remove("GITHUB_ACTIONS")
-			// A developer bypassing the gate in their own shell must not
-			// silently disable the tests that check the gate.
+			// Every variable `ci_detect` looks at, not just the two a developer
+			// is likely to have. CI mode now decides whether the machine-wide
+			// directory is read and whether `state.json` is written, so a stray
+			// `BUILDKITE` in someone's shell would quietly turn off the tests
+			// that check both -- and they would pass.
 			.env_remove("RUNFILE_SKIP_PREPARE")
 			.env_remove("RUNFILE_PRIVATE_KEYS");
+		for v in CI_VARS {
+			c.env_remove(v);
+		}
 		c
 	}
 }
+
+/// Mirrors `ci_detect::CI_ENV_VARS`, which lives in a binary crate an
+/// integration test cannot import. `each_ci_variable_puts_the_binary_in_ci_mode`
+/// proves every name here really is one the binary reacts to; a *new* detector
+/// variable has to be added here by hand, or the fixture stops isolating.
+const CI_VARS: &[&str] = &[
+	"CI",
+	"GITHUB_ACTIONS",
+	"GITLAB_CI",
+	"CIRCLECI",
+	"TRAVIS",
+	"BUILDKITE",
+	"JENKINS_URL",
+	"TF_BUILD",
+	"TEAMCITY_VERSION",
+	"BITBUCKET_BUILD_NUMBER",
+];
 
 /// Poll until `f` holds. Watch mode is inherently asynchronous — a fixed sleep
 /// would be either flaky or slow, so every wait here is a bounded poll.
@@ -326,6 +347,79 @@ fn ci_is_treated_as_consent() {
 		.output()
 		.unwrap();
 	assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+// ----------------------------------------------------------------- CI mode
+
+/// A project with a machine-wide `deploy` beside it, and a `run` that can be
+/// pointed into or out of CI.
+fn with_a_global_target() -> Project {
+	let p = project(&[("runfiles/local.run", "$ true\n")]);
+	let g = p.home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), "# Ships it\n$ true\n").unwrap();
+	p
+}
+
+#[test]
+fn ci_does_not_read_the_machine_wide_directory() {
+	// The mechanism, not the symptom: a runner's home directory is not the
+	// person's, so a target nobody reviewing this repository can see must not
+	// join the run -- nor shadow a checked-in one of the same name.
+	let p = with_a_global_target();
+	let listed = p.command(p.dir.path(), &[":list"]).env("CI", "1").output().unwrap();
+	assert!(!out(&listed).contains("deploy"), "{}", out(&listed));
+	assert!(!out(&listed).contains("global:"), "{}", out(&listed));
+
+	let o = p.command(p.dir.path(), &["deploy"]).env("CI", "1").output().unwrap();
+	assert!(!o.status.success(), "a machine-wide target must not be runnable in CI");
+}
+
+#[test]
+fn each_ci_variable_puts_the_binary_in_ci_mode() {
+	let p = with_a_global_target();
+	for v in CI_VARS {
+		let o = p.command(p.dir.path(), &[":list"]).env(v, "1").output().unwrap();
+		assert!(!out(&o).contains("deploy"), "{v} did not read as CI:\n{}", out(&o));
+	}
+	// And the empty string is not a CI marker, or `CI=` would be one.
+	let o = p.command(p.dir.path(), &[":list"]).env("CI", "").output().unwrap();
+	assert!(out(&o).contains("deploy"), "an empty CI is not CI:\n{}", out(&o));
+}
+
+#[test]
+fn ci_writes_no_prepare_state() {
+	// It never reads the file, so it must not create one. This used to be
+	// written on every CI run purely for a cleanup step to delete afterwards.
+	let p = project(&[("runfiles/setup.run", "$ true\n"), ("runfiles/build.run", "$ true\n")]);
+	let state = p.home.path().join("state.json");
+
+	let o = p.command(p.dir.path(), &["setup"]).env("CI", "1").output().unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(!state.exists(), "CI wrote {}", state.display());
+
+	// And the gate it would have recorded is not enforced either.
+	let o = p.command(p.dir.path(), &["build"]).env("CI", "1").output().unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(!state.exists(), "CI wrote {}", state.display());
+}
+
+#[test]
+fn a_developer_bypassing_the_gate_still_records_it() {
+	// `RUNFILE_SKIP_PREPARE` is not CI mode: the machine's state is still worth
+	// keeping, so unsetting the variable must not report a setup that plainly
+	// ran as never having run.
+	let p = project(&[("runfiles/setup.run", "$ true\n"), ("runfiles/build.run", "$ true\n")]);
+	let o = p
+		.command(p.dir.path(), &["setup"])
+		.env("RUNFILE_SKIP_PREPARE", "1")
+		.output()
+		.unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(
+		p.run(&["build"]).status.success(),
+		"the bypassed setup was not recorded"
+	);
 }
 
 // ------------------------------------------------------------------ globals

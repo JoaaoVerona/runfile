@@ -242,6 +242,7 @@ the rest.
 
 ```
 GRAMMAR.ebnf                   # Normative grammar reference
+.github/actions/setup/         # The only shipped action: installs `run`, PATH, optional secret keys
 runfiles/                      # This project's own targets (self-hosting); ci/ and wsl/ are namespaces
 editors/vscode/                # The VS Code extension (TypeScript) + its own runfiles/
 editors/tree-sitter/   # The tree-sitter grammar (Zed, Neovim, Helix) + its own runfiles/
@@ -324,7 +325,12 @@ Walks **up** for the nearest `runfiles/`, then **down** for `*/runfiles/` (depth
 `node_modules`, `target`, `dist`, `build`, `.git`, `vendor`). Nested directories become `:`-separated namespace
 segments. The machine-wide directory is `$HOME/.runfiles/`, `$HOME/runfiles/` or `$HOME/Runfiles/` — a
 **fixed set of names with no setting to add to it**, so a person can show the folder or hide it without
-telling the runner. **Exactly one of the three may hold anything**: two populated ones is `AmbiguousGlobal`
+telling the runner. **None of them is read in CI**: `main::discovery_home` answers `None` there, which is the
+whole gate — one call rather than an `is_ci` in the catalog, `:list`, `:format`, `:generate` and `:complete`
+each. A runner's home directory is nobody's (a hosted one holds whatever the image shipped, a self-hosted one
+belongs to the machine's owner), so a target no reader of the repository can see must not join the run or
+shadow a checked-in one of the same name. It is also why nothing *cleans* `$HOME/.runfiles` on a runner: a
+directory that is never read is not a leak, and deleting a self-hosted runner's own would be pure destruction. **Exactly one of the three may hold anything**: two populated ones is `AmbiguousGlobal`
 naming both, since merging them would let one target shadow another invisibly. An *empty* one never clashes
 (a leftover `mkdir` must not stop a run), and `$HOME/runfiles/` found by the upward walk is not collected a
 second time as the global. This replaced `includes` entirely.
@@ -698,10 +704,31 @@ block form until it asked a question, so a property covering two commands meant 
 writing `cd web &&` on every line, which is what 35 sites in the corpus did. It takes nothing after the
 keyword, and says so: anything there would read as a condition it does not have.
 
+## The GitHub Action
+
+`.github/actions/setup` is the only one, and **everything it leaves on a runner is job-scoped**: the binary
+under `$RUNNER_TEMP/runfile-bin`, a `$GITHUB_PATH` entry for it, and — when `secret-keys` is passed —
+`RUNFILE_PRIVATE_KEYS` in `$GITHUB_ENV`. Nothing is written to `$HOME`.
+
+That invariant is what removed the companion `cleanup` action, its `clean-runner-state` twin and the ten call
+sites of the two. Each of the three things they cleaned had stopped existing: `global-targets` and
+`runfile-source` (which copied `.run` files into `$HOME/.runfiles/`), `env-file-source` (which wrote a
+secret-supplied `.env` under `$RUNNER_TEMP` and exported `RUNFILE_ENV_FILE_TARGET` at it), and `state.json`,
+which CI no longer writes. A workflow that wants a materialized env file writes it and points `run :env inject`
+at the path — one step in the workflow rather than a capability in the action, and the CLI keeps
+`RUNFILE_ENV_FILE_TARGET` for whoever sets it. Deleting `$HOME/.runfiles` had also turned actively wrong once
+the CLI stopped reading it in CI: on a self-hosted runner it destroyed a directory the run was already ignoring.
+
 ## Preparation targets
 
 A target named `setup` gates every other target in its directory, fingerprinted by its own text, so editing the
-setup re-triggers the requirement. State lives in `state.json` in the platform state directory. There is no
+setup re-triggers the requirement. State lives in `state.json` in the platform state directory — **except in
+CI, where there is none**. A runner is built from scratch and thrown away, so asking whether an earlier `setup`
+happened is asking about a machine that did not exist: `prepare::enforce` returns before reading the file and
+`prepare::record` returns before creating one. It used to be written on every CI run purely for a cleanup step
+to delete afterwards. `RUNFILE_SKIP_PREPARE` is deliberately *not* the same predicate — it turns the gate off
+on a machine whose state is still worth keeping, so a `setup` run under it is still recorded, or unsetting the
+variable would report a setup that plainly ran as never having run. There is no
 settings file: global registrations, path aliases and custom shell paths were all replaced by conventions
 (the machine-wide directory, discovery, shell detection).
 
@@ -770,7 +797,10 @@ tests that assert the mechanism rather than the symptom.
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with
    `HOME`, `USERPROFILE`, `RUNFILE_CONFIG_DIR`, `XDG_*` and `APPDATA` pointed at an empty directory and
-   `CI`, `GITHUB_ACTIONS`, `RUNFILE_SKIP_PREPARE` and `RUNFILE_PRIVATE_KEYS` stripped. The first three
+   `RUNFILE_SKIP_PREPARE`, `RUNFILE_PRIVATE_KEYS` and **every one of the ten variables `ci_detect` looks at**
+   stripped — not just `CI` and `GITHUB_ACTIONS`, because CI mode now decides whether the machine-wide
+   directory is read and whether `state.json` is written, so a stray `BUILDKITE` in someone's shell would
+   quietly turn off the tests that check both and they would pass. The first three
    matter on Windows, where the Known Folder API ignores `HOME` and `APPDATA`; the CLI reads `HOME` before
    asking the platform for exactly this reason.
 4. LSP behaviour is tested by scripting a whole client conversation through the real transport

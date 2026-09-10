@@ -642,6 +642,9 @@ invoke `run` from.
 directory than hide it, `$HOME/runfiles/` and `$HOME/Runfiles/` are read too — but only one of the three may
 hold anything.
 
+**Not in CI.** A runner's home directory is nobody's, so `run` reads none of the three there: what runs is
+what is checked in and reviewable. This is also why nothing has to be cleaned up after a job.
+
 Everything relative — `.env-file`, `.add-path`, `glob`, `read_file`, `{{ RUN.parent }}`, the working directory
 — resolves against **the parent of `runfiles/`**. One anchor, one rule.
 
@@ -658,6 +661,11 @@ error: `setup` has never been run
 
 It re-triggers when `setup.run` itself changes, so a new dependency is not silently missed. `--dry-run` is
 exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
+
+The record lives in `state.json` in the platform state directory. In CI there is none: a runner is built and
+thrown away, so there is no earlier session whose `setup` this one could be relying on — the gate is not
+enforced and the file is not written. `RUNFILE_SKIP_PREPARE=1` is different: it turns the gate off on a machine
+whose state is still worth keeping, so a `setup` run under it is still recorded.
 
 ## Commands
 
