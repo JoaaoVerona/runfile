@@ -65,7 +65,11 @@ fn split_line_prefix(msg: &str) -> (usize, String) {
 ///
 /// `known_targets` is what `run <name>` may refer to; pass an empty slice when
 /// the catalog is unknown, and target checks are skipped rather than guessed.
-pub fn diagnose(src: &str, known_targets: &[String]) -> Vec<Diagnostic> {
+/// `machine_wide` says whether this document sits in the machine-wide
+/// directory, which is the one place `.only-in-directories` means anything.
+/// Without it an editor would accept a property the runner refuses -- the drift
+/// that makes a language server worse than none.
+pub fn diagnose(src: &str, known_targets: &[String], machine_wide: bool) -> Vec<Diagnostic> {
 	let ast = match runfile_lang::parse(src) {
 		Ok(a) => a,
 		Err(e) => {
@@ -81,7 +85,7 @@ pub fn diagnose(src: &str, known_targets: &[String]) -> Vec<Diagnostic> {
 	};
 
 	let mut out = Vec::new();
-	check_properties(&ast.body, false, &mut out, src);
+	check_properties(&ast.body, false, machine_wide, &mut out, src);
 	if !known_targets.is_empty() {
 		check_target_calls(&ast.body, known_targets, &mut out, src);
 	}
@@ -89,7 +93,13 @@ pub fn diagnose(src: &str, known_targets: &[String]) -> Vec<Diagnostic> {
 	out
 }
 
-fn check_properties(block: &runfile_lang::Block, nested: bool, out: &mut Vec<Diagnostic>, src: &str) {
+fn check_properties(
+	block: &runfile_lang::Block,
+	nested: bool,
+	machine_wide: bool,
+	out: &mut Vec<Diagnostic>,
+	src: &str,
+) {
 	for p in &block.properties {
 		let Some(head) = p.path.first() else { continue };
 		let Some(known) = PROPERTIES.iter().find(|p| p.name == head) else {
@@ -107,10 +117,17 @@ fn check_properties(block: &runfile_lang::Block, nested: bool, out: &mut Vec<Dia
 				severity: Severity::Error,
 			});
 		}
+		if head == runfile_discovery::SCOPE && !machine_wide {
+			out.push(Diagnostic {
+				range: whole_line(src, p.span.line),
+				message: format!("`.{head}` scopes the machine-wide directory; this target is part of the project"),
+				severity: Severity::Error,
+			});
+		}
 	}
 	for st in &block.statements {
 		for inner in sub_blocks(st) {
-			check_properties(inner, true, out, src);
+			check_properties(inner, true, machine_wide, out, src);
 		}
 	}
 }
@@ -600,7 +617,7 @@ mod tests {
 	use super::*;
 
 	fn messages(src: &str) -> Vec<String> {
-		diagnose(src, &[]).into_iter().map(|d| d.message).collect()
+		diagnose(src, &[], false).into_iter().map(|d| d.message).collect()
 	}
 
 	#[test]
@@ -609,8 +626,19 @@ mod tests {
 	}
 
 	#[test]
+	fn only_in_directories_is_refused_in_a_project_file_and_accepted_in_a_machine_wide_one() {
+		// An editor that accepts what the runner refuses is worse than none:
+		// the file underlines clean and then fails when somebody runs it.
+		let src = ".only-in-directories = \"sub\"\n$ true\n";
+		let d = diagnose(src, &[], false);
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert!(d[0].message.contains("machine-wide"), "{}", d[0].message);
+		assert!(diagnose(src, &[], true).is_empty(), "the one place it means something");
+	}
+
+	#[test]
 	fn a_syntax_error_is_reported_on_its_own_line() {
-		let d = diagnose("$ echo ok\nlet = 3\n", &[]);
+		let d = diagnose("$ echo ok\nlet = 3\n", &[], false);
 		assert_eq!(d.len(), 1, "{d:?}");
 		assert_eq!(d[0].range.start_line, 1, "zero-based line 1 is the second line");
 	}
@@ -643,33 +671,33 @@ mod tests {
 
 	#[test]
 	fn a_call_to_a_missing_target_is_reported() {
-		let d = diagnose("run build\n", &["deploy".to_string()]);
+		let d = diagnose("run build\n", &["deploy".to_string()], false);
 		assert_eq!(d.len(), 1);
 		assert!(d[0].message.contains("no target named `build`"), "{:?}", d[0]);
 	}
 
 	#[test]
 	fn a_call_to_a_known_target_is_fine() {
-		assert!(diagnose("run build\n", &["build".to_string()]).is_empty());
+		assert!(diagnose("run build\n", &["build".to_string()], false).is_empty());
 	}
 
 	#[test]
 	fn an_interpolated_target_name_is_not_guessed_at() {
 		// It is only known at run time, so flagging it would be a false alarm.
-		assert!(diagnose("run {{ ENV.NS }}:build\n", &["deploy".to_string()]).is_empty());
+		assert!(diagnose("run {{ ENV.NS }}:build\n", &["deploy".to_string()], false).is_empty());
 	}
 
 	#[test]
 	fn target_calls_are_checked_inside_blocks_too() {
 		let src = "for x in [\"a\"]\n\trun nope\nend\n";
-		let d = diagnose(src, &["yes".to_string()]);
+		let d = diagnose(src, &["yes".to_string()], false);
 		assert_eq!(d.len(), 1, "{d:?}");
 		assert_eq!(d[0].range.start_line, 1);
 	}
 
 	#[test]
 	fn without_a_catalog_target_calls_are_left_alone() {
-		assert!(diagnose("run anything\n", &[]).is_empty());
+		assert!(diagnose("run anything\n", &[], false).is_empty());
 	}
 
 	#[test]

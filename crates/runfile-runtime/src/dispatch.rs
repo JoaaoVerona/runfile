@@ -208,7 +208,14 @@ impl<'a> Host<'a> {
 		// to every target in the directory, so they are evaluated first into the
 		// same scope. Outermost first, so a nested directory's settings layer
 		// over the one above it.
-		let mut shared_props = Props::default();
+		let mut shared_props = Props {
+			// Where the file was found, carried in so the one property that
+			// depends on it can say no. It survives every `extend`, which
+			// clones, so a `_shared.run` in the machine-wide directory may set
+			// it too.
+			machine_wide: target.origin == runfile_discovery::Origin::Global,
+			..Props::default()
+		};
 		for s in &shared {
 			shared_props = shared_props.extend(&s.body, &mut scope, false)?;
 			crate::run::run_block_bindings(&s.body, &mut scope)?;

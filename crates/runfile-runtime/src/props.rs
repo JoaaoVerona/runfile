@@ -31,7 +31,10 @@ pub struct Props {
 	/// Start the commands and do not wait; see `Spawn::detach`.
 	pub detach: bool,
 	pub aliases: Vec<String>,
-	pub only_in_directories: Vec<String>,
+	/// Whether this target came from the machine-wide directory. Not a
+	/// property: it is a fact about where the file was found, and the one
+	/// thing that makes `.only-in-directories` mean anything.
+	pub machine_wide: bool,
 }
 
 /// Properties a nested block may set. Everything else is header-only, because
@@ -111,8 +114,8 @@ pub const PROPERTIES: &[KnownProperty] = &[
 	KnownProperty {
 		name: "only-in-directories",
 		block_scoped: false,
-		doc: "For the machine-wide directory: offer these targets only inside these directories.",
-		example: ".only-in-directories = \"~/work/acme\"",
+		doc: "For the machine-wide directory: offer this target only inside these directories.",
+		example: ".only-in-directories = [\"~/work/acme\", \"~/work/zed\"]",
 	},
 	KnownProperty {
 		name: "parallel",
@@ -148,6 +151,8 @@ pub enum PropError {
 	NotBlockScoped { name: String, line: usize },
 	#[error("line {line}: `.{name}` needs a value")]
 	NeedsValue { name: String, line: usize },
+	#[error("line {line}: `.{name}` scopes the machine-wide directory; this target is part of the project")]
+	NotMachineWide { name: String, line: usize },
 	#[error(transparent)]
 	Eval(#[from] EvalError),
 }
@@ -224,7 +229,19 @@ impl Props {
 			"add-path" => push_all(&mut self.add_paths, value(p, sc)?),
 			"watch" => push_all(&mut self.watch, value(p, sc)?),
 			"alias" => push_all(&mut self.aliases, value(p, sc)?),
-			"only-in-directories" => push_all(&mut self.only_in_directories, value(p, sc)?),
+			// Read by discovery before anything runs, so there is nothing left
+			// to do with it here -- but a project file setting it does nothing
+			// at all, and saying so is the whole point: a scope that silently
+			// did not apply is a target offered where it was meant to be
+			// hidden, found out by someone else.
+			"only-in-directories" => {
+				if !self.machine_wide {
+					return Err(PropError::NotMachineWide {
+						name: p.path.join("."),
+						line,
+					});
+				}
+			}
 			_ => {
 				return Err(PropError::Unknown {
 					name: p.path.join("."),

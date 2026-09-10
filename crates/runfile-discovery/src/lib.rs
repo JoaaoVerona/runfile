@@ -82,6 +82,11 @@ pub enum DiscoverError {
 		 keep one of them and remove or empty the other"
 	)]
 	AmbiguousGlobal { a: PathBuf, b: PathBuf },
+	#[error(
+		"{path}: line {line}: `.{SCOPE}` has to be a literal string, or a list of them\n\
+		 it is read before any target is chosen, so there is nothing to interpolate from"
+	)]
+	UnreadableScope { path: PathBuf, line: usize },
 }
 
 /// Read the declaration-region values of a property from a `_shared.run`.
@@ -109,12 +114,89 @@ fn shared_strings(path: &Path, name: &str) -> Vec<String> {
 		.collect()
 }
 
+/// The property that scopes the machine-wide directory.
+pub const SCOPE: &str = "only-in-directories";
+
+/// Where a scope is being judged from.
+///
+/// `home` is what a relative entry anchors to -- every level anchors to the
+/// same place, so `work/acme` means one directory however deep the file naming
+/// it sits. `cwd` is the directory that has to be covered.
+struct Reach<'a> {
+	home: &'a Path,
+	cwd: &'a Path,
+}
+
+/// The directories a machine-wide file admits, or an error when it names them
+/// in a form that cannot be read here.
+///
+/// This runs before any target is chosen, so there are no arguments to
+/// substitute and only literals can be read. A value that is not one is
+/// **refused** rather than passed over: read as no scope at all it fails
+/// *open*, leaving the directory active everywhere -- the opposite of what was
+/// asked for, and silent. That is what a list literal used to do.
+///
+/// A file that does not parse is left alone. It is broken whatever it says and
+/// will say so when it runs, and a machine-wide directory holding one must not
+/// stop every `run` on the machine.
+fn scope_of(path: &Path) -> Result<Vec<String>, DiscoverError> {
+	let Ok(src) = std::fs::read_to_string(path) else {
+		return Ok(Vec::new());
+	};
+	// The property has to appear literally to be declared, so the text is an
+	// exact gate on whether the file is worth parsing at all: a false positive
+	// costs one parse, and a false negative cannot happen.
+	if !src.contains(SCOPE) {
+		return Ok(Vec::new());
+	}
+	let Ok(ast) = runfile_lang::parse(&src) else {
+		return Ok(Vec::new());
+	};
+	let mut out = Vec::new();
+	for p in ast
+		.body
+		.properties
+		.iter()
+		.filter(|p| p.path.first().is_some_and(|h| h == SCOPE))
+	{
+		let unreadable = || DiscoverError::UnreadableScope {
+			path: path.to_path_buf(),
+			line: p.span.line,
+		};
+		// One entry or several: repeated lines already append, and a list says
+		// the same thing on one line the way every other list-valued property
+		// accepts one.
+		let items: Vec<&runfile_lang::Expr> = match &p.value {
+			Some(runfile_lang::Expr::List(items, _)) => items.iter().collect(),
+			Some(e) => vec![e],
+			None => return Err(unreadable()),
+		};
+		for e in items {
+			out.push(literal_string(e).ok_or_else(unreadable)?);
+		}
+	}
+	Ok(out)
+}
+
+/// A string with nothing interpolated into it. The whole value has to be one
+/// literal: `"{{ ENV.X }}/work"` names a directory this cannot know.
+fn literal_string(e: &runfile_lang::Expr) -> Option<String> {
+	match e {
+		runfile_lang::Expr::Str(parts, _) => match parts.as_slice() {
+			[] => Some(String::new()),
+			[runfile_lang::InterpPart::Literal(t)] => Some(t.clone()),
+			_ => None,
+		},
+		_ => None,
+	}
+}
+
 /// Whether a directory-scoped source applies where we are standing.
 ///
-/// Entries anchor to the source's own directory, absolute paths pass through,
-/// both sides canonicalize with a raw-path fallback, and the comparison is on
-/// path components so a name that merely shares a prefix does not match.
-/// `~` expands, which the old field silently did not.
+/// Entries anchor to the home directory, absolute paths pass through, both
+/// sides canonicalize with a raw-path fallback, and the comparison is on path
+/// components so a name that merely shares a prefix does not match. `~`
+/// expands, which the old field silently did not.
 fn covers_cwd(anchor: &Path, dirs: &[String], cwd: &Path) -> bool {
 	if dirs.is_empty() {
 		return true;
@@ -132,6 +214,24 @@ fn covers_cwd(anchor: &Path, dirs: &[String], cwd: &Path) -> bool {
 		};
 		let allowed = std::fs::canonicalize(&allowed).unwrap_or(allowed);
 		here.starts_with(&allowed)
+	})
+}
+
+/// Whether a file sits inside the machine-wide directory, judged from its path
+/// alone.
+///
+/// The path is all an editor has to go on -- it holds one document, not a
+/// catalog -- and it is enough, because the three names are fixed: a file is
+/// machine-wide exactly when it is under one of them in this user's home. It
+/// is what lets a language server refuse `.only-in-directories` in the same
+/// places the runner does, rather than accepting what the runner will not.
+pub fn is_machine_wide(path: &Path) -> bool {
+	let Some(home) = home_dir() else { return false };
+	let here = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+	GLOBAL_NAMES.iter().any(|n| {
+		let g = home.join(n);
+		let g = std::fs::canonicalize(&g).unwrap_or(g);
+		here.starts_with(&g)
 	})
 }
 
@@ -154,7 +254,7 @@ pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverErr
 	if let Some(dir) = &local {
 		let anchor = dir.parent().unwrap_or(dir).to_path_buf();
 		cat.root = anchor.clone();
-		collect(dir, &anchor, "", Origin::Local, &mut cat)?;
+		collect(dir, &anchor, "", Origin::Local, None, &mut cat)?;
 		// Sibling projects: a depth-1 `runfiles/` is a namespace, no declaration.
 		scan_subprojects(&anchor, 1, &mut cat)?;
 	}
@@ -164,12 +264,12 @@ pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverErr
 		// directory when the run started at or below the home directory.
 		// Collecting it twice would report every target as a duplicate.
 		if let Some(g) = global_dir(h)?.filter(|g| local.as_ref() != Some(g)) {
-			// A machine-wide directory can scope itself: registered everywhere,
-			// active only inside the directories it names.
-			let scope = shared_strings(&g.join(SHARED), "only-in-directories");
-			if covers_cwd(h, &scope, from) {
-				collect(&g, h, "", Origin::Global, &mut cat)?;
-			}
+			// A machine-wide target can scope itself: registered everywhere,
+			// active only inside the directories it names. Judged per file as
+			// the tree is walked, so a directory, a namespace inside it and a
+			// single target each get to say where they belong.
+			let here = Reach { home: h, cwd: from };
+			collect(&g, h, "", Origin::Global, Some(&here), &mut cat)?;
 		}
 	}
 
@@ -254,7 +354,7 @@ fn scan_subprojects(root: &Path, depth: usize, cat: &mut Catalog) -> Result<(), 
 		}
 		let candidate = p.join("runfiles");
 		if candidate.is_dir() {
-			collect(&candidate, &p, name, Origin::Included, cat)?;
+			collect(&candidate, &p, name, Origin::Included, None, cat)?;
 		}
 		scan_subprojects(&p, depth + 1, cat)?;
 	}
@@ -263,8 +363,22 @@ fn scan_subprojects(root: &Path, depth: usize, cat: &mut Catalog) -> Result<(), 
 
 /// Every `.run` under `dir` becomes a target named by its path, with `/`
 /// mapped to `:`.
-fn collect(dir: &Path, anchor: &Path, prefix: &str, origin: Origin, cat: &mut Catalog) -> Result<(), DiscoverError> {
-	walk_runs(dir, dir, anchor, prefix, origin, cat)
+///
+/// `reach` is `Some` only for the machine-wide directory, which is the one
+/// tree whose files may scope themselves. A project's targets are visible to
+/// anyone reading the repository, so hiding some of them by working directory
+/// would recreate the very invisibility the machine-wide rule exists to fix --
+/// and it is why a project file setting the property is refused outright
+/// rather than quietly doing nothing.
+fn collect(
+	dir: &Path,
+	anchor: &Path,
+	prefix: &str,
+	origin: Origin,
+	reach: Option<&Reach<'_>>,
+	cat: &mut Catalog,
+) -> Result<(), DiscoverError> {
+	walk_runs(dir, dir, anchor, prefix, origin, reach, cat)
 }
 
 /// The namespace a directory inside a `runfiles/` tree contributes to.
@@ -284,8 +398,19 @@ fn walk_runs(
 	anchor: &Path,
 	prefix: &str,
 	origin: Origin,
+	reach: Option<&Reach<'_>>,
 	cat: &mut Catalog,
 ) -> Result<(), DiscoverError> {
+	// A directory's `_shared.run` scopes everything below it, so a subtree we
+	// are standing outside of is pruned whole -- one file read rather than one
+	// per target, which is the common case for a scoped machine-wide
+	// directory.
+	if let Some(r) = reach
+		&& !covers_cwd(r.home, &scope_of(&dir.join(SHARED))?, r.cwd)
+	{
+		return Ok(());
+	}
+
 	// Every directory in the tree can carry settings, not just the top one:
 	// `runfiles/api/_shared.run` applies to `api:*`. Registering only the root
 	// meant a nested one was read by nothing at all.
@@ -296,13 +421,22 @@ fn walk_runs(
 	entries.sort();
 	for p in entries {
 		if p.is_dir() {
-			walk_runs(root, &p, anchor, prefix, origin, cat)?;
+			walk_runs(root, &p, anchor, prefix, origin, reach, cat)?;
 			continue;
 		}
 		if p.extension().is_none_or(|x| x != "run") {
 			continue;
 		}
 		if p.file_name().is_some_and(|n| n == SHARED) {
+			continue;
+		}
+		// A target narrows further within the directory that admitted it. Every
+		// level that names directories has to cover us, so a file can only ever
+		// narrow -- naming a directory its `_shared.run` excludes does not let
+		// it back out.
+		if let Some(r) = reach
+			&& !covers_cwd(r.home, &scope_of(&p)?, r.cwd)
+		{
 			continue;
 		}
 		let rel = p.strip_prefix(root).unwrap_or(&p).with_extension("");

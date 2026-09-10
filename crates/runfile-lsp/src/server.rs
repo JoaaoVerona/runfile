@@ -137,8 +137,10 @@ impl Server {
 
 	fn diagnostics_for(&self, uri: &str) -> Value {
 		let src = self.docs.get(uri).map(String::as_str).unwrap_or_default();
-		let targets = uri_to_path(uri).map(|p| target_names(&p)).unwrap_or_default();
-		let mut all = analysis::diagnose(src, &targets);
+		let path = uri_to_path(uri);
+		let targets = path.as_deref().map(target_names).unwrap_or_default();
+		let machine_wide = path.as_deref().is_some_and(runfile_discovery::is_machine_wide);
+		let mut all = analysis::diagnose(src, &targets, machine_wide);
 		// Only when the file itself is sound: shellcheck on a document that does
 		// not parse would report against text the runner never assembles.
 		if all.is_empty() {

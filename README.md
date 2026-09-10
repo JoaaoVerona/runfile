@@ -607,7 +607,7 @@ Set at the top of the file, or inside a block where marked.
 | `.watch` | Re-run when matching files change. A `!` prefix excludes. | |
 | `.alias` | Another name for this target. | |
 | `.detach` | Start the commands and do not wait. | |
-| `.only-in-directories` | For the machine-wide directory: only offer these targets inside these directories. | |
+| `.only-in-directories` | Machine-wide targets only: offer this one inside these directories. Appends. | |
 
 `.env-file` and `.add-path` **append**, so a block adds to what it inherited rather than replacing it, and a
 block's file can be named by something the body worked out — which a header property cannot do, because it
@@ -688,6 +688,23 @@ invoke `run` from.
 directory than hide it, `$HOME/runfiles/` and `$HOME/Runfiles/` are read too — but only one of the three may
 hold anything. `run :list` puts them first, under `global:`: they are the part of the listing you cannot see
 by looking at the project.
+
+A machine-wide target can say where it belongs, so one directory can hold work for several places at once:
+
+```sh
+# ~/.runfiles/deploy.run
+# Ship the current branch
+
+.only-in-directories = ["~/work/acme", "~/work/zed"]
+
+$ ./scripts/ship
+```
+
+It is offered inside those directories and nowhere else. A `_shared.run` says the same thing for every target
+below it, and each level narrows the one above — a target cannot name its way back out of a directory that
+excluded it. Relative entries are relative to your home. It is the one property a project's own files may not
+set: their targets are visible to anyone reading the repository, so hiding some by working directory would
+bring back the very invisibility this exists to fix.
 
 **Not in CI.** A runner's home directory is nobody's, so `run` reads none of the three there: what runs is
 what is checked in and reviewable. This is also why nothing has to be cleaned up after a job.

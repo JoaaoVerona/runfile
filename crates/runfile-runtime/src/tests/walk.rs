@@ -231,3 +231,36 @@ fn a_scored_dispatch_passes_its_arguments_and_splices_its_trace() {
 		"the dependency's trace comes first: {trace}"
 	);
 }
+
+// ---- `.only-in-directories`, which only the machine-wide directory may set
+
+#[test]
+fn only_in_directories_is_refused_in_a_project_file() {
+	// It was stored in `Props` and read by nothing, so a project file naming
+	// directories was accepted, offered by completion, and did nothing at all.
+	// A scope that silently did not apply is a target offered where it was
+	// meant to be hidden, found out by somebody else.
+	let d = project(&[("runfiles/deploy.run", ".only-in-directories = \"sub\"\n$ true\n")]);
+	let e = host_run(&d, "deploy").expect_err("a project target has no such question to answer");
+	assert!(e.to_string().contains("machine-wide"), "{e}");
+}
+
+#[test]
+fn only_in_directories_is_accepted_in_a_machine_wide_file() {
+	// Discovery has already acted on it by the time the target runs, so the
+	// runtime's only job is not to object.
+	let home = tempfile::TempDir::new().unwrap();
+	std::fs::create_dir_all(home.path().join(".runfiles")).unwrap();
+	std::fs::create_dir_all(home.path().join("work")).unwrap();
+	std::fs::write(
+		home.path().join(".runfiles/deploy.run"),
+		".only-in-directories = \"work\"\n$ true\n",
+	)
+	.unwrap();
+
+	let cat = runfile_discovery::discover(&home.path().join("work"), Some(home.path())).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	h.run("deploy", &[])
+		.expect("the one place the property means something");
+}

@@ -378,9 +378,24 @@ second time as the global. This replaced `includes` entirely.
   A real file name always wins over an alias, and two targets claiming one alias is an error naming both.
 - **An alias carries its target's namespace.** `web/runfiles/setup.run` declaring `deps` answers to `web:deps`,
   never a bare `deps` — a subproject must not claim a name in the root.
-- `.only-in-directories` in a global `_shared.run` scopes the machine-wide directory: registered everywhere,
-  active only inside the paths it names. Compared on path components, so `work/acme` does not admit
-  `work/acme-other`. `~` expands.
+- **`.only-in-directories` scopes a machine-wide target, per file.** Registered everywhere, active only
+  inside the paths it names. Compared on path components, so `work/acme` does not admit `work/acme-other`;
+  `~` expands, and a relative entry anchors to **home** at every level, so one spelling means one directory
+  however deep the file naming it sits. It was read from `$HOME/.runfiles/_shared.run` and nowhere else,
+  while `Props.only_in_directories` sat filled and read by nothing -- so a *target* file naming its
+  directories was accepted, offered by completion, and did nothing, and so was a nested `_shared.run`. It is
+  judged as the tree is walked now: every level that names directories has to cover the working directory, so
+  a `_shared.run` scopes its whole subtree and a target **narrows** within it and can never name its way back
+  out. A subtree that excludes us is pruned whole, which keeps the common case to one file read rather than
+  one parse per target; elsewhere the property has to appear in the text before a file is parsed at all. A
+  **list literal used to read as no scope**, which failed *open* -- the directory became active everywhere,
+  the opposite of what was written -- so a value that cannot be read this early is now
+  `DiscoverError::UnreadableScope` rather than silence. A file that does not *parse* is still left alone: it
+  is broken whatever it says, and refusing would take every other target on the machine with it. **A project
+  file may not set it at all** (`PropError::NotMachineWide`): its targets are visible to anyone reading the
+  repository, so hiding some by working directory recreates the invisibility the machine-wide rule exists to
+  fix. `Props` carries `machine_wide` -- where the file was found, not a property -- because that is the one
+  fact that makes the property mean anything.
 
 ### runfile-runtime
 
@@ -717,7 +732,7 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 
 ## Properties
 
-Header-only: `alias`, `watch`, `only-in-directories`, `detach`.
+Header-only: `alias`, `watch`, `only-in-directories` (machine-wide files only), `detach`.
 Block-scoped (may also appear inside `if` / `for` / `match`): `shell`, `parallel`, `ignore-errors`, `logging`,
 `workdir`, `env` (addressed by sub-key, `.env.NAME = "value"`), `env-file`, `add-path`.
 

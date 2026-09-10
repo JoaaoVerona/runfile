@@ -437,3 +437,176 @@ fn a_binding_in_a_shared_file_is_reported_in_the_chain_outermost_first() {
 	assert!(chain[0].ends_with("runfiles/_shared.run"), "outermost first: {chain:?}");
 	assert!(chain[1].ends_with("runfiles/api/_shared.run"), "{chain:?}");
 }
+
+// ---- scoping the machine-wide directory
+
+/// A home with one scopable machine-wide target, and two projects to stand in.
+/// Returns the home, the directory the scope names, and one it does not.
+fn scopable() -> (TempDir, PathBuf, PathBuf) {
+	let home = TempDir::new().unwrap();
+	std::fs::create_dir_all(home.path().join(".runfiles")).unwrap();
+	let inside = home.path().join("work/acme");
+	let outside = home.path().join("work/other");
+	for d in [&inside, &outside] {
+		std::fs::create_dir_all(d.join("runfiles")).unwrap();
+		std::fs::write(d.join("runfiles/build.run"), "$ true\n").unwrap();
+	}
+	(home, inside, outside)
+}
+
+#[test]
+fn a_machine_wide_target_scopes_itself() {
+	// The property is a target's to set, not only a directory's. It parsed and
+	// was stored in `Props` and then read by nothing at all, so a target file
+	// naming its directories was offered everywhere regardless.
+	let (home, inside, outside) = scopable();
+	std::fs::write(
+		home.path().join(".runfiles/deploy.run"),
+		".only-in-directories = \"work/acme\"\n$ true\n",
+	)
+	.unwrap();
+	std::fs::write(home.path().join(".runfiles/other.run"), "$ true\n").unwrap();
+
+	let here = discover(&inside, Some(home.path())).unwrap();
+	assert!(here.resolve("deploy").is_some(), "active inside the directory it names");
+	let there = discover(&outside, Some(home.path())).unwrap();
+	assert!(there.resolve("deploy").is_none(), "registered, but not active here");
+	assert!(
+		there.resolve("other").is_some(),
+		"one target's scope is not the whole directory's"
+	);
+}
+
+#[test]
+fn a_nested_machine_wide_shared_scopes_its_namespace() {
+	// Only `$HOME/.runfiles/_shared.run` was ever read, so a namespace inside
+	// the machine-wide directory could not scope itself at all.
+	let (home, inside, outside) = scopable();
+	std::fs::create_dir_all(home.path().join(".runfiles/acme")).unwrap();
+	std::fs::write(
+		home.path().join(".runfiles/acme").join(SHARED),
+		".only-in-directories = \"work/acme\"\n",
+	)
+	.unwrap();
+	std::fs::write(home.path().join(".runfiles/acme/deploy.run"), "$ true\n").unwrap();
+
+	assert!(
+		discover(&inside, Some(home.path()))
+			.unwrap()
+			.resolve("acme:deploy")
+			.is_some()
+	);
+	assert!(
+		discover(&outside, Some(home.path()))
+			.unwrap()
+			.resolve("acme:deploy")
+			.is_none()
+	);
+}
+
+#[test]
+fn a_target_can_narrow_its_directory_but_never_widen_past_it() {
+	// Every level that names directories has to cover us. Otherwise a file
+	// could name its way back out of the `_shared.run` that excluded it, which
+	// is a hole rather than a feature.
+	let (home, inside, outside) = scopable();
+	std::fs::write(
+		home.path().join(".runfiles").join(SHARED),
+		".only-in-directories = \"work/acme\"\n",
+	)
+	.unwrap();
+	std::fs::write(
+		home.path().join(".runfiles/deploy.run"),
+		".only-in-directories = \"work/other\"\n$ true\n",
+	)
+	.unwrap();
+
+	assert!(
+		discover(&outside, Some(home.path()))
+			.unwrap()
+			.resolve("deploy")
+			.is_none(),
+		"the directory above it does not admit `work/other`"
+	);
+	assert!(
+		discover(&inside, Some(home.path()))
+			.unwrap()
+			.resolve("deploy")
+			.is_none(),
+		"and its own scope does not admit `work/acme`"
+	);
+}
+
+#[test]
+fn a_list_of_directories_is_read_the_same_as_repeated_lines() {
+	// A list read as *no scope at all* failed open: the machine-wide directory
+	// became active everywhere, which is the opposite of what was written.
+	let (home, inside, outside) = scopable();
+	std::fs::write(
+		home.path().join(".runfiles").join(SHARED),
+		".only-in-directories = [\"work/acme\", \"work/zed\"]\n",
+	)
+	.unwrap();
+	std::fs::write(home.path().join(".runfiles/deploy.run"), "$ true\n").unwrap();
+
+	assert!(
+		discover(&inside, Some(home.path()))
+			.unwrap()
+			.resolve("deploy")
+			.is_some()
+	);
+	assert!(
+		discover(&outside, Some(home.path()))
+			.unwrap()
+			.resolve("deploy")
+			.is_none(),
+		"a list names directories; it does not name none of them"
+	);
+}
+
+#[test]
+fn a_scope_that_cannot_be_read_is_refused_rather_than_ignored() {
+	// Nothing is interpolated this early, and passing the value over would
+	// leave the directory active everywhere without saying so.
+	let (home, _inside, outside) = scopable();
+	std::fs::write(
+		home.path().join(".runfiles").join(SHARED),
+		".only-in-directories = \"{{ ENV.WORK }}/acme\"\n",
+	)
+	.unwrap();
+	std::fs::write(home.path().join(".runfiles/deploy.run"), "$ true\n").unwrap();
+
+	let e = discover(&outside, Some(home.path())).unwrap_err();
+	assert!(e.to_string().contains("literal string"), "{e}");
+}
+
+#[test]
+fn a_machine_wide_file_that_does_not_parse_does_not_stop_every_run() {
+	// It is broken whatever its scope says, and it will say so when it runs.
+	// Refusing here would take every other target on the machine with it.
+	let (home, _inside, outside) = scopable();
+	std::fs::write(
+		home.path().join(".runfiles/deploy.run"),
+		".only-in-directories = \"work/acme\"\nif\n",
+	)
+	.unwrap();
+	assert!(discover(&outside, Some(home.path())).is_ok());
+}
+
+#[test]
+fn a_project_file_is_never_scoped_by_where_it_is_run_from() {
+	// A project's targets are visible to anyone reading the repository, so
+	// hiding some by working directory would recreate the invisibility the
+	// machine-wide rule exists to fix. Discovery registers it; the runtime is
+	// what refuses the property.
+	let d = TempDir::new().unwrap();
+	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
+	std::fs::create_dir_all(d.path().join("sub")).unwrap();
+	std::fs::write(
+		d.path().join("runfiles/deploy.run"),
+		".only-in-directories = \"sub\"\n$ true\n",
+	)
+	.unwrap();
+	let c = discover(d.path(), None).unwrap();
+	assert!(c.resolve("deploy").is_some(), "not discovery's question to ask");
+}
