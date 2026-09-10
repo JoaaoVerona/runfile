@@ -250,11 +250,32 @@ pub fn home_dir() -> Option<PathBuf> {
 pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverError> {
 	let mut cat = Catalog::default();
 	let local = find_upward(from);
+	let global = match home {
+		Some(h) => global_dir(h)?,
+		None => None,
+	};
+	// Scoping belongs to the machine-wide directory wherever it is reached
+	// from, so this is worked out once and handed to whichever walk collects
+	// it.
+	let reach = home.map(|h| Reach { home: h, cwd: from });
 
 	if let Some(dir) = &local {
 		let anchor = dir.parent().unwrap_or(dir).to_path_buf();
 		cat.root = anchor.clone();
-		collect(dir, &anchor, "", Origin::Local, None, &mut cat)?;
+		// `$HOME/runfiles` reached by the upward walk *is* the machine-wide
+		// directory -- the names are what make one -- so its files still get
+		// to say where they belong. Collected as `Local` because it is also
+		// the nearest one, which is a different question and the one `Origin`
+		// answers.
+		let mine = global.as_ref() == Some(dir);
+		collect(
+			dir,
+			&anchor,
+			"",
+			Origin::Local,
+			reach.as_ref().filter(|_| mine),
+			&mut cat,
+		)?;
 		// Sibling projects: a depth-1 `runfiles/` is a namespace, no declaration.
 		scan_subprojects(&anchor, 1, &mut cat)?;
 	}
@@ -263,13 +284,12 @@ pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverErr
 		// `$HOME/runfiles` is a legal spelling, so it can also be the *local*
 		// directory when the run started at or below the home directory.
 		// Collecting it twice would report every target as a duplicate.
-		if let Some(g) = global_dir(h)?.filter(|g| local.as_ref() != Some(g)) {
+		if let Some(g) = global.filter(|g| local.as_ref() != Some(g)) {
 			// A machine-wide target can scope itself: registered everywhere,
 			// active only inside the directories it names. Judged per file as
 			// the tree is walked, so a directory, a namespace inside it and a
 			// single target each get to say where they belong.
-			let here = Reach { home: h, cwd: from };
-			collect(&g, h, "", Origin::Global, Some(&here), &mut cat)?;
+			collect(&g, h, "", Origin::Global, reach.as_ref(), &mut cat)?;
 		}
 	}
 

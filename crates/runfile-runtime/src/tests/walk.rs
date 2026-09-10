@@ -258,9 +258,33 @@ fn only_in_directories_is_accepted_in_a_machine_wide_file() {
 	)
 	.unwrap();
 
-	let cat = runfile_discovery::discover(&home.path().join("work"), Some(home.path())).unwrap();
-	let mut h = crate::dispatch::Host::new(&cat);
-	h.assume_yes = true;
-	h.run("deploy", &[])
-		.expect("the one place the property means something");
+	super::with_home(home.path(), || {
+		let cat = runfile_discovery::discover(&home.path().join("work"), Some(home.path())).unwrap();
+		let mut h = crate::dispatch::Host::new(&cat);
+		h.assume_yes = true;
+		h.run("deploy", &[])
+			.expect("the one place the property means something");
+	});
+}
+
+#[test]
+fn a_machine_wide_file_may_scope_itself_even_when_it_is_the_local_directory() {
+	// The runtime asked `Origin`, which answers how discovery *reached* the
+	// file, not where it lives. `$HOME/runfiles` is collected as `Local` when
+	// the run started at or below the home directory, so every target in the
+	// machine-wide directory refused its own scope with "this target is part of
+	// the project". It asks the path now -- the same question the language
+	// server asks, so the two cannot answer differently.
+	let home = tempfile::TempDir::new().unwrap();
+	let g = home.path().join("runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), ".only-in-directories = \".\"\n$ true\n").unwrap();
+
+	super::with_home(home.path(), || {
+		let cat = runfile_discovery::discover(home.path(), Some(home.path())).unwrap();
+		let mut h = crate::dispatch::Host::new(&cat);
+		h.assume_yes = true;
+		h.run("deploy", &[])
+			.expect("the machine-wide directory may scope itself wherever it was reached from");
+	});
 }

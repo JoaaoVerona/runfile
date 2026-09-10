@@ -84,3 +84,26 @@ pub fn host_run(d: &tempfile::TempDir, target: &str) -> Result<Vec<String>, crat
 	let t = h.trace.lock().expect("trace").clone();
 	Ok(t)
 }
+
+/// Run `f` with `HOME` pointed at `home`, restoring it afterwards.
+///
+/// `discovery::is_machine_wide` reads the environment, and tests share one
+/// process and run on several threads -- so the swap is serialized and the
+/// restore happens on the way out however `f` ended.
+pub fn with_home<T>(home: &std::path::Path, f: impl FnOnce() -> T) -> T {
+	static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+	let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+	let prev = std::env::var_os("HOME");
+	// SAFETY: the lock makes this the only thread touching HOME, and every
+	// reader of it in this crate runs inside `f`.
+	unsafe { std::env::set_var("HOME", home) };
+	let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+	match prev {
+		Some(v) => unsafe { std::env::set_var("HOME", v) },
+		None => unsafe { std::env::remove_var("HOME") },
+	}
+	match out {
+		Ok(v) => v,
+		Err(p) => std::panic::resume_unwind(p),
+	}
+}

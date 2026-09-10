@@ -209,11 +209,20 @@ impl<'a> Host<'a> {
 		// same scope. Outermost first, so a nested directory's settings layer
 		// over the one above it.
 		let mut shared_props = Props {
-			// Where the file was found, carried in so the one property that
+			// Where the file *lives*, carried in so the one property that
 			// depends on it can say no. It survives every `extend`, which
 			// clones, so a `_shared.run` in the machine-wide directory may set
 			// it too.
-			machine_wide: target.origin == runfile_discovery::Origin::Global,
+			//
+			// Asked of the path rather than of `Origin`, which answers a
+			// different question -- how discovery *reached* the file. The two
+			// part company whenever the machine-wide directory is also the
+			// nearest one: `$HOME/runfiles` found by the upward walk is
+			// collected once, as `Local`, so standing in `$HOME` made every
+			// machine-wide target refuse its own scope. It is also the
+			// function the language server asks, and one question with two
+			// answers is how an editor and the runner come to disagree.
+			machine_wide: runfile_discovery::is_machine_wide(&target.path),
 			..Props::default()
 		};
 		for s in &shared {

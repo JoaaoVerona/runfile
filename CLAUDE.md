@@ -440,7 +440,15 @@ second time as the global. This replaced `includes` entirely.
   file may not set it at all** (`PropError::NotMachineWide`): its targets are visible to anyone reading the
   repository, so hiding some by working directory recreates the invisibility the machine-wide rule exists to
   fix. `Props` carries `machine_wide` -- where the file was found, not a property -- because that is the one
-  fact that makes the property mean anything.
+  fact that makes the property mean anything, and it is `discovery::is_machine_wide` that answers, **not
+  `Origin`**. The two ask different questions: `Origin` says how discovery *reached* a file, and
+  `$HOME/runfiles` found by the upward walk is reached as `Local`, so standing at or below the home directory
+  made every machine-wide target refuse its own scope with *"this target is part of the project"*. It is also
+  the function the language server asks, and one question with two answers is how an editor and the runner
+  come to disagree. For the same reason the scope is now applied to that directory **whichever walk found
+  it**: the three names are what make a directory machine-wide, so a file in one gets to say where it belongs
+  even while it is also the nearest `runfiles/`. Being reached as `Local` still decides everything else --
+  `:list` grouping, and what `:format` and `:generate` leave out without `--include-global`.
 
 ### runfile-runtime
 

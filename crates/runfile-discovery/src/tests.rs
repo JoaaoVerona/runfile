@@ -610,3 +610,31 @@ fn a_project_file_is_never_scoped_by_where_it_is_run_from() {
 	let c = discover(d.path(), None).unwrap();
 	assert!(c.resolve("deploy").is_some(), "not discovery's question to ask");
 }
+
+#[test]
+fn the_machine_wide_directory_scopes_itself_when_it_is_also_the_local_one() {
+	// `$HOME/runfiles` reached by the upward walk is still the machine-wide
+	// directory -- the names are what make one. It was collected with no scope
+	// at all, so standing in `$HOME` offered every target whatever it named.
+	let home = TempDir::new().unwrap();
+	let g = home.path().join("runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("plain.run"), "$ true\n").unwrap();
+	std::fs::write(g.join("scoped.run"), ".only-in-directories = \"work/acme\"\n$ true\n").unwrap();
+	let inside = home.path().join("work/acme");
+	std::fs::create_dir_all(&inside).unwrap();
+
+	let here = discover(home.path(), Some(home.path())).unwrap();
+	assert!(here.resolve("plain").is_some(), "an unscoped one is always offered");
+	assert!(
+		here.resolve("scoped").is_none(),
+		"`work/acme` is not `$HOME`, whichever walk found the directory"
+	);
+	assert!(
+		discover(&inside, Some(home.path()))
+			.unwrap()
+			.resolve("scoped")
+			.is_some(),
+		"and it is offered where it says"
+	);
+}
