@@ -1263,7 +1263,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "runfile-cli"
-version = "1.1.6"
+version = "1.2.0"
 dependencies = [
  "clap",
  "globset",
@@ -1285,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "runfile-crypto"
-version = "1.1.6"
+version = "1.2.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "runfile-discovery"
-version = "1.1.6"
+version = "1.2.0"
 dependencies = [
  "runfile-lang",
  "tempfile",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "runfile-env"
-version = "1.1.6"
+version = "1.2.0"
 dependencies = [
  "runfile-crypto",
  "tempfile",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "runfile-lang"
-version = "1.1.6"
+version = "1.2.0"
 dependencies = [
  "base64",
  "globset",
@@ -1332,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "runfile-lsp"
-version = "1.1.6"
+version = "1.2.0"
 dependencies = [
  "runfile-discovery",
  "runfile-lang",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "runfile-runtime"
-version = "1.1.6"
+version = "1.2.0"
 dependencies = [
  "libc",
  "runfile-discovery",
@@ -1357,7 +1357,7 @@ dependencies = [
 
 [[package]]
 name = "runfile-state"
-version = "1.1.6"
+version = "1.2.0"
 dependencies = [
  "apple-native-keyring-store",
  "dirs",
