@@ -181,20 +181,39 @@ impl Dispatch for NoDispatch {
 }
 
 /// One unit of concurrent work, fully rendered so a thread needs no scope.
+///
+/// Every property a branch runs under is resolved here, at collect time, and
+/// carried rather than re-read from the batch's own properties: a nested block
+/// inside a fan-out layers its own `.shell`, `.logging` and `.ignore-errors`
+/// the same way it layers `.workdir`, and only the leaf knows which block it
+/// came out of.
 enum Leaf {
 	Exec {
-		cmd: Option<String>,
+		/// Already through `command_for`, so a block's own `.shell` is the one
+		/// that runs it.
+		command: Option<String>,
 		body: String,
 		env: Vec<(String, String)>,
 		dir: PathBuf,
 		/// What to prefix this branch's output with.
 		label: String,
 		detach: bool,
+		announce: bool,
+		ignore_errors: bool,
 	},
 	Run {
 		target: String,
 		args: Vec<String>,
+		ignore_errors: bool,
 	},
+}
+
+impl Leaf {
+	fn ignore_errors(&self) -> bool {
+		match self {
+			Leaf::Exec { ignore_errors, .. } | Leaf::Run { ignore_errors, .. } => *ignore_errors,
+		}
+	}
 }
 
 pub struct Runner<'a> {
@@ -506,7 +525,7 @@ fn for_body(
 			collect(body, inner, r, &mut leaves)?;
 		}
 		restore_all(names, priors, r);
-		return run_leaves(leaves, inner, r);
+		return run_leaves(leaves, r);
 	}
 	for item in items {
 		bind_item(names, item, line, r)?;
@@ -791,7 +810,18 @@ fn merged_env(r: &Runner<'_>, props: &Props) -> Vec<(String, String)> {
 fn walk_parallel(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
 	let mut leaves = Vec::new();
 	collect(block, props, r, &mut leaves)?;
-	run_leaves(leaves, props, r)
+	run_leaves(leaves, r)
+}
+
+/// A block nested inside a fan-out, layering its own properties over the
+/// enclosing ones -- `nested` for the collecting walk.
+///
+/// A leaf is rendered where it is collected, so a `.workdir`, `.env` or
+/// `.shell` not applied here is applied never: the parser accepted the
+/// property and the branch then ran without it.
+fn collect_nested(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>) -> Result<(), RunError> {
+	let inner = props.extend(block, &mut r.scope, true)?;
+	with_block_env(props, &inner, r, |r| collect(block, &inner, r, out))
 }
 
 fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>) -> Result<(), RunError> {
@@ -803,14 +833,22 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 				r.scope.bind_names(names, parts);
 			}
 			Statement::Call { expr, .. } => {
-				eval_boundary(expr, &mut r.scope)?;
+				// Through `value_of`, so a bare `code_of($ cmd)` runs the
+				// command rather than reaching the pure evaluator, which has
+				// no shell -- the same reason the sequential walk does.
+				value_of(expr, props, r)?;
 			}
 			Statement::Exec { command, body, .. } => {
 				let (cmd, text) = render(command.as_deref(), body, r)?;
 				out.push(Leaf::Exec {
+					// From the header as written, before `.shell` is folded in:
+					// a `$` branch under `.shell = "python3"` is still named by
+					// its own first word.
 					label: exec_label(cmd.as_deref(), &text),
+					command: command_for(cmd.as_deref(), props).map(str::to_string),
 					detach: props.detach,
-					cmd,
+					announce: props.logging,
+					ignore_errors: props.ignore_errors,
 					body: text,
 					env: merged_env(r, props),
 					dir: cwd(props, &r.anchor),
@@ -819,22 +857,27 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 			Statement::Run { target, args, .. } => {
 				let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
 				let a = run_args(args, &mut r.scope)?;
-				out.push(Leaf::Run { target: t, args: a });
+				out.push(Leaf::Run {
+					target: t,
+					args: a,
+					ignore_errors: props.ignore_errors,
+				});
 			}
 			// Control flow is expanded here so its leaves join the same batch.
-			Statement::Do { body, .. } => collect(body, props, r, out)?,
+			Statement::Do { body, .. } => collect_nested(body, props, r, out)?,
 			Statement::If {
 				cond,
 				then,
 				otherwise,
 				span,
 			} => {
-				let taken = eval_boundary(cond, &mut r.scope)?
-					.as_bool()
-					.map_err(|e| EvalError::ty(span.line, e))?;
+				// A condition decides which branches join the batch, so it is
+				// answered before the batch exists -- and `if $ cmd` is a
+				// condition like any other, which needs a process to ask.
+				let taken = cond_of(cond, props, r, span.line)?;
 				match (taken, otherwise) {
-					(true, _) => collect(then, props, r, out)?,
-					(false, Some(b)) => collect(b, props, r, out)?,
+					(true, _) => collect_nested(then, props, r, out)?,
+					(false, Some(b)) => collect_nested(b, props, r, out)?,
 					(false, None) => {}
 				}
 			}
@@ -844,7 +887,10 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 				body,
 				span,
 			} => {
-				let items = match eval_boundary(iter, &mut r.scope)? {
+				// Through `value_of` too: a fan-out's list is what says how
+				// many branches there are, and `for f in lines($ git ls-files)`
+				// cannot answer that from the pure evaluator.
+				let items = match value_of(iter, props, r)? {
 					Value::List(v) => v,
 					other => {
 						return Err(RunError::ForNeedsList {
@@ -854,11 +900,16 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 					}
 				};
 				let priors: Vec<Option<Value>> = names.iter().map(|n| r.scope.vars.remove(n)).collect();
-				for item in items {
-					bind_item(names, item, span.line, r)?;
-					collect(body, props, r, out)?;
-				}
+				let inner = props.extend(body, &mut r.scope, true)?;
+				let res = with_block_env(props, &inner, r, |r| {
+					for item in items {
+						bind_item(names, item, span.line, r)?;
+						collect(body, &inner, r, out)?;
+					}
+					Ok(())
+				});
 				restore_all(names, &priors, r);
+				res?;
 			}
 			// A fan-out collects every branch before any of them runs, and a
 			// conditional loop has nothing to collect until its body has run
@@ -894,9 +945,9 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 			} => {
 				let v = subject_of(subject, props, r)?;
 				match cases.iter().find(|c| c.label == v) {
-					Some(c) => collect(&c.body, props, r, out)?,
+					Some(c) => collect_nested(&c.body, props, r, out)?,
 					None => match default {
-						Some(b) => collect(b, props, r, out)?,
+						Some(b) => collect_nested(b, props, r, out)?,
 						None => {
 							return Err(RunError::NoCase {
 								subject: v,
@@ -940,11 +991,10 @@ fn exec_label(command: Option<&str>, body: &str) -> String {
 		.to_string()
 }
 
-fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
+fn run_leaves(leaves: Vec<Leaf>, r: &mut Runner<'_>) -> Result<(), RunError> {
 	let dispatch = r.dispatch;
 	let chain = r.chain.clone();
 	let dry_run = r.dry_run;
-	let logging = props.logging;
 	let results: Vec<Result<Option<String>, RunError>> = std::thread::scope(|s| {
 		let handles: Vec<_> = leaves
 			.iter()
@@ -952,14 +1002,16 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 				let chain = &chain;
 				s.spawn(move || match leaf {
 					Leaf::Exec {
-						cmd,
+						command,
 						body,
 						env,
 						dir,
 						label,
 						detach,
+						announce,
+						..
 					} => exec::spawn(Spawn {
-						command: command_for(cmd.as_deref(), props),
+						command: command.as_deref(),
 						body,
 						cwd: dir,
 						env,
@@ -967,7 +1019,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 						dry_run,
 						label: Some(label),
 						detach: *detach,
-						announce: logging && !dry_run,
+						announce: *announce && !dry_run,
 					})
 					.map(|_| Some(body.clone()))
 					.map_err(RunError::from),
@@ -976,7 +1028,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 					// rather than being interleaved line by line.
 					// A dispatched target labels its own leaves, so nothing is
 					// added here; its trace joins the parent's as one block.
-					Leaf::Run { target, args } => dispatch
+					Leaf::Run { target, args, .. } => dispatch
 						.run(target, args, chain, Some(target))
 						.map(|t| Some(t.join("\n"))),
 				})
@@ -989,10 +1041,14 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 	});
 
 	let mut first_error = None;
-	for res in results {
+	// Paired with its leaf, because `.ignore-errors` is block-scoped: a branch
+	// out of a nested block that named it is forgiven while its siblings are
+	// not.
+	for (leaf, res) in leaves.iter().zip(results) {
 		match res {
 			Ok(Some(body)) => r.trace.push(body),
 			Ok(None) => {}
+			Err(e) if leaf.ignore_errors() && !e.is_stop() => {}
 			Err(e) => {
 				if first_error.is_none() {
 					first_error = Some(e);
@@ -1003,7 +1059,7 @@ fn run_leaves(leaves: Vec<Leaf>, props: &Props, r: &mut Runner<'_>) -> Result<()
 	// Every branch runs to completion before a failure surfaces -- stopping the
 	// others would leave a half-started fan-out behind.
 	match first_error {
-		Some(e) if !props.ignore_errors || e.is_stop() => Err(e),
-		_ => Ok(()),
+		Some(e) => Err(e),
+		None => Ok(()),
 	}
 }

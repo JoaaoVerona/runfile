@@ -483,6 +483,25 @@ second time as the global. This replaced `includes` entirely.
   parallel siblings are not mistaken for a cycle.
 - `.parallel`: bindings evaluate in source order, then executable leaves fan out via `std::thread::scope`.
   Control flow expands into the same batch, and every branch completes before a failure surfaces.
+- **A block inside a fan-out layers its own properties, and the leaf carries them.** `collect` recursed into a
+  nested `do` / `if` / `for` / `match` with the *enclosing* properties, so every block-scoped property inside a
+  `.parallel` block was parsed, accepted, and then ignored -- a `.workdir` ran in the anchor, a `.env` reached
+  nobody, a `.env-file` was never read. `collect_nested` is `nested` for the collecting walk: `extend` plus
+  `with_block_env`, so the same `.env-file`/`.add-path` rebuild happens and is put back after. The rest had to
+  move *into* `Leaf`, because a leaf is rendered where it is collected and spawned somewhere else: `.shell`
+  resolved through `command_for`, `.logging` as `announce`, and `.ignore-errors` paired with its own branch --
+  read off the batch, a block that asked to be forgiven either took its siblings with it or was not forgiven
+  at all. `.detach` is header-only and `extend(nested)` clears it, which is what the sequential walk does too.
+- **A fan-out's preamble runs through the process host, like every other statement.** `collect` reached the
+  *pure* evaluator for an `if` condition, a `for` list and a bare call, so `if $ cmd`,
+  `for f in lines($ git ls-files)` and `code_of($ cmd)` were an error inside a `.parallel` block -- *"capture
+  needs a process host"*, an internal sentence about the walker, for a line that works one indent out. They
+  are `cond_of` and `value_of` now, the two the sequential walk uses. Not a new decision: `collect`'s `let`
+  arm already ran its captures this way, and these sit in the same place -- the preamble is what decides
+  *what* fans out, so it is answered in source order before any leaf exists. `Statement::Match` was already
+  right, since `subject_of` runs a capture itself; a test pins it so the four cannot drift apart again. What a
+  preamble capture runs under is the *nested* block's properties, because `props` is what the collecting walk
+  is holding -- which is the bullet above.
 - **Everything the runner says while a target runs carries `[runfile]`** — the announcement, `error:`, the
   `.confirm` question, the `--stdin-args` prompt, watch-mode notices. A person reading a terminal is watching
   two things talk at once, and without the prefix `error: …` could as easily be the target's own output.
