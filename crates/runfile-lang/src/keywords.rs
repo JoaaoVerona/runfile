@@ -1,14 +1,14 @@
 //! What the line forms mean, for an editor to show on hover.
 //!
 //! `FUNCTIONS` and `PROPERTIES` already carry their own documentation, and a
-//! person reading a `.run` file for the first time meets `$`, `exec` and `run`
-//! long before either. Those are the words with no signature to read and no
-//! completion entry to hover, so they are written down here instead.
+//! person reading a `.run` file for the first time meets `#`, `$`, `exec` and
+//! `run` long before either. Those are the words with no signature to read and
+//! no completion entry to hover, so they are written down here instead.
 
 /// One line form, as editor tooling sees it.
 pub struct Keyword {
-	/// The word itself. `"$"` is one, and is matched as a character rather
-	/// than as a word.
+	/// The word itself. `"$"` and `"#"` are two, and are matched as characters
+	/// rather than as words.
 	pub name: &'static str,
 	/// The shape of the construct, for the hover heading.
 	pub syntax: &'static str,
@@ -189,5 +189,15 @@ pub const KEYWORDS: &[Keyword] = &[
 		      `end` closes all of it. An `exec` body closes only on an `end` at its **opener's** \
 		      indentation, so a body may contain the word freely.",
 		example: "for f in glob(\"*.sh\")\n\t$ shellcheck {{ f }}\nend",
+	},
+	Keyword {
+		name: "#",
+		syntax: "# <text>",
+		doc: "A comment, to the end of the line. It may follow code, and starts at a `#` that begins \
+		      a **word** — the shell's own rule, so one sentence covers both halves of a file: the \
+		      text after `$ ` is the shell's, `#` included, and `a#b` is one word on either side. A \
+		      `#` inside a string or a `{{ … }}` is text. The block of comments a file opens with \
+		      is the target's description, which `run <target> --help` prints.",
+		example: "# Build every release binary.\n\nlet targets = [\n\t\"x86_64-unknown-linux-musl\", # the portable one\n\t\"aarch64-apple-darwin\",\n]",
 	},
 ];

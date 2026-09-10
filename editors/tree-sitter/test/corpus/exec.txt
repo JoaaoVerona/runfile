@@ -67,9 +67,8 @@ end
       (identifier))
     (let_statement
       (identifier)
-      (capture
-        (exec_capture
-          (command
-            (shell_content))
-          (exec_body
-            (exec_content)))))))
+      (exec_capture
+        (command
+          (shell_content))
+        (exec_body
+          (exec_content))))))

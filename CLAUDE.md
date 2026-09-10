@@ -43,7 +43,7 @@ Line-oriented. Every line is one of:
 
 | Form | Meaning |
 | --- | --- |
-| `# text` | Comment. The leading block is the target's description. |
+| `# text` | Comment, to end of line; it may follow code. The leading block is the target's description. |
 | `.name = value` | A property. |
 | `$ <line>` | Hand this line to a shell. |
 | `exec <cmd>` … `end` | Run `<cmd>`, with the block's body as its stdin. |
@@ -295,6 +295,37 @@ path unquoted because nothing in it needed quoting — so a Python body read `/t
 alone, the value arrives as itself and the author quotes it the way that language wants, which is the only
 thing that can be right for every language. A shell body still self-quotes, which is what keeps `$ cp
 {{ src }} {{ dst }}` safe.
+
+### Comments
+
+**A `#` opens a comment where it begins a word** — at the start of a line, or after a blank — and runs to the
+end of it. That is the shell's own rule, and half of a runfile is shell: the text after `$ ` is handed over
+whole, so the shell applies the rule there and `lexer::comment_at` applies it here, which is what makes one
+sentence true on both sides of the marker. `a#b` is one word in either half, and `1#c` is a mistake worth its
+own message (`LexError::TightComment`) rather than a silently truncated line.
+
+A comment used to be a whole line and nothing else, so the three places most worth annotating — an element of
+a list that spans lines, a condition, a call — could not carry one at all.
+
+**Three regions answer `None` and keep their `#`**: a string (scanned by the same `scan_string` the tokenizer
+uses), a `{{ … }}`, and **everything from a `$` on**. The last is the important one: a capture runs to the end
+of its line, so `$ sed 's/#//' f` and `$ curl "$u#frag"` are the shell's to read, and no lexer of this
+language can quote-scan another's. It also means `f($ cmd) # note` is refused — the `)` has to be the last
+character of the line, which is the rule that was already there. An `exec` **body** keeps its `#` for the same
+reason, being somebody else's language; its `end` does not, being ours.
+
+An `exec` **command** does take one, unlike a `$` line. The two look alike and are not: the runner reads that
+line itself — `split_command` splits it into words and spawns the program directly — so a `#` left in would
+arrive as an argument nobody meant, while a `$` line's reaches a shell that applies the same rule we do. The
+escape hatch is quoting, which `split_command` honours; a `run` argument keeps its quotes, so there it is
+`{{ "#general" }}`.
+
+`lexer::code` is the one place a line is stripped, and it is called from `logical` (so a spilled list's lines
+are stripped before they are joined), from `property`, `case_label` and the `exec` header, and from
+`parser::closes_body` — which the formatter shares, since a closer rule the two disagreed about would move a
+line into or out of a body. The formatter re-attaches the comment one space out and never touches its text:
+it is prose, and re-spacing an author's sentence is not what a formatter is for. Nothing in the tree records
+a comment, so the fingerprint check cannot catch a dropped one — only a test can.
 
 ### Three context-sensitive lexer rules
 
@@ -609,11 +640,16 @@ second time as the global. This replaced `includes` entirely.
   prose, an **Example** block, and for a property a rule and whether it may sit inside a block — fenced as
   `runfile`, which is the extension's own language id, so an editor colours the example with the same grammar
   as the file. Completion sends the example too, in its markdown `documentation`.
-- **`keywords::KEYWORDS` documents the line forms** — `$`, `exec`, `run`, `let`, `if`, `else`, `for`, `in`,
-  `match`, `case`, `default`, `retry`, `every`, `json`, `code_of`, `end`. These are what a person meets first
-  and the only things in the language with no signature to read and no completion entry to hover. `$` is
-  matched as a *character* rather than a word, and only where it is the marker: `is_shell_marker` accepts it
-  at the start of a line or after `if` / `match`, so `$HOME` and `$(date)` inside a command are left alone.
+- **`keywords::KEYWORDS` documents the line forms** — `#`, `$`, `exec`, `run`, `let`, `if`, `else`, `for`,
+  `in`, `match`, `case`, `default`, `retry`, `every`, `json`, `code_of`, `end`. These are what a person meets
+  first and the only things in the language with no signature to read and no completion entry to hover. `$`
+  and `#` are matched as *characters* rather than words, and only where they are the marker: `is_shell_marker`
+  accepts a `$` at the start of a line or after `if` / `match`, so `$HOME` and `$(date)` inside a command are
+  left alone, and `lexer::comment_at` answers for the `#`, so an editor cannot think one in a string or in
+  shell text is a comment.
+- **Anything at or past where a comment starts hovers as the comment, and completes as nothing.** A `print`
+  written in a sentence about printing is prose, and offering its card there is the same mistake as scanning
+  the text for `ARG.` -- which is why both ask the runner's own rule rather than looking for a `#`.
 - Hover reads the word under the cursor rather than the tree, so it keeps working
   while the document does not parse. `RUN.` is the only source whose keys are known ahead of time; `ARG`,
   `ENV` and `FLAG` are whatever the caller passed, so there is nothing to offer for them.
@@ -654,6 +690,14 @@ comments and brackets to use, so for a long time a shell line came out one flat 
 listed before the include, so `{{ … }}` stays the language's. `exec` bodies are split in two rules —
 `exec sh|bash|…` delegates, anything else does not, since a Python body is not shell — and both close on an
 `end` at the opener's own indentation via a `\1` backreference to the captured indent.
+
+**The comment rule needs no region of its own, and one word of care.** It matches `(?:^|(?<=[ \t]))#.*$` --
+the word-start rule, spelled the way Oniguruma can see it -- and is listed first at the root, which is enough:
+TextMate takes the *earliest* match, so a `$` line, a string or a capture, each of which begins further left,
+takes the line before the comment rule is reached. That is also why a shell line's `#` comes out the shell
+grammar's own comment rather than ours, which is exactly right: the rule it applies there is the rule we
+apply here. Only two rules had to learn anything -- `structured-block`, whose `begin` ended at `$` and now
+captures a trailing comment as one, and `retry-header`, which reads its own line to the end.
 
 **A capture call is matched by shape, not by name.** The rule spelled `code_of` out, so every other call had
 its command read as a runfile *expression*: `--cached` came out two operators and `"*.rs"` a string. It takes
@@ -733,6 +777,18 @@ an extension host. Registering `DocumentFormattingEditProvider` is what makes `e
 `grammar.js` mirrors `GRAMMAR.ebnf`. Newlines are tokens rather than extras, so every line form ends in one;
 a file without a trailing newline gets a zero-width one from the scanner, exactly once.
 
+- **A comment is not an extra; `_eol` is where one may go.** An extra is offered at every token position, and
+  three of those are positions where the `#` is not ours: inside a string, inside a `$` line, and inside an
+  `exec` body. As an extra it took all three -- `"a {{ x }} # b"` ended its string at the `#` and ran on to
+  the next line. `_eol` is `optional($.comment), $._newline` and replaces `$._newline` on every line form the
+  language reads, which is every one of them but `shell_line`. A line whose last value is *shell text* keeps
+  the bare newline, since a capture runs to the end of its line: `endsLine` is the one place that split is
+  spelled, and it is why `shell_capture` and `exec_capture` are named apart rather than wrapped in one
+  `capture` node.
+- **An `exec` command is a line of words, which is how the runner splits it too.** Its parts are the only
+  non-immediate text tokens here, so a word ends at the blank after it and `_eol` has a comment left to find.
+  A `$` line's text is one immediate run for the opposite reason: it runs to the end of the line because all
+  of it is the shell's.
 - **A capture is a call's last argument, whatever the call is called.** `capture_call` takes any name, so
   `lines($ git ls-files)` parses the way `code_of($ cmd)` always did -- both grammars had only the second,
   since `code_of` was once the only call a capture could sit inside, and no `.run` file in this repository
@@ -741,8 +797,15 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   hold a `run` dispatch, and that stays the *runner's* rule: it is about what a call means rather than what it
   looks like, so an editor colours `lines(run x)` and the parser is what refuses it.
 - `src/scanner.c` carries the rules an EBNF cannot: an `exec` body closes only on an `end` at the opener's
-  indentation, a `$` or `exec` body stops at `{{` so an interpolation is a node the grammar parses, and a
-  `run` argument is one whitespace-delimited word with its interpolations kept whole. The string rule needs no
+  indentation, a `$` or `exec` body stops at `{{` so an interpolation is a node the grammar parses, a `run`
+  argument is one whitespace-delimited word with its interpolations kept whole, and a `#` opens a comment only
+  where it begins a word -- a rule about the character *before* it, which is why no regex here can hold it: by
+  the time one matched, the whitespace in front would already have been skipped. The scanner still has it to
+  look at. `at_line_tail` is the shared answer to "nothing after this but blanks and perhaps a comment", which
+  both the block terminator and the `json` keyword ask.
+- **A scanner that skips blanks and then fails has moved the position for whoever runs next.** `scan_line_start`
+  is one pass over that whitespace answering for both the comment and the `exec` keyword, because the second
+  is recognised at column 0 and would otherwise be answered by the blanks the first had skipped. The string rule needs no
   scanner: the interpolation's expression is parsed as an expression, quotes and all. A dispatch's word inside
   `code_of(…)` is a second token, because there the `)` closing the call ends it — unless a `(` in the word
   opened it, which is how the parser reads one too.

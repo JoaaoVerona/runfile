@@ -17,14 +17,114 @@ $ echo hi
       (shell_content))))
 
 ================================================================================
-A comment is a whole line
+A comment on a line of its own, and on the end of one
 ================================================================================
 # note
-let x = 1
+let x = 1 # how many
+.shell = "bash" # which
 --------------------------------------------------------------------------------
 
 (source_file
   (comment)
   (let_statement
     (identifier)
-    (number)))
+    (number)
+    (comment))
+  (property
+    (property_name
+      (identifier))
+    (string
+      (string_content))
+    (comment)))
+
+================================================================================
+A comment closes a block opener, a block, and the elements of a list
+================================================================================
+if n > 1 # a question
+	print("y") # yes
+else # otherwise
+	break
+end # closed
+
+let ts = [
+	"a", # first
+	# and the rest
+	"b",
+] # done
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    (binary_expression
+      (identifier)
+      (number))
+    (comment)
+    (expression_statement
+      (call_expression
+        (identifier)
+        (arguments
+          (string
+            (string_content))))
+      (comment))
+    (comment)
+    (break_statement)
+    (comment))
+  (let_statement
+    (identifier)
+    (list
+      (string
+        (string_content))
+      (comment)
+      (comment)
+      (string
+        (string_content)))
+    (comment)))
+
+================================================================================
+A hash is the shell's from the marker on, and the body's inside a body
+================================================================================
+$ sed -i 's/#//' f # the shell's
+let out = $ echo {{ x }} # also the shell's
+exec python3 # ours: the runner reads this line itself
+	# python's own
+	print(1)
+end # closed
+--------------------------------------------------------------------------------
+
+(source_file
+  (shell_line
+    (shell_text
+      (shell_content)))
+  (let_statement
+    (identifier)
+    (shell_capture
+      (shell_text
+        (shell_content)
+        (interpolation
+          (identifier))
+        (shell_content))))
+  (exec_block
+    (command
+      (shell_content))
+    (comment)
+    (exec_body
+      (exec_content))
+    (comment)))
+
+================================================================================
+A hash that does not begin a word is not a comment
+================================================================================
+run push origin main#1 # the shell's own rule, on both sides of the marker
+let u = "http://x/#frag"
+--------------------------------------------------------------------------------
+
+(source_file
+  (run_statement
+    (target)
+    (argument)
+    (argument)
+    (comment))
+  (let_statement
+    (identifier)
+    (string
+      (string_content))))

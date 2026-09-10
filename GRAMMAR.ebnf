@@ -1,21 +1,37 @@
 (* Runfile .run — grammar v0 *)
 
 file        = { line } ;
-line        = blank | comment | property | exec_block | shell | statement ;
+line        = blank | property | exec_block | shell | ( WS , statement , eol ) ;
 
-blank       = WS , NEWLINE ;
-comment     = WS , "#" , { ANY - NEWLINE } , NEWLINE ;
+blank       = WS , [ comment ] , NEWLINE ;
+(* Every line this language reads ends this way. `shell` is the exception: the
+   text after `$ ` is the shell's, `#` and all, and no lexer of this language
+   can quote-scan another's. An `exec` *command* does end this way, because the
+   runner reads that line itself -- it splits it into words and spawns the
+   program -- while the body below it does not. *)
+eol         = [ comment ] , NEWLINE ;
+(* A `#` opens a comment only where it begins a *word*: at the start of a line,
+   or after a blank. That is a rule about the character before it, so the lexer
+   states it and this grammar cannot. It is the shell's own rule, which is what
+   makes one sentence true on both sides of the marker: `a#b` is one word in
+   either half. A `#` inside a string or a `{{ … }}` is text -- the only way to
+   write a word that does begin with one. *)
+comment     = "#" , { ANY - NEWLINE } ;
 
 (* ---- properties ---- *)
-property    = WS , "." , ident , { "." , ident } , [ WS , "=" , WS , expr ] , NEWLINE ;
+property    = WS , "." , ident , { "." , ident } , [ WS , "=" , WS , expr ] , eol ;
 
 (* ---- shell ---- *)
-shell       = WS , "$" , " " , shell_text , NEWLINE ;
+shell       = WS , "$" , " " , shell_text , NEWLINE ;               (* no comment: all of it is the shell's *)
 shell_text  = { ANY - NEWLINE | "\" , NEWLINE } ;          (* backslash continues *)
 
-exec_block  = WS , "exec" , " " , shell_text , NEWLINE ,
-              { ANY - ( WS , "end" , NEWLINE ) } ,
-              WS , "end" , NEWLINE ;
+exec_block  = WS , "exec" , " " , cmd_text , eol ,
+              { ANY - ( WS , "end" , eol ) } ,
+              WS , "end" , eol ;
+(* The words of a command line, which is how the runner splits it -- so a `#`
+   beginning one of them is a comment here, unlike in `shell_text`. *)
+cmd_text    = cmd_word , { WS , cmd_word } ;
+cmd_word    = ( ANY - WS - NEWLINE - "#" | interp ) , { ANY - WS - NEWLINE | interp } ;
 
 (* ---- statements ---- *)
 statement   = let | assign | if | else | for | while | until | loop
@@ -58,10 +74,10 @@ arg_word    = { ANY - WS - NEWLINE | interp } ;
    indentation. *)
 value       = expr | capture | structured | capture_call ;
 capture     = "$" , " " , shell_text
-            | "exec" , " " , shell_text , NEWLINE , exec_body , WS , "end" ;
-structured  = struct_kw , NEWLINE , exec_body , WS , "end" ;
+            | "exec" , " " , cmd_text , eol , exec_body , WS , "end" ;
+structured  = struct_kw , eol , exec_body , WS , "end" ;
 struct_kw   = "json" ;
-exec_body   = { ANY - ( WS , "end" , NEWLINE ) } ;
+exec_body   = { ANY - ( WS , "end" , eol ) } ;              (* a `#` in a body is that language's *)
 
 (* A call whose last argument is a `$` run: the capture reaches the `)`, which
    has to be the last character of the line. `code_of` is the one call that may

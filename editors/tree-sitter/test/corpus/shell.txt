@@ -33,7 +33,6 @@ let staged = $ git diff --name-only
 (source_file
   (let_statement
     (identifier)
-    (capture
-      (shell_capture
-        (shell_text
-          (shell_content))))))
+    (shell_capture
+      (shell_text
+        (shell_content)))))

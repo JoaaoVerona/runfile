@@ -10,6 +10,21 @@
 /// <reference types="tree-sitter-cli/dsl" />
 // @ts-check
 
+// One word of an `exec` command line. A `#` may sit *inside* a word -- `a#b`,
+// a URL fragment -- but may not begin one, which is where a comment begins.
+// The runner reads this line itself, splitting it into words and spawning the
+// program directly, so a `#` left in would arrive as an argument nobody meant;
+// a `$` line is handed to a shell whole, and its `#` is the shell's to apply.
+const COMMAND_WORD = String.raw`(?:[^ \t{#\\\r\n]|\\[^\r\n])(?:[^ \t{\\\r\n]|\\[^\r\n])*`;
+
+// A line's last value, with the end of that line. A capture runs to the end of
+// the line it is on -- everything after the `$` is the command's, `#` included
+// -- so a line that ends in one ends there, with nothing of ours after it.
+// `code_of($ x)` is the same shape and the same rule: the `)` has to be the
+// last character of the line, which is why neither takes a comment.
+const endsLine = ($, name, shell, own) =>
+	choice(seq(field(name, shell), $._newline), seq(field(name, own), $._eol));
+
 const PREC = {
 	chain: 1,
 	or: 2,
@@ -24,11 +39,20 @@ const PREC = {
 module.exports = grammar({
 	name: "runfile",
 
-	// Newlines are not extras: they end lines.
+	// Newlines are not extras: they end lines. Neither is a comment, though it
+	// may end any of them: as an extra it would be found *inside* a string and
+	// inside a `$` line, whose `#` is the shell's. `_eol` is where one may go,
+	// and that is every line this language reads and no line it hands over.
+	//
+	// It is external all the same, because where a comment starts is a rule
+	// about the character *before* the `#` -- one that begins a word -- which
+	// a regex here cannot see: by the time one matched, the whitespace in
+	// front of it would already have been skipped.
 	extras: () => [/[ \t]+/],
 
 	externals: ($) => [
 		$._newline,
+		$.comment,
 		$._exec_keyword,
 		$._capture_exec_keyword,
 		$.exec_content,
@@ -53,10 +77,14 @@ module.exports = grammar({
 	rules: {
 		source_file: ($) => repeat($._line),
 
+		// The end of a line the language reads: a comment may close it. Not
+		// `shell_line`'s, and not an `exec` body's -- there the `#` belongs to
+		// whoever is being handed the text.
+		_eol: ($) => seq(optional($.comment), $._newline),
+
 		_line: ($) =>
 			choice(
-				$._newline,
-				$.comment,
+				$._eol,
 				$.property,
 				$.shell_line,
 				$.exec_block,
@@ -76,13 +104,10 @@ module.exports = grammar({
 				$.expression_statement,
 			),
 
-		// A whole line, never trailing: the lexer rejects `#` inside an expression.
-		comment: ($) => seq(/#[^\r\n]*/, $._newline),
-
 		// ---- properties
 
 		property: ($) =>
-			seq(".", field("name", $.property_name), optional(seq("=", field("value", $._expression))), $._newline),
+			seq(".", field("name", $.property_name), optional(seq("=", field("value", $._expression))), $._eol),
 
 		property_name: ($) => seq($.identifier, repeat(seq(".", $.identifier))),
 
@@ -100,13 +125,31 @@ module.exports = grammar({
 			seq(
 				alias($._exec_keyword, "exec"),
 				field("command", $.command),
-				$._newline,
+				$._eol,
 				optional(field("body", $.exec_body)),
 				"end",
-				$._newline,
+				$._eol,
 			),
 
-		command: ($) => repeat1(choice($.shell_content, alias($._lone_brace, $.shell_content), $.interpolation, $.line_continuation)),
+		// An `exec` command is a line of **words**, which is how the runner
+		// reads it too -- and why a comment may end this line while a `$`
+		// line's `#` is the shell's. Nothing here is `token.immediate`, so a
+		// word ends at the blank after it rather than running to the end of
+		// the line; an immediate run, which is what a `$` line's text is,
+		// would take the ` # note` with it and leave `_eol` nothing to find.
+		command: ($) =>
+			repeat1(
+				choice(
+					alias($._command_word, $.shell_content),
+					alias($._command_brace, $.shell_content),
+					alias($._command_interpolation, $.interpolation),
+					alias($._command_continuation, $.line_continuation),
+				),
+			),
+		_command_word: () => token(prec(-1, new RegExp(COMMAND_WORD))),
+		_command_brace: () => "{",
+		_command_interpolation: ($) => seq("{{", $._expression, "}}"),
+		_command_continuation: () => /\\\r?\n/,
 
 		// Body text comes from the scanner in runs that stop at `{{`, so an
 		// interpolation inside a body is a node of its own.
@@ -123,8 +166,7 @@ module.exports = grammar({
 				field("name", $.identifier),
 				repeat(seq(",", field("name", $.identifier))),
 				"=",
-				field("value", choice($.capture_call, $.structured, $.capture, $._expression)),
-				$._newline,
+				endsLine($, "value", choice($.capture_call, $.shell_capture), choice($.structured, $.exec_capture, $._expression)),
 			),
 
 		// A call whose last argument is a `$` run -- `lines($ git ls-files)`,
@@ -163,8 +205,7 @@ module.exports = grammar({
 				field("name", $.identifier),
 				repeat(seq(",", field("name", $.identifier))),
 				"=",
-				field("value", choice($.capture_call, $.structured, $.capture, $._expression)),
-				$._newline,
+				endsLine($, "value", choice($.capture_call, $.shell_capture), choice($.structured, $.exec_capture, $._expression)),
 			),
 
 		// `json … end`: a block of structured text, as one value of that format.
@@ -174,20 +215,23 @@ module.exports = grammar({
 		structured: ($) =>
 			seq(
 				field("format", alias($._structured_keyword, $.structured_format)),
-				$._newline,
+				$._eol,
 				optional(field("body", $.exec_body)),
 				"end",
 			),
 
-		// `$` or `exec` in value position: what the command prints.
-		capture: ($) => choice($.shell_capture, $.exec_capture),
+		// `$` or `exec` in value position: what the command prints. The two are
+		// named apart rather than wrapped in one `capture` node, because the
+		// end of their line differs: a `$` capture runs to the end of it, `#`
+		// included, while an `exec` one closes on an `end` of its own and takes
+		// a comment after it like any other line.
 		shell_capture: ($) => seq("$", optional($.shell_text)),
 		exec_capture: ($) =>
-			seq(alias($._capture_exec_keyword, "exec"), field("command", $.command), $._newline, optional(field("body", $.exec_body)), "end"),
+			seq(alias($._capture_exec_keyword, "exec"), field("command", $.command), $._eol, optional(field("body", $.exec_body)), "end"),
 
 		// `do` … `end`: a block with no condition, so a property has somewhere
 		// to go without inventing a question.
-		do_statement: ($) => seq("do", $._newline, repeat($._line), "end", $._newline),
+		do_statement: ($) => seq("do", $._eol, repeat($._line), "end", $._eol),
 
 		if_statement: ($) =>
 			seq(
@@ -195,12 +239,11 @@ module.exports = grammar({
 				// A `$` run may stand as the condition: it is true when the
 				// command succeeds. Never an `exec` -- its `end` would be the
 				// one the `if` wants.
-				field("condition", choice($.shell_capture, $._expression)),
-				$._newline,
+				endsLine($, "condition", $.shell_capture, $._expression),
 				repeat($._line),
 				optional($._else_clause),
 				"end",
-				$._newline,
+				$._eol,
 			),
 
 		// `else if` continues the chain rather than opening a block of its
@@ -211,12 +254,11 @@ module.exports = grammar({
 				seq(
 					"else",
 					"if",
-					field("condition", choice($.shell_capture, $._expression)),
-					$._newline,
+					endsLine($, "condition", $.shell_capture, $._expression),
 					repeat($._line),
 					optional($._else_clause),
 				),
-				seq("else", $._newline, repeat($._line)),
+				seq("else", $._eol, repeat($._line)),
 			),
 
 		// `retry n [every s]` … `[else …]` `end`: the body is run again while it
@@ -226,11 +268,11 @@ module.exports = grammar({
 				"retry",
 				field("attempts", $._expression),
 				optional(seq("every", field("delay", $._expression))),
-				$._newline,
+				$._eol,
 				repeat($._line),
-				optional(seq("else", $._newline, repeat($._line))),
+				optional(seq("else", $._eol, repeat($._line))),
 				"end",
-				$._newline,
+				$._eol,
 			),
 
 		for_statement: ($) =>
@@ -239,50 +281,48 @@ module.exports = grammar({
 				field("variable", $.identifier),
 				repeat(seq(",", field("variable", $.identifier))),
 				"in",
-				field("iterable", choice($.capture_call, $._expression)),
-				$._newline,
+				endsLine($, "iterable", $.capture_call, $._expression),
 				repeat($._line),
 				"end",
-				$._newline,
+				$._eol,
 			),
 
 		// `while` and `until` are the same block asking opposite questions.
 		// Written as two rules rather than a `choice` of keywords so the node
 		// name says which one is on the screen.
 		while_statement: ($) =>
-			seq("while", field("condition", choice($.shell_capture, $._expression)), $._newline, repeat($._line), "end", $._newline),
+			seq("while", endsLine($, "condition", $.shell_capture, $._expression), repeat($._line), "end", $._eol),
 
 		until_statement: ($) =>
-			seq("until", field("condition", choice($.shell_capture, $._expression)), $._newline, repeat($._line), "end", $._newline),
+			seq("until", endsLine($, "condition", $.shell_capture, $._expression), repeat($._line), "end", $._eol),
 
 		// Takes no condition: `break` is how it ends.
-		loop_statement: ($) => seq("loop", $._newline, repeat($._line), "end", $._newline),
+		loop_statement: ($) => seq("loop", $._eol, repeat($._line), "end", $._eol),
 
-		break_statement: ($) => seq("break", $._newline),
-		continue_statement: ($) => seq("continue", $._newline),
+		break_statement: ($) => seq("break", $._eol),
+		continue_statement: ($) => seq("continue", $._eol),
 
 		match_statement: ($) =>
 			seq(
 				"match",
 				// A `$` run may stand as the subject, and the cases are then
 				// exit codes: `case "0"`, `case "1"`.
-				field("subject", choice($.shell_capture, $._expression)),
-				$._newline,
-				repeat(choice($._newline, $.comment)),
+				endsLine($, "subject", $.shell_capture, $._expression),
+				repeat($._eol),
 				repeat($.match_case),
 				optional($.match_default),
 				"end",
-				$._newline,
+				$._eol,
 			),
 
 		// A label is a string, always quoted: it is compared against a value, and
 		// `RUN.os` is a string like any other.
-		match_case: ($) => seq("case", field("label", $.string), $._newline, repeat($._line)),
-		match_default: ($) => seq("default", $._newline, repeat($._line)),
+		match_case: ($) => seq("case", field("label", $.string), $._eol, repeat($._line)),
+		match_default: ($) => seq("default", $._eol, repeat($._line)),
 
-		run_statement: ($) => seq("run", field("target", alias($.run_word, $.target)), repeat(alias($.run_word, $.argument)), $._newline),
+		run_statement: ($) => seq("run", field("target", alias($.run_word, $.target)), repeat(alias($.run_word, $.argument)), $._eol),
 
-		expression_statement: ($) => seq(choice($.capture_call, $._expression), $._newline),
+		expression_statement: ($) => choice(seq($.capture_call, $._newline), seq($._expression, $._eol)),
 
 		// ---- expressions
 
@@ -323,15 +363,15 @@ module.exports = grammar({
 		list: ($) =>
 			seq(
 				"[",
-				repeat($._newline),
+				repeat($._eol),
 				optional(
 					seq(
 						$._expression,
-						repeat(seq(repeat($._newline), ",", repeat($._newline), $._expression)),
-						optional(seq(repeat($._newline), ",")),
+						repeat(seq(repeat($._eol), ",", repeat($._eol), $._expression)),
+						optional(seq(repeat($._eol), ",")),
 					),
 				),
-				repeat($._newline),
+				repeat($._eol),
 				"]",
 			),
 

@@ -430,3 +430,45 @@ fn a_list_of_binding_names_is_spaced_like_an_argument_list() {
 		"let a, b, c = range(3)\n\nfor k, _ in pairs\n\ta, c = [c, a]\nend\n"
 	);
 }
+
+#[test]
+fn a_trailing_comment_survives_and_sits_one_space_out() {
+	// The tree keeps no comments, so the fingerprint check cannot catch one
+	// being dropped: only a test can.
+	let out = format("let n=3    # how many\nif n>2 # a question\nprint(\"y\")#tight\nend#done\n");
+	// `#tight` is not a comment, so that file does not parse at all.
+	assert!(out.is_err(), "{out:?}");
+	let out = format("let n=3    # how many\nif n>2 # a question\nprint( \"y\" ) # yes\nend # done\n").unwrap();
+	assert_eq!(
+		out,
+		"let n = 3 # how many\n\nif n > 2 # a question\n\tprint(\"y\") # yes\nend # done\n"
+	);
+}
+
+#[test]
+fn a_comment_in_a_spilled_list_is_indented_with_the_elements() {
+	let out = format("let ts = [\n\"a\", # first\n# and the rest\n\"b\",\n]\n").unwrap();
+	assert_eq!(out, "let ts = [\n\t\"a\", # first\n\t# and the rest\n\t\"b\",\n]\n");
+}
+
+#[test]
+fn a_comment_on_a_block_opener_or_closer_stays_on_its_line() {
+	let out = format("exec python3 # runs it\nprint(1)\nend # closed\n").unwrap();
+	assert_eq!(out, "exec python3 # runs it\n\tprint(1)\nend # closed\n");
+	let out = format("let d = json # a payload\n{\"a\":1}\nend # closed\n").unwrap();
+	assert_eq!(out, "let d = json # a payload\n\t{\n\t\t\"a\": 1\n\t}\nend # closed\n");
+}
+
+#[test]
+fn a_shells_own_hash_is_left_where_it_is() {
+	let src = "$ sed -i 's/#//'   f # the shell's\n\nif $ test -f x # also the shell's\n\t$ true\nend\n";
+	assert_eq!(format(src).unwrap(), src);
+}
+
+#[test]
+fn formatting_a_commented_file_settles() {
+	let src = "# T\n\n.shell = \"bash\" # which\n\nmatch RUN.os # which platform\n\tcase \"linux\" # penguins\n\t\trun build a b # go\n\tdefault # the rest\n\t\tprint(\"?\") # eh\nend # done\n";
+	let once = format(src).unwrap();
+	assert_eq!(format(&once).unwrap(), once, "{once}");
+	assert_eq!(once, src, "{once}");
+}

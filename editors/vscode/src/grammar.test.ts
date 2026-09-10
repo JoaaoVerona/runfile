@@ -552,3 +552,38 @@ test("a dispatch inside code_of is coloured like a run statement", async () => {
 		"a dispatch is not shell"
 	)
 })
+
+test("a comment is coloured wherever the language reads one", async () => {
+	// Every one of these used to be a parse error in the runner, so the only
+	// place a `#` could go was a line of its own.
+	const lines = await tokensOf(
+		'.shell = "bash" # which\nlet n = 3 # how many\nretry 3 every 1 # keep at it\nend # closed\nlet d = json # a payload\n{}\nend\n'
+	)
+	const comment = (i: number) =>
+		(lines[i] ?? []).find((t) => t.text.startsWith("#"))?.scopes.join(" ") ?? ""
+	for (const i of [0, 1, 2, 3, 4]) {
+		assert.ok(comment(i).includes("comment.line.number-sign.run"), `line ${i}: ${comment(i)}`)
+	}
+	// The `json` block still opened: its body is JSON, not more of the header.
+	assert.ok(
+		(lines[5] ?? []).some((t) => t.scopes.some((s) => s.includes("meta.embedded.block.json"))),
+		"the block did not open: " + (lines[5] ?? []).flatMap((t) => t.scopes).join(" ")
+	)
+})
+
+test("a hash the language does not own is not coloured as our comment", async () => {
+	// Three regions own their own `#`: a string, a `$` line -- where the shell
+	// grammar applies the same word-start rule we do -- and a word that simply
+	// contains one.
+	const lines = await tokensOf('let u = "http://x/#frag"\n$ sed -i \'s/#//\' f\nrun push main#1\n')
+	for (const [i, why] of [
+		[0, "inside a string"],
+		[1, "inside a shell line"],
+		[2, "inside a word"]
+	] as const) {
+		assert.ok(
+			!(lines[i] ?? []).some((t) => t.scopes.includes("comment.line.number-sign.run")),
+			`${why}: ${(lines[i] ?? []).flatMap((t) => t.scopes).join(" ")}`
+		)
+	}
+})

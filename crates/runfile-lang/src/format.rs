@@ -169,9 +169,14 @@ fn render(src: &str) -> Result<String, ParseError> {
 			i += 1;
 			continue;
 		}
+		// Everything below this line is the language's, so a `#` in it is a
+		// comment. Above it are the two regions that own their own `#`: a `$`
+		// line, and a whole-line comment, which is the author's text entire.
+		let (trimmed, note) = lexer::split_comment(trimmed);
+
 		if let Some(cmd) = trimmed.strip_prefix("exec ") {
 			let d = o.depth();
-			o.push(d, &format!("exec {}", cmd.trim()), Kind::Open);
+			o.push(d, &noted(&format!("exec {}", cmd.trim()), note), Kind::Open);
 			i = exec_body(&raw, i + 1, line, d, None, &mut o);
 			continue;
 		}
@@ -183,7 +188,7 @@ fn render(src: &str) -> Result<String, ParseError> {
 					o.stack.pop();
 				}
 				o.stack.pop();
-				o.at_depth("end", Kind::Close);
+				o.at_depth(&noted("end", note), Kind::Close);
 			}
 			"else" => {
 				o.stack.pop();
@@ -196,7 +201,7 @@ fn render(src: &str) -> Result<String, ParseError> {
 					None => "else".to_string(),
 				};
 				let d = o.depth();
-				o.push(d, &text, Kind::Mid);
+				o.push(d, &noted(&text, note), Kind::Mid);
 				o.stack.push(Frame::Body);
 				i = spill(&raw, i + 1, &text, d, &mut o, no)?;
 				continue;
@@ -213,11 +218,11 @@ fn render(src: &str) -> Result<String, ParseError> {
 				} else {
 					format!("{head} {rest}")
 				};
-				o.at_depth(&text, Kind::Mid);
+				o.at_depth(&noted(&text, note), Kind::Mid);
 				o.stack.push(Frame::Case);
 			}
 			_ => {
-				i = statement(&raw, i, trimmed, no, &mut o)?;
+				i = statement(&raw, i, trimmed, note, no, &mut o)?;
 				continue;
 			}
 		}
@@ -247,11 +252,12 @@ fn exec_body(
 	o: &mut Out,
 ) -> usize {
 	let indent = &opener[..opener.len() - opener.trim_start().len()];
-	let closer = format!("{indent}end");
 	let mut j = from;
 	let mut body: Vec<&str> = Vec::new();
 	while j < raw.len() {
-		if raw[j] == closer || (indent.is_empty() && raw[j].trim_end() == "end") {
+		// The parser's own rule, so the two cannot disagree about which line
+		// closes a body -- one that did would move a line into or out of it.
+		if crate::parser::closes_body(raw[j], indent) {
 			break;
 		}
 		body.push(raw[j]);
@@ -280,13 +286,20 @@ fn exec_body(
 		}
 	}
 	if j < raw.len() {
-		o.push(depth, "end", Kind::Close);
+		o.push(depth, &noted("end", lexer::split_comment(raw[j].trim()).1), Kind::Close);
 	}
 	j + 1
 }
 
 /// A statement line, plus any lines a list literal spills onto.
-fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> Result<usize, ParseError> {
+fn statement(
+	raw: &[&str],
+	i: usize,
+	trimmed: &str,
+	note: Option<&str>,
+	no: usize,
+	o: &mut Out,
+) -> Result<usize, ParseError> {
 	let head = trimmed.split_whitespace().next().unwrap_or("");
 	let (text, opens) = match head {
 		"do" => ("do".to_string(), Some(Frame::Body)),
@@ -343,13 +356,15 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 		let fmt = crate::Structured::from_keyword(rest);
 		if fmt.is_some() || rest.strip_prefix("exec ").is_some() {
 			let d = o.depth();
-			o.push(d, &text, Kind::Open);
+			o.push(d, &noted(&text, note), Kind::Open);
 			return Ok(exec_body(raw, i + 1, raw[i], d, fmt, o));
 		}
 	}
 
 	let d = o.depth();
-	o.push(d, &text, kind_of(head, trimmed, opens));
+	o.push(d, &noted(&text, note), kind_of(head, trimmed, opens));
+	// `text` without the comment: what spills is decided by the brackets, and
+	// a `#` inside one would be counted as though it were code.
 	let j = spill(raw, i + 1, &text, d, o, no)?;
 	if let Some(f) = opens {
 		o.stack.push(f);
@@ -367,13 +382,15 @@ fn spill(raw: &[&str], from: usize, text: &str, depth: usize, o: &mut Out, no: u
 	let (mut open, _) = lexer::brackets(text, no);
 	let mut j = from;
 	while open > 0 && j < raw.len() {
-		let t = raw[j].trim();
+		let (t, note) = lexer::split_comment(raw[j].trim());
 		let rendered = if t.is_empty() { String::new() } else { spaced(t, no)? };
 		let (delta, leading) = lexer::brackets(&rendered, no);
 		// One level per bracket still open, less the ones this line closes:
 		// a `]` sits with the `[` it answers, not with what was inside it.
 		let level = depth + usize::try_from((open - leading).max(0)).unwrap_or(0);
-		o.push(level, &rendered, Kind::Opaque);
+		// A comment on its own sits with the elements it is about: it moves
+		// the depth by nothing, so it lands wherever the next element does.
+		o.push(level, &noted(&rendered, note), Kind::Opaque);
 		open += delta;
 		j += 1;
 	}
@@ -499,6 +516,19 @@ fn name_list(s: &str) -> String {
 fn after_word<'a>(rest: &'a str, word: &str) -> Option<&'a str> {
 	let tail = rest.strip_prefix(word)?;
 	tail.starts_with(char::is_whitespace).then(|| tail.trim_start())
+}
+
+/// A rendered line with the comment that was written after it, one space away.
+///
+/// The comment's own text is never touched -- it is prose, and re-spacing an
+/// author's sentence is not what a formatter is for. Only the gap before the
+/// `#` is decided here, the same way the gap between two tokens is.
+fn noted(text: &str, note: Option<&str>) -> String {
+	match note {
+		None => text.to_string(),
+		Some(n) if text.is_empty() => n.to_string(),
+		Some(n) => format!("{text} {n}"),
+	}
 }
 
 /// Words separated by one space, each left exactly as written.

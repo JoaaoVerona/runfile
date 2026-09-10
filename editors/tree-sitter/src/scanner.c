@@ -8,6 +8,10 @@
 //      node the grammar parses as an expression rather than opaque text.
 //   3. A `run` argument is one whitespace-delimited word; a `{{ … }}` inside it
 //      is kept whole, quotes and nested braces included.
+//   4. A comment starts at a `#` that begins a word. That is a rule about the
+//      character *before* the `#`, which a grammar regex cannot see: by the
+//      time one is matched the whitespace in front of it has been skipped.
+//      Here the whitespace is still there to look at.
 //
 // Newlines are external too, only so that a file without a trailing one still
 // ends its last line.
@@ -20,6 +24,7 @@
 
 enum TokenType {
 	NEWLINE,
+	COMMENT,
 	EXEC_KEYWORD,
 	CAPTURE_EXEC_KEYWORD,
 	EXEC_CONTENT,
@@ -62,14 +67,32 @@ static uint8_t read_indent(TSLexer *lexer, char *buf) {
 	return n > MAX_INDENT ? MAX_INDENT : n;
 }
 
-// `exec` followed by a blank: the keyword, not an identifier that starts with
-// those letters. Leaves the lexer just past the word.
-static bool read_word(TSLexer *lexer, const char *kw, bool blank_after) {
+// The word `kw`, if that is what is here. Leaves the lexer just past it.
+static bool read_bare_word(TSLexer *lexer, const char *kw) {
 	for (int i = 0; kw[i]; i++) {
 		if (lexer->lookahead != kw[i]) return false;
 		advance(lexer);
 	}
+	return true;
+}
+
+// `exec` followed by a blank: the keyword, not an identifier that starts with
+// those letters. Leaves the lexer just past the word.
+static bool read_word(TSLexer *lexer, const char *kw, bool blank_after) {
+	if (!read_bare_word(lexer, kw)) return false;
 	return blank_after ? is_blank(lexer->lookahead) : !is_blank(lexer->lookahead);
+}
+
+// Nothing after this position but blanks, and perhaps a comment: the end of a
+// line, as far as this language is concerned. A comment needs a blank before
+// it, since a `#` is only one where it begins a word.
+static bool at_line_tail(TSLexer *lexer) {
+	bool spaced = false;
+	while (is_blank(lexer->lookahead)) {
+		advance(lexer);
+		spaced = true;
+	}
+	return at_eol(lexer) || (spaced && lexer->lookahead == '#');
 }
 
 static bool read_exec_word(TSLexer *lexer) {
@@ -77,11 +100,11 @@ static bool read_exec_word(TSLexer *lexer) {
 }
 
 // `json` alone on the rest of the line: the whole word, with nothing after it
-// but the newline. One more name here is all a second format needs.
+// but a comment. One more name here is all a second format needs.
 static bool read_structured_word(TSLexer *lexer) {
 	const char *formats[] = {"json", NULL};
 	for (int f = 0; formats[f]; f++) {
-		if (read_word(lexer, formats[f], false)) return true;
+		if (read_bare_word(lexer, formats[f])) return true;
 	}
 	return false;
 }
@@ -122,13 +145,39 @@ static bool scan_newline(Scanner *s, TSLexer *lexer) {
 	return false;
 }
 
-// At column 0 of any statement line. Records the line's indentation whether
-// or not it turns out to be an `exec` line, so a capture later on the same
-// line knows where it opened.
-static bool scan_exec_keyword(Scanner *s, TSLexer *lexer) {
-	if (lexer->get_column(lexer) != 0) return false;
-	s->line_indent_len = read_indent(lexer, s->line_indent);
-	if (!read_exec_word(lexer)) return false;
+// A comment, or the `exec` that opens a block. Both start by reading the
+// whitespace in front of them, and both are decided here because a scanner
+// that reads it and then fails has moved the position for whoever runs next:
+// `exec` is recognised at column 0, and would be answered by the blanks a
+// separate comment check had already skipped.
+//
+// A `#` is a comment where it begins a **word** -- at the start of a line, or
+// after a blank. That is the shell's own rule, and the text after `$ ` is the
+// shell's, comment and all, so one rule covers both halves of a file and
+// `a#b` is one word on either side of the marker. It is a rule about the
+// character before the `#`, which is why no regex in the grammar can hold it:
+// by the time one is matched the whitespace has been skipped.
+//
+// The line's indentation is recorded whether or not this turns out to be an
+// `exec` line, so a capture later on the same line knows where it opened.
+static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
+	bool at_column_0 = lexer->get_column(lexer) == 0;
+	bool spaced = at_column_0;
+	if (at_column_0) {
+		s->line_indent_len = read_indent(lexer, s->line_indent);
+	} else {
+		while (is_blank(lexer->lookahead)) {
+			skip(lexer);
+			spaced = true;
+		}
+	}
+	if (valid[COMMENT] && spaced && lexer->lookahead == '#') {
+		while (!at_eol(lexer)) advance(lexer);
+		lexer->mark_end(lexer);
+		lexer->result_symbol = COMMENT;
+		return true;
+	}
+	if (!valid[EXEC_KEYWORD] || !at_column_0 || !read_exec_word(lexer)) return false;
 	lexer->mark_end(lexer);
 	s->exec_indent_len = s->line_indent_len;
 	memcpy(s->exec_indent, s->line_indent, MAX_INDENT);
@@ -153,6 +202,9 @@ static bool scan_structured_keyword(Scanner *s, TSLexer *lexer) {
 	while (is_blank(lexer->lookahead)) skip(lexer);
 	if (!read_structured_word(lexer)) return false;
 	lexer->mark_end(lexer);
+	// The keyword is the whole line: `json x` is not a format this runner
+	// knows, and the block would swallow the `x`.
+	if (!at_line_tail(lexer)) return false;
 	s->exec_indent_len = s->line_indent_len;
 	memcpy(s->exec_indent, s->line_indent, MAX_INDENT);
 	lexer->result_symbol = STRUCTURED_KEYWORD;
@@ -160,8 +212,8 @@ static bool scan_structured_keyword(Scanner *s, TSLexer *lexer) {
 }
 
 // Is the line at the current position the one that closes the open block?
-// Exactly the opener's indentation then `end`; trailing blanks are allowed
-// only when the opener was not indented, matching the parser.
+// Exactly the opener's indentation, then `end`, then nothing but blanks and a
+// comment -- which is what the parser's own `closes_body` accepts.
 static bool at_terminator(Scanner *s, TSLexer *lexer) {
 	for (uint8_t i = 0; i < s->exec_indent_len; i++) {
 		if (lexer->lookahead != s->exec_indent[i]) return false;
@@ -172,10 +224,9 @@ static bool at_terminator(Scanner *s, TSLexer *lexer) {
 		if (lexer->lookahead != kw[i]) return false;
 		advance(lexer);
 	}
-	if (s->exec_indent_len == 0) {
-		while (is_blank(lexer->lookahead)) advance(lexer);
-	}
-	return at_eol(lexer);
+	// The `end` is this language's line, not the body's, so it takes a comment
+	// like any other -- and the runner's own closer rule allows one.
+	return at_line_tail(lexer);
 }
 
 // Body text up to the next `{{`, the closing `end` line, or end of file. The
@@ -315,12 +366,17 @@ bool tree_sitter_runfile_external_scanner_scan(void *payload, TSLexer *lexer, co
 	// Order matters: the newline check never consumes anything unless it
 	// succeeds, so it is safe to run first; the keyword checks skip blanks and
 	// are only tried when nothing else could be wanted at that position.
+	// Anything that skips blanks and then fails has moved the position, which
+	// is why the one check that asks about column 0 shares its pass.
 	if (valid[NEWLINE] && scan_newline(s, lexer)) return true;
 	if (valid[EXEC_CONTENT]) return scan_exec_content(s, lexer);
+	// Before the word scanners, which would otherwise take the comment after a
+	// `run` for one more argument, and after `EXEC_CONTENT`, whose body owns
+	// every `#` in it -- a body is somebody else's language.
+	if ((valid[COMMENT] || valid[EXEC_KEYWORD]) && scan_line_start(s, lexer, valid)) return true;
 	if (valid[RUN_WORD]) return scan_run_word(lexer);
 	if (valid[DISPATCH_WORD]) return scan_dispatch_word(lexer);
 	if (valid[STRUCTURED_KEYWORD] && scan_structured_keyword(s, lexer)) return true;
 	if (valid[CAPTURE_EXEC_KEYWORD]) return scan_capture_exec_keyword(s, lexer);
-	if (valid[EXEC_KEYWORD]) return scan_exec_keyword(s, lexer);
 	return false;
 }

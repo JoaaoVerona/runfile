@@ -4,7 +4,7 @@
 //! so an editor can never disagree with what `run` does. Keeping this layer
 //! free of protocol types is what lets it be tested without a client.
 
-use runfile_lang::{InterpPart, KEYWORDS, Statement};
+use runfile_lang::{InterpPart, KEYWORDS, Statement, lexer};
 use runfile_runtime::props::PROPERTIES;
 
 /// A zero-based, half-open range, the way LSP counts.
@@ -317,6 +317,13 @@ fn with_example(doc: &str, example: &str) -> String {
 /// on a document that does not currently parse.
 pub fn complete(line_prefix: &str) -> Completions {
 	let t = line_prefix.trim_start();
+	// Prose, not code. A comment runs to the end of its line, so a prefix that
+	// has already passed the `#` is inside one -- and the runner's own rule is
+	// what says which `#` that is, so a `#` in a string or in shell text still
+	// completes as the code it is.
+	if lexer::comment_at(line_prefix).is_some() {
+		return Completions::None;
+	}
 	if let Some(rest) = t.strip_prefix('.')
 		&& !rest.contains('=')
 	{
@@ -542,6 +549,18 @@ fn card(heading: &str, doc: &str, example: &str, footer: Option<&str>) -> String
 }
 
 pub fn hover(line: &str, col: usize) -> Option<String> {
+	// Anywhere at or past where a comment starts is prose, so the comment is
+	// the only thing there is to say about it. Answered first, and by the
+	// runner's own rule: a `#` in a string or in shell text does not start one,
+	// and nothing written inside one is code -- which is what stops the lookups
+	// below from offering the `print` card for the word `print` in a sentence
+	// about printing, or the `$` card for a `$` in a remark about a shell line.
+	if let Some(at) = lexer::comment_at(line)
+		&& byte_at(line, col) >= at
+	{
+		let k = KEYWORDS.iter().find(|k| k.name == "#")?;
+		return Some(card(k.syntax, k.doc, k.example, None));
+	}
 	// `$` is punctuation rather than a word, so it is found by looking at the
 	// character rather than by `word_at`. It is the first thing anyone meets
 	// in a runfile and had nothing to say for itself.
@@ -582,6 +601,11 @@ pub fn hover(line: &str, col: usize) -> Option<String> {
 	Some(card(k.syntax, k.doc, k.example, None))
 }
 
+/// The byte offset of character `col`, or the end of the line past it.
+fn byte_at(line: &str, col: usize) -> usize {
+	line.char_indices().nth(col).map_or(line.len(), |(i, _)| i)
+}
+
 /// Whether the `$` at `col` is the shell marker rather than a `$` inside a
 /// command -- `$HOME`, `$(date)` and the `$` in a regex are not this one.
 ///
@@ -589,7 +613,7 @@ pub fn hover(line: &str, col: usize) -> Option<String> {
 /// of the keywords a command may stand behind -- `if`, `match`, and the two
 /// loops that ask the same question of one.
 fn is_shell_marker(line: &str, col: usize) -> bool {
-	let before = line[..line.char_indices().nth(col).map_or(line.len(), |(i, _)| i)].trim_end();
+	let before = line[..byte_at(line, col)].trim_end();
 	before.is_empty() || ["if", "match", "while", "until"].iter().any(|k| before.ends_with(k))
 }
 
@@ -991,5 +1015,31 @@ mod tests {
 		for col in 9..=13 {
 			assert!(hover("let x = to_upper(s)", col).is_some(), "at {col}");
 		}
+	}
+
+	#[test]
+	fn a_comment_hovers_as_one_and_hides_the_words_inside_it() {
+		// `print` written in a sentence about printing is prose. Offering its
+		// card there is the same mistake as scanning the text for `ARG.`.
+		let h = hover("let x = 1 # call print() first", 19).expect("hovers");
+		assert!(h.contains("# <text>"), "{h}");
+		let h = hover("let x = 1 # note", 10).expect("hovers the `#` itself");
+		assert!(h.contains("# <text>"), "{h}");
+		// A `$` inside a remark about one is prose too.
+		let h = hover("let x = 1 # like if $ cmd", 20).expect("hovers");
+		assert!(h.contains("# <text>"), "{h}");
+		// The two regions that own their own `#`.
+		let h = hover("$ echo {{ RUN.os }} # a shell comment", 15).expect("hovers");
+		assert!(h.contains("RUN.os"), "{h}");
+		let h = hover("let x = to_upper(\"#a\")", 12).expect("hovers");
+		assert!(h.contains("to_upper"), "{h}");
+	}
+
+	#[test]
+	fn nothing_completes_inside_a_comment() {
+		assert!(matches!(complete("let x = 1 # about pri"), Completions::None));
+		assert!(matches!(complete("# a note on con"), Completions::None));
+		// Still code: the `#` is the shell's, and the `{{ … }}` is ours.
+		assert!(!matches!(complete("$ echo # {{ RUN."), Completions::None));
 	}
 }

@@ -186,3 +186,124 @@ fn do_takes_nothing() {
 	let e = crate::parse("do true\n\t$ x\nend\n").unwrap_err().to_string();
 	assert!(e.contains("takes nothing"), "{e}");
 }
+
+// ------------------------------------------------------------------ comments
+
+#[test]
+fn a_comment_may_trail_any_line_of_the_language() {
+	// Every one of these used to be a parse error, so a `#` could explain a
+	// file only from a line of its own.
+	let x = t(
+		"# T\n.shell = \"bash\" # which one\nlet n = 3 # how many\nif n > 2 # a question\n\tprint(\"big\") # yes\nend # done\n",
+	);
+	assert_eq!(x.body.properties.len(), 1);
+	assert_eq!(x.body.statements.len(), 2);
+	let Statement::If { then, .. } = &x.body.statements[1] else {
+		panic!("{:?}", x.body.statements[1])
+	};
+	assert_eq!(then.statements.len(), 1);
+}
+
+#[test]
+fn a_comment_sits_between_the_elements_of_a_spilled_list() {
+	// A list spans lines, so the lines inside it are the ones most worth
+	// annotating -- and each is stripped before the join, not after.
+	let x = t("let ts = [\n\t\"a\", # first\n\t# and the rest\n\t\"b\",\n]\n");
+	let Statement::Let { value, .. } = &x.body.statements[0] else {
+		panic!()
+	};
+	let Expr::List(items, _) = value else {
+		panic!("{value:?}")
+	};
+	assert_eq!(items.len(), 2);
+}
+
+#[test]
+fn a_hash_inside_a_string_or_an_interpolation_is_text() {
+	let x = t("let u = \"http://x/#frag\"\nlet v = \"{{ ARG.a ? \"#none\" }}\"\n");
+	assert_eq!(x.body.statements.len(), 2);
+	let Statement::Let { value, .. } = &x.body.statements[0] else {
+		panic!()
+	};
+	let Expr::Str(parts, _) = value else { panic!() };
+	assert_eq!(parts, &[InterpPart::Literal("http://x/#frag".into())]);
+}
+
+#[test]
+fn a_hash_reaches_the_shell_whole() {
+	// The text after `$ ` is the shell's, and no lexer of this language can
+	// quote-scan one: `sed 's/#//'` is not a comment and `# x` is.
+	let x = t("$ sed -i 's/#//' f # and this is the shell's too\n");
+	let Statement::Exec { body, .. } = &x.body.statements[0] else {
+		panic!()
+	};
+	assert_eq!(
+		body[0],
+		vec![InterpPart::Literal(
+			"sed -i 's/#//' f # and this is the shell's too".into()
+		)]
+	);
+}
+
+#[test]
+fn a_hash_is_the_shells_from_the_marker_on() {
+	// Not only at the start of a line: a capture runs to the end of its own,
+	// so everything past the `$` belongs to the command.
+	let x = t("let out = $ echo hi # not ours\nif $ test -f f # nor this\n\t$ true\nend\n");
+	let Statement::Let { value, .. } = &x.body.statements[0] else {
+		panic!()
+	};
+	let Expr::Capture { body, .. } = value else { panic!() };
+	assert_eq!(body[0], vec![InterpPart::Literal("echo hi # not ours".into())]);
+}
+
+#[test]
+fn an_exec_body_keeps_its_own_comments_and_its_end_takes_ours() {
+	// The body is somebody else's language -- a `#` in it is python's, or
+	// data. The `end` that closes it is this language's line.
+	let x = t("exec python3 # runs it\n\t# a python comment\n\tprint(1)\nend # closed\n");
+	let Statement::Exec { command, body, .. } = &x.body.statements[0] else {
+		panic!()
+	};
+	assert_eq!(command.as_deref(), Some(&[InterpPart::Literal("python3".into())][..]));
+	assert_eq!(body.len(), 2, "the python comment is a body line");
+	assert_eq!(body[0], vec![InterpPart::Literal("# a python comment".into())]);
+}
+
+#[test]
+fn a_run_statement_takes_a_comment_rather_than_the_word() {
+	// Its arguments are values, not shell text, so the rule that holds for a
+	// `$` line holds here: a `#` that begins a word is a comment.
+	let x = t("run build --release # dispatch\n");
+	let Statement::Run { args, .. } = &x.body.statements[0] else {
+		panic!()
+	};
+	assert_eq!(args.len(), 1, "{args:?}");
+}
+
+#[test]
+fn a_hash_that_does_not_begin_a_word_is_not_a_comment() {
+	// The shell's rule, so one sentence covers both halves of a file. The
+	// message is the one thing worth having here, since a `#` is otherwise
+	// just an unexpected character.
+	let e = crate::parse("let x = 1#c\n").unwrap_err().to_string();
+	assert!(e.contains("starts a word"), "{e}");
+	let x = t("run push a#b\n");
+	let Statement::Run { args, .. } = &x.body.statements[0] else {
+		panic!()
+	};
+	assert_eq!(args[0], vec![InterpPart::Literal("a#b".into())]);
+}
+
+#[test]
+fn a_case_label_and_a_bare_property_take_one_too() {
+	let x = t(
+		".parallel # fan out\nmatch RUN.os # which\n\tcase \"linux\" # penguins\n\t\t$ true\n\tdefault # the rest\n\t\t$ true\nend\n",
+	);
+	assert_eq!(x.body.properties[0].path, vec!["parallel"]);
+	let Statement::Match { cases, default, .. } = &x.body.statements[0] else {
+		panic!()
+	};
+	assert_eq!(cases[0].label, "linux");
+	assert!(default.is_some());
+}

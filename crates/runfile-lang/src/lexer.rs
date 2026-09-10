@@ -22,6 +22,10 @@ pub enum LexError {
 	UnterminatedInterp { line: usize },
 	#[error("line {line}: unexpected character `{ch}`")]
 	UnexpectedChar { ch: char, line: usize },
+	/// The one unexpected character worth its own sentence: whoever wrote it
+	/// meant a comment, and the rule they missed is a space.
+	#[error("line {line}: a `#` starts a comment only where it starts a word -- put a space before it")]
+	TightComment { line: usize },
 	#[error("line {line}: unknown escape `\\{ch}`")]
 	UnknownEscape { ch: char, line: usize },
 }
@@ -218,6 +222,9 @@ pub fn tokenize(s: &str, base: usize, line: usize) -> Result<Vec<Spanned>, LexEr
 			i = j;
 			continue;
 		}
+		if c == b'#' {
+			return Err(LexError::TightComment { line });
+		}
 		if let Some(p) = PUNCT.iter().find(|p| s[i..].starts_with(**p)) {
 			out.push(sp(Token::Punct(p), base, start, i + p.len(), line));
 			i += p.len();
@@ -278,4 +285,60 @@ pub fn brackets(text: &str, no: usize) -> (i32, i32) {
 		}
 	}
 	(delta, leading)
+}
+
+/// Where a comment begins on this line, if one does.
+///
+/// A `#` starts a comment when it starts a **word** -- at the start of the line
+/// or after a space or tab. That is the shell's own rule, and half of a runfile
+/// is shell: a `$` line's `#` is read by the shell rather than here, so picking
+/// the same rule is what keeps one sentence true on both sides of the marker.
+/// `a#b` is one word in either half.
+///
+/// Three regions answer `None`, because the `#` in them is not ours:
+///
+/// * **Strings**, scanned by the same [`scan_string`] the tokenizer uses, so a
+///   `"…#…"` and a raw string's backslashes behave here exactly as they do
+///   there.
+/// * **`{{ … }}`**, skipped whole. It is the escape hatch for the one place
+///   quoting cannot reach: a `run` argument keeps its quotes, so `#general` is
+///   written `{{ "#general" }}`.
+/// * **Everything from a `$` on.** A capture runs to the end of its line, so
+///   the shell text starts there and the shell applies its own rule to it --
+///   which is what leaves `$ sed 's/#//' f` and `$ curl "$u#frag"` alone. No
+///   lexer of this language can quote-scan somebody else's.
+///
+/// A line that does not scan -- an unterminated string, an unclosed `{{` --
+/// answers `None` and is left whole for the parser to report against the text
+/// the author actually wrote.
+pub fn comment_at(text: &str) -> Option<usize> {
+	let b = text.as_bytes();
+	let mut i = 0usize;
+	while i < b.len() {
+		match b[i] {
+			b'"' => {
+				let raw = i > 0 && b[i - 1] == b'r';
+				let (_, next) = scan_string(text, if raw { i - 1 } else { i }, 0, raw).ok()?;
+				i = next;
+			}
+			b'{' if b[i + 1..].starts_with(b"{") => i = skip_interp(b, i, 0).ok()?,
+			b'$' => return None,
+			b'#' if i == 0 || b[i - 1] == b' ' || b[i - 1] == b'\t' => return Some(i),
+			_ => i += 1,
+		}
+	}
+	None
+}
+
+/// This line's code and its comment, split at [`comment_at`].
+pub fn split_comment(text: &str) -> (&str, Option<&str>) {
+	match comment_at(text) {
+		Some(i) => (text[..i].trim_end(), Some(text[i..].trim_end())),
+		None => (text, None),
+	}
+}
+
+/// This line with any comment removed. The common half of [`split_comment`].
+pub fn code(text: &str) -> &str {
+	split_comment(text).0
 }

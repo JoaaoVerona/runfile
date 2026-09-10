@@ -42,7 +42,8 @@
 	],
 	"repository": {
 		"comment": {
-			"match": "#.*$",
+			"comment": "A comment runs to the end of the line, and may follow code. The `#` has to begin a word, which is the shell's own rule -- so `a#b` and a URL fragment are one word here exactly as they are inside a `$` line, where this rule is applied by the shell grammar rather than by us.",
+			"match": "(?:^|(?<=[ \\t]))#.*$",
 			"name": "comment.line.number-sign.run"
 		},
 		"property": {
@@ -448,13 +449,16 @@
 					"name": "keyword.control.run"
 				},
 				{
+					"include": "#comment"
+				},
+				{
 					"include": "#expression"
 				}
 			]
 		},
 		"structured-block": {
 			"$comment": "`json … end`: the body is JSON, so it is coloured as JSON. Closes on an `end` at the opener's own indentation, the same `\\1` backreference the exec rules use. A second format is one more word in the alternation and one more embedded scope.",
-			"begin": "^(\\s*)(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*(json)[ \\t]*$",
+			"begin": "^(\\s*)(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*(json)(?:[ \\t]+(#.*))?[ \\t]*$",
 			"beginCaptures": {
 				"2": {
 					"name": "keyword.other.let.run"
@@ -470,6 +474,9 @@
 				},
 				"6": {
 					"name": "keyword.control.structured.run"
+				},
+				"7": {
+					"name": "comment.line.number-sign.run"
 				}
 			},
 			"end": "^\\1(end)\\b",

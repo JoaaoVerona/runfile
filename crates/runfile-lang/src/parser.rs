@@ -81,6 +81,21 @@ fn after_keyword<'a>(rest: &'a str, word: &str) -> Option<&'a str> {
 	tail.starts_with(char::is_whitespace).then(|| tail.trim_start())
 }
 
+/// Whether this raw line is the `end` that closes a body opened at `indent`.
+///
+/// The indentation has to match the *opener's* exactly, which is what lets a
+/// body carry an `end` of its own (ruby, lua) without closing the block early.
+/// The `end` line itself is this language's rather than the body's, so it takes
+/// a comment like any other -- and this is the one place that has to be said
+/// twice, since the formatter finds the closer by the same rule and the two
+/// disagreeing would let it move a line out of a body.
+pub(crate) fn closes_body(raw: &str, indent: &str) -> bool {
+	let Some(rest) = raw.strip_prefix(indent) else {
+		return false;
+	};
+	!rest.starts_with([' ', '\t']) && lexer::code(rest.trim_end()) == "end"
+}
+
 /// One physical line, pre-classified.
 struct Line<'a> {
 	raw: &'a str,
@@ -212,7 +227,10 @@ impl<'a> P<'a> {
 	fn property(&mut self) -> Result<Property, ParseError> {
 		let line = &self.lines[self.i];
 		self.i += 1;
-		let t = line.trimmed;
+		// A property is one physical line -- it never spills the way a list
+		// does -- so it takes its comment off itself rather than through
+		// `logical`. `t` is still a slice of `raw`, which the offsets index.
+		let t = lexer::code(line.trimmed);
 		let (name, rest) = match t.find('=') {
 			Some(k) => (t[1..k].trim(), Some(t[k + 1..].trim())),
 			None => (t[1..].trim(), None),
@@ -237,14 +255,20 @@ impl<'a> P<'a> {
 
 	/// Gather a logical line, continuing while `[` are unbalanced so a list may
 	/// span lines -- and nest, since the count is what says where it ends.
+	///
+	/// Each *physical* line loses its comment before it is joined, which is
+	/// what lets one sit beside an element of a spilled list, or on a line of
+	/// its own between two of them. Stripping is a suffix, so every offset this
+	/// returns still indexes the source; a joined line's do not anyway, since
+	/// the join is already a string of its own.
 	fn logical(&mut self) -> (String, usize, usize) {
 		let start = &self.lines[self.i];
 		let (no, offset) = (start.no, start.offset);
-		let mut buf = start.trimmed.to_string();
+		let mut buf = lexer::code(start.trimmed).to_string();
 		self.i += 1;
 		while lexer::brackets(&buf, no).0 > 0 && self.i < self.lines.len() {
 			buf.push(' ');
-			buf.push_str(self.lines[self.i].trimmed);
+			buf.push_str(lexer::code(self.lines[self.i].trimmed));
 			self.i += 1;
 		}
 		(buf, offset, no)
@@ -411,7 +435,7 @@ impl<'a> P<'a> {
 						Some("case") => {
 							let l = &self.lines[self.i];
 							let label = case_label(l.trimmed, l.no)?;
-							let cs = Span::new(l.offset, l.offset + l.trimmed.len(), l.no);
+							let cs = Span::new(l.offset, l.offset + lexer::code(l.trimmed).len(), l.no);
 							self.i += 1;
 							cases.push(MatchCase {
 								label,
@@ -572,7 +596,7 @@ impl<'a> P<'a> {
 	}
 
 	/// Read an `exec` body: lines until an `end` at `indent`, dedented by their
-	/// own base indentation.
+	/// own base indentation. See [`closes_body`] for what counts as one.
 	#[allow(clippy::type_complexity)]
 	fn exec_body(&mut self, indent: &str, no: usize) -> Result<(Vec<Vec<InterpPart>>, Vec<usize>, usize), ParseError> {
 		let mut j = self.i;
@@ -582,7 +606,7 @@ impl<'a> P<'a> {
 				return err(no, "`exec` block never closed by an `end` at its own indentation");
 			}
 			let l = &self.lines[j];
-			if l.raw == format!("{indent}end") || (indent.is_empty() && l.raw.trim_end() == "end") {
+			if closes_body(l.raw, indent) {
 				break;
 			}
 			raw.push(l);
@@ -688,7 +712,7 @@ impl<'a> P<'a> {
 	fn exec_block(&mut self) -> Result<Statement, ParseError> {
 		let open = &self.lines[self.i];
 		let (no, offset, indent) = (open.no, open.offset, open.indent);
-		let cmd_text = open.trimmed.strip_prefix("exec ").unwrap().trim();
+		let cmd_text = lexer::code(open.trimmed.strip_prefix("exec ").unwrap().trim());
 		let command = to_parts(lexer::split_interp(cmd_text, offset, no)?, no)?;
 		self.i += 1;
 		let indent = indent.to_string();
@@ -974,7 +998,7 @@ fn capture_of(cmd: &str, offset: usize, no: usize) -> Result<Expr, ParseError> {
 /// string like any other. Requiring the quotes keeps one rule: a string is
 /// always in quotes, wherever it appears.
 fn case_label(trimmed: &str, no: usize) -> Result<String, ParseError> {
-	let rest = trimmed[4..].trim();
+	let rest = lexer::code(trimmed[4..].trim());
 	let inner = rest
 		.strip_prefix('"')
 		.and_then(|r| r.strip_suffix('"'))

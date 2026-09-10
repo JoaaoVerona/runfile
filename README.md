@@ -365,7 +365,7 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 
 | Line | Meaning |
 | --- | --- |
-| `# text` | A comment. The leading block is the target's description. |
+| `# text` | A comment, to the end of the line. It may follow code. The leading block is the target's description. |
 | `.name = value` | A property. |
 | `$ echo hi` | Hand this line to a shell. |
 | `exec python3` … `end` | Run a command with the block as its stdin. |
@@ -381,6 +381,10 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `run other-target` | Run another target, in this process. |
 | `print(…)` | Anything else is an expression, evaluated for its effect. |
 
+A `#` opens a comment where it begins a word — the shell's own rule, so it reads the same on both sides of the
+marker, and `a#b` is one word in either half. The text after `$ ` is the shell's, `#` and all, and so is an
+`exec` block's body; everything else this language reads takes a comment at the end of the line.
+
 ### Values
 
 Strings, numbers, booleans and lists — **strict, with no coercion.** `"a" + 1` is an error telling you to use
@@ -390,7 +394,8 @@ Lists nest as deep as you like, which beats packing several fields into one stri
 
 ```sh
 for volume, owner in [
-	["prometheus-data", "65534:65534"],
+	["prometheus-data", "65534:65534"], # nobody
+	# the rest run as themselves
 	["kvrocks-data", "999:999"],
 ]
 	$ docker run --rm -v {{ volume }}:/v alpine chown -R {{ owner }} /v

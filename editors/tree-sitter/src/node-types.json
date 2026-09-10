@@ -93,15 +93,15 @@
             "named": true
           },
           {
-            "type": "capture",
-            "named": true
-          },
-          {
             "type": "capture_call",
             "named": true
           },
           {
             "type": "chain_expression",
+            "named": true
+          },
+          {
+            "type": "exec_capture",
             "named": true
           },
           {
@@ -129,6 +129,10 @@
             "named": true
           },
           {
+            "type": "shell_capture",
+            "named": true
+          },
+          {
             "type": "source",
             "named": true
           },
@@ -146,6 +150,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -219,7 +233,17 @@
   {
     "type": "break_statement",
     "named": true,
-    "fields": {}
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        }
+      ]
+    }
   },
   {
     "type": "call_expression",
@@ -245,25 +269,6 @@
           }
         ]
       }
-    }
-  },
-  {
-    "type": "capture",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": false,
-      "required": true,
-      "types": [
-        {
-          "type": "exec_capture",
-          "named": true
-        },
-        {
-          "type": "shell_capture",
-          "named": true
-        }
-      ]
     }
   },
   {
@@ -435,14 +440,19 @@
     }
   },
   {
-    "type": "comment",
-    "named": true,
-    "fields": {}
-  },
-  {
     "type": "continue_statement",
     "named": true,
-    "fields": {}
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        }
+      ]
+    }
   },
   {
     "type": "dispatch",
@@ -577,6 +587,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -622,6 +642,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -629,7 +659,7 @@
     "named": true,
     "fields": {},
     "children": {
-      "multiple": false,
+      "multiple": true,
       "required": true,
       "types": [
         {
@@ -650,6 +680,10 @@
         },
         {
           "type": "chain_expression",
+          "named": true
+        },
+        {
+          "type": "comment",
           "named": true
         },
         {
@@ -1150,15 +1184,15 @@
             "named": true
           },
           {
-            "type": "capture",
-            "named": true
-          },
-          {
             "type": "capture_call",
             "named": true
           },
           {
             "type": "chain_expression",
+            "named": true
+          },
+          {
+            "type": "exec_capture",
             "named": true
           },
           {
@@ -1186,6 +1220,10 @@
             "named": true
           },
           {
+            "type": "shell_capture",
+            "named": true
+          },
+          {
             "type": "source",
             "named": true
           },
@@ -1203,6 +1241,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -1227,6 +1275,10 @@
         },
         {
           "type": "chain_expression",
+          "named": true
+        },
+        {
+          "type": "comment",
           "named": true
         },
         {
@@ -1749,6 +1801,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -2007,6 +2069,10 @@
         {
           "type": "argument",
           "named": true
+        },
+        {
+          "type": "comment",
+          "named": true
         }
       ]
     }
@@ -2243,6 +2309,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -2723,6 +2799,10 @@
   {
     "type": "case",
     "named": false
+  },
+  {
+    "type": "comment",
+    "named": true
   },
   {
     "type": "continue",
