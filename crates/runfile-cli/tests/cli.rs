@@ -437,6 +437,40 @@ fn a_target_in_the_machine_wide_directory_is_reachable_anywhere() {
 	assert!(p.run(&["deploy"]).status.success());
 }
 
+#[test]
+fn the_machine_wide_targets_are_listed_first() {
+	// They are reachable from every directory, so they are the part of the
+	// listing a person cannot see by looking at the project. Local targets
+	// take a heading of their own once something precedes them: an unheaded
+	// run of names below `global:` would read as more global ones.
+	let p = project(&[
+		("runfiles/build.run", "# Builds it\n$ true\n"),
+		("api/runfiles/ship.run", "# Ships the api\n$ true\n"),
+	]);
+	let g = p.home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("deploy.run"), "# Ships it\n$ true\n").unwrap();
+
+	let text = out(&p.run(&[":list"]));
+	let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s} missing from:\n{text}"));
+	assert!(at("global:") < at("local:"), "{text}");
+	assert!(at("local:") < at("subprojects:"), "{text}");
+	assert!(at("deploy") < at("build"), "{text}");
+	assert!(
+		text.starts_with("global:"),
+		"no blank line before the first group: {text:?}"
+	);
+}
+
+#[test]
+fn a_project_with_no_global_targets_lists_exactly_as_before() {
+	// The local group is the unlabelled default while nothing comes before it,
+	// which is every project without a machine-wide directory.
+	let p = project(&[("runfiles/build.run", "# Builds it\n$ true\n")]);
+	let text = out(&p.run(&[":list"]));
+	assert_eq!(text, "  build  Builds it\n", "{text:?}");
+}
+
 // -------------------------------------------------------------------- watch
 
 /// Counts runs by appending a byte per run, so the test can tell a re-run from

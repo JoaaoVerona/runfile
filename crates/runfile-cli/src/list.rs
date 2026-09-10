@@ -127,14 +127,22 @@ pub fn print(cat: &Catalog) {
 		return;
 	}
 	let width = shown.iter().map(|(t, _)| t.name.len()).max().unwrap_or(0);
-	for origin in [Origin::Local, Origin::Included, Origin::Global] {
+	let mut first = true;
+	for origin in [Origin::Global, Origin::Local, Origin::Included] {
 		let group: Vec<&(&Target, Facts)> = shown.iter().filter(|(t, _)| t.origin == origin).collect();
 		if group.is_empty() {
 			continue;
 		}
-		if origin != Origin::Local {
-			println!("\n{}:", label(origin));
+		// The local group is the unlabelled default only while nothing comes
+		// before it: an unheaded run of names below `global:` reads as more
+		// global ones. Everything else says which group it is.
+		if !first || origin != Origin::Local {
+			if !first {
+				println!();
+			}
+			println!("{}:", label(origin));
 		}
+		first = false;
 		for (t, f) in group {
 			let also = format!("also `{}`", f.aliases.join("`, `"));
 			let described = match (f.description.is_empty(), f.aliases.is_empty()) {

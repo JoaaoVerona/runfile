@@ -686,7 +686,8 @@ invoke `run` from.
 
 `$HOME/.runfiles/` holds machine-wide targets, available in every project. If you would rather see the
 directory than hide it, `$HOME/runfiles/` and `$HOME/Runfiles/` are read too — but only one of the three may
-hold anything.
+hold anything. `run :list` puts them first, under `global:`: they are the part of the listing you cannot see
+by looking at the project.
 
 **Not in CI.** A runner's home directory is nobody's, so `run` reads none of the three there: what runs is
 what is checked in and reviewable. This is also why nothing has to be cleaned up after a job.

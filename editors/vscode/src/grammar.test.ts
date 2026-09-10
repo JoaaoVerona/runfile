@@ -440,6 +440,43 @@ test("a `$` condition and a code_of body are coloured as shell", async () => {
 	}
 })
 
+test("a capture's region ends at its `)`, and the rest of the line is ours again", async () => {
+	// The region *closed* on the right line -- that much was already tested --
+	// but it closed at the end of the line rather than at the paren, so
+	// everything after `)` was still shell. `first-shell-statement` carries no
+	// scope of its own, so nothing showed while it was open, and while it was
+	// open the enclosing rule's `end` was not in the scanner at all: its own
+	// end is `;`, `|`, `&` or end of line, and a `)` is none of those. The
+	// shell grammar then starts a fresh statement right after a `)`, so
+	// `if code_of($ true) == 0` read `== 0` as a command -- `==` an unquoted
+	// string, `0` a shell numeric. Only the real shell grammar does that.
+	const shell = realShellGrammar()
+	if (!shell) {
+		return
+	}
+	for (const [line, tail] of [
+		["if code_of($ true) == 0", ["==", "0"]],
+		["let n = length(lines($ ls))", [")"]],
+		["for f in lines($ git ls-files '*.sh')", []]
+	] as [string, string[]][]) {
+		const [tokens] = await tokensOf(`${line}\n`, shell)
+		const words = (tokens ?? []).filter((t) => t.text.trim())
+		const close = words.findIndex((t) => t.scopes.includes("punctuation.section.arguments.end.run"))
+		assert.ok(close >= 0, `${line}: the \`)\` did not close the call`)
+		for (const t of words.slice(close)) {
+			assert.ok(
+				!t.scopes.some((s) => s.endsWith(".shell")),
+				`${line}: ${JSON.stringify(t.text)} after the \`)\` is still shell: ${t.scopes.join(" ")}`
+			)
+		}
+		assert.deepEqual(
+			words.slice(close + 1).map((t) => t.text),
+			tail,
+			`${line}: what follows the \`)\``
+		)
+	}
+})
+
 test("the keyword before a `$` condition is still the language's", async () => {
 	const [scopes] = await scopesOf("if $ true\n")
 	assert.ok(scopes?.includes("keyword.control.run"), `got ${scopes?.join(" ")}`)

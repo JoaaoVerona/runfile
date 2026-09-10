@@ -584,6 +584,19 @@ these is a single line by construction — the parser requires `code_of(`'s `)` 
 is correct rather than a fallback. The regression test uses **VS Code's real shell grammar**: a stub does not
 over-consume, so nothing weaker can see this.
 
+**A capture's region also has to end at its `)`, and the end-of-line bound hid that it did not.** The paren
+closed the shell grammar's *own* command statement without closing anything of ours, because
+`#first-shell-statement` was still open — a helper with no scope of its own, so nothing showed, and while it
+is open the enclosing rule's `end` is not in the scanner at all. Its end is `;`, `|`, `&` or end of line, and
+a `)` is none of those. So the region ran on and the shell grammar, which starts a fresh statement right
+after a `)`, read the rest of the line as a command: `if code_of($ true) == 0` came out with `==` an unquoted
+shell string and `0` a shell numeric, and every `)` closing a capture lost its punctuation scope.
+`#capture-shell-statement` is the same helper with `\)` in its end, used only by `#capture-call` — a `)`
+inside the command is refused by the parser, so stopping at the first one is the rule the runner already
+enforces, while a `)` in a plain `$` line is ordinary shell and `#first-shell-statement` is left alone. Only
+the real shell grammar starts a statement after a paren, so this is the second bug in this file a stub could
+not see.
+
 Two things the shell grammar's own anchoring forces. It starts a statement only after `^`, `;`, `|`, `&`,
 `!`, `(`, `{` or a backtick — and the text after `$ ` is none of those, so the **first** command on a line
 came out bare while every later one was coloured. `#first-shell-statement` fixes it: `source.shell`'s
@@ -652,6 +665,12 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   `run echoes --dry-run` passes `--dry-run` through as `FLAG.dry-run`.
 - `:list` shows the aliases a target answers to. Without that a documented alias is undiscoverable, since
   the listing otherwise reports only the file name -- which the corpus inventory diff is what surfaced.
+- **`:list` shows the machine-wide targets first**, under `global:`. They are reachable from every directory
+  and appear in no file a reader of the project can see, so they are the group worth meeting first; the local
+  ones follow. `local:` is the unlabelled default only while nothing precedes it, which is every project
+  without a machine-wide directory -- an unheaded run of names under `global:` would read as more global ones.
+  The order is the human listing's; `--names` and `--json` stay in the catalog's own (sorted) order, since
+  their readers work by name.
 - `:list` has three forms: human, `--names` (for completion scripts), `--json` (for tooling). The JSON is
   serialized by hand — four string fields do not justify a serde dependency in the CLI — and carries a
   `formatVersion` that CI checks against the extension's constant.
