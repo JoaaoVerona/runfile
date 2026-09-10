@@ -1,9 +1,9 @@
-# Copy the built binaries to ~/.local/bin, replacing whatever is there
+# Copy the built binary to ~/.local/bin, replacing whatever is there
 #
-# Both of them, always. An editor talks to `runfile-lsp`, so a `run` newer than
-# the language server beside it reports valid files as broken -- a `retry`, a
-# `.logging`, a `case` label underlined in red while the runner accepts them.
-# That happened three times before this target stopped installing only one.
+# One binary. The language server is `run :lsp`, so there is no second file to
+# keep in step -- a `run` newer than the `runfile-lsp` beside it used to report
+# valid files as broken, a `retry`, a `.logging`, a `case` label underlined in
+# red while the runner accepted them. That happened three times.
 
 run build-release
 
@@ -13,11 +13,9 @@ if RUN.os == "windows"
 	ext = ".exe"
 end
 
-for name in ["run", "runfile-lsp"]
-	# Written beside the target and moved into place: `cp` onto a binary that
-	# is running fails with "Text file busy", and the language server usually is.
-	$ cp {{ ENV.CARGO_TARGET_DIR }}/release/{{ name }}{{ ext }} ~/.local/bin/.{{ name }}.new{{ ext }}
-	$ mv -f ~/.local/bin/.{{ name }}.new{{ ext }} ~/.local/bin/{{ name }}{{ ext }}
-end
+# Written beside the target and moved into place: `cp` onto a binary that is
+# running fails with "Text file busy", and an editor usually has one open.
+$ cp {{ ENV.CARGO_TARGET_DIR }}/release/run{{ ext }} ~/.local/bin/.run.new{{ ext }}
+$ mv -f ~/.local/bin/.run.new{{ ext }} ~/.local/bin/run{{ ext }}
 
-print("Installed run and runfile-lsp to ~/.local/bin")
+print("Installed run to ~/.local/bin")

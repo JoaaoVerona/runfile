@@ -52,35 +52,73 @@ export function severityOf(n: number | undefined): vscode.DiagnosticSeverity {
 	}
 }
 
+/**
+ * The standalone server, as it was installed beside `run` before the runner
+ * grew a `:lsp` of its own.
+ *
+ * Only a fallback, and only for the window where the two can disagree: the
+ * marketplace updates this extension on its own, while `run` is updated by
+ * hand, so a client asking for `run :lsp` can meet a runner that has never
+ * heard of it. That runner came with a `runfile-lsp` next to it, which is
+ * still on PATH and still answers. Removable once no supported `run` predates
+ * the subcommand.
+ */
+const LEGACY_SERVER = "runfile-lsp";
+
 export class LanguageClient implements vscode.Disposable {
 	private child?: ChildProcess;
-	private readonly reader = new MessageReader();
+	private reader = new MessageReader();
 	private readonly diagnostics = vscode.languages.createDiagnosticCollection("runfile");
 	private readonly subs: vscode.Disposable[] = [];
 	private nextId = 1;
 	/** Requests waiting on a reply, by id. */
 	private readonly pending = new Map<number, (result: unknown) => void>();
+	/** Whether the server has said anything at all -- see [`LEGACY_SERVER`]. */
+	private answered = false;
+	private fellBack = false;
+	private disposed = false;
 
 	constructor(
 		private readonly command: string,
+		private readonly args: string[],
 		private readonly log: vscode.OutputChannel,
 	) {}
 
 	start(): void {
+		this.spawnServer(this.command, this.args);
+		// Registered once, outside `spawnServer`: a fallback replaces the
+		// process, not this client, and subscribing a second time would send
+		// every notification twice.
+		this.subs.push(
+			vscode.workspace.onDidOpenTextDocument((d) => this.didOpen(d)),
+			vscode.workspace.onDidChangeTextDocument((e) => this.didChange(e.document)),
+			vscode.workspace.onDidCloseTextDocument((d) => this.didClose(d)),
+		);
+	}
+
+	private spawnServer(command: string, args: string[]): void {
+		// A fresh reader: a half-written frame from a process that died is not
+		// the start of the next one's first message.
+		this.reader = new MessageReader();
 		try {
-			this.child = spawn(this.command, [], { stdio: ["pipe", "pipe", "pipe"] });
+			this.child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
 		} catch (e) {
 			this.log.appendLine(`language server did not start: ${String(e)}`);
+			this.child = undefined;
 			return;
 		}
 		this.child.on("error", (e) => {
 			// Not installed is the common case, and it must not be a popup.
-			this.log.appendLine(`language server unavailable (${this.command}): ${e.message}`);
+			this.log.appendLine(`language server unavailable (${command}): ${e.message}`);
 			this.child = undefined;
+			this.fallBack("could not be started");
 		});
+		// A runner with no `:lsp` prints its refusal here and exits 1.
+		this.child.on("exit", (code) => this.fallBack(`exited with code ${code}`));
 		this.child.stderr?.on("data", (b: Buffer) => this.log.append(b.toString()));
 		this.child.stdout?.on("data", (b: Buffer) => {
 			for (const message of this.reader.push(b)) {
+				this.answered = true;
 				this.receive(message);
 			}
 		});
@@ -89,18 +127,30 @@ export class LanguageClient implements vscode.Disposable {
 		this.send({ jsonrpc: "2.0", method: "initialized", params: {} });
 
 		// Whatever is already open when the extension activates never fires
-		// `onDidOpen`, so it is opened explicitly.
+		// `onDidOpen`, so it is opened explicitly. Also what re-syncs the
+		// documents onto a fallback server, which missed them the first time.
 		for (const doc of vscode.workspace.textDocuments) {
 			this.didOpen(doc);
 		}
-		this.subs.push(
-			vscode.workspace.onDidOpenTextDocument((d) => this.didOpen(d)),
-			vscode.workspace.onDidChangeTextDocument((e) => this.didChange(e.document)),
-			vscode.workspace.onDidCloseTextDocument((d) => this.didClose(d)),
-		);
+	}
+
+	/**
+	 * Try [`LEGACY_SERVER`] once, if the configured one never said anything.
+	 *
+	 * A server that answered and then died is a crash, not a version
+	 * mismatch, and reaching for a different binary would hide it.
+	 */
+	private fallBack(why: string): void {
+		if (this.answered || this.fellBack || this.disposed) {
+			return;
+		}
+		this.fellBack = true;
+		this.log.appendLine(`${[this.command, ...this.args].join(" ")} ${why}; trying ${LEGACY_SERVER}`);
+		this.spawnServer(LEGACY_SERVER, []);
 	}
 
 	dispose(): void {
+		this.disposed = true;
 		for (const s of this.subs) {
 			s.dispose();
 		}

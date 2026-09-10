@@ -1,7 +1,6 @@
 {
 	"bin": {
-		"run": "bin/run.js",
-		"runfile-lsp": "bin/runfile-lsp.js"
+		"run": "bin/run.js"
 	},
 	"description": "Runfile CLI — a cross-platform command runner with its own small language",
 	"engines": {

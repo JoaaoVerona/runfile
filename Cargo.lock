@@ -1274,6 +1274,7 @@ dependencies = [
  "runfile-discovery",
  "runfile-env",
  "runfile-lang",
+ "runfile-lsp",
  "runfile-runtime",
  "runfile-state",
  "serde_json",

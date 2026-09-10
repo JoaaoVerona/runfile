@@ -43,6 +43,7 @@ const SECTIONS: &[Section] = &[
 				"run :generate <editor>",
 				"write task files for zed, jetbrains or vscode",
 			),
+			Row("run :lsp", "start the language server on stdin/stdout"),
 			Row("run :update", "update the runfile binary"),
 		],
 	),
@@ -194,6 +195,15 @@ fn real_main() -> Result<ExitCode, String> {
 			for c in completions::complete(words, cword, &targets) {
 				println!("{c}");
 			}
+			return Ok(ExitCode::SUCCESS);
+		}
+		// The language server, on stdin/stdout. It answers here -- before the
+		// catalog is built and before anything else can reach stdout -- because
+		// LSP framing owns that stream: one stray line of ours desynchronises
+		// the client for the rest of the session. Errors go to stderr, which
+		// is where `main` already writes them and where an editor logs them.
+		":lsp" => {
+			runfile_lsp::serve().map_err(|e| e.to_string())?;
 			return Ok(ExitCode::SUCCESS);
 		}
 		":init" => {

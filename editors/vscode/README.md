@@ -14,9 +14,9 @@ sections. Pin the ones you reach for and they move to the top.
 
 **Syntax highlighting**, with `$` lines and `exec` bodies highlighted as the shell they are.
 
-**Diagnostics as you type**, when [`runfile-lsp`](https://github.com/JoaaoVerona/runfile) is installed — from
-the same parser `run` itself uses, so the editor never disagrees with what will actually happen. Shell lines are
-handed to [shellcheck](https://www.shellcheck.net) when it is available.
+**Diagnostics as you type**, from the language server inside `run` itself (`run :lsp`) — the same parser the
+runner uses, so the editor never disagrees with what will actually happen. Shell lines are handed to
+[shellcheck](https://www.shellcheck.net) when it is available.
 
 ## How targets are found
 
@@ -56,7 +56,7 @@ Turn `runfile.interactive` off to use a plain shell task instead.
 | `runfile.codeLens` | `true` | Show the inline Run button. |
 | `runfile.interactive` | `true` | Run tasks in a pseudoterminal so prompts work. |
 | `runfile.lsp` | `true` | Report errors as you type. |
-| `runfile.lspPath` | `runfile-lsp` | Path to the language server. |
+| `runfile.lspPath` | `run` | Path to `run`, asked to serve the language server as `run :lsp`. |
 
 ## Commands
 
@@ -66,7 +66,7 @@ If targets are missing, *Show Log* has the failing command and its stderr.
 
 ## Requirements
 
-The `run` CLI on your `PATH`. `runfile-lsp` as well, for diagnostics.
+The `run` CLI on your `PATH`. That is all — the language server is `run :lsp`, so there is no second binary.
 
 ## License
 

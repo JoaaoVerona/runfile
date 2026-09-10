@@ -320,7 +320,7 @@ crates/
   runfile-lang/                # Lexer, parser, evaluator, values, the function library
   runfile-discovery/           # Finding runfiles/ directories and building the catalog
   runfile-runtime/             # Properties, env building, process spawning, the walker, dispatch
-  runfile-lsp/                 # Language server: diagnostics, completion, shellcheck delegation
+  runfile-lsp/                 # Language server (a library; served by `run :lsp`)
   runfile-cli/                 # The `run` binary
   runfile-env/                 # .env parsing and env-map building
   runfile-crypto/              # AES-256-GCM for encrypted env values
@@ -579,12 +579,25 @@ second time as the global. This replaced `includes` entirely.
 (shellcheck delegation).
 
 - Diagnostics come from the **real parser**, so an editor and the runner cannot disagree about validity.
-- The binary ships in the release archive beside `run`; both installers, the npm package (one launcher script
-  copied under each name), `:update` and the repo's own `run install` install both. The editor integrations
-  find it on PATH by name. **Installing one without the other is the bug to avoid**: an editor talks to the
-  language server, so a `run` newer than the `runfile-lsp` beside it underlines valid files in red while the
-  runner accepts them. It happened three times during the rewrite -- `retry`, `.logging`, a namespaced `run`
-  call -- which is why `install` copies both and never one.
+- **It is a library, and `run :lsp` is how it is served.** There is no `runfile-lsp` binary: the crate has no
+  `[[bin]]`, `serve()` is its entry point, and the CLI dispatches to it from an arm that returns before the
+  catalog is built. Everything it links -- `runfile-lang`, `runfile-discovery`, `runfile-runtime`,
+  `serde_json` -- was already inside `run`, so it costs `run` about 200 KB and saves 1.1 MB from every
+  archive, six of them in the npm package. The bytes are not the reason. **Two copies of one parser could
+  skew, and did**: a `run` newer than the `runfile-lsp` beside it underlines valid files in red while the
+  runner accepts them, which happened three times during the rewrite -- `retry`, `.logging`, a namespaced
+  `run` call. Ten sites existed only to keep the two in step (both installers, two blocks of `release.yml`,
+  the npm `bin` map and its name-yourself-from-`__filename` launcher, the setup action's `run*` glob, a CI
+  step, `install.run`, `runfile.lspPath`), and the glob had already broken every consumer's job once by
+  expanding to two words. One file cannot skew against itself.
+- **`:lsp` answers before anything can print.** LSP framing owns stdout, and one stray line desynchronises the
+  client for the rest of the session -- so the arm sits with the other `:` commands, all of which return
+  before `catalog()`, and errors go to stderr where `main` already writes them.
+- **The extension falls back to a `runfile-lsp` on PATH, once, and only if `run :lsp` never answers.** The
+  marketplace updates the extension on its own while `run` is updated by hand, so a client can meet a runner
+  that predates the subcommand -- and that runner shipped a standalone server next to it. A server that
+  answered and *then* died is a crash, not a mismatch, and is not retried. Removable once no supported `run`
+  predates `:lsp`.
 - The transport is hand-rolled. LSP framing is a header and a byte count; a framework would reintroduce the
   async runtime this rewrite removed, for a server that answers one client, one message at a time.
 - Full document sync, deliberately: these files are small, and an incremental applier is a source of drift.
@@ -987,9 +1000,11 @@ tests that assert the mechanism rather than the symptom.
    matter on Windows, where the Known Folder API ignores `HOME` and `APPDATA`; the CLI reads `HOME` before
    asking the platform for exactly this reason.
 4. LSP behaviour is tested by scripting a whole client conversation through the real transport
-   (`crates/runfile-lsp/tests/protocol.rs`), and the compiled binary is started as a subprocess
-   (`tests/binary.rs`) — nothing in the former would notice a broken `main.rs` or a renamed binary, and it
-   is what ships.
+   (`crates/runfile-lsp/tests/protocol.rs`), and `run :lsp` is started as a subprocess
+   (`crates/runfile-cli/tests/lsp.rs`) — nothing in the former would notice an arm that never dispatched, and
+   the subcommand is what ships. One of those tests asserts that stdout **opens with a frame**, in a
+   directory with a project in it: `run` is a program that talks, and anything of its own ahead of the first
+   header would desynchronise the client.
 5. **`run check` cross-checks the six release triples**, so a break that only shows on another platform is
    found before CI. `windows-sys` 0.61 moving `BOOL` out of `Win32::Foundation` cost a release run: nothing
    local compiled for Windows, and `cargo check --target` needs no linker, so nothing had to. Targets `rustup`

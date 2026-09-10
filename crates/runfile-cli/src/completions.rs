@@ -316,6 +316,9 @@ pub const ROOT: Cmd = Cmd {
 			arg: Arg::None,
 		},
 		leaf(":init"),
+		// Typed once, into an editor's configuration, by someone who read the
+		// help -- so it is listed rather than hidden the way `:complete` is.
+		leaf(":lsp"),
 		Cmd {
 			name: ":format",
 			subs: &[],

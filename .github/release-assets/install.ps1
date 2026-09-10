@@ -54,33 +54,6 @@ try {
 
   Write-Host "Installed run.exe to $dest"
 
-
-  # The language server ships beside the runner from 0.48 on; an older archive
-
-  # simply does not have it. Same rename-aside dance: an editor may be running it.
-
-  $lspSrc = Join-Path $tmp "runfile-cli-$target\runfile-lsp.exe"
-
-  if (Test-Path $lspSrc) {
-
-    $lspDest = Join-Path $installDir 'runfile-lsp.exe'
-
-    if (Test-Path $lspDest) {
-
-      Remove-Item -Path "$lspDest.old" -Force -ErrorAction SilentlyContinue
-
-      Rename-Item -Path $lspDest -NewName 'runfile-lsp.exe.old' -ErrorAction SilentlyContinue
-
-    }
-
-    Move-Item -Path $lspSrc -Destination $lspDest -Force
-
-    if (Test-Path "$lspDest.old") { Remove-Item -Path "$lspDest.old" -Force -ErrorAction SilentlyContinue }
-
-    Write-Host "Installed runfile-lsp.exe to $lspDest"
-
-  }
-
   $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
   if (-not ($userPath -split ';' -contains $installDir)) {
     [Environment]::SetEnvironmentVariable('Path', "$userPath;$installDir", 'User')

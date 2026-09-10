@@ -152,9 +152,13 @@ jobs:
       - name: Setup Runfile
         uses: ./.github/actions/setup
 
-      - name: Both binaries are on PATH
+      - name: The binary is on PATH and serves the protocol
         run: |
           run --version
-          # Asked with `command -v`, not `--version`: the language server does
-          # not take one and would sit reading stdin for a request instead.
-          command -v runfile-lsp
+          # Fed a shutdown rather than asked for `--version`: `:lsp` does not
+          # take one and would sit reading stdin for a request instead. This
+          # is what a `command -v runfile-lsp` used to stand in for, and it
+          # asks the sharper question -- that the server ships inside the
+          # runner and answers, not merely that a second file arrived.
+          printf 'Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"shutdown"}' |
+            run :lsp | grep -q Content-Length

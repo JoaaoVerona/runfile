@@ -29,6 +29,7 @@ runfile-crypto = { path = "crates/runfile-crypto" }
 runfile-discovery = { path = "crates/runfile-discovery" }
 runfile-env = { path = "crates/runfile-env" }
 runfile-lang = { path = "crates/runfile-lang" }
+runfile-lsp = { path = "crates/runfile-lsp" }
 runfile-runtime = { path = "crates/runfile-runtime" }
 runfile-state = { path = "crates/runfile-state" }
 secret-service = { default-features = false, features = ["rt-async-io-crypto-rust"], version = "=5.1.0" }

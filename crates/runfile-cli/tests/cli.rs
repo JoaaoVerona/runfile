@@ -836,7 +836,9 @@ fn the_bash_script_completes_target_names() {
 fn the_bash_script_completes_subcommands_after_a_colon() {
 	let p = project(&[(MARK, &marker("o"))]);
 	let got = complete_bash(&p, "run :l");
-	assert_eq!(got, [":list"]);
+	// Both, in the tree's own order -- the point is that readline handed the
+	// script `:l` whole rather than splitting the colon off it.
+	assert_eq!(got, [":list", ":lsp"]);
 }
 
 #[cfg(unix)]

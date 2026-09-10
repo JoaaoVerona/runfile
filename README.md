@@ -817,9 +817,9 @@ actually decrypts, so a locked keyring never gets in the way of an unrelated tar
 
 ## Editor support
 
-`runfile-lsp` ships beside `run` and gives you diagnostics, completion, formatting, go-to-definition and
-documentation on hover — from the same parser `run` itself uses, so your editor never disagrees with what will
-actually happen.
+`run :lsp` is a language server, so the binary you already have gives you diagnostics, completion, formatting,
+go-to-definition and documentation on hover — from the same parser `run` itself uses, so your editor never
+disagrees with what will actually happen. There is nothing extra to install.
 
 Hover anything: a function shows its signature, what it does and a worked example; a property adds whether it
 may sit inside a block; `$`, `exec`, `run`, `retry`, `match` and the rest explain the line form itself.
@@ -838,8 +838,10 @@ same command in a `.sh` file. Set `"editor.formatOnSave": true` and saving forma
 **JetBrains IDEs** read the same grammar: *Settings → Editor → TextMate Bundles*, add the `editors/vscode`
 directory from a checkout.
 
-**Zed, Neovim and Helix** use the tree-sitter grammar in `editors/tree-sitter`, with highlight queries
-included. For Neovim with nvim-treesitter:
+**Zed, Neovim and Helix** point their language-server configuration at `run` with the argument `:lsp` — in
+Neovim, `vim.lsp.config("runfile", { cmd = { "run", ":lsp" }, filetypes = { "runfile" } })` — and take the
+tree-sitter grammar in `editors/tree-sitter` for highlighting, with highlight queries included. For Neovim
+with nvim-treesitter:
 
 ```lua
 require("nvim-treesitter.parsers").get_parser_configs().runfile = {

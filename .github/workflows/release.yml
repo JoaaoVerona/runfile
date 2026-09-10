@@ -75,12 +75,9 @@ jobs:
           case "$CARGO_BUILD_TARGET" in *windows*) bin=run.exe ;; esac
           dir="runfile-cli-$CARGO_BUILD_TARGET"
           mkdir "$dir"
+          # One file: the language server is `run :lsp`, so the archive holds
+          # the runner and nothing that could be an older copy of its parser.
           cp "target/$CARGO_BUILD_TARGET/release/$bin" "$dir/"
-          # The language server ships beside the runner: the editor integrations
-          # look for it on PATH by name.
-          lsp=runfile-lsp
-          case "$CARGO_BUILD_TARGET" in *windows*) lsp=runfile-lsp.exe ;; esac
-          cp "target/$CARGO_BUILD_TARGET/release/$lsp" "$dir/"
           cp README.md "$dir/"
           case "$CARGO_BUILD_TARGET" in
             *windows*) 7z a "$dir.zip" "./$dir" ;;
@@ -278,8 +275,6 @@ jobs:
           mkdir -p "$pkg/bin"
           cp npm/package.json "$pkg/"
           cp npm/run.js "$pkg/bin/"
-          # The same launcher, named for the second binary it starts.
-          cp npm/run.js "$pkg/bin/runfile-lsp.js"
           cp README.md "$pkg/"
           declare -A map=(
             [aarch64-apple-darwin]=darwin-arm64
@@ -296,12 +291,11 @@ jobs:
               *windows*)
                 unzip -q "dist/runfile-cli-$target.zip" -d "$RUNNER_TEMP/x-$target"
                 cp "$RUNNER_TEMP/x-$target/runfile-cli-$target/run.exe" "$pkg/bin/$plat/"
-                cp "$RUNNER_TEMP/x-$target/runfile-cli-$target/runfile-lsp.exe" "$pkg/bin/$plat/"
                 ;;
               *)
                 tar -xJf "dist/runfile-cli-$target.tar.xz" -C "$RUNNER_TEMP"
-                cp "$RUNNER_TEMP/runfile-cli-$target/run" "$RUNNER_TEMP/runfile-cli-$target/runfile-lsp" "$pkg/bin/$plat/"
-                chmod +x "$pkg/bin/$plat/run" "$pkg/bin/$plat/runfile-lsp"
+                cp "$RUNNER_TEMP/runfile-cli-$target/run" "$pkg/bin/$plat/"
+                chmod +x "$pkg/bin/$plat/run"
                 ;;
             esac
           done

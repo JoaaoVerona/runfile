@@ -200,12 +200,12 @@
 				"runfile.lsp": {
 					"type": "boolean",
 					"default": true,
-					"markdownDescription": "Report errors in `.run` files as you type, using the `runfile-lsp` language server. Diagnostics come from the same parser `run` itself uses, so the editor and the runner cannot disagree. Turn off if the server is not installed."
+					"markdownDescription": "Report errors in `.run` files as you type, using the language server built into `run` (`run :lsp`). Diagnostics come from the same parser `run` itself uses, so the editor and the runner cannot disagree."
 				},
 				"runfile.lspPath": {
 					"type": "string",
-					"default": "runfile-lsp",
-					"description": "Path to the runfile-lsp executable. Looked up on PATH when left as a bare name."
+					"default": "run",
+					"description": "Path to the run executable, which is asked to serve the language server as `run :lsp`. Looked up on PATH when left as a bare name."
 				}
 			}
 		},

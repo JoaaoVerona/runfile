@@ -93,17 +93,15 @@ runs:
           tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
         fi
 
-        # The glob is right here: the archive holds the language server beside
-        # the runner and both belong on PATH — an editor talking to a stale one
-        # underlines valid files in red.
-        mv "$RUNNER_TEMP/runfile-cli-${TARGET}"/run* "$install_dir/"
-        echo "$install_dir" >> "$GITHUB_PATH"
-        # But not here. It was one binary until 1.0.0 shipped `runfile-lsp` in
-        # the archive, and then `run*` expanded to both: the second became the
-        # first's argument, and every consumer's job died on `no target named
-        # …/runfile-bin/runfile-lsp`. Keyed off `$EXT`, like the extraction
-        # above, so the spellings live in one place.
+        # Named, not globbed. The archive holds one binary — the language
+        # server is `run :lsp` — and the spelling is keyed off `$EXT`, like the
+        # extraction above, so it lives in one place. A `run*` glob here once
+        # expanded to two files when 1.0.0 added `runfile-lsp` beside the
+        # runner: the second became the first's argument, and every consumer's
+        # job died on `no target named …/runfile-bin/runfile-lsp`.
         if [ "$EXT" = "zip" ]; then bin=run.exe; else bin=run; fi
+        mv "$RUNNER_TEMP/runfile-cli-${TARGET}/$bin" "$install_dir/"
+        echo "$install_dir" >> "$GITHUB_PATH"
         "$install_dir/$bin" --version
 
     - name: Build runfile from source

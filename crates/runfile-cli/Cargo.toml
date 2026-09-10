@@ -22,6 +22,7 @@ runfile-crypto.workspace = true
 runfile-env.workspace = true
 runfile-discovery.workspace = true
 runfile-lang.workspace = true
+runfile-lsp.workspace = true
 runfile-runtime.workspace = true
 runfile-state.workspace = true
 serde_json.workspace = true

@@ -42,7 +42,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	const config = vscode.workspace.getConfiguration("runfile")
 	if (config.get<boolean>("lsp", true)) {
-		const client = new LanguageClient(config.get<string>("lspPath", "runfile-lsp"), output)
+		// The runner is the server: `run :lsp`. The extension already needs
+		// `run` on PATH -- the task provider, the tree and the code lens all
+		// shell out to it -- so nothing new has to be installed for this, and
+		// there is no second copy of the parser to fall behind the runner.
+		const client = new LanguageClient(config.get<string>("lspPath", "run"), [":lsp"], output)
 		client.start()
 		context.subscriptions.push(client)
 		// Registering this is what makes `editor.formatOnSave` work for `.run`

@@ -2,10 +2,7 @@
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const KEY = process.platform + '-' + process.arch;
-// One launcher for both binaries, `run` and `runfile-lsp`: which one is
-// decided by this file's own name, so the second is a copy, not a second file.
-const NAME = path.basename(__filename, ".js");
-const EXE = process.platform === "win32" ? `${NAME}.exe` : NAME;
+const EXE = process.platform === "win32" ? "run.exe" : "run";
 const BINARIES = {
   "linux-x64": EXE,
   "linux-arm64": EXE,
