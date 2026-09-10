@@ -1,6 +1,4 @@
 # One-time: install the nightly Miri component and build its sysroot
 
-.alias = "miri:setup"
-
 $ rustup toolchain install nightly --component miri
 $ cargo +nightly miri setup

@@ -111,14 +111,6 @@ pub(crate) fn render(cat: &Catalog, target: &Target) -> String {
 		}
 	}
 
-	let aliases = runfile_discovery::aliases_of(target);
-	if !aliases.is_empty() {
-		out.push_str(&format!(
-			"\n{}\n  {}\n",
-			help::bold("Also answers to"),
-			aliases.join(", ")
-		));
-	}
 	out.push_str(&format!(
 		"\n{}\n  {}\n",
 		help::bold("Defined in"),

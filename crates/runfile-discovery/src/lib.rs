@@ -75,8 +75,6 @@ pub enum DiscoverError {
 	NotFound(PathBuf),
 	#[error("target `{name}` is defined twice: {a} and {b}")]
 	Duplicate { name: String, a: PathBuf, b: PathBuf },
-	#[error("alias `{alias}` is claimed by both `{a}` and `{b}`")]
-	DuplicateAlias { alias: String, a: String, b: String },
 	#[error(
 		"global runfiles live in two places at once: {a} and {b}\n\
 		 keep one of them and remove or empty the other"
@@ -87,31 +85,6 @@ pub enum DiscoverError {
 		 it is read before any target is chosen, so there is nothing to interpolate from"
 	)]
 	UnreadableScope { path: PathBuf, line: usize },
-}
-
-/// Read the declaration-region values of a property from a `_shared.run`.
-/// Only literal strings are read: this runs before any target is chosen, so
-/// there are no arguments to substitute.
-fn shared_strings(path: &Path, name: &str) -> Vec<String> {
-	let Ok(src) = std::fs::read_to_string(path) else {
-		return Vec::new();
-	};
-	let Ok(ast) = runfile_lang::parse(&src) else {
-		return Vec::new();
-	};
-	ast.body
-		.properties
-		.iter()
-		.filter(|p| p.path.first().is_some_and(|h| h == name))
-		.filter_map(|p| match &p.value {
-			Some(runfile_lang::Expr::Str(parts, _)) => Some(parts),
-			_ => None,
-		})
-		.filter_map(|parts| match parts.first() {
-			Some(runfile_lang::InterpPart::Literal(t)) => Some(t.clone()),
-			_ => None,
-		})
-		.collect()
 }
 
 /// The property that scopes the machine-wide directory.
@@ -488,47 +461,11 @@ fn walk_runs(
 	Ok(())
 }
 
-/// The names a target answers to besides its own, qualified by its namespace.
-///
-/// An alias declared in `web/runfiles/setup.run` as `deps` answers to
-/// `web:deps`, not `deps`: a subproject must not be able to claim a bare name
-/// in the root, and the qualified spelling is the one every listing shows.
-pub fn aliases_of(t: &Target) -> Vec<String> {
-	let prefix = match t.name.rsplit_once(':') {
-		Some((p, _)) => format!("{p}:"),
-		None => String::new(),
-	};
-	shared_strings(&t.path, "alias")
-		.into_iter()
-		.map(|a| format!("{prefix}{a}"))
-		.collect()
-}
-
 impl Catalog {
-	/// Resolve by file name first; only scan aliases on a miss, so the common
-	/// path costs one lookup and nothing is read from disk.
+	/// A target is reached by its file name, and only by its file name: one
+	/// hash lookup, nothing read from disk.
 	pub fn resolve(&self, name: &str) -> Option<&Target> {
-		self.targets.get(name).or_else(|| self.by_alias(name).ok().flatten())
-	}
-
-	/// Scan every target's declaration region for `.alias = "<name>"`. Only
-	/// reached on a miss, which is why aliases cost nothing in the common case.
-	pub fn by_alias(&self, name: &str) -> Result<Option<&Target>, DiscoverError> {
-		let mut found: Option<&Target> = None;
-		for t in self.targets.values() {
-			if !aliases_of(t).iter().any(|a| a == name) {
-				continue;
-			}
-			if let Some(prev) = found {
-				return Err(DiscoverError::DuplicateAlias {
-					alias: name.to_string(),
-					a: prev.name.clone(),
-					b: t.name.clone(),
-				});
-			}
-			found = Some(t);
-		}
-		Ok(found)
+		self.targets.get(name)
 	}
 
 	/// Every `_shared.run` that applies to a target, outermost first, so a

@@ -20,6 +20,10 @@ comment     = "#" , { ANY - NEWLINE } ;
 
 (* ---- properties ---- *)
 property    = WS , "." , ident , { "." , ident } , [ WS , "=" , WS , expr ] , eol ;
+(* A property may be written anywhere in a block and is applied where it sits, so it reads the bindings above
+   it. Which names may sit below the block's first statement is a rule about the name rather than the shape:
+   `.parallel`, `.watch`, `.detach` and `.only-in-directories` describe the whole block and are refused there.
+   `PROPERTIES` in runfile-runtime is the list. *)
 
 (* ---- shell ---- *)
 shell       = WS , "$" , " " , shell_text , NEWLINE ;               (* no comment: all of it is the shell's *)

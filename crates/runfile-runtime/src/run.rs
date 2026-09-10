@@ -5,6 +5,7 @@ use crate::props::{PropError, Props};
 use runfile_lang::Value;
 use runfile_lang::ast::*;
 use runfile_lang::eval::{EvalError, Scope, eval_boundary, interpolate_shell};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
@@ -267,7 +268,35 @@ fn walk(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError
 	if props.parallel {
 		return walk_parallel(block, props, r);
 	}
+	// A block almost always writes its properties at the top, and those are
+	// already in `props`. Only when one is written below a statement is there
+	// anything to apply mid-walk -- and only then is there an environment to
+	// put back, which is why the whole walk is wrapped rather than each
+	// property: the block's own environment is what the block after it expects.
+	if block.trailing().is_empty() {
+		return walk_body(block, props, r);
+	}
+	let saved_env = r.env.clone();
+	let saved_scope_env = r.scope.env.clone();
+	let out = walk_body(block, props, r);
+	r.env = saved_env;
+	r.scope.env = saved_scope_env;
+	out
+}
+
+fn walk_body(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
+	// Borrowed until a trailing property makes it its own: a block without one
+	// walks on exactly the properties it was handed.
+	let mut props = Cow::Borrowed(props);
+	let mut trailing = block.trailing().iter().peekable();
 	for st in &block.statements {
+		// Properties written above this line but below the one before it. They
+		// read the scope as it stands here -- which is the whole point: the
+		// binding they name was made by a statement already run.
+		while trailing.peek().is_some_and(|p| p.span.line < st.span().line) {
+			let p = trailing.next().expect("peeked");
+			apply_trailing(p, &mut props, r)?;
+		}
 		// Between statements, not inside one: a child already took the same
 		// SIGINT and is gone, so there is nothing to wait for and nothing to
 		// kill. `.ignore-errors` does not apply -- an interrupt is not a
@@ -275,11 +304,25 @@ fn walk(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError
 		if r.interrupted.is_some_and(|f| f()) {
 			return Err(RunError::Interrupted);
 		}
-		if let Err(e) = statement(st, props, r)
+		if let Err(e) = statement(st, &props, r)
 			&& (!props.ignore_errors || e.is_stop())
 		{
 			return Err(e);
 		}
+	}
+	Ok(())
+}
+
+/// Apply a property written below a statement, and rebuild the environment when
+/// it is one the environment is made of.
+///
+/// `nested` is `false` because it cannot matter: `Props::extend` has already
+/// refused every declaration-only property here, and everything header-only is
+/// declaration-only, so what reaches this may sit in a block by definition.
+fn apply_trailing(p: &Property, props: &mut Cow<'_, Props>, r: &mut Runner<'_>) -> Result<(), RunError> {
+	props.to_mut().apply(p, &mut r.scope, false)?;
+	if matches!(p.path[0].as_str(), "env" | "env-file" | "add-path" | "workdir") {
+		build_env(props, r)?;
 	}
 	Ok(())
 }
@@ -825,7 +868,18 @@ fn collect_nested(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Ve
 }
 
 fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>) -> Result<(), RunError> {
+	// A fan-out's preamble runs in source order, so a property written inside
+	// one is applied in source order too -- from there down, over the leaves
+	// collected after it. The environment is not put back here: `walk_parallel`
+	// is called from `walk`, which already wraps a block that has one.
+	let mut props = Cow::Borrowed(props);
+	let mut trailing = block.trailing().iter().peekable();
 	for st in &block.statements {
+		while trailing.peek().is_some_and(|p| p.span.line < st.span().line) {
+			let p = trailing.next().expect("peeked");
+			apply_trailing(p, &mut props, r)?;
+		}
+		let props = props.as_ref();
 		match st {
 			Statement::Let { names, value, span } | Statement::Assign { names, value, span } => {
 				let v = value_of(value, props, r)?;

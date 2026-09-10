@@ -132,28 +132,60 @@ fn namespaces_come_from_discovered_subprojects() {
 
 #[test]
 fn every_exported_property_name_is_actually_known() {
-	// The exported list drives editor completion; a name here that `extend`
-	// rejects would be offered and then fail.
+	// The exported list drives editor completion and every static check; a name
+	// here that `extend` rejects would be offered and then fail, and a column
+	// that does not match what `extend` does is an editor disagreeing with the
+	// runner. All three are asserted against the behaviour, not restated.
+	// Machine-wide, so `.only-in-directories` is admissible here: it is the one
+	// property whose legality depends on where the file was found rather than
+	// on anything in the line.
+	fn base() -> crate::props::Props {
+		crate::props::Props {
+			machine_wide: true,
+			..Default::default()
+		}
+	}
 	for p in crate::props::PROPERTIES {
-		let (name, block_ok) = (p.name, &p.block_scoped);
+		let name = p.name;
 		// `.env` is the one property addressed by sub-key rather than set whole.
 		let lhs = if name == "env" {
 			"env.SOME_KEY".to_string()
 		} else {
 			(*name).to_string()
 		};
-		let src = format!(".{lhs} = \"x\"\n$ true\n");
+		// A flag will not take a string, which is the point of the column.
+		let rhs = if p.flag {
+			"true".to_string()
+		} else {
+			"\"x\"".to_string()
+		};
+		let src = format!(".{lhs} = {rhs}\n$ true\n");
 		let ast = runfile_lang::parse(&src).unwrap_or_else(|e| panic!(".{name}: {e}"));
 		let mut sc = runfile_lang::Scope::new();
-		if let Err(crate::props::PropError::Unknown { .. }) =
-			crate::props::Props::default().extend(&ast.body, &mut sc, false)
-		{
-			panic!("`.{name}` is exported for completion but not known");
+		match base().extend(&ast.body, &mut sc, false) {
+			Err(crate::props::PropError::Unknown { .. }) => {
+				panic!("`.{name}` is exported for completion but not known")
+			}
+			Err(e) => panic!("`.{name}` is exported but its own example shape fails: {e}"),
+			Ok(_) => {}
 		}
-		// And the second column must match where it is actually allowed.
-		let nested = crate::props::Props::default().extend(&ast.body, &mut sc, true);
+		// Column two: where a block allows it at all.
+		let nested = base().extend(&ast.body, &mut sc, true);
 		let allowed = !matches!(nested, Err(crate::props::PropError::NotBlockScoped { .. }));
-		assert_eq!(allowed, *block_ok, "`.{name}` block-scoping is mislabelled");
+		assert_eq!(allowed, p.block_scoped, "`.{name}` block-scoping is mislabelled");
+
+		// Column three: whereabouts in one. Written below a statement rather
+		// than above it.
+		let below = runfile_lang::parse(&format!("$ true\n.{lhs} = {rhs}\n")).expect("parses");
+		let trailing = base().extend(&below.body, &mut sc, false);
+		let refused = matches!(trailing, Err(crate::props::PropError::NotInDeclaration { .. }));
+		assert_eq!(refused, p.declaration_only, "`.{name}` declaration-only is mislabelled");
+
+		// Column four: whether a constant that is not a bool is refused.
+		let with_number = runfile_lang::parse(&format!(".{lhs} = 23\n$ true\n")).expect("parses");
+		let numbered = base().extend(&with_number.body, &mut sc, false);
+		let refused = matches!(numbered, Err(crate::props::PropError::NotABool { .. }));
+		assert_eq!(refused, p.flag, "`.{name}` flag is mislabelled");
 	}
 }
 
@@ -287,4 +319,64 @@ fn a_machine_wide_file_may_scope_itself_even_when_it_is_the_local_directory() {
 		h.run("deploy", &[])
 			.expect("the machine-wide directory may scope itself wherever it was reached from");
 	});
+}
+
+// ---- flags
+
+/// `.ignore-errors = <rhs>`, applied against a scope holding `ENV.F`.
+fn flag_with(rhs: &str, f: Option<&str>) -> Result<crate::props::Props, crate::props::PropError> {
+	let ast = runfile_lang::parse(&format!(".ignore-errors = {rhs}\n$ true\n")).expect("parses");
+	let mut sc = runfile_lang::Scope::new();
+	if let Some(v) = f {
+		sc.env.insert("F".into(), v.into());
+	}
+	crate::props::Props::default().extend(&ast.body, &mut sc, false)
+}
+
+#[test]
+fn a_flag_written_with_a_constant_that_is_not_a_bool_is_refused() {
+	// It used to be read as `false` and say nothing: `matches!(v, Bool(true))`
+	// answered every other value the same way, so a flag that did not take
+	// effect was found out later, if at all. A constant has one reading and
+	// this is it.
+	for rhs in ["23", "\"abc\"", "[]", "\"\""] {
+		let e = flag_with(rhs, None).expect_err(rhs);
+		assert!(matches!(e, crate::props::PropError::NotABool { .. }), "{rhs}: {e}");
+	}
+	// The near miss is worth naming: the quotes are the whole mistake.
+	let e = flag_with("\"true\"", None).unwrap_err();
+	assert!(e.to_string().contains("write `true` without the quotes"), "{e}");
+	let e = flag_with("\"0\"", None).unwrap_err();
+	assert!(e.to_string().contains("write `false`"), "{e}");
+	// And a bool is what it takes.
+	assert!(flag_with("true", None).expect("a bool literal").ignore_errors);
+	assert!(!flag_with("false", None).expect("a bool literal").ignore_errors);
+}
+
+#[test]
+fn a_flag_worked_out_during_the_run_is_left_to_the_run() {
+	// The rule is about constants, not about types: `ENV.F` is a string on
+	// every platform there is, and refusing it statically would leave a flag
+	// with no way to be decided by anything outside the file.
+	for (v, want) in [("true", true), ("1", true), ("TRUE", true), (" true ", true)] {
+		let p = flag_with("ENV.F", Some(v)).unwrap_or_else(|e| panic!("F={v}: {e}"));
+		assert_eq!(p.ignore_errors, want, "F={v}");
+	}
+	for v in ["false", "0"] {
+		assert!(!flag_with("ENV.F", Some(v)).unwrap().ignore_errors, "F={v}");
+	}
+	// An interpolated string is not a constant either, so it takes the same path.
+	assert!(flag_with("\"{{ ENV.F }}\"", Some("true")).unwrap().ignore_errors);
+	// And a `?` chain ending in a literal is how a default is written.
+	assert!(!flag_with("ARG.f ? ENV.F ? \"false\"", None).unwrap().ignore_errors);
+}
+
+#[test]
+fn a_flag_that_resolves_to_neither_says_so_rather_than_reading_as_false() {
+	// The dynamic half of the same rule. Silently off is the failure worth
+	// pinning: nothing about the run says the line did not take effect.
+	for v in ["yes", "", "on", "2"] {
+		let e = flag_with("ENV.F", Some(v)).expect_err(v);
+		assert!(matches!(e, crate::props::PropError::FlagValue { .. }), "F={v}: {e}");
+	}
 }

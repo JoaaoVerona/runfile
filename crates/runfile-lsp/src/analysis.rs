@@ -100,22 +100,37 @@ fn check_properties(
 	out: &mut Vec<Diagnostic>,
 	src: &str,
 ) {
-	for p in &block.properties {
+	// Asked of the runner's own `check`, rather than described a second time
+	// here: an editor that accepts a line the runner refuses is how the two
+	// come to disagree about what a file means, and this file used to hold its
+	// own copy of the scope rule for exactly that reason.
+	let regions = block
+		.declaration()
+		.iter()
+		.map(|p| (p, false))
+		.chain(block.trailing().iter().map(|p| (p, true)));
+	for (p, trailing) in regions {
 		let Some(head) = p.path.first() else { continue };
-		let Some(known) = PROPERTIES.iter().find(|p| p.name == head) else {
-			out.push(Diagnostic {
-				range: whole_line(src, p.span.line),
-				message: format!("unknown property `.{head}`{}", nearest(head)),
-				severity: Severity::Error,
-			});
-			continue;
-		};
-		if nested && !known.block_scoped {
-			out.push(Diagnostic {
-				range: whole_line(src, p.span.line),
-				message: format!("`.{head}` is header-only and cannot be set inside a block"),
-				severity: Severity::Error,
-			});
+		match runfile_runtime::props::check(p, nested, trailing) {
+			Ok(_) => {}
+			Err(runfile_runtime::props::PropError::Unknown { .. }) => {
+				out.push(Diagnostic {
+					range: whole_line(src, p.span.line),
+					message: format!("unknown property `.{head}`{}", nearest(head)),
+					severity: Severity::Error,
+				});
+				continue;
+			}
+			// Every other refusal already reads as a sentence about the line,
+			// and carries its own line number, which the range says instead.
+			Err(e) => {
+				out.push(Diagnostic {
+					range: whole_line(src, p.span.line),
+					message: strip_line_prefix(&e.to_string()),
+					severity: Severity::Error,
+				});
+				continue;
+			}
 		}
 		if head == runfile_discovery::SCOPE && !machine_wide {
 			out.push(Diagnostic {
@@ -129,6 +144,18 @@ fn check_properties(
 		for inner in sub_blocks(st) {
 			check_properties(inner, true, machine_wide, out, src);
 		}
+	}
+}
+
+/// Drop the `line N: ` a `PropError` opens with. The runner prints one line
+/// with no other place to say where it happened; a diagnostic has a range.
+fn strip_line_prefix(msg: &str) -> String {
+	match msg.strip_prefix("line ") {
+		Some(rest) => match rest.split_once(": ") {
+			Some((n, tail)) if n.chars().all(|c| c.is_ascii_digit()) => tail.to_string(),
+			_ => msg.to_string(),
+		},
+		None => msg.to_string(),
 	}
 }
 
@@ -573,12 +600,22 @@ pub fn hover(line: &str, col: usize) -> Option<String> {
 	if let Some(rest) = word.strip_prefix('.') {
 		let head = rest.split('.').next().unwrap_or(rest);
 		let p = PROPERTIES.iter().find(|p| p.name == head)?;
-		let scope = if p.block_scoped {
+		let mut notes = vec![if p.block_scoped {
 			"Block-scoped: it may also be set inside an `if` / `for` / `match` block, and applies to that block."
 		} else {
 			"Header-only: it belongs at the top of the file, before any statement."
-		};
-		return Some(card(&format!(".{}", p.name), p.doc, p.example, Some(scope)));
+		}];
+		// Only worth saying of a block-scoped one: for a header-only property
+		// the line above has already said it.
+		if p.declaration_only && p.block_scoped {
+			notes.push("It describes the whole block, so it has to be written above the block's first statement.");
+		}
+		if p.flag {
+			notes.push(
+				"A flag: write it bare for `= true`, or give it a bool -- or an expression that resolves to one.",
+			);
+		}
+		return Some(card(&format!(".{}", p.name), p.doc, p.example, Some(&notes.join(" "))));
 	}
 	// `ARG.name`, or a bare source root.
 	if let Some((root, key)) = word.split_once('.')
@@ -653,6 +690,39 @@ mod tests {
 	#[test]
 	fn a_clean_file_has_no_diagnostics() {
 		assert!(messages("# Builds\n.shell = \"bash\"\n$ echo hi\n").is_empty());
+	}
+
+	#[test]
+	fn a_flag_given_a_constant_that_is_not_a_bool_is_underlined() {
+		// The runner's own rule, asked of the runner: these two used to be
+		// described in two places, and the scope rule had already drifted once.
+		for src in [".parallel = 23\n$ true\n", ".detach = \"abc\"\n$ true\n"] {
+			let m = messages(src);
+			assert_eq!(m.len(), 1, "{src}: {m:?}");
+			assert!(m[0].contains("is a flag and takes a bool"), "{}", m[0]);
+		}
+		assert!(
+			messages(".parallel = \"true\"\n$ true\n")[0].contains("without the quotes"),
+			"the near miss is named"
+		);
+		// A value the run works out is not the parser's business.
+		assert!(messages(".parallel = ENV.CI\n$ true\n").is_empty());
+		assert!(messages(".parallel = \"{{ ENV.CI }}\"\n$ true\n").is_empty());
+	}
+
+	#[test]
+	fn a_property_that_describes_the_block_is_underlined_below_the_first_statement() {
+		let m = messages("$ true\n.parallel\n$ true\n");
+		assert_eq!(m.len(), 1, "{m:?}");
+		assert!(m[0].contains("above the block's first statement"), "{}", m[0]);
+		// One that takes effect from where it sits is fine there.
+		assert!(messages("$ true\n.workdir = \"web\"\n$ true\n").is_empty());
+	}
+
+	#[test]
+	fn a_diagnostic_does_not_repeat_the_line_number_the_range_already_carries() {
+		let m = messages("if true\n\t.watch = \"x\"\n\t$ true\nend\n");
+		assert!(!m[0].starts_with("line "), "{}", m[0]);
 	}
 
 	#[test]

@@ -10,9 +10,6 @@ pub(crate) struct Facts {
 	/// Whether the target reads its command line, so a generated editor task
 	/// knows to offer an argument prompt.
 	pub(crate) uses_args: bool,
-	/// Other names this target answers to. Without showing them a documented
-	/// alias is undiscoverable: the listing reports the file name only.
-	pub(crate) aliases: Vec<String>,
 }
 
 impl Facts {
@@ -21,7 +18,6 @@ impl Facts {
 			description: String::new(),
 			hidden: false,
 			uses_args: false,
-			aliases: Vec::new(),
 		}
 	}
 }
@@ -35,7 +31,6 @@ pub(crate) fn facts(t: &Target) -> Facts {
 	};
 	Facts {
 		uses_args: src.contains("ARGS") || src.contains("ARG."),
-		aliases: runfile_discovery::aliases_of(t),
 		description: ast
 			.description
 			.as_deref()
@@ -64,12 +59,11 @@ pub fn print_json(cat: &Catalog) {
 	for (i, (t, f)) in rows.iter().enumerate() {
 		let comma = if i + 1 == rows.len() { "" } else { "," };
 		println!(
-			"    {{\"name\": {}, \"description\": {}, \"origin\": {}, \"path\": {}, \"aliases\": [{}]}}{comma}",
+			"    {{\"name\": {}, \"description\": {}, \"origin\": {}, \"path\": {}}}{comma}",
 			quote(&t.name),
 			quote(&f.description),
 			quote(label(t.origin)),
 			quote(&t.path.to_string_lossy()),
-			f.aliases.iter().map(|a| quote(a)).collect::<Vec<_>>().join(", "),
 		);
 	}
 	println!("  ]");
@@ -78,7 +72,7 @@ pub fn print_json(cat: &Catalog) {
 
 /// Bumped when the shape changes incompatibly, so an old extension can say so
 /// rather than misread a new CLI.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 fn quote(s: &str) -> String {
 	let mut out = String::with_capacity(s.len() + 2);
@@ -144,13 +138,7 @@ pub fn print(cat: &Catalog) {
 		}
 		first = false;
 		for (t, f) in group {
-			let also = format!("also `{}`", f.aliases.join("`, `"));
-			let described = match (f.description.is_empty(), f.aliases.is_empty()) {
-				(true, true) => String::new(),
-				(true, false) => also,
-				(false, true) => f.description.clone(),
-				(false, false) => format!("{}  ({also})", f.description),
-			};
+			let described = f.description.clone();
 			if described.is_empty() {
 				println!("  {}", t.name);
 			} else {

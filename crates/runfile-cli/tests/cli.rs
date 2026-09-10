@@ -583,30 +583,60 @@ fn dry_run_previews_a_watch_target_instead_of_watching_it() {
 	assert!(!p.dir.path().join("runs.txt").exists(), "dry-run must not execute");
 }
 
-// -------------------------------------------------------------------- alias
+// -------------------------------------------------------------- no aliases
 
 #[test]
-fn a_target_can_be_invoked_by_its_alias() {
-	let p = project(&[("runfiles/build.run", ".alias = \"b\"\n$ printf done > out.txt\n")]);
-	let o = p.run(&["b"]);
-	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(std::fs::read_to_string(p.dir.path().join("out.txt")).unwrap(), "done");
-}
-
-#[test]
-fn an_alias_shadowed_by_a_real_file_name_loses() {
-	// `x.run` declares the alias `build`, but a real `build.run` exists; the
-	// file name must win, so aliases can never hijack a target.
-	let p = project(&[
-		("runfiles/build.run", "$ printf real > out.txt\n"),
-		("runfiles/x.run", ".alias = \"build\"\n$ printf alias > out.txt\n"),
-	]);
+fn alias_is_not_a_property() {
+	// A target answered to a second name, declared in its own file and found by
+	// scanning every other file on a miss. It is gone: a name that is not a
+	// file name is not a target, and `.alias` is a spelling mistake like any
+	// other unknown property rather than a line that quietly does nothing.
+	let p = project(&[("runfiles/build.run", ".alias = \"b\"\n$ true\n")]);
 	let o = p.run(&["build"]);
-	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(std::fs::read_to_string(p.dir.path().join("out.txt")).unwrap(), "real");
+	assert!(!o.status.success(), "the property is refused where it is written");
+	assert!(err(&o).contains("unknown property `.alias`"), "{}", err(&o));
 }
 
 // ------------------------------------------------------- workdir and add-path
+
+#[test]
+fn a_workdir_can_be_worked_out_by_the_lines_above_it() {
+	// What the block form of a property always bought over the header form,
+	// now available at the top of a file too: the value is computed first and
+	// the property reads it. Before, a property resolved ahead of every
+	// statement whatever the order, so this was `d is not defined`.
+	let p = project(&[(
+		"runfiles/where.run",
+		"let d = concat(\"su\", \"b\")\n.workdir = d\n$ pwd > out.txt\n",
+	)]);
+	std::fs::create_dir(p.dir.path().join("sub")).unwrap();
+	let o = p.run(&["where"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let seen = std::fs::read_to_string(p.dir.path().join("sub/out.txt")).unwrap();
+	assert!(
+		seen.trim().ends_with("sub"),
+		"ran in the directory the binding named: {seen}"
+	);
+}
+
+#[test]
+fn a_property_below_a_statement_takes_effect_from_there_down() {
+	let p = project(&[(
+		"runfiles/half.run",
+		"$ pwd > before.txt\n.workdir = \"sub\"\n$ pwd > after.txt\n",
+	)]);
+	std::fs::create_dir(p.dir.path().join("sub")).unwrap();
+	let o = p.run(&["half"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(
+		p.dir.path().join("before.txt").exists(),
+		"the line above it ran in the anchor"
+	);
+	assert!(
+		p.dir.path().join("sub/after.txt").exists(),
+		"and the line below it ran in the new directory"
+	);
+}
 
 #[test]
 fn workdir_moves_the_target_without_moving_the_anchor() {
@@ -1074,7 +1104,7 @@ fn list_json_describes_every_visible_target() {
 	let o = p.run(&[":list", "--json"]);
 	assert!(o.status.success(), "{}", err(&o));
 	let text = out(&o);
-	assert!(text.contains("\"formatVersion\": 1"), "{text}");
+	assert!(text.contains("\"formatVersion\": 2"), "{text}");
 	assert!(text.contains("\"name\": \"build\""), "{text}");
 	assert!(text.contains("\"description\": \"Builds it\""), "{text}");
 	assert!(text.contains("\"origin\": \"local\""), "{text}");
@@ -2199,36 +2229,10 @@ fn a_branch_label_reaches_the_whole_subtree() {
 }
 
 #[test]
-fn the_listing_shows_the_names_a_target_also_answers_to() {
-	// Without this an alias is undiscoverable: the listing reports the file
-	// name, and nothing tells you the other name works.
-	let p = project(&[
-		("runfiles/build.run", "# Builds it\n.alias = \"b\"\n$ true\n"),
-		("runfiles/plain.run", ".alias = \"p\"\n$ true\n"),
-	]);
-	let o = p.run(&[":list"]);
-	assert!(o.status.success(), "{}", err(&o));
-	let text = out(&o);
-	assert!(text.contains("Builds it  (also `b`)"), "{text}");
-	assert!(
-		text.contains("also `p`"),
-		"a target with no description still shows it: {text}"
-	);
-}
-
-#[test]
-fn list_json_carries_the_aliases_too() {
-	let p = project(&[("runfiles/build.run", "# Builds it\n.alias = \"b\"\n$ true\n")]);
-	let v: serde_json::Value = serde_json::from_str(&out(&p.run(&[":list", "--json"]))).expect("JSON");
-	assert_eq!(v["targets"][0]["aliases"][0], "b");
-}
-
-#[test]
-fn a_target_with_no_alias_lists_exactly_as_before() {
+fn the_listing_shows_a_target_and_the_first_line_of_its_description() {
 	let p = project(&[("runfiles/build.run", "# Builds it\n$ true\n")]);
 	let text = out(&p.run(&[":list"]));
 	assert!(text.contains("build  Builds it"), "{text}");
-	assert!(!text.contains("also"), "{text}");
 }
 
 // ---------------------------------------------- logging, detach, parallel for
@@ -2847,7 +2851,7 @@ fn help_shows_the_whole_description_not_just_its_first_line() {
 fn help_lists_the_inputs_the_target_reads() {
 	let p = project(&[(
 		"runfiles/dep.run",
-		"# Deploy.\n.alias = \"ship\"\n\nlet e = ARG.env ? \"dev\"\n\nif FLAG.force\n\t$ echo {{ ARGS }}\nend\n",
+		"# Deploy.\n\nlet e = ARG.env ? \"dev\"\n\nif FLAG.force\n\t$ echo {{ ARGS }}\nend\n",
 	)]);
 	let o = p.run(&["dep", "--help"]);
 	let text = out(&o);
@@ -2855,7 +2859,6 @@ fn help_lists_the_inputs_the_target_reads() {
 	assert!(text.contains("defaults to dev"), "what happens without it: {text}");
 	assert!(text.contains("--force"), "{text}");
 	assert!(text.contains("positional"), "{text}");
-	assert!(text.contains("ship"), "aliases are undiscoverable otherwise: {text}");
 	assert!(text.contains("run dep [--env=<value>] [--force] [args…]"), "{text}");
 }
 

@@ -2,7 +2,7 @@
 // run rather than only inside an extension host.
 
 /** Bump alongside `FORMAT_VERSION` in crates/runfile-cli/src/list.rs. */
-export const SUPPORTED_FORMAT_VERSION = 1;
+export const SUPPORTED_FORMAT_VERSION = 2;
 
 export type Origin = "local" | "subprojects" | "global";
 

@@ -30,30 +30,20 @@ pub struct Props {
 	pub watch: Vec<String>,
 	/// Start the commands and do not wait; see `Spawn::detach`.
 	pub detach: bool,
-	pub aliases: Vec<String>,
 	/// Whether this target came from the machine-wide directory. Not a
 	/// property: it is a fact about where the file was found, and the one
 	/// thing that makes `.only-in-directories` mean anything.
 	pub machine_wide: bool,
 }
 
-/// Properties a nested block may set. Everything else is header-only, because
-/// the runner has to know it before any statement runs.
-const BLOCK_SCOPED: &[&str] = &[
-	"shell",
-	"parallel",
-	"ignore-errors",
-	"logging",
-	"workdir",
-	"env",
-	"env-file",
-	"add-path",
-];
-
-/// Every property name, and whether it may appear inside a block.
+/// Every property name, whether it may appear inside a block, and whether it
+/// is a flag.
 ///
-/// Exported so tooling offers exactly what exists. A test walks this list and
-/// rejects any name `extend` would call unknown.
+/// Exported so tooling offers exactly what exists, and so the three axes are
+/// described once: `apply` reads this list rather than carrying its own copy,
+/// and the language server reads the same one, which is what stops an editor
+/// accepting a line the runner refuses. A test walks it and rejects any name
+/// `extend` would call unknown.
 /// One property name, as editor tooling sees it. Named apart from the AST's
 /// `Property`, which is an occurrence of one in a file.
 pub struct KnownProperty {
@@ -61,6 +51,19 @@ pub struct KnownProperty {
 	/// Whether it may appear inside an `if` / `for` / `match` block, rather
 	/// than only at the top of a file.
 	pub block_scoped: bool,
+	/// Whether it is a flag: written bare for `= true`, and otherwise taking a
+	/// bool. A constant that is not one is refused where it is written, and a
+	/// value worked out during the run has to resolve to a bool or to one of
+	/// the words a shell and an environment variable spell one with.
+	pub flag: bool,
+	/// Whether it has to be written above the block's first statement.
+	///
+	/// These describe the shape of the whole block rather than the environment
+	/// of the commands under them, so "from here down" is not a reading they
+	/// have: a fan-out collects every branch before any of them runs, and
+	/// `.watch` and `.detach` are answered once, around the run. Everything
+	/// header-only is also this; `parallel` is the one that is not.
+	pub declaration_only: bool,
 	pub doc: &'static str,
 	/// What it looks like in a file. A property is a line someone writes
 	/// rather than a value they compute, so the useful thing to show is the
@@ -72,76 +75,111 @@ pub const PROPERTIES: &[KnownProperty] = &[
 	KnownProperty {
 		name: "add-path",
 		block_scoped: true,
+		flag: false,
+		declaration_only: false,
 		doc: "Prepend a directory to `PATH`, relative to the runfiles parent.",
 		example: ".add-path = \"node_modules/.bin\"",
 	},
 	KnownProperty {
-		name: "alias",
-		block_scoped: false,
-		doc: "Another name this target answers to. Carries the target's namespace.",
-		example: ".alias = \"build:release\"\n\n# `run build:release` now reaches this file.",
-	},
-	KnownProperty {
 		name: "detach",
 		block_scoped: false,
+		flag: true,
+		declaration_only: true,
 		doc: "Start the commands and do not wait. For something meant to outlive the run.",
 		example: ".detach = true\n\n$ cargo run --bin server",
 	},
 	KnownProperty {
 		name: "env",
 		block_scoped: true,
+		flag: false,
+		declaration_only: false,
 		doc: "Set an environment variable, addressed by sub-key: `.env.NAME = \"value\"`.",
 		example: ".env.PORT = ARG.port ? \"3000\"\n.env.DATABASE_URL = \"postgres://localhost/app\"",
 	},
 	KnownProperty {
 		name: "env-file",
 		block_scoped: true,
+		flag: false,
+		declaration_only: false,
 		doc: "Load a `.env` file. Encrypted values are decrypted in memory.",
 		example: ".env-file = \".env.{{ one_of(ARG.env, \\\"dev\\\", \\\"prod\\\") }}\"",
 	},
 	KnownProperty {
 		name: "ignore-errors",
 		block_scoped: true,
+		flag: true,
+		declaration_only: false,
 		doc: "Keep going when a command fails.",
 		example: ".ignore-errors\n\n# Creating a volume that exists is an error worth ignoring.\n$ docker volume create app-data",
 	},
 	KnownProperty {
 		name: "logging",
 		block_scoped: true,
+		flag: true,
+		declaration_only: false,
 		doc: "Announce each command on stderr before it runs.",
 		example: ".logging = true\n\n# Each command announces itself on stderr as it runs.",
 	},
 	KnownProperty {
 		name: "only-in-directories",
 		block_scoped: false,
+		flag: false,
+		declaration_only: true,
 		doc: "For the machine-wide directory: offer this target only inside these directories.",
 		example: ".only-in-directories = [\"~/work/acme\", \"~/work/zed\"]",
 	},
 	KnownProperty {
 		name: "parallel",
 		block_scoped: true,
+		flag: true,
+		declaration_only: true,
 		doc: "Run this block's commands at once, each branch labelled in the output.",
 		example: "for compose in glob(\"**/docker-compose.yml\")\n\t.parallel\n\n\t$ docker compose -f {{ compose }} pull\nend",
 	},
 	KnownProperty {
 		name: "shell",
 		block_scoped: true,
+		flag: false,
+		declaration_only: false,
 		doc: "Which shell `$` lines use.",
 		example: ".shell = \"sh\"",
 	},
 	KnownProperty {
 		name: "watch",
 		block_scoped: false,
+		flag: false,
+		declaration_only: true,
 		doc: "Re-run whenever a matching file changes. A `!` prefix excludes.",
 		example: ".watch = \"src/**/*.rs\"\n.watch = \"!src/generated/**\"",
 	},
 	KnownProperty {
 		name: "workdir",
 		block_scoped: true,
+		flag: false,
+		declaration_only: false,
 		doc: "Where commands run, relative to the runfiles parent.",
 		example: ".workdir = \"web\"",
 	},
 ];
+
+/// How a flag's value reads once the run has worked it out.
+///
+/// A bool is the answer; the four words are what the places a flag is usually
+/// read from spell one with -- `ENV.CI`, an `ARG` typed on a command line, the
+/// output of a `$` capture. Nothing else is accepted, because the alternative
+/// is what this replaced: `matches!(v, Bool(true))` read every other value as
+/// `false`, so `.ignore-errors = "yes"` was off and said nothing.
+fn as_bool(v: &Value) -> Option<bool> {
+	match v {
+		Value::Bool(b) => Some(*b),
+		Value::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
+			"true" | "1" => Some(true),
+			"false" | "0" => Some(false),
+			_ => None,
+		},
+		_ => None,
+	}
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PropError {
@@ -153,46 +191,116 @@ pub enum PropError {
 	NeedsValue { name: String, line: usize },
 	#[error("line {line}: `.{name}` scopes the machine-wide directory; this target is part of the project")]
 	NotMachineWide { name: String, line: usize },
+	/// A constant that can never be a bool, read off the page. Separate from
+	/// `FlagValue` because this one is a mistake in the text and is answerable
+	/// before the run: the language server reports it from the same list.
+	#[error("line {line}: `.{name}` is a flag and takes a bool, not {kind}")]
+	NotABool { name: String, line: usize, kind: String },
+	#[error("line {line}: `.{name}` is a flag and needs `true` or `false`; this resolved to `{got}`")]
+	FlagValue { name: String, line: usize, got: String },
+	#[error(
+		"line {line}: `.{name}` describes the whole block, so it has to be written above the block's first statement"
+	)]
+	NotInDeclaration { name: String, line: usize },
 	#[error(transparent)]
 	Eval(#[from] EvalError),
 }
 
+/// How a constant that is not a bool reads in a message, with the hint that
+/// fits it. A string spelling a bool word is the near miss worth naming: the
+/// quotes are the whole mistake.
+pub fn describe_constant(c: &runfile_lang::Constant) -> String {
+	match c {
+		runfile_lang::Constant::Number => "a number".to_string(),
+		runfile_lang::Constant::List => "a list".to_string(),
+		runfile_lang::Constant::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
+			w @ ("true" | "false") => format!("a string -- write `{w}` without the quotes"),
+			"1" => "a string -- write `true`".to_string(),
+			"0" => "a string -- write `false`".to_string(),
+			_ => "a string".to_string(),
+		},
+	}
+}
+
+/// Everything about a property line that is answerable without running it.
+///
+/// One function, so the three static rules are asked in one order and the
+/// language server can ask them the same way -- an editor accepting a line the
+/// runner refuses is how the two come to disagree about what a file means.
+pub fn check(p: &Property, nested: bool, trailing: bool) -> Result<&'static KnownProperty, PropError> {
+	let head = p.path[0].as_str();
+	let line = p.span.line;
+	// Whether it exists comes first: the other questions are about a name this
+	// list has, so asking any of them first told someone who typed
+	// `.ignore-error` inside a `for` that it was header-only -- sending them
+	// after a rule instead of a spelling mistake.
+	let Some(known) = PROPERTIES.iter().find(|k| k.name == head) else {
+		return Err(PropError::Unknown {
+			name: p.path.join("."),
+			line,
+		});
+	};
+	// Where it may sit, from the outside in: what a block allows at all, then
+	// whereabouts in one. Header-only is the sharper answer of the two, and
+	// everything header-only is also declaration-only, so it is asked first.
+	if nested && !known.block_scoped {
+		return Err(PropError::NotBlockScoped {
+			name: p.path.join("."),
+			line,
+		});
+	}
+	if trailing && known.declaration_only {
+		return Err(PropError::NotInDeclaration {
+			name: p.path.join("."),
+			line,
+		});
+	}
+	// A flag written with a constant that can never be a bool is answered here
+	// rather than by evaluating it: `.parallel = 23` has one reading and it is
+	// a mistake, so it is reported whether or not the line would have been
+	// reached.
+	if known.flag
+		&& let Some(e) = &p.value
+		&& let Some(c) = e.constant_non_bool()
+	{
+		return Err(PropError::NotABool {
+			name: p.path.join("."),
+			line,
+			kind: describe_constant(&c),
+		});
+	}
+	Ok(known)
+}
+
 impl Props {
-	/// Layer a block's own properties over the inherited set.
+	/// Layer a block's declaration region over the inherited set.
+	///
+	/// Only the region above the first statement: a property written below one
+	/// is applied by the walker where it sits, so that it can read the bindings
+	/// above it. The ones that could not mean that are refused here rather than
+	/// there -- this runs before the block does, so the message arrives whether
+	/// or not the line would have been reached.
 	pub fn extend(&self, block: &Block, sc: &mut Scope, nested: bool) -> Result<Props, PropError> {
 		let mut out = self.clone();
 		// A nested block inherits behaviour but never a parent's one-shot header
 		// state.
 		if nested {
 			out.watch.clear();
-			out.aliases.clear();
 			out.detach = false;
 		}
-		for p in &block.properties {
+		for p in block.trailing() {
+			check(p, nested, true)?;
+		}
+		for p in block.declaration() {
 			out.apply(p, sc, nested)?;
 		}
 		Ok(out)
 	}
 
-	fn apply(&mut self, p: &Property, sc: &mut Scope, nested: bool) -> Result<(), PropError> {
+	pub(crate) fn apply(&mut self, p: &Property, sc: &mut Scope, nested: bool) -> Result<(), PropError> {
 		let head = p.path[0].as_str();
 		let line = p.span.line;
-		// Whether it exists comes first. `BLOCK_SCOPED` is a subset of the
-		// known names, so asking about scope first told someone who typed
-		// `.ignore-error` inside a `for` that it was header-only -- sending
-		// them after a rule instead of a spelling mistake.
-		if !PROPERTIES.iter().any(|k| k.name == head) {
-			return Err(PropError::Unknown {
-				name: p.path.join("."),
-				line,
-			});
-		}
-		if nested && !BLOCK_SCOPED.contains(&head) {
-			return Err(PropError::NotBlockScoped {
-				name: p.path.join("."),
-				line,
-			});
-		}
+		check(p, nested, false)?;
 		let value = |p: &Property, sc: &mut Scope| -> Result<Value, PropError> {
 			match &p.value {
 				Some(e) => Ok(eval_boundary(e, sc)?),
@@ -205,7 +313,14 @@ impl Props {
 		let flag = |p: &Property, sc: &mut Scope| -> Result<bool, PropError> {
 			match &p.value {
 				None => Ok(true), // bare `.parallel` means `= true`
-				Some(e) => Ok(matches!(eval_boundary(e, sc)?, Value::Bool(true))),
+				Some(e) => {
+					let v = eval_boundary(e, sc)?;
+					as_bool(&v).ok_or_else(|| PropError::FlagValue {
+						name: p.path.join("."),
+						line,
+						got: v.to_string(),
+					})
+				}
 			}
 		};
 		match head {
@@ -228,7 +343,6 @@ impl Props {
 			"env-file" => push_all(&mut self.env_files, value(p, sc)?),
 			"add-path" => push_all(&mut self.add_paths, value(p, sc)?),
 			"watch" => push_all(&mut self.watch, value(p, sc)?),
-			"alias" => push_all(&mut self.aliases, value(p, sc)?),
 			// Read by discovery before anything runs, so there is nothing left
 			// to do with it here -- but a project file setting it does nothing
 			// at all, and saying so is the whole point: a scope that silently

@@ -364,6 +364,9 @@ crates/
 
 `ast.rs` carries `LoopTest` beside `Statement`. `eval.rs` holds `destructure`, the one description of what a
 comma-separated left-hand side means.
+`ast.rs` also holds `Constant` and `Expr::constant_non_bool` -- the one description of "a value the parser can
+read straight off the page", which the flag rule is about -- plus `Statement::span` and the
+`Block::declaration()` / `Block::trailing()` split that gives a block's two property regions.
 `args.rs` classifies a command line against what the target reads — the one place the `--key value` rule is
 spelled, so the runner and the `--stdin-args` prompt cannot read the same words two ways.
 `format.rs` is the pretty-printer. `lexer.rs` is a hand-rolled scanner (`skip_interp`, `split_interp`, `scan_string`, `tokenize`). `parser.rs`
@@ -450,10 +453,14 @@ second time as the global. This replaced `includes` entirely.
   by it meant that merely *having* a `~/.runfiles` silently disabled the root `_shared.run` of every project
   on the machine. Its properties *and* its `let` bindings apply (`run_block_bindings`), which is what makes
   it the `globals` analog.
-- `resolve` is one hash lookup; `.alias` is only scanned on a miss, so aliases cost nothing in the common case.
-  A real file name always wins over an alias, and two targets claiming one alias is an error naming both.
-- **An alias carries its target's namespace.** `web/runfiles/setup.run` declaring `deps` answers to `web:deps`,
-  never a bare `deps` — a subproject must not claim a name in the root.
+- **`resolve` is one hash lookup, and a target is reached by its file name only.** `.alias` is gone: a target
+  used to answer to a second name declared in its own file, found by scanning every *other* file's declaration
+  region on a miss. The property was the last thing in the language read from the **text** rather than from a
+  value — only a literal string could be, since discovery runs before any scope exists — and it enforced that
+  in the loosest possible way: a list literal registered nothing, `"k{{ x }}"` silently registered `k`, and
+  `"{{ x }}k"` silently registered nothing. Meanwhile `Props.aliases` was filled by the *evaluator* and read
+  by nobody, so `.alias = concat("a","b")` ran, succeeded, and registered nothing while `.alias = nope` failed
+  the run. One name per target instead, and `.alias` is an unknown property like any other spelling mistake.
 - **`.only-in-directories` scopes a machine-wide target, per file.** Registered everywhere, active only
   inside the paths it names. Compared on path components, so `work/acme` does not admit `work/acme-other`;
   `~` expands, and a relative entry anchors to **home** at every level, so one spelling means one directory
@@ -486,8 +493,13 @@ second time as the global. This replaced `includes` entirely.
 `props.rs` (property resolution), `env.rs` (env building), `exec.rs` (spawning), `run.rs` (the walker),
 `dispatch.rs` (`Host`, target resolution, cycle detection), `shell.rs` (shell selection).
 
-- `PROPERTIES` is exported with a block-scoped flag per name, tested against `extend` the same way `FUNCTIONS`
-  is. Block-scoped: `shell`, `parallel`, `ignore-errors`, `workdir`, `env`. The rest are header-only.
+- **`PROPERTIES` carries the whole taxonomy, and is the only copy of it.** Three booleans per name --
+  `block_scoped`, `declaration_only`, `flag` -- each tested against `extend`'s actual behaviour the way
+  `FUNCTIONS` is, in both directions, so a mislabelled column fails rather than misinforming an editor. There
+  used to be a second copy: a `BLOCK_SCOPED` const beside the list, and the language server describing the
+  same rules again in `check_properties`, which is how the scope rule had already drifted once. `props::check`
+  is the one function that answers everything about a property line without running it, and `analysis.rs`
+  calls **it** rather than restating it.
 - **Shell resolution**: bash → Git Bash (four known Windows paths) → sh. `System32\bash.exe` is deliberately
   excluded: it is the WSL launcher, and a different filesystem.
 - `is_shell()` matches `sh|bash|dash|ash|zsh|ksh|busybox|brush` on the **first word only**, and inserts `-e`.
@@ -610,6 +622,12 @@ second time as the global. This replaced `includes` entirely.
 (shellcheck delegation).
 
 - Diagnostics come from the **real parser**, so an editor and the runner cannot disagree about validity.
+- **Property diagnostics come from the runner's own `props::check`**, for the same reason. `check_properties`
+  used to describe the rules a second time, and the two had already drifted: it knew the scope rule and not
+  the flag one. It now calls `check` per property -- with the region the property sits in -- and renders
+  whatever `PropError` comes back, minus the `line N: ` prefix a diagnostic's range already carries. Only
+  `only-in-directories` is asked separately, since that one depends on where the *file* was found rather than
+  on anything in the line.
 - **It is a library, and `run :lsp` is how it is served.** There is no `runfile-lsp` binary: the crate has no
   `[[bin]]`, `serve()` is its entry point, and the CLI dispatches to it from an arm that returns before the
   catalog is built. Everything it links -- `runfile-lang`, `runfile-discovery`, `runfile-runtime`,
@@ -826,8 +844,6 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 
 - **Runner flags are recognised only before the target name**; everything after it belongs to the target. So
   `run echoes --dry-run` passes `--dry-run` through as `FLAG.dry-run`.
-- `:list` shows the aliases a target answers to. Without that a documented alias is undiscoverable, since
-  the listing otherwise reports only the file name -- which the corpus inventory diff is what surfaced.
 - **`:list` shows the machine-wide targets first**, under `global:`. They are reachable from every directory
   and appear in no file a reader of the project can see, so they are the group worth meeting first; the local
   ones follow. `local:` is the unlabelled default only while nothing precedes it, which is every project
@@ -836,7 +852,9 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   their readers work by name.
 - `:list` has three forms: human, `--names` (for completion scripts), `--json` (for tooling). The JSON is
   serialized by hand — four string fields do not justify a serde dependency in the CLI — and carries a
-  `formatVersion` that CI checks against the extension's constant.
+  `formatVersion` that CI checks against the extension's constant. **Version 2** dropped the `aliases` array
+  with the property; the extension never read it, but a field removed is a shape change and the constant says
+  so rather than letting an old reader guess.
 - `--dry-run` is **not** gated by prepare: it changes nothing, and reading what a target would do is a
   reasonable thing to want before setting a project up.
 - Watch mode is entered automatically by any target declaring `.watch`; there is no flag, because the file
@@ -890,9 +908,19 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 
 ## Properties
 
-Header-only: `alias`, `watch`, `only-in-directories` (machine-wide files only), `detach`.
-Block-scoped (may also appear inside `if` / `for` / `match`): `shell`, `parallel`, `ignore-errors`, `logging`,
-`workdir`, `env` (addressed by sub-key, `.env.NAME = "value"`), `env-file`, `add-path`.
+Four axes, all of them `PROPERTIES` columns:
+
+| Axis | Yes | No |
+| --- | --- | --- |
+| Block-scoped (may sit inside `if` / `for` / `match`) | `shell`, `parallel`, `ignore-errors`, `logging`, `workdir`, `env`, `env-file`, `add-path` | `watch`, `detach`, `only-in-directories` |
+| Declaration-only (must be above the block's first statement) | `parallel`, `watch`, `detach`, `only-in-directories` | the rest |
+| Flag (bare means `= true`, takes a bool) | `parallel`, `ignore-errors`, `logging`, `detach` | the rest |
+| Machine-wide files only | `only-in-directories` | the rest |
+
+`env` is addressed by sub-key, `.env.NAME = "value"`, and exactly two segments: `.env` and `.env.A.B` are
+both "unknown property". Every value is a full expression, so a `?` chain, a call or a `"{{ … }}"` string is
+legal in any of them -- `only-in-directories` is the one exception, read by discovery before any evaluator
+exists and so a literal string or a list of them, refused with `DiscoverError::UnreadableScope` otherwise.
 
 **`env-file` and `add-path` are block-scoped, and both append.** A block that names one has a longer list than
 the block around it, which is how `with_block_env` tells it has to rebuild -- reading and decrypting the files
@@ -902,8 +930,48 @@ form goes through that one function: `if` and `match` via `nested`, and `for` an
 whose bodies were extracted into `for_body` and `retry_attempts` so the wrapper has something to wrap. A
 `retry`'s `else` runs *outside* the body's environment -- it is what to do when the block never worked, not
 part of it. What this buys over the header form is that a block's file can be named by something the body
-computed, since a header property resolves before any statement runs. A `.env-file` naming a file that is not
-there is skipped, the same as a header one: a project whose `.env` is git-ignored still has to run.
+computed. A `.env-file` naming a file that is not there is skipped, the same as a header one: a project whose
+`.env` is git-ignored still has to run.
+
+**A property is applied where it is written.** It used to be applied before every statement of its block
+whatever the order, because `ast::Block` keeps `properties` and `statements` in two lists and the walker read
+one and then the other -- so `let x = "sub"` followed by `.workdir = x` was `` `x` is not defined ``, in a
+file that reads top to bottom. `Block::declaration()` and `Block::trailing()` split the list at the first
+statement's line: the declaration region is what `Props::extend` applies at block entry, exactly as before,
+and anything below a statement is applied by `walk` when it reaches that line. So a property reads the
+bindings above it, and takes effect from there down. Nothing existing moved -- not one `.run` file in the
+repository or on the author's machine had a property below a statement -- which is what made the ordering
+safe to define rather than a break. `Cow<Props>` is what keeps the common path free: a block with no trailing
+property walks on the borrowed properties it was handed and clones nothing.
+
+The environment is the part that has to be put back. A trailing `.env`, `.env-file`, `.add-path` or
+`.workdir` rebuilds it mid-walk, so `walk` saves the block's own environment and restores it on the way out
+-- `with_block_env` cannot, because it decides whether to save by comparing list *lengths* at block entry,
+before a trailing property has been applied.
+
+**Four properties describe the whole block and have to be written above its first statement**
+(`PropError::NotInDeclaration`): `parallel`, `watch`, `detach`, `only-in-directories`. Everything header-only
+is also this; `parallel` is the one that is not, because a fan-out collects every branch before any of them
+runs and half a block fanning out would be a second meaning for one word. Refused by `extend` at block entry
+rather than by `walk` where the line sits, so the message arrives whether or not the line would have been
+reached -- after a `break`, or in an `if` that went the other way.
+
+**A flag takes a bool, and a constant that can never be one is refused where it is written.**
+`.parallel`, `.ignore-errors`, `.logging` and `.detach` are the four. `matches!(v, Value::Bool(true))` used to
+answer every other value with `false` and say nothing, so `.ignore-errors = "true"` was *off* -- in a language
+that refuses `"a" + 1` and `"1" == 1`. Now `Expr::constant_non_bool` answers whether the right-hand side is
+something the parser can read straight off the page and is not a bool -- a number, a list, or a string with no
+interpolation in it -- and `PropError::NotABool` names what it found, with the hint the near miss earns
+(*"a string -- write `true` without the quotes"*). Nothing is const-folded: `1 + 1` is left to the run,
+because a flag written as arithmetic is not the mistake this is looking for.
+
+The rule is about **constants, not types**, because a flag decided from outside the file has no other shape to
+arrive in: `ENV.CI` is a string on every platform there is, and so is `ARG.p`. So `.parallel = ENV.CI`,
+`.parallel = "{{ ENV.CI }}"` and `.parallel = ARG.p ? ENV.CI ? "false"` all pass the static check and are
+resolved at run time by `as_bool`, which takes a bool, or `true`/`1`/`false`/`0` case-insensitively and
+trimmed -- the words the places a flag is read from spell one with. Anything else is
+`PropError::FlagValue`, naming the value: silently off is the failure this replaced, and a run that stops is
+strictly better than a line that quietly did nothing.
 
 **`.confirm` and `.hide` are gone**, each replaced by something that could not disagree with itself.
 
@@ -958,7 +1026,8 @@ settings file: global registrations, path aliases and custom shell paths were al
 
 ## Removed, and not coming back
 
-MCP server, `:convert`, `:config` (all subcommands), the user settings file, `-p` / target globs, `capture()`
+MCP server, `.alias` (a target is its file name), `:convert`, `:config` (all subcommands), the user settings
+file, `-p` / target globs, `capture()`
 (now `$` in value position), `shell_quote()` (interpolation self-quotes), `set_cwd()` (now `.workdir`),
 `define()` (now `let`), `nth()` / `count_parts()` (now `split()` and indexing), the arithmetic and comparison
 functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKillOnSigInt`, the JSON schema,
@@ -969,7 +1038,7 @@ Every other function from the old surface is present. Seventeen were missing at 
 oversight rather than decision, and all are back. `try` is the one exception, replaced by `a ? b`.
 
 **`run <target> --help`** prints the target's whole description, every input it reads — with what happens
-without each one — its aliases and its path (`target_help.rs`). Two things made it necessary: `--help` after a target name is the
+without each one — and its path (`target_help.rs`). Two things made it necessary: `--help` after a target name is the
 target's own argument, so `run deploy --help` warned about an unread flag and then **deployed**; and a
 description was only ever visible as its first line in `:list`, which is why forty of them in the corpus had
 grown past three hundred characters and one to sixteen hundred, with nowhere to be read. It is checked before

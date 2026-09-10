@@ -17,8 +17,38 @@ pub struct Target {
 /// A run of statements plus the properties set within it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Block {
+	/// In source order, which is what splits them into the two regions below.
 	pub properties: Vec<Property>,
 	pub statements: Vec<Statement>,
+}
+
+impl Block {
+	/// How many properties are written above the block's first statement.
+	fn declared(&self) -> usize {
+		match self.statements.first() {
+			Some(first) => self.properties.partition_point(|p| p.span.line < first.span().line),
+			None => self.properties.len(),
+		}
+	}
+
+	/// The declaration region: properties written before the first statement.
+	///
+	/// These describe the block before it runs and are what `Props::extend`
+	/// applies, so they are also the only ones that can say something about the
+	/// shape of the whole block.
+	pub fn declaration(&self) -> &[Property] {
+		&self.properties[..self.declared()]
+	}
+
+	/// Properties written below a statement.
+	///
+	/// One of these is applied where it sits rather than at the top: it can
+	/// read a binding above it, and it takes effect from there down. Almost
+	/// always empty -- a property is usually written at the top of its block --
+	/// which is what lets the walker keep its cheap path.
+	pub fn trailing(&self) -> &[Property] {
+		&self.properties[self.declared()..]
+	}
 }
 
 /// `.name = value`, or bare `.name` for `= true`. Dotted names address a
@@ -322,7 +352,64 @@ pub enum BinaryOp {
 	Or,
 }
 
+/// A property value the parser can read straight off the page.
+///
+/// A flag takes a bool, and a bool literal is the one constant it can be
+/// written with. Everything here is a constant that can never be one, so it is
+/// reported where it is written rather than quietly read as `false`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Constant {
+	Number,
+	List,
+	/// A string with nothing interpolated into it, carried whole so a message
+	/// can say `write `true`, not `"true"``.
+	Str(String),
+}
+
+impl Statement {
+	pub fn span(&self) -> Span {
+		match self {
+			Statement::Let { span, .. }
+			| Statement::Assign { span, .. }
+			| Statement::Call { span, .. }
+			| Statement::Do { span, .. }
+			| Statement::If { span, .. }
+			| Statement::Retry { span, .. }
+			| Statement::For { span, .. }
+			| Statement::Loop { span, .. }
+			| Statement::Break { span }
+			| Statement::Continue { span }
+			| Statement::Match { span, .. }
+			| Statement::Run { span, .. }
+			| Statement::Exec { span, .. } => *span,
+		}
+	}
+}
+
 impl Expr {
+	/// This expression as a constant that is not a bool, if that is what it is.
+	///
+	/// `None` covers the two things a flag may be written with: a bool literal,
+	/// and anything whose value is not known until the run -- a source, a call,
+	/// a comparison, a `?` chain, or a string with an interpolation in it.
+	/// Nothing is folded: `1 + 1` is left to the run, because a flag written
+	/// as arithmetic is not the mistake this is looking for.
+	pub fn constant_non_bool(&self) -> Option<Constant> {
+		match self {
+			Expr::Number(..) => Some(Constant::Number),
+			Expr::List(..) => Some(Constant::List),
+			Expr::Str(parts, _) => parts
+				.iter()
+				.map(|p| match p {
+					InterpPart::Literal(t) => Some(t.as_str()),
+					InterpPart::Expr(_) => None,
+				})
+				.collect::<Option<Vec<_>>>()
+				.map(|lits| Constant::Str(lits.concat())),
+			_ => None,
+		}
+	}
+
 	pub fn span(&self) -> Span {
 		match self {
 			Expr::Number(_, s)

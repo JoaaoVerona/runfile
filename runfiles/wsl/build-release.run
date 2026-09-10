@@ -1,5 +1,3 @@
 # Optimized release build of the whole workspace, through WSL
 
-.alias = "build:release"
-
 $ wsl --shell-type login -- cargo build --locked --release {{ ARGS }}

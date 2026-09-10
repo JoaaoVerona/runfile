@@ -631,24 +631,46 @@ it away. Most often it is a call with the parentheses left off, and the message 
 
 Set at the top of the file, or inside a block where marked.
 
-| Property | Effect | In a block? |
-| --- | --- | :-: |
-| `.shell` | Which shell `$` lines use. | ✅ |
-| `.env.NAME` | Set an environment variable. | ✅ |
-| `.workdir` | Where commands run. | ✅ |
-| `.parallel` | Run this block's commands at once. On a `for`, its iterations. | ✅ |
-| `.ignore-errors` | Keep going when a command fails. | ✅ |
-| `.logging` | Announce each command on stderr before it runs. Off unless set. | ✅ |
-| `.env-file` | Load a `.env` file (encrypted values are decrypted in memory). Appends. | ✅ |
-| `.add-path` | Prepend a directory to `PATH`. Appends. | ✅ |
-| `.watch` | Re-run when matching files change. A `!` prefix excludes. | |
-| `.alias` | Another name for this target. | |
-| `.detach` | Start the commands and do not wait. | |
-| `.only-in-directories` | Machine-wide targets only: offer this one inside these directories. Appends. | |
+| Property | Effect | In a block? | Flag? |
+| --- | --- | :-: | :-: |
+| `.shell` | Which shell `$` lines use. | ✅ | |
+| `.env.NAME` | Set an environment variable. | ✅ | |
+| `.workdir` | Where commands run. | ✅ | |
+| `.parallel` | Run this block's commands at once. On a `for`, its iterations. | ✅ | ✅ |
+| `.ignore-errors` | Keep going when a command fails. | ✅ | ✅ |
+| `.logging` | Announce each command on stderr before it runs. Off unless set. | ✅ | ✅ |
+| `.env-file` | Load a `.env` file (encrypted values are decrypted in memory). Appends. | ✅ | |
+| `.add-path` | Prepend a directory to `PATH`. Appends. | ✅ | |
+| `.watch` | Re-run when matching files change. A `!` prefix excludes. | | |
+| `.detach` | Start the commands and do not wait. | | ✅ |
+| `.only-in-directories` | Machine-wide targets only: offer this one inside these directories. Appends. | | |
+
+A **flag** is written bare for `= true`, or given a bool. A constant that can never be one is refused where it
+is written — `.parallel = 23` and `.parallel = "true"` are both errors, and the second says to drop the
+quotes. A value the run works out is left to the run: `.parallel = ENV.CI` and
+`.parallel = ARG.p ? ENV.CI ? "false"` are how a flag is decided from outside the file, and there `true`,
+`false`, `1` and `0` are all understood. Anything else stops the run rather than reading as `false`, because
+a flag that quietly did not take effect is found out much later.
+
+A property is applied **where it is written**: it can read a binding above it, and it takes effect from there
+down.
+
+```sh
+# runfiles/build.run
+# Build into a directory the command line picks
+
+let out = concat("target-", ARG.profile ? "debug")
+
+.workdir = out
+
+$ ls
+```
+
+Four of them describe the whole block rather than the commands under it — `.parallel`, `.watch`, `.detach`
+and `.only-in-directories` — and those have to be written above the block's first statement.
 
 `.env-file` and `.add-path` **append**, so a block adds to what it inherited rather than replacing it, and a
-block's file can be named by something the body worked out — which a header property cannot do, because it
-resolves before any statement runs:
+block's file can be named by something that block worked out:
 
 ```sh
 # runfiles/deploy.run

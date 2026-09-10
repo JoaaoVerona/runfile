@@ -1,7 +1,7 @@
 # Settings for the CI-only targets.
 #
 # They live in this project's own `runfiles/`, so the directory name is the
-# namespace and no alias is needed: `runfiles/ci/check.run` is `ci:check`.
+# namespace, and that is the only name it has: `runfiles/ci/check.run` is `ci:check`.
 
 .env.CARGO_TERM_COLOR = "always"
 

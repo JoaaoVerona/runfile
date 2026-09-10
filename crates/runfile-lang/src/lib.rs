@@ -20,7 +20,7 @@ pub mod structured;
 pub mod value;
 
 pub use args::Arg;
-pub use ast::{Block, Expr, InterpPart, Property, SourceKind, Statement, Target};
+pub use ast::{Block, Constant, Expr, InterpPart, Property, SourceKind, Statement, Target};
 pub use eval::{EvalError, Keys, Scope, TempFiles, eval};
 pub use format::format;
 pub use parser::{ParseError, parse};

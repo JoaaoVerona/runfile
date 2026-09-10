@@ -112,28 +112,19 @@ fn nothing_anywhere_is_an_error_that_names_the_directory() {
 	assert!(e.to_string().contains("no runfiles/"), "{e}");
 }
 
-// ---- aliases and directory scoping
+// ---- directory scoping
 
 #[test]
-fn an_alias_resolves_only_when_the_file_name_misses() {
+fn a_target_is_reached_by_its_file_name_and_nothing_else() {
+	// There was a second way in: `.alias = "b"` on `build.run` answered to
+	// `run b`. It is gone, and the property with it -- so a name that is not a
+	// file name is not a target, whatever any file says about itself.
 	let d = TempDir::new().unwrap();
 	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
-	std::fs::write(d.path().join("runfiles/build.run"), ".alias = \"b\"\n$ true\n").unwrap();
+	std::fs::write(d.path().join("runfiles/build.run"), "$ true\n").unwrap();
 	let c = discover(d.path(), None).unwrap();
-	assert_eq!(c.resolve("build").unwrap().name, "build", "the exact name never scans");
-	assert_eq!(c.resolve("b").unwrap().name, "build", "the alias is found on a miss");
-	assert!(c.resolve("nope").is_none());
-}
-
-#[test]
-fn two_targets_claiming_one_alias_is_an_error() {
-	let d = TempDir::new().unwrap();
-	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
-	std::fs::write(d.path().join("runfiles/one.run"), ".alias = \"x\"\n$ true\n").unwrap();
-	std::fs::write(d.path().join("runfiles/two.run"), ".alias = \"x\"\n$ true\n").unwrap();
-	let c = discover(d.path(), None).unwrap();
-	let e = c.by_alias("x").unwrap_err();
-	assert!(e.to_string().contains("claimed by both"), "{e}");
+	assert_eq!(c.resolve("build").unwrap().name, "build");
+	assert!(c.resolve("b").is_none(), "nothing but the file name resolves");
 }
 
 #[test]
@@ -185,45 +176,6 @@ fn scoping_matches_whole_path_components_not_string_prefixes() {
 	std::fs::write(sibling.join("runfiles/x.run"), "$ true\n").unwrap();
 	let c = discover(&sibling, Some(home.path())).unwrap();
 	assert!(c.resolve("deploy").is_none(), "acme-other is not inside acme");
-}
-
-#[test]
-fn a_subproject_alias_carries_its_namespace() {
-	// Otherwise a subproject claims a bare name in the root, and the qualified
-	// spelling every listing shows does not work.
-	let d = TempDir::new().unwrap();
-	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
-	std::fs::write(d.path().join("runfiles/root.run"), "$ true\n").unwrap();
-	std::fs::create_dir_all(d.path().join("web/runfiles")).unwrap();
-	std::fs::write(d.path().join("web/runfiles/setup.run"), ".alias = \"deps\"\n$ true\n").unwrap();
-
-	let c = discover(d.path(), None).unwrap();
-	assert_eq!(c.resolve("web:deps").unwrap().name, "web:setup");
-	assert!(c.resolve("deps").is_none(), "a subproject must not claim a bare name");
-}
-
-#[test]
-fn a_root_alias_stays_unqualified() {
-	let d = TempDir::new().unwrap();
-	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
-	std::fs::write(d.path().join("runfiles/build.run"), ".alias = \"b\"\n$ true\n").unwrap();
-	let c = discover(d.path(), None).unwrap();
-	assert_eq!(c.resolve("b").unwrap().name, "build");
-}
-
-#[test]
-fn a_subproject_alias_resolves_unqualified_from_inside_it() {
-	// From within the subproject its targets have no prefix, so neither do its
-	// aliases -- the same file works either way.
-	let d = TempDir::new().unwrap();
-	std::fs::create_dir_all(d.path().join("runfiles")).unwrap();
-	std::fs::write(d.path().join("runfiles/root.run"), "$ true\n").unwrap();
-	let web = d.path().join("web");
-	std::fs::create_dir_all(web.join("runfiles")).unwrap();
-	std::fs::write(web.join("runfiles/setup.run"), ".alias = \"deps\"\n$ true\n").unwrap();
-
-	let c = discover(&web, None).unwrap();
-	assert_eq!(c.resolve("deps").unwrap().name, "setup");
 }
 
 #[test]

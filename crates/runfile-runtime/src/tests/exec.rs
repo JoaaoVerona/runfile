@@ -190,24 +190,35 @@ fn declining_stops_the_run_and_nothing_catches_it() {
 }
 
 #[test]
-fn a_header_property_cannot_see_a_body_binding() {
-	// Header properties resolve before any statement runs -- that ordering is
-	// what lets `.env-file` feed `{{ ENV.x }}` -- so they see sources, not lets.
-	let target = runfile_lang::parse("let e = \"x\"\n.watch = \"{{ e }}\"\n$ true\n").unwrap();
+fn a_property_written_below_a_binding_can_read_it() {
+	// It could not, and the reason was invisible: the tree keeps properties and
+	// statements in two lists, so every property resolved before every
+	// statement whatever the order they were written in. A file reads top to
+	// bottom, so `.workdir = d` below `let d` now means what it says.
 	let d = Recorder::default();
-	let mut r = crate::run::Runner {
-		chain: Vec::new(),
-		scope: runfile_lang::eval::Scope::new(),
-		env: Vec::new(),
-		anchor: std::env::temp_dir(),
-		dispatch: &d,
-		interrupted: None,
-		label: None,
-		dry_run: false,
-		trace: Vec::new(),
-	};
-	let e = crate::run::run_target(&target, &mut r).unwrap_err();
+	// Without it this is `s is not defined`: the property resolved before the
+	// line above it ever ran.
+	run_src("let s = \"sh\"\n.shell = s\n$ true\n", &d).expect("the binding above it is in scope");
+}
+
+#[test]
+fn a_property_in_the_declaration_region_still_resolves_before_the_body() {
+	// The ordering that lets `.env-file` feed `{{ ENV.x }}` to the first
+	// statement is untouched: what changed is only where a property may be
+	// written, not when one written at the top is read.
+	let d = Recorder::default();
+	let e = run_src(".workdir = \"{{ later }}\"\nlet later = \"sub\"\n$ true\n", &d).unwrap_err();
 	assert!(e.to_string().contains("not defined"), "{e}");
+}
+
+#[test]
+fn a_property_that_describes_the_whole_block_has_to_be_written_above_it() {
+	// `.parallel` decides what fans out, and a fan-out collects every branch
+	// before any of them runs -- so half a block fanning out is a second
+	// meaning for one word rather than a useful one.
+	let d = Recorder::default();
+	let e = run_src("$ true\n.parallel\n$ true\n", &d).unwrap_err();
+	assert!(e.to_string().contains("above the block's first statement"), "{e}");
 }
 
 #[test]

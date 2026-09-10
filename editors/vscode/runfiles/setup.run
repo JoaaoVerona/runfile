@@ -2,6 +2,4 @@
 #
 # Named `setup`, so every other target here is gated until it has run.
 
-.alias = "deps"
-
 $ pnpm install --frozen-lockfile
