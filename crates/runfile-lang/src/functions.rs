@@ -209,13 +209,76 @@ pub fn call_with(name: &str, v: Vec<Value>, sc: &mut Scope, sp: Span) -> Result<
 			})?;
 			// A value that parses as JSON goes in as that; anything else is a
 			// string, so `json_set(d, "name", "bob")` does what it looks like.
-			let fresh = serde_json::from_str(s(2)?)
-				.unwrap_or_else(|_| serde_json::Value::String(s(2).unwrap_or_default().to_string()));
+			// A number, bool or list is written as JSON directly -- the same
+			// encoder a `json` block uses, so the two cannot disagree about
+			// what a value looks like.
+			let fresh = match &v[2] {
+				Value::Str(t) => serde_json::from_str(t).unwrap_or_else(|_| serde_json::Value::String(t.clone())),
+				other => serde_json::from_str(&crate::structured::Structured::Json.render(other))
+					.unwrap_or(serde_json::Value::Null),
+			};
 			json_set_at(&mut doc, s(1)?, fresh).map_err(|m| EvalError::Other {
 				msg: format!("`json_set`: {m}"),
 				line: sp.line,
 			})?;
 			Value::Str(doc.to_string())
+		}
+		"json_query" => {
+			// Every value the path reaches, as a list. `json_get` asks for one
+			// value and fails without it; a query asks how many there are, so
+			// finding none is an answer and not an error.
+			want!(2, "2 arguments");
+			let doc = parse_json("json_query", s(0)?, sp)?;
+			Value::List(json_walk(&doc, s(1)?).iter().map(|v| json_to_value(v)).collect())
+		}
+		"json_keys" => {
+			// The only way to ask what is *in* an object: the language has no
+			// map type, so `json_get` hands one back as text and there is
+			// otherwise nothing to iterate.
+			let (doc, path) = json_at("json_keys", &v, n, sp)?;
+			let found = json_seek("json_keys", &doc, path, sp)?;
+			match found {
+				// Document order, which is the order the file was written in.
+				serde_json::Value::Object(o) => Value::List(o.keys().map(|k| Value::Str(k.clone())).collect()),
+				serde_json::Value::Array(a) => Value::List((0..a.len()).map(|i| Value::Num(i as f64)).collect()),
+				other => {
+					return Err(EvalError::Other {
+						msg: format!("`json_keys`: {} has no keys", json_type_name(other)),
+						line: sp.line,
+					});
+				}
+			}
+		}
+		"json_type" => {
+			// What `json_get` had to flatten away: it answers `""` for a null
+			// and the compact text for an object or an array, so nothing else
+			// can tell those apart from a string that looks like them.
+			let (doc, path) = json_at("json_type", &v, n, sp)?;
+			Value::Str(json_type_name(json_seek("json_type", &doc, path, sp)?).to_string())
+		}
+		"json_format" => {
+			// `jq .`, and the layout `run :format` gives a `json` block: one
+			// member to a line, nested a level in, tabs unless told otherwise.
+			if n != 1 && n != 2 {
+				return Err(arity(name, "1 or 2 arguments", n, sp));
+			}
+			let text = s(0)?;
+			let fmt = crate::structured::Structured::Json;
+			fmt.validate(text).map_err(|e| EvalError::Other {
+				msg: format!("`json_format`: {e}"),
+				line: sp.line,
+			})?;
+			let indent = if n == 2 { s(1)? } else { "\t" };
+			Value::Str(fmt.pretty(text, indent).ok_or_else(|| EvalError::Other {
+				msg: "`json_format`: cannot lay this document out".into(),
+				line: sp.line,
+			})?)
+		}
+		"json_encode" => {
+			// The other direction, and the same encoder a `json` block and an
+			// interpolation inside one use.
+			want!(1, "1 argument");
+			Value::Str(crate::structured::Structured::Json.render(&v[0]))
 		}
 		"power" => {
 			want!(2, "2 arguments");
@@ -714,6 +777,120 @@ fn json_path<'a>(doc: &'a serde_json::Value, path: &str) -> Option<&'a serde_jso
 	Some(cur)
 }
 
+/// Parse a document, naming the function that asked for it.
+fn parse_json(who: &str, text: &str, sp: Span) -> Result<serde_json::Value, EvalError> {
+	serde_json::from_str(text).map_err(|e| EvalError::Other {
+		msg: format!("`{who}`: {e}"),
+		line: sp.line,
+	})
+}
+
+/// The `(document, path)` pair the functions taking an optional path share.
+///
+/// The path defaults to the empty one, which `json_path` reads as the document
+/// itself -- so `json_keys(doc)` asks about the top level.
+fn json_at<'a>(who: &str, v: &'a [Value], n: usize, sp: Span) -> Result<(serde_json::Value, &'a str), EvalError> {
+	if n != 1 && n != 2 {
+		return Err(arity(who, "1 or 2 arguments", n, sp));
+	}
+	let text = v[0].as_str().map_err(|e| ty(sp, e))?;
+	let path = if n == 2 {
+		v[1].as_str().map_err(|e| ty(sp, e))?
+	} else {
+		""
+	};
+	Ok((parse_json(who, text, sp)?, path))
+}
+
+/// One value at a path, or the same failure `json_get` gives -- so `?` says
+/// what to do when it is not there.
+fn json_seek<'a>(
+	who: &str,
+	doc: &'a serde_json::Value,
+	path: &str,
+	sp: Span,
+) -> Result<&'a serde_json::Value, EvalError> {
+	json_path(doc, path).ok_or_else(|| EvalError::Other {
+		msg: format!("`{who}`: no value at `{path}`"),
+		line: sp.line,
+	})
+}
+
+/// A JSON value's type, named the way the language names its own: `bool`
+/// rather than `boolean`, so a `match` on it reads like a `match` on anything
+/// else.
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+	match v {
+		serde_json::Value::Null => "null",
+		serde_json::Value::Bool(_) => "bool",
+		serde_json::Value::Number(_) => "number",
+		serde_json::Value::String(_) => "string",
+		serde_json::Value::Array(_) => "array",
+		serde_json::Value::Object(_) => "object",
+	}
+}
+
+/// Every value a query path reaches.
+///
+/// A path is `json_get`'s -- dotted, a numeric segment indexing an array --
+/// with one addition: a `[]` after a segment descends into **every** element
+/// of an array, or every value of an object, which is jq's `.[]` and the whole
+/// reason for this function. So `results[].packages[].name` collects a name
+/// per package across every result, and no shell is involved.
+///
+/// Nothing here fails. A segment that matches nothing narrows the answer to
+/// the empty list, which is what makes a path over ragged data usable: a
+/// result with no packages contributes nothing rather than stopping the run.
+fn json_walk<'a>(doc: &'a serde_json::Value, path: &str) -> Vec<&'a serde_json::Value> {
+	let mut cur = vec![doc];
+	if path.is_empty() {
+		return cur;
+	}
+	for seg in path.split('.') {
+		let (name, wildcards) = split_wildcards(seg);
+		// An empty name with no `[]` is a typo -- `a..b` -- and answers with
+		// nothing, the same as any other segment that matches nothing, rather
+		// than silently reading as `a.b`.
+		if name.is_empty() && wildcards == 0 {
+			return Vec::new();
+		}
+		if !name.is_empty() {
+			cur = cur
+				.iter()
+				.filter_map(|v| match v {
+					serde_json::Value::Array(a) => a.get(name.parse::<usize>().ok()?),
+					other => other.get(name),
+				})
+				.collect();
+		}
+		for _ in 0..wildcards {
+			let mut next = Vec::new();
+			for v in &cur {
+				match v {
+					serde_json::Value::Array(a) => next.extend(a.iter()),
+					serde_json::Value::Object(o) => next.extend(o.values()),
+					// A scalar has nothing to descend into and is dropped.
+					_ => {}
+				}
+			}
+			cur = next;
+		}
+	}
+	cur
+}
+
+/// A segment split into its name and its trailing `[]`s: `matrix[][]` is
+/// `("matrix", 2)`, and a bare `[]` is `("", 1)`.
+fn split_wildcards(seg: &str) -> (&str, usize) {
+	let mut name = seg;
+	let mut n = 0;
+	while let Some(rest) = name.strip_suffix("[]") {
+		name = rest;
+		n += 1;
+	}
+	(name, n)
+}
+
 fn json_set_at(doc: &mut serde_json::Value, path: &str, fresh: serde_json::Value) -> Result<(), String> {
 	if path.is_empty() {
 		*doc = fresh;
@@ -978,6 +1155,36 @@ pub const FUNCTIONS: &[Function] = &[
 		signature: "json_set(json, path, value)",
 		doc: "Set a dotted path and return the document. Containers are created as needed.",
 		example: "let doc = json_set(doc, \"scripts.build\", \"vite build\")",
+	},
+	Function {
+		name: "json_query",
+		signature: "json_query(json, path)",
+		doc: "Every value a path reaches, as a list. `[]` descends into each element of an array.",
+		example: "let names = json_query(read_file(\"report.json\"), \"results[].packages[].name\")",
+	},
+	Function {
+		name: "json_keys",
+		signature: "json_keys(json[, path])",
+		doc: "An object's keys in document order, as a list. An array answers with its indices.",
+		example: "let deps = json_keys(read_file(\"package.json\"), \"dependencies\")",
+	},
+	Function {
+		name: "json_type",
+		signature: "json_type(json[, path])",
+		doc: "What is at a path: object, array, string, number, bool or null.",
+		example: "if json_type(doc, \"scripts\") == \"object\"\n\tprint(\"there are scripts\")\nend",
+	},
+	Function {
+		name: "json_format",
+		signature: "json_format(json[, indent])",
+		doc: "Lay a document out: one member to a line, nested a level in. Tabs unless told otherwise.",
+		example: "write_file(\"tsconfig.json\", json_format(doc, \"  \"))",
+	},
+	Function {
+		name: "json_encode",
+		signature: "json_encode(value)",
+		doc: "A value as JSON text. A list becomes an array; a string is quoted and escaped.",
+		example: "let doc = json_set(doc, \"files\", json_encode(glob(\"src/*.ts\")))",
 	},
 	Function {
 		name: "append",

@@ -764,7 +764,32 @@ coloured line had to stay a shell line — twelve of them in the corpus did.
 
 `now` and `uuid` are read-only, so a preview shows a real value rather than a placeholder: `--dry-run` is
 about not changing anything. `json_get` returns a number, bool or string directly, and an object or array as
-its compact JSON text, since the language has no map type.
+its compact JSON text, since the language has no map type. That last part was a dead end: an array came back
+as *text*, so `length` counted its characters, and an object could not be looked into at all. **`json_query`
+answers with a list instead** — a path where `[]` descends into every element of an array, or every value of
+an object, which is jq's `.[]` and the whole point. `results[].packages[].groups[].max_severity` collects one
+value per group across every result, and what comes back is one of the language's own lists, so `for`, `if`
+and `length` do the rest of what a jq pipeline was doing. No lambdas were added: `select(. >= 7) | length` is
+a `for` with an `if` in it, which is the language being the default.
+
+**A query cannot fail.** A segment matching nothing narrows the answer to the empty list, so a path over
+ragged data is usable — a result with no packages contributes nothing rather than stopping the run — and a
+scalar met by a `[]` drops out rather than erroring. That is the split from `json_get`, which asks for *one*
+value and fails without it: finding none is an answer to a query and a failure to a lookup. An empty segment
+(`a..b`) is the one typo worth catching, and answers with nothing rather than silently reading as `a.b`.
+
+The other three close the gaps that leaves. **`json_keys`** is the only way to ask what is *in* an object,
+in document order (`preserve_order` is on, so that is the order the file was written in); an array answers
+with its indices, so both can be indexed the same way. **`json_type`** answers `object`, `array`, `string`,
+`number`, `bool` or `null` — named the way the language names its own types, `bool` rather than `boolean`, so
+a `match` on it reads like any other. It is the question `json_get` cannot answer, having flattened a null to
+`""` and a container to text; a missing path fails exactly as `json_get`'s does, so `?` says the rest rather
+than a `"missing"` type being invented. **`json_format`** is `jq .`, reusing `Structured::pretty` so a
+document is laid out the way `run :format` lays out a `json` block — validated first, since tokenising is
+laxer than JSON and handing back a malformed document would be worse than refusing it. **`json_encode`** is
+the write direction, reusing `Structured::render`, which is also what **`json_set` now accepts a number, bool
+or list through**: building an array meant hand-writing JSON text with the escapes the `json` block exists to
+avoid. One encoder, so a value cannot look like one thing in a block and another in a call.
 
 **`print` and `printf` write to stdout**, and replaced 142 `$ echo` and `$ printf` lines across the corpus —
 each of which was a shell process started to say one sentence. `print` takes one or more values, separates

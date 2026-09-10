@@ -375,6 +375,191 @@ fn json_get_reads_a_dotted_path() {
 }
 
 #[test]
+fn json_query_collects_every_value_a_path_reaches() {
+	// The corpus case this replaces, spelled in jq:
+	//   jq '[.results[].packages[].groups[].max_severity]'
+	let doc = "{\"results\": [\
+		{\"packages\": [{\"name\": \"a\", \"sev\": 7}, {\"name\": \"b\", \"sev\": 2}]}, \
+		{\"packages\": [{\"name\": \"c\", \"sev\": 9}]}]}";
+	let q = |p: &str| v(&format!("json_query(\"{}\", \"{p}\")", doc.replace('"', "\\\"")));
+
+	assert_eq!(
+		q("results[].packages[].name"),
+		Value::List(vec![
+			Value::Str("a".into()),
+			Value::Str("b".into()),
+			Value::Str("c".into())
+		]),
+		"a wildcard descends into every element, across every branch"
+	);
+	assert_eq!(
+		q("results[].packages[].sev"),
+		Value::List(vec![Value::Num(7.0), Value::Num(2.0), Value::Num(9.0)]),
+		"and the values keep their JSON types"
+	);
+	assert_eq!(
+		q("results.0.packages.1.name"),
+		Value::List(vec![Value::Str("b".into())]),
+		"`json_get`'s own path still works, as a list of one"
+	);
+	assert_eq!(
+		q("nope[].name"),
+		Value::List(vec![]),
+		"a miss is an empty list, not an error"
+	);
+	assert_eq!(
+		q("results[].packages[].nope"),
+		Value::List(vec![]),
+		"and so is a key no element has"
+	);
+	assert_eq!(
+		q("a..b"),
+		Value::List(vec![]),
+		"an empty segment matches nothing rather than reading as `a.b`"
+	);
+
+	// The whole document, and a wildcard with nothing before it.
+	assert_eq!(
+		v("json_query(\"[1, 2]\", \"\")"),
+		Value::List(vec![Value::Str("[1,2]".into())])
+	);
+	assert_eq!(
+		v("json_query(\"[1, 2]\", \"[]\")"),
+		Value::List(vec![Value::Num(1.0), Value::Num(2.0)])
+	);
+
+	// jq's `.[]` over an object yields its values, which is how a map of
+	// versions is read without a map type.
+	assert_eq!(
+		v("json_query(\"{\\\"a\\\": \\\"1.0\\\", \\\"b\\\": \\\"2.0\\\"}\", \"[]\")"),
+		Value::List(vec![Value::Str("1.0".into()), Value::Str("2.0".into())])
+	);
+	// A scalar has nothing to descend into, so it drops out rather than failing
+	// the whole query -- what makes a path over ragged data usable.
+	assert_eq!(
+		v("json_query(\"{\\\"xs\\\": [[1], 2, [3]]}\", \"xs[][]\")"),
+		Value::List(vec![Value::Num(1.0), Value::Num(3.0)])
+	);
+	assert!(boom("json_query(\"not json\", \"a\")").contains("json_query"));
+}
+
+#[test]
+fn a_json_query_counts_without_a_shell() {
+	// `length` over a query is what `| length` was for, and the reason a query
+	// answers with a list rather than text: `length` of an array's JSON text
+	// would count its characters.
+	let doc = "{\"xs\": [1, 2, 3]}";
+	assert_eq!(
+		v(&format!(
+			"length(json_query(\"{}\", \"xs[]\"))",
+			doc.replace('"', "\\\"")
+		)),
+		Value::Num(3.0)
+	);
+	assert_eq!(
+		v(&format!("length(json_get(\"{}\", \"xs\"))", doc.replace('"', "\\\""))),
+		Value::Num(7.0),
+		"where `json_get` hands back text, and `length` honestly counts it"
+	);
+}
+
+#[test]
+fn json_keys_opens_an_object_up() {
+	let doc = "{\"b\": 1, \"a\": 2}";
+	assert_eq!(
+		v(&format!("json_keys(\"{}\")", doc.replace('"', "\\\""))),
+		Value::List(vec![Value::Str("b".into()), Value::Str("a".into())]),
+		"document order, not sorted: it is the order the file was written in"
+	);
+	assert_eq!(
+		v("json_keys(\"{\\\"deps\\\": {\\\"x\\\": 1}}\", \"deps\")"),
+		Value::List(vec![Value::Str("x".into())]),
+		"and a path says which object"
+	);
+	assert_eq!(
+		v("json_keys(\"[9, 9, 9]\")"),
+		Value::List(vec![Value::Num(0.0), Value::Num(1.0), Value::Num(2.0)]),
+		"an array answers with its indices, so the two can be indexed the same way"
+	);
+	assert!(boom("json_keys(\"{\\\"a\\\": 1}\", \"a\")").contains("number has no keys"));
+	assert!(boom("json_keys(\"{}\", \"nope\")").contains("no value at"));
+	assert_eq!(
+		v("json_keys(\"{}\", \"nope\") ? \"gone\""),
+		Value::Str("gone".into()),
+		"so `?` can answer for it"
+	);
+}
+
+#[test]
+fn json_type_says_what_json_get_had_to_flatten() {
+	let doc = "{\"s\": \"x\", \"n\": 1, \"b\": true, \"z\": null, \"a\": [], \"o\": {}}";
+	let t = |p: &str| v(&format!("json_type(\"{}\", \"{p}\")", doc.replace('"', "\\\"")));
+	for (path, want) in [
+		("s", "string"),
+		("n", "number"),
+		("b", "bool"),
+		("z", "null"),
+		("a", "array"),
+		("o", "object"),
+	] {
+		assert_eq!(t(path), Value::Str(want.into()), "at `{path}`");
+	}
+	assert_eq!(t(""), Value::Str("object".into()), "no path is the document itself");
+
+	// The distinction nothing else can draw: `json_get` answers `""` for a
+	// null, and the compact text for a container.
+	let g = |p: &str| v(&format!("json_get(\"{}\", \"{p}\")", doc.replace('"', "\\\"")));
+	assert_eq!(g("z"), Value::Str(String::new()));
+	assert_eq!(g("o"), Value::Str("{}".into()));
+}
+
+#[test]
+fn json_format_lays_a_document_out() {
+	assert_eq!(
+		v("json_format(\"{\\\"a\\\":[1,2],\\\"b\\\":{}}\")"),
+		Value::Str("{\n\t\"a\": [\n\t\t1,\n\t\t2\n\t],\n\t\"b\": {}\n}".into()),
+		"tabs by default, one member to a line, an empty object left on its own"
+	);
+	assert_eq!(
+		v("json_format(\"{\\\"a\\\":1}\", \"  \")"),
+		Value::Str("{\n  \"a\": 1\n}".into()),
+		"and an indent of your choosing"
+	);
+	// Tokenising is laxer than JSON, so a document is validated first: `jq .`
+	// fails on bad input rather than handing it back.
+	assert!(boom("json_format(\"{\\\"a\\\": 1\")").contains("json_format"));
+}
+
+#[test]
+fn json_encode_is_the_write_direction() {
+	assert_eq!(
+		v("json_encode([1, \"a\", true])"),
+		Value::Str("[1, \"a\", true]".into())
+	);
+	assert_eq!(
+		v("json_encode(\"it \\\"quotes\\\"\")"),
+		Value::Str("\"it \\\"quotes\\\"\"".into())
+	);
+	assert_eq!(
+		v("json_encode([[1], [2]])"),
+		Value::Str("[[1], [2]]".into()),
+		"and nests"
+	);
+}
+
+#[test]
+fn json_set_takes_a_value_and_not_only_text() {
+	// A list had to be hand-built as JSON text before this, which meant
+	// escaping by hand -- the thing the `json` block exists to avoid.
+	assert_eq!(
+		v("json_set(\"{}\", \"files\", [\"a.ts\", \"b.ts\"])"),
+		Value::Str("{\"files\":[\"a.ts\",\"b.ts\"]}".into())
+	);
+	assert_eq!(v("json_set(\"{}\", \"n\", 3)"), Value::Str("{\"n\":3}".into()));
+	assert_eq!(v("json_set(\"{}\", \"ok\", true)"), Value::Str("{\"ok\":true}".into()));
+}
+
+#[test]
 fn json_set_writes_a_path_and_builds_what_is_missing() {
 	let set = |doc: &str, path: &str, val: &str| {
 		v(&format!(

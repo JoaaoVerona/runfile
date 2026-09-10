@@ -193,6 +193,39 @@ run _aws -- s3api put-bucket-policy --bucket {{ bucket }} --policy {{ policy }}
 `run :format` lays the block out, and a missing brace is underlined in your editor as you type — not reported
 by the far end an hour later.
 
+### Reading JSON without jq
+
+`json_query` walks a path and answers with a **list**, where `[]` descends into every element the way jq's
+`.[]` does. What comes back is one of the language's own lists — something to loop over and count, not text to
+parse a second time.
+
+```sh
+# runfiles/audit/gate.run
+# Fail when a dependency has a high or critical vulnerability
+
+let report = ARG.report ? "osv.json"
+let severities = json_query(read_file(report), "results[].packages[].groups[].max_severity")
+let high = 0
+
+for severity in severities
+	if severity != "" && number(severity) >= 7
+		high = high + 1
+	end
+end
+
+print("High or critical:", high)
+
+if high != 0
+	exit(1)
+end
+```
+
+`json_get` reads one value at a path, and `json_keys` opens an object up — there is no map type, so without it
+an object is text and nothing more. `json_type` says what is at a path, which is the one question `json_get`
+cannot answer: it hands back `""` for a null and the compact text for an object. `json_format` is `jq .`, and
+`json_encode` goes the other way, turning a list into an array. Nothing here is a dependency your machine has
+to already have.
+
 ### Any language you have installed
 
 `exec <command>` runs that command with the block as its **stdin**, so a target can be a Python script, a Node
@@ -379,7 +412,7 @@ end
 `append`, `prepend`, `concat_lists`, `sort`, `reverse`, `unique`, `slice`, `flatten`, `zip`, `index_of` and
 `without`, beside `first`, `last`, `length` and `join`.
 
-There are 78 built-in functions — strings, lists, regex, paths, JSON, hashes, time, files. Your editor lists
+There are 83 built-in functions — strings, lists, regex, paths, JSON, hashes, time, files. Your editor lists
 them all with a description and an example; `run :list` is for targets, and the language server is for the
 language.
 
