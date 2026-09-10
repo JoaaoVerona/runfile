@@ -6,6 +6,15 @@
 # setup action pin -- `…/actions/setup@v1` -- is moved by the release workflow
 # once the release is built, since a tag meaning "the newest v1" must not point
 # at a release that never finished.
+#
+# Which is why the tag is annotated and the push is `--follow-tags` rather than
+# `--tags`. `--tags` pushes every local tag, and `vX` is one of them: a fetch
+# auto-follows it once and then never updates it again, so the local copy sits
+# at whatever release it was first seen at while CI force-moves the remote one
+# forward. Pushing the stale copy is rejected -- `! [rejected] v1 -> v1
+# (already exists)` -- and takes the release tag's push down with it.
+# `--follow-tags` sends only annotated tags reachable from the commits being
+# pushed, and the alias is lightweight, so it is exactly this one tag.
 
 let part = one_of(first(ARGS), "major", "minor", "patch")
 let cargo = read_file("Cargo.toml")
@@ -38,6 +47,5 @@ let tag = concat("v", next)
 
 print("Bumped: {{ cur }} -> {{ next }}, tagging {{ tag }}")
 $ git commit Cargo.toml Cargo.lock editors/vscode/package.json -m "bump to {{ next }}"
-$ git tag {{ tag }}
-$ git push
-$ git push --tags
+$ git tag -a {{ tag }} -m {{ tag }}
+$ git push --follow-tags
