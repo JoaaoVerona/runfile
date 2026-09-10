@@ -31,6 +31,56 @@ fn check_binding_name(name: &str, line: usize) -> Result<(), ParseError> {
 	Ok(())
 }
 
+/// The names on the left of a `let`, a reassignment or a `for`.
+///
+/// One name is an ordinary binding; several unpack a list positionally. `_` is
+/// a position matched and thrown away, and may be written as often as it is
+/// useful -- it is not a name (an identifier starts with a letter or a letter
+/// after `_`), so it cannot shadow one and two of them cannot collide.
+fn binding_names(text: &str, line: usize) -> Result<Vec<String>, ParseError> {
+	let names: Vec<String> = text.split(',').map(|n| n.trim().to_string()).collect();
+	for n in &names {
+		if n != "_" {
+			check_binding_name(n, line)?;
+		}
+	}
+	Ok(names)
+}
+
+/// One binding name, or several separated by commas.
+///
+/// The cheap form of [`binding_names`], for deciding whether a line is a
+/// reassignment at all before committing to reading one.
+fn is_name_list(text: &str) -> bool {
+	!text.is_empty() && text.split(',').all(|n| is_name(n.trim()))
+}
+
+fn is_name(n: &str) -> bool {
+	n == "_"
+		|| (!n.is_empty()
+			&& n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+			&& n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+}
+
+/// A condition or an iterable: either an expression or a `$` run, whose exit
+/// status is the answer.
+fn condition(text: &str, at: usize, no: usize) -> Result<Expr, ParseError> {
+	match shell_capture(text, at, no)? {
+		Some(e) => Ok(e),
+		None => parse_expr(text, at, no),
+	}
+}
+
+/// `rest` with `word` and the whitespace after it removed, when that is how it
+/// begins. `else ifx` is not an `else if`.
+fn after_keyword<'a>(rest: &'a str, word: &str) -> Option<&'a str> {
+	let tail = rest.strip_prefix(word)?;
+	if tail.is_empty() {
+		return Some(tail);
+	}
+	tail.starts_with(char::is_whitespace).then(|| tail.trim_start())
+}
+
 /// One physical line, pre-classified.
 struct Line<'a> {
 	raw: &'a str,
@@ -65,7 +115,11 @@ fn scan_lines(src: &str) -> Vec<Line<'_>> {
 
 pub fn parse(src: &str) -> Result<Target, ParseError> {
 	let lines = scan_lines(src);
-	let mut p = P { lines: &lines, i: 0 };
+	let mut p = P {
+		lines: &lines,
+		i: 0,
+		loops: 0,
+	};
 	let description = p.take_description();
 	let body = p.block(None)?;
 	if p.i < p.lines.len() {
@@ -78,6 +132,13 @@ pub fn parse(src: &str) -> Result<Target, ParseError> {
 struct P<'a> {
 	lines: &'a [Line<'a>],
 	i: usize,
+	/// How many loop bodies enclose the line being parsed.
+	///
+	/// `break` and `continue` are refused outside one *here* rather than at
+	/// run time, so an editor underlines them: whether a line sits inside a
+	/// loop is a question about the text, and a run that finds out has already
+	/// done half the work.
+	loops: usize,
 }
 
 impl<'a> P<'a> {
@@ -211,15 +272,14 @@ impl<'a> P<'a> {
 				let Some(eq) = rest.find('=') else {
 					return err(no, "`let` needs `= value`");
 				};
-				let name = rest[..eq].trim().to_string();
-				check_binding_name(&name, no)?;
+				let names = binding_names(rest[..eq].trim(), no)?;
 				let base = offset + (text.len() - rest.len()) + eq + 1;
 				let raw_rhs = rest[eq + 1..].trim();
 				let value = match self.capture_rhs(raw_rhs, indent, base, no)? {
 					Some(e) => e,
 					None => parse_expr(raw_rhs, base, no)?,
 				};
-				Ok(Statement::Let { name, value, span })
+				Ok(Statement::Let { names, value, span })
 			}
 			"do" => {
 				if !text[2..].trim().is_empty() {
@@ -233,24 +293,60 @@ impl<'a> P<'a> {
 				Ok(Statement::Do { body, span })
 			}
 			"if" => {
-				let rest = text[2..].trim();
-				let cond = match shell_capture(rest, offset + 3, no)? {
-					Some(e) => e,
-					None => parse_expr(rest, offset + 3, no)?,
-				};
-				let then = self.block(Some("if"))?;
-				let otherwise = if self.peek_kw() == Some("else") {
-					self.i += 1;
-					Some(self.block(Some("if"))?)
-				} else {
-					None
-				};
+				let cond = condition(text[2..].trim(), offset + 3, no)?;
+				let st = self.if_tail(cond, span)?;
 				self.expect_end(no)?;
-				Ok(Statement::If {
-					cond,
-					then,
-					otherwise,
+				Ok(st)
+			}
+			// `while cond`, `until cond` -- the same body, opposite questions.
+			// `until` is the shape a wait loop wants, and the corpus wrote four
+			// of them as shell `until … do sleep … done`.
+			"while" | "until" => {
+				let rest = text[head.len()..].trim();
+				if rest.is_empty() {
+					return err(no, format!("`{head}` needs a condition, as `{head} n < 10`"));
+				}
+				let cond = condition(rest, offset + head.len() + 1, no)?;
+				let test = if head == "while" {
+					LoopTest::While(cond)
+				} else {
+					LoopTest::Until(cond)
+				};
+				let body = self.loop_body(head)?;
+				self.expect_end(no)?;
+				Ok(Statement::Loop { test, body, span })
+			}
+			// Takes nothing, and says so: anything after it would read as a
+			// condition, which is the one thing a `loop` does not have.
+			"loop" => {
+				if !text[4..].trim().is_empty() {
+					return err(
+						no,
+						"`loop` takes nothing; it runs until a `break`, and `while` is the form that asks a question",
+					);
+				}
+				let body = self.loop_body("loop")?;
+				self.expect_end(no)?;
+				Ok(Statement::Loop {
+					test: LoopTest::Forever,
+					body,
 					span,
+				})
+			}
+			"break" | "continue" => {
+				if !text[head.len()..].trim().is_empty() {
+					return err(no, format!("`{head}` takes nothing after it"));
+				}
+				if self.loops == 0 {
+					return err(
+						no,
+						format!("`{head}` is only meaningful inside a `for`, `while`, `until` or `loop`"),
+					);
+				}
+				Ok(if head == "break" {
+					Statement::Break { span }
+				} else {
+					Statement::Continue { span }
 				})
 			}
 			// `retry n [every secs]` … `[else …]` `end`
@@ -289,17 +385,19 @@ impl<'a> P<'a> {
 				let Some(k) = rest.find(" in ") else {
 					return err(no, "`for` needs `in`");
 				};
-				let name = rest[..k].trim().to_string();
+				let names = binding_names(rest[..k].trim(), no)?;
 				// `for f in lines($ git ls-files)` -- the same rule as a `let`,
 				// and the shape a loop over a command's output actually wants.
 				let list = rest[k + 4..].trim();
-				let iter = match shell_capture(list, offset + 3 + k + 4, no)? {
-					Some(e) => e,
-					None => parse_expr(list, offset + 3 + k + 4, no)?,
-				};
-				let body = self.block(Some("for"))?;
+				let iter = condition(list, offset + 3 + k + 4, no)?;
+				let body = self.loop_body("for")?;
 				self.expect_end(no)?;
-				Ok(Statement::For { name, iter, body, span })
+				Ok(Statement::For {
+					names,
+					iter,
+					body,
+					span,
+				})
 			}
 			"match" => {
 				let rest = text[5..].trim();
@@ -347,20 +445,75 @@ impl<'a> P<'a> {
 					return Ok(Statement::Call { expr: e, span });
 				}
 				if let Some(eq) = assignment_split(&text) {
-					let name = text[..eq].trim().to_string();
-					check_binding_name(&name, no)?;
+					let names = binding_names(text[..eq].trim(), no)?;
 					let raw_rhs = text[eq + 1..].trim();
 					let value = match self.capture_rhs(raw_rhs, indent, offset + eq + 1, no)? {
 						Some(e) => e,
 						None => parse_expr(raw_rhs, offset + eq + 1, no)?,
 					};
-					return Ok(Statement::Assign { name, value, span });
+					return Ok(Statement::Assign { names, value, span });
 				}
 				let expr = parse_expr(&text, offset, no)?;
 				check_has_effect(&expr, no)?;
 				Ok(Statement::Call { expr, span })
 			}
 		}
+	}
+
+	/// An `if` and every `else`/`else if` after it, down to but **not**
+	/// including the `end` that closes the chain.
+	///
+	/// A chain is one block with one `end`, so only the caller consumes it.
+	/// `else if` builds a nested `If` here rather than going back through
+	/// `statement`, which would want an `end` of its own -- which means
+	/// nothing downstream has to tell a chain from a nest: `else` + a nested
+	/// `if` and `else if` parse to the same tree, and the formatter, being
+	/// line-oriented, prints back whichever was written.
+	fn if_tail(&mut self, cond: Expr, span: Span) -> Result<Statement, ParseError> {
+		let then = self.block(Some("if"))?;
+		let otherwise = if self.peek_kw() == Some("else") {
+			let (text, offset, no) = self.logical();
+			let rest = text[4..].trim();
+			if rest.is_empty() {
+				Some(self.block(Some("if"))?)
+			} else {
+				// Trailing text used to be dropped without a word, so an
+				// `else x > 1` ran its block unconditionally.
+				let Some(tail) = after_keyword(rest, "if") else {
+					return err(
+						no,
+						format!("`else` takes nothing after it, or `if <condition>`: `{rest}`"),
+					);
+				};
+				if tail.is_empty() {
+					return err(no, "`else if` needs a condition");
+				}
+				let at = offset + (text.len() - rest.len());
+				let inner = Span::new(at, offset + text.len(), no);
+				let icond = condition(tail, at + 3, no)?;
+				Some(Block {
+					properties: Vec::new(),
+					statements: vec![self.if_tail(icond, inner)?],
+				})
+			}
+		} else {
+			None
+		};
+		Ok(Statement::If {
+			cond,
+			then,
+			otherwise,
+			span,
+		})
+	}
+
+	/// A loop's body, with the depth `break` and `continue` are checked
+	/// against raised for its extent.
+	fn loop_body(&mut self, kw: &str) -> Result<Block, ParseError> {
+		self.loops += 1;
+		let out = self.block(Some(kw));
+		self.loops -= 1;
+		out
 	}
 
 	fn peek_kw(&self) -> Option<&'a str> {
@@ -874,11 +1027,7 @@ fn assignment_split(text: &str) -> Option<usize> {
 	if before.ends_with(['!', '<', '>']) {
 		return None;
 	}
-	let name = text[..eq].trim();
-	(!name.is_empty()
-		&& name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-		&& name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-	.then_some(eq)
+	is_name_list(text[..eq].trim()).then_some(eq)
 }
 
 fn to_parts(raw: Vec<RawPart>, line: usize) -> Result<Vec<InterpPart>, ParseError> {

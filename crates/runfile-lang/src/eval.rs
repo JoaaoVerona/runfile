@@ -38,6 +38,19 @@ pub enum EvalError {
 	},
 	#[error("line {line}: {msg}")]
 	Other { msg: String, line: usize },
+	/// A destructuring `let`, reassignment or `for` with more names than the
+	/// value has elements. Hard rather than quietly short: the names are a
+	/// claim about the shape of the value, and a claim that does not hold is a
+	/// mistake every time. Extra elements are not -- they are simply not asked
+	/// for.
+	#[error("line {line}: {names} names to unpack, but the list has {len}")]
+	Unpack { names: usize, len: usize, line: usize },
+	#[error("line {line}: unpacking {names} names needs a list, got {actual}")]
+	UnpackNeedsList {
+		names: usize,
+		actual: &'static str,
+		line: usize,
+	},
 	/// `try(…)` caught a failure. Carried rather than swallowed so a chain can
 	/// still fall through: `try(x) ? "fallback"` must reach the fallback, while
 	/// a bare `try(x)` resolves to an empty string at the boundary.
@@ -194,6 +207,15 @@ impl Scope {
 		self.vars.insert(name.to_string(), value)
 	}
 
+	/// Bind what [`destructure`] answered, skipping the `_` holes.
+	pub fn bind_names(&mut self, names: &[String], values: Vec<Value>) {
+		for (n, v) in names.iter().zip(values) {
+			if n != "_" {
+				self.bind(n, v);
+			}
+		}
+	}
+
 	pub fn restore(&mut self, name: &str, prior: Option<Value>) {
 		match prior {
 			Some(v) => {
@@ -210,6 +232,36 @@ impl Default for Scope {
 	fn default() -> Self {
 		Self::new()
 	}
+}
+
+/// Match a value against the names on the left of a `let`, a reassignment or
+/// a `for`, answering one value per name.
+///
+/// **One** name binds the value whole, so a list bound to a single name stays
+/// a list -- unpacking is what the commas ask for, and nothing else should
+/// start behaving differently because a value happened to be a list. Several
+/// names take the elements in order; the extra ones are left where they are,
+/// since the names say how many are wanted rather than how many there are.
+/// `_` keeps its position and is dropped when the caller binds.
+pub fn destructure(names: &[String], v: Value, line: usize) -> Result<Vec<Value>, EvalError> {
+	if names.len() == 1 {
+		return Ok(vec![v]);
+	}
+	let Value::List(items) = v else {
+		return Err(EvalError::UnpackNeedsList {
+			names: names.len(),
+			actual: v.type_name(),
+			line,
+		});
+	};
+	if items.len() < names.len() {
+		return Err(EvalError::Unpack {
+			names: names.len(),
+			len: items.len(),
+			line,
+		});
+	}
+	Ok(items.into_iter().take(names.len()).collect())
 }
 
 pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {

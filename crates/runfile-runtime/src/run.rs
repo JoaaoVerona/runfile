@@ -51,6 +51,19 @@ pub enum RunError {
 	NoResolver { line: usize },
 	#[error("line {line}: a `retry` cannot be inside a `.parallel` block")]
 	RetryInParallel { line: usize },
+	/// A `while`, `until`, `loop`, `break` or `continue` inside a fan-out. A
+	/// `for` is expanded there because its list is known before it starts; a
+	/// conditional loop's passes are not, and neither is which one a `break`
+	/// would leave once every branch is already collected.
+	#[error("line {line}: a `{kind}` cannot be inside a `.parallel` block")]
+	NotInParallel { kind: &'static str, line: usize },
+	/// `break` -- travelling as an error because that is the only way back out
+	/// of a walk. The message is a net: the parser refuses one outside a loop,
+	/// so nothing should ever print this.
+	#[error("line {line}: `break` outside a loop")]
+	Break { line: usize },
+	#[error("line {line}: `continue` outside a loop")]
+	Continue { line: usize },
 	#[error(transparent)]
 	Host(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -102,13 +115,20 @@ impl RunError {
 		}
 	}
 
-	/// Whether this is an instruction to stop rather than a failure. A target
-	/// may shrug off a command that failed; it does not get to shrug off
-	/// `exit()`, or someone answering no to `confirm()`.
+	/// Whether this is something the run has to carry out rather than a
+	/// command that went wrong. A target may shrug off a command that failed;
+	/// it does not get to shrug off `exit()`, someone answering no to
+	/// `confirm()`, or a `break` -- forgiving one of those would leave a
+	/// statement that plainly did nothing, which is the worst way for it to be
+	/// wrong. It is also what carries a `break` out through a `retry`, which
+	/// would otherwise read it as a failed attempt and run the body again.
 	pub fn is_stop(&self) -> bool {
 		matches!(
 			self,
-			RunError::Eval(EvalError::Exit { .. } | EvalError::Cancelled { .. }) | RunError::Cancelled
+			RunError::Eval(EvalError::Exit { .. } | EvalError::Cancelled { .. })
+				| RunError::Cancelled
+				| RunError::Break { .. }
+				| RunError::Continue { .. }
 		)
 	}
 
@@ -207,9 +227,9 @@ pub fn run_target(target: &Target, r: &mut Runner<'_>) -> Result<(), RunError> {
 /// values into a target's scope without running its statements.
 pub fn run_block_bindings(block: &Block, sc: &mut Scope) -> Result<(), RunError> {
 	for st in &block.statements {
-		if let Statement::Let { name, value, .. } = st {
+		if let Statement::Let { names, value, span } = st {
 			let v = eval_boundary(value, sc)?;
-			sc.bind(name, v);
+			sc.bind_names(names, runfile_lang::eval::destructure(names, v, span.line)?);
 		}
 	}
 	Ok(())
@@ -247,14 +267,10 @@ fn walk(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError
 
 fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
 	match st {
-		Statement::Let { name, value, .. } => {
+		Statement::Let { names, value, span } | Statement::Assign { names, value, span } => {
 			let v = value_of(value, props, r)?;
-			r.scope.bind(name, v);
-			Ok(())
-		}
-		Statement::Assign { name, value, .. } => {
-			let v = value_of(value, props, r)?;
-			r.scope.bind(name, v);
+			let parts = runfile_lang::eval::destructure(names, v, span.line)?;
+			r.scope.bind_names(names, parts);
 			Ok(())
 		}
 		Statement::Call { expr, .. } => {
@@ -310,7 +326,12 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				(Some(e), None) => Err(e),
 			}
 		}
-		Statement::For { name, iter, body, span } => {
+		Statement::For {
+			names,
+			iter,
+			body,
+			span,
+		} => {
 			// Through `value_of`, so `for f in lines($ git ls-files)` can run
 			// its command -- the pure evaluator has no process to run it in.
 			let it = value_of(iter, props, r)?;
@@ -323,14 +344,23 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 					});
 				}
 			};
-			let prior = r.scope.vars.remove(name);
+			let priors: Vec<Option<Value>> = names.iter().map(|n| r.scope.vars.remove(n)).collect();
 			let inner = props.extend(body, &mut r.scope, true)?;
 			let out = with_block_env(props, &inner, r, |r| {
-				for_body(name, items, body, &inner, prior.clone(), r)
+				for_body(names, items, body, &inner, &priors, span.line, r)
 			});
-			r.scope.restore(name, prior);
+			restore_all(names, &priors, r);
 			out
 		}
+		Statement::Loop { test, body, span } => {
+			let inner = props.extend(body, &mut r.scope, true)?;
+			with_block_env(props, &inner, r, |r| loop_passes(test, body, &inner, span.line, r))
+		}
+		// Control flow, not a failure: it leaves as an error because that is
+		// the only way back out of a walk, and every catcher on the way lets
+		// it through -- see `is_stop`.
+		Statement::Break { span } => Err(RunError::Break { line: span.line }),
+		Statement::Continue { span } => Err(RunError::Continue { line: span.line }),
 		Statement::Match {
 			subject,
 			cases,
@@ -455,14 +485,15 @@ fn retry_attempts(
 	Ok(last)
 }
 
-/// The iterations of a `for`. The loop variable is restored by the caller,
+/// The iterations of a `for`. The loop variables are restored by the caller,
 /// which also owns the block's environment.
 fn for_body(
-	name: &str,
+	names: &[String],
 	items: Vec<Value>,
 	body: &Block,
 	inner: &Props,
-	prior: Option<Value>,
+	priors: &[Option<Value>],
+	line: usize,
 	r: &mut Runner<'_>,
 ) -> Result<(), RunError> {
 	// `.parallel` on a loop body means the *iterations* are the branches, not
@@ -471,21 +502,74 @@ fn for_body(
 	if inner.parallel {
 		let mut leaves = Vec::new();
 		for item in items {
-			r.scope.bind(name, item);
+			bind_item(names, item, line, r)?;
 			collect(body, inner, r, &mut leaves)?;
 		}
-		r.scope.restore(name, prior);
+		restore_all(names, priors, r);
 		return run_leaves(leaves, inner, r);
 	}
 	for item in items {
-		r.scope.bind(name, item);
-		if let Err(e) = walk(body, inner, r)
-			&& (!inner.ignore_errors || e.is_stop())
-		{
-			return Err(e);
+		bind_item(names, item, line, r)?;
+		match walk(body, inner, r) {
+			Ok(()) => {}
+			Err(RunError::Break { .. }) => break,
+			Err(RunError::Continue { .. }) => {}
+			Err(e) if !inner.ignore_errors || e.is_stop() => return Err(e),
+			Err(_) => {}
 		}
 	}
 	Ok(())
+}
+
+/// One iteration's value against the loop's names: the whole item for one
+/// name, unpacked for several -- the same rule a `let` follows.
+fn bind_item(names: &[String], item: Value, line: usize, r: &mut Runner<'_>) -> Result<(), RunError> {
+	let parts = runfile_lang::eval::destructure(names, item, line)?;
+	r.scope.bind_names(names, parts);
+	Ok(())
+}
+
+fn restore_all(names: &[String], priors: &[Option<Value>], r: &mut Runner<'_>) {
+	for (n, p) in names.iter().zip(priors) {
+		r.scope.restore(n, p.clone());
+	}
+}
+
+/// The passes of a `while`, `until` or `loop`.
+///
+/// Under `--dry-run` the body is walked **once** and the loop stops. A preview
+/// performs none of the effects the condition is asking about, so the answer
+/// it would get back never changes: `while` would run forever or not at all,
+/// and neither is what happened. One pass is the honest thing a preview has to
+/// say -- here is the body, once; how often is not knowable without running
+/// it.
+fn loop_passes(test: &LoopTest, body: &Block, inner: &Props, line: usize, r: &mut Runner<'_>) -> Result<(), RunError> {
+	loop {
+		// Checked here as well as in `walk`, which looks *between* statements:
+		// a `loop` with an empty body has none, and would spin past every
+		// chance to notice a Ctrl+C.
+		if r.interrupted.is_some_and(|f| f()) {
+			return Err(RunError::Interrupted);
+		}
+		let again = match test {
+			LoopTest::Forever => true,
+			LoopTest::While(c) => cond_of(c, inner, r, line)?,
+			LoopTest::Until(c) => !cond_of(c, inner, r, line)?,
+		};
+		if !again {
+			return Ok(());
+		}
+		match walk(body, inner, r) {
+			Ok(()) => {}
+			Err(RunError::Break { .. }) => return Ok(()),
+			Err(RunError::Continue { .. }) => {}
+			Err(e) if !inner.ignore_errors || e.is_stop() => return Err(e),
+			Err(_) => {}
+		}
+		if r.dry_run {
+			return Ok(());
+		}
+	}
 }
 
 fn nested(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
@@ -713,9 +797,10 @@ fn walk_parallel(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(),
 fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>) -> Result<(), RunError> {
 	for st in &block.statements {
 		match st {
-			Statement::Let { name, value, .. } | Statement::Assign { name, value, .. } => {
+			Statement::Let { names, value, span } | Statement::Assign { names, value, span } => {
 				let v = value_of(value, props, r)?;
-				r.scope.bind(name, v);
+				let parts = runfile_lang::eval::destructure(names, v, span.line)?;
+				r.scope.bind_names(names, parts);
 			}
 			Statement::Call { expr, .. } => {
 				eval_boundary(expr, &mut r.scope)?;
@@ -753,7 +838,12 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 					(false, None) => {}
 				}
 			}
-			Statement::For { name, iter, body, span } => {
+			Statement::For {
+				names,
+				iter,
+				body,
+				span,
+			} => {
 				let items = match eval_boundary(iter, &mut r.scope)? {
 					Value::List(v) => v,
 					other => {
@@ -763,12 +853,34 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 						});
 					}
 				};
-				let prior = r.scope.vars.remove(name);
+				let priors: Vec<Option<Value>> = names.iter().map(|n| r.scope.vars.remove(n)).collect();
 				for item in items {
-					r.scope.bind(name, item);
+					bind_item(names, item, span.line, r)?;
 					collect(body, props, r, out)?;
 				}
-				r.scope.restore(name, prior);
+				restore_all(names, &priors, r);
+			}
+			// A fan-out collects every branch before any of them runs, and a
+			// conditional loop has nothing to collect until its body has run
+			// at least once. `break` has the same problem from the other end:
+			// by the time one could be honoured, the batch is already built.
+			Statement::Loop { test, span, .. } => {
+				return Err(RunError::NotInParallel {
+					kind: test.keyword(),
+					line: span.line,
+				});
+			}
+			Statement::Break { span } => {
+				return Err(RunError::NotInParallel {
+					kind: "break",
+					line: span.line,
+				});
+			}
+			Statement::Continue { span } => {
+				return Err(RunError::NotInParallel {
+					kind: "continue",
+					line: span.line,
+				});
 			}
 			// Retrying inside a fan-out would mean several bodies sleeping and
 			// re-running against each other, with no useful reading of what

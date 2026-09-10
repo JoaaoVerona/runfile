@@ -99,3 +99,13 @@ fn temp_files_are_removed_when_a_run_is_interrupted() {
 fn the_exit_code_is_the_one_a_shell_reports() {
 	assert_eq!(crate::interrupt::EXIT_CODE, 130);
 }
+
+#[test]
+fn an_empty_loop_body_still_notices_an_interrupt() {
+	// The walker checks *between* statements, and a `loop` with an empty body
+	// has none -- so without a check of its own at the top of each pass this
+	// spins past every chance to stop, and this test hangs rather than fails.
+	let files = &[("runfiles/t.run", "loop\nend\n")];
+	let (out, _d) = run_interrupting_after(files, "t", 3);
+	assert!(matches!(out, Err(crate::RunError::Interrupted)), "{out:?}");
+}

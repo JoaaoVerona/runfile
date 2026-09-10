@@ -88,7 +88,12 @@ fn sub_blocks(st: &Statement) -> Vec<&Block> {
 			v.extend(otherwise.iter());
 			v
 		}
-		Statement::For { body, .. } => vec![body],
+		Statement::For { body, .. } | Statement::Loop { body, .. } | Statement::Do { body, .. } => vec![body],
+		Statement::Retry { body, otherwise, .. } => {
+			let mut v = vec![body];
+			v.extend(otherwise.iter());
+			v
+		}
 		Statement::Match { cases, default, .. } => {
 			let mut v: Vec<&Block> = cases.iter().map(|c| &c.body).collect();
 			v.extend(default.iter());

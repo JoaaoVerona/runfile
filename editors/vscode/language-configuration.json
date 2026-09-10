@@ -8,7 +8,7 @@
 	],
 	"surroundingPairs": [["\"", "\""], ["[", "]"], ["(", ")"]],
 	"indentationRules": {
-		"increaseIndentPattern": "^\\s*(if\\b|else\\b|for\\b|match\\b|case\\b|default\\b|exec\\b).*$",
+		"increaseIndentPattern": "^\\s*(if\\b|else\\b|for\\b|while\\b|until\\b|loop\\b|do\\b|retry\\b|match\\b|case\\b|default\\b|exec\\b).*$",
 		"decreaseIndentPattern": "^\\s*(end|else|case|default)\\b.*$"
 	},
 	"onEnterRules": [

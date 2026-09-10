@@ -148,3 +148,144 @@ fn a_comment_shifts_every_position_after_it_and_none_of_them_count() {
 	let b = crate::parse("# note\n#\n$ one\nexec sh\n\ttwo\nend\n").unwrap();
 	assert_eq!(crate::fingerprint(&a), crate::fingerprint(&b));
 }
+
+// ---- loops, and the two ways out of one
+
+#[test]
+fn break_and_continue_are_refused_outside_a_loop() {
+	// Whether a line sits inside a loop is a question about the text, so it is
+	// answered here and underlined in an editor rather than by a run that has
+	// already done half the work.
+	for kw in ["break", "continue"] {
+		for src in [
+			format!("{kw}\n"),
+			format!("if true\n\t{kw}\nend\n"),
+			format!("retry 3\n\t{kw}\nend\n"),
+			format!("do\n\t{kw}\nend\n"),
+		] {
+			let e = crate::parse(&src).unwrap_err().to_string();
+			assert!(e.contains("only meaningful inside"), "{src:?}: {e}");
+		}
+	}
+}
+
+#[test]
+fn break_and_continue_are_fine_anywhere_inside_one() {
+	for body in [
+		"for x in [1]\n\tbreak\nend\n",
+		"while true\n\tcontinue\nend\n",
+		"until false\n\tbreak\nend\n",
+		"loop\n\tbreak\nend\n",
+		// Nested in anything, as long as a loop is somewhere above it.
+		"for x in [1]\n\tif x == 1\n\t\tcontinue\n\tend\nend\n",
+		"loop\n\tretry 3\n\t\tbreak\n\tend\nend\n",
+		"for x in [1]\n\tmatch x\n\tcase \"1\"\n\t\tbreak\n\tend\nend\n",
+	] {
+		crate::parse(body).unwrap_or_else(|e| panic!("{body:?}: {e}"));
+	}
+	// And the depth comes back down: a loop that has closed does not license
+	// what follows it.
+	let e = crate::parse("for x in [1]\n\t$ true\nend\nbreak\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("only meaningful inside"), "{e}");
+}
+
+#[test]
+fn a_loop_keyword_takes_only_what_it_has_a_use_for() {
+	let e = crate::parse("loop true\n\tbreak\nend\n").unwrap_err().to_string();
+	assert!(e.contains("`loop` takes nothing"), "{e}");
+	let e = crate::parse("while\n\t$ true\nend\n").unwrap_err().to_string();
+	assert!(e.contains("needs a condition"), "{e}");
+	let e = crate::parse("for x in [1]\n\tbreak now\nend\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("takes nothing after it"), "{e}");
+}
+
+#[test]
+fn a_conditional_loop_may_be_scored_on_a_command() {
+	// The same rule an `if` follows, and what makes `until $ cmd` the wait
+	// loop the corpus wrote by hand four times.
+	let t = crate::parse("until $ curl -sf localhost\n\tsleep(1)\nend\n").unwrap();
+	let [crate::Statement::Loop { test, .. }] = &t.body.statements[..] else {
+		panic!("{:?}", t.body.statements)
+	};
+	assert!(
+		matches!(test.cond(), Some(crate::Expr::Capture { .. })),
+		"the condition is the command's status"
+	);
+}
+
+// ---- `else if`
+
+#[test]
+fn an_else_if_chain_is_one_block_closed_by_one_end() {
+	use crate::ast::Statement;
+	let t = crate::parse("if a\n\t$ one\nelse if b\n\t$ two\nelse if c\n\t$ three\nelse\n\t$ four\nend\n").unwrap();
+	// Each `else if` nests inside the one before it, so a walker that knows
+	// `if` knows a chain without being told about one.
+	let mut depth = 0;
+	let mut at = &t.body.statements[0];
+	loop {
+		let Statement::If { otherwise, .. } = at else {
+			panic!("{at:?}")
+		};
+		let Some(b) = otherwise else { break };
+		match &b.statements[..] {
+			[inner @ Statement::If { .. }] => {
+				depth += 1;
+				at = inner;
+			}
+			// The bare `else` at the end.
+			_ => break,
+		}
+	}
+	assert_eq!(depth, 2, "two `else if`s");
+	// One `end` for the lot: another statement after it is at file level.
+	let t = crate::parse("if a\n\t$ one\nelse if b\n\t$ two\nend\n$ after\n").unwrap();
+	assert_eq!(t.body.statements.len(), 2);
+}
+
+#[test]
+fn an_else_with_anything_but_if_after_it_is_refused() {
+	// The trailing text used to be dropped without a word, so `else x > 1` ran
+	// its block unconditionally.
+	let e = crate::parse("if a\n\t$ one\nelse b\n\t$ two\nend\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("takes nothing after it, or `if"), "{e}");
+	let e = crate::parse("if a\n\t$ one\nelse if\n\t$ two\nend\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("needs a condition"), "{e}");
+	// `ifx` is a name, not the keyword.
+	let e = crate::parse("if a\n\t$ one\nelse ifx\n\t$ two\nend\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("takes nothing after it"), "{e}");
+}
+
+// ---- unpacking
+
+#[test]
+fn a_binding_may_name_several_positions() {
+	use crate::ast::Statement;
+	let t = crate::parse("let a, _, c = [1, 2, 3]\n").unwrap();
+	let [Statement::Let { names, .. }] = &t.body.statements[..] else {
+		panic!("{:?}", t.body.statements)
+	};
+	assert_eq!(names, &["a", "_", "c"]);
+
+	// `_` is a position rather than a name, so it may be written as often as
+	// it is useful and cannot collide with itself.
+	crate::parse("let _, _, x = [1, 2, 3]\n").unwrap();
+	crate::parse("x, y = [1, 2]\n").unwrap();
+	crate::parse("for k, v in pairs\n\t$ echo {{ k }}\nend\n").unwrap();
+
+	// Every name still has to look like one.
+	let e = crate::parse("let a, 2fast = [1, 2]\n").unwrap_err().to_string();
+	assert!(e.contains("not a valid name"), "{e}");
+	let e = crate::parse("let a, = [1, 2]\n").unwrap_err().to_string();
+	assert!(e.contains("binding has no name"), "{e}");
+}

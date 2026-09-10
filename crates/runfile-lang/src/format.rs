@@ -187,8 +187,19 @@ fn render(src: &str) -> Result<String, ParseError> {
 			}
 			"else" => {
 				o.stack.pop();
-				o.at_depth("else", Kind::Mid);
+				let rest = trimmed[4..].trim();
+				// `else if` continues the chain rather than opening a level of
+				// its own: one `end` closes the whole thing, so the stack sees
+				// exactly what a bare `else` does.
+				let text = match after_word(rest, "if") {
+					Some(tail) => format!("else if {}", condition(tail, no)?),
+					None => "else".to_string(),
+				};
+				let d = o.depth();
+				o.push(d, &text, Kind::Mid);
 				o.stack.push(Frame::Body);
+				i = spill(&raw, i + 1, &text, d, &mut o, no)?;
+				continue;
 			}
 			"case" | "default" => {
 				if o.stack.last() == Some(&Frame::Case) {
@@ -279,7 +290,13 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 	let head = trimmed.split_whitespace().next().unwrap_or("");
 	let (text, opens) = match head {
 		"do" => ("do".to_string(), Some(Frame::Body)),
+		"loop" => ("loop".to_string(), Some(Frame::Body)),
+		"break" | "continue" => (head.to_string(), None),
 		"if" => (format!("if {}", condition(trimmed[2..].trim(), no)?), Some(Frame::Body)),
+		"while" | "until" => (
+			format!("{head} {}", condition(trimmed[head.len()..].trim(), no)?),
+			Some(Frame::Body),
+		),
 		// `retry n every s` -- two ordinary expressions around a keyword.
 		"retry" => {
 			let rest = trimmed[5..].trim();
@@ -299,7 +316,11 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 				// The list may be a call holding a `$` run, which `rhs` knows
 				// not to re-space.
 				Some(k) => (
-					format!("for {} in {}", rest[..k].trim(), rhs(rest[k + 4..].trim(), no)?),
+					format!(
+						"for {} in {}",
+						name_list(rest[..k].trim()),
+						rhs(rest[k + 4..].trim(), no)?
+					),
 					Some(Frame::Body),
 				),
 				None => (trimmed.to_string(), Some(Frame::Body)),
@@ -329,25 +350,32 @@ fn statement(raw: &[&str], i: usize, trimmed: &str, no: usize, o: &mut Out) -> R
 
 	let d = o.depth();
 	o.push(d, &text, kind_of(head, trimmed, opens));
-	// `let x = [` and its continuation lines are one logical line to the
-	// parser, so they are indented as a run rather than as statements -- and
-	// against the *opener's* depth, since `for x in [` spills its list before
-	// the loop body starts, not inside it.
-	let (mut open, _) = lexer::brackets(&text, no);
-	let mut j = i + 1;
+	let j = spill(raw, i + 1, &text, d, o, no)?;
+	if let Some(f) = opens {
+		o.stack.push(f);
+	}
+	Ok(j)
+}
+
+/// The continuation lines of a list literal that spills past its opening line.
+///
+/// `let x = [` and what follows are one logical line to the parser, so they
+/// are indented as a run rather than as statements -- and against the
+/// *opener's* depth, since `for x in [` spills its list before the loop body
+/// starts, not inside it.
+fn spill(raw: &[&str], from: usize, text: &str, depth: usize, o: &mut Out, no: usize) -> Result<usize, ParseError> {
+	let (mut open, _) = lexer::brackets(text, no);
+	let mut j = from;
 	while open > 0 && j < raw.len() {
 		let t = raw[j].trim();
 		let rendered = if t.is_empty() { String::new() } else { spaced(t, no)? };
 		let (delta, leading) = lexer::brackets(&rendered, no);
 		// One level per bracket still open, less the ones this line closes:
 		// a `]` sits with the `[` it answers, not with what was inside it.
-		let level = d + usize::try_from((open - leading).max(0)).unwrap_or(0);
+		let level = depth + usize::try_from((open - leading).max(0)).unwrap_or(0);
 		o.push(level, &rendered, Kind::Opaque);
 		open += delta;
 		j += 1;
-	}
-	if let Some(f) = opens {
-		o.stack.push(f);
 	}
 	Ok(j)
 }
@@ -367,16 +395,19 @@ fn assignment(trimmed: &str, no: usize) -> Result<(String, Option<Frame>), Parse
 	if let Some(rest) = trimmed.strip_prefix("let ")
 		&& let Some(k) = rest.find('=')
 	{
-		let name = rest[..k].trim();
-		return Ok((format!("let {name} = {}", rhs(rest[k + 1..].trim(), no)?), None));
+		let names = name_list(rest[..k].trim());
+		return Ok((format!("let {names} = {}", rhs(rest[k + 1..].trim(), no)?), None));
 	}
 	if crate::parser::is_capture_call(trimmed) {
 		return Ok((rhs(trimmed, no)?, None));
 	}
 	if let Some(k) = assignment_split(trimmed) {
-		let name = trimmed[..k].trim();
-		if is_name(name) {
-			return Ok((format!("{name} = {}", rhs(trimmed[k + 1..].trim(), no)?), None));
+		let names = trimmed[..k].trim();
+		if is_name_list(names) {
+			return Ok((
+				format!("{} = {}", name_list(names), rhs(trimmed[k + 1..].trim(), no)?),
+				None,
+			));
 		}
 	}
 	Ok((spaced(trimmed, no)?, None))
@@ -447,9 +478,27 @@ fn assignment_split(text: &str) -> Option<usize> {
 }
 
 fn is_name(s: &str) -> bool {
-	!s.is_empty()
-		&& s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-		&& s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+	s == "_"
+		|| (!s.is_empty()
+			&& s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+			&& s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+}
+
+fn is_name_list(s: &str) -> bool {
+	!s.is_empty() && s.split(',').all(|n| is_name(n.trim()))
+}
+
+/// The names a destructuring binding takes, spaced the way an argument list
+/// is: `x,y` and `x , y` both come out `x, y`.
+fn name_list(s: &str) -> String {
+	s.split(',').map(str::trim).collect::<Vec<_>>().join(", ")
+}
+
+/// `rest` with `word` and the whitespace after it removed, when that is how it
+/// begins -- `else ifx` is not an `else if`.
+fn after_word<'a>(rest: &'a str, word: &str) -> Option<&'a str> {
+	let tail = rest.strip_prefix(word)?;
+	tail.starts_with(char::is_whitespace).then(|| tail.trim_start())
 }
 
 /// Words separated by one space, each left exactly as written.

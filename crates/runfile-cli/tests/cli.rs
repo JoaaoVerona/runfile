@@ -880,6 +880,57 @@ fn the_bash_script_takes_the_colon_out_of_the_word_breaks() {
 	);
 }
 
+/// zsh's completion system is loaded by `compinit`, which defines `compdef`.
+/// A shell that has not run it answers `command not found: compdef` -- and
+/// `zsh -f` is exactly the machine `install` writes a brand new `~/.zshrc` on,
+/// where this hook is the only line in the file and nothing else loads it.
+/// Skipped where zsh is absent, which is most Linux boxes and no macOS one.
+#[cfg(unix)]
+#[test]
+fn the_zsh_script_registers_on_a_shell_that_has_not_run_compinit() {
+	if !have("zsh") {
+		eprintln!("skipped: zsh is not installed");
+		return;
+	}
+	let p = project(&[("runfiles/deploy.run", "$ true\n")]);
+	let script = out(&p.run(&[":completions", "output", "zsh"]));
+	let path = p.dir.path().join("c.zsh");
+	std::fs::write(&path, &script).unwrap();
+
+	// `-f` is the point: no rc files, so nothing has run `compinit`.
+	let o = Command::new("zsh")
+		.args([
+			"-f",
+			"-c",
+			&format!("source {}\nprint -r -- ${{_comps[run]-none}}", path.display()),
+		])
+		.current_dir(p.dir.path())
+		.env("HOME", p.home.path())
+		.output()
+		.expect("zsh");
+	let (o_out, o_err) = (out(&o), err(&o));
+	assert!(
+		!o_err.contains("compdef"),
+		"the hook greets every new terminal with an error: {o_err}"
+	);
+	assert!(o.status.success(), "{o_err}");
+	// Sourcing without an error is not enough -- a guard that skipped the
+	// registration would pass that and complete nothing.
+	assert_eq!(o_out.trim(), "_run", "`run` is not registered: {o_out:?} {o_err}");
+}
+
+/// A tool an external test needs, or not. Skipping keeps a contributor without
+/// it from seeing a broken build.
+#[cfg(unix)]
+fn have(tool: &str) -> bool {
+	Command::new(tool)
+		.arg("--version")
+		.stdout(Stdio::null())
+		.stderr(Stdio::null())
+		.status()
+		.is_ok_and(|s| s.success())
+}
+
 #[cfg(unix)]
 #[test]
 fn the_bash_script_completes_a_namespaced_target() {

@@ -6,7 +6,9 @@ Target {
         properties: [],
         statements: [
             Let {
-                name: "arithmetic",
+                names: [
+                    "arithmetic",
+                ],
                 value: Binary {
                     op: Sub,
                     lhs: Binary {
@@ -42,7 +44,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "compared",
+                names: [
+                    "compared",
+                ],
                 value: Binary {
                     op: Or,
                     lhs: Binary {
@@ -86,7 +90,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "chained",
+                names: [
+                    "chained",
+                ],
                 value: Chain {
                     lhs: Chain {
                         lhs: Source {
@@ -118,7 +124,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "indexed",
+                names: [
+                    "indexed",
+                ],
                 value: Index {
                     base: Call {
                         name: "split",
@@ -151,7 +159,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "called",
+                names: [
+                    "called",
+                ],
                 value: Call {
                     name: "concat",
                     args: [
@@ -183,7 +193,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "list",
+                names: [
+                    "list",
+                ],
                 value: List(
                     [
                         Str(
@@ -208,7 +220,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "nested",
+                names: [
+                    "nested",
+                ],
                 value: List(
                     [
                         List(

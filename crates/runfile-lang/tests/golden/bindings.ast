@@ -6,7 +6,9 @@ Target {
         properties: [],
         statements: [
             Let {
-                name: "plain",
+                names: [
+                    "plain",
+                ],
                 value: Number(
                     1.0,
                     Span,
@@ -14,7 +16,9 @@ Target {
                 span: Span,
             },
             Assign {
-                name: "plain",
+                names: [
+                    "plain",
+                ],
                 value: Binary {
                     op: Add,
                     lhs: Ident(
@@ -30,7 +34,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "out",
+                names: [
+                    "out",
+                ],
                 value: Capture {
                     command: None,
                     body: [
@@ -45,7 +51,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "block",
+                names: [
+                    "block",
+                ],
                 value: Capture {
                     command: Some(
                         [
@@ -63,6 +71,88 @@ Target {
                     ],
                     span: Span,
                 },
+                span: Span,
+            },
+            Let {
+                names: [
+                    "x",
+                    "y",
+                    "z",
+                ],
+                value: List(
+                    [
+                        Number(
+                            1.0,
+                            Span,
+                        ),
+                        Number(
+                            2.0,
+                            Span,
+                        ),
+                        Number(
+                            3.0,
+                            Span,
+                        ),
+                    ],
+                    Span,
+                ),
+                span: Span,
+            },
+            Let {
+                names: [
+                    "first",
+                    "_",
+                    "third",
+                ],
+                value: List(
+                    [
+                        Str(
+                            [
+                                Literal(
+                                    "a",
+                                ),
+                            ],
+                            Span,
+                        ),
+                        Str(
+                            [
+                                Literal(
+                                    "b",
+                                ),
+                            ],
+                            Span,
+                        ),
+                        Str(
+                            [
+                                Literal(
+                                    "c",
+                                ),
+                            ],
+                            Span,
+                        ),
+                    ],
+                    Span,
+                ),
+                span: Span,
+            },
+            Assign {
+                names: [
+                    "x",
+                    "y",
+                ],
+                value: List(
+                    [
+                        Number(
+                            9.0,
+                            Span,
+                        ),
+                        Number(
+                            8.0,
+                            Span,
+                        ),
+                    ],
+                    Span,
+                ),
                 span: Span,
             },
         ],

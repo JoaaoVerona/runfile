@@ -6,7 +6,9 @@ Target {
         properties: [],
         statements: [
             Let {
-                name: "escapes",
+                names: [
+                    "escapes",
+                ],
                 value: Str(
                     [
                         Literal(
@@ -18,7 +20,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "nested",
+                names: [
+                    "nested",
+                ],
                 value: Str(
                     [
                         Literal(
@@ -53,7 +57,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "raw",
+                names: [
+                    "raw",
+                ],
                 value: Str(
                     [
                         Literal(

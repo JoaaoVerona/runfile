@@ -5,6 +5,7 @@ mod args;
 mod exec;
 mod interrupt;
 mod keys;
+mod loops;
 mod parallel;
 mod walk;
 

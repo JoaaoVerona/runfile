@@ -95,7 +95,8 @@
 		"keyword": {
 			"patterns": [
 				{
-					"match": "^\\s*(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)",
+					"$comment": "The names a `let` binds -- several of them when it unpacks a list, so the whole comma-separated run is one capture rather than only the first name being coloured.",
+					"match": "^\\s*(let)\\s+([A-Za-z_][A-Za-z0-9_-]*(?:[ \\t]*,[ \\t]*[A-Za-z_][A-Za-z0-9_-]*)*)",
 					"captures": {
 						"1": {
 							"name": "keyword.other.let.run"
@@ -135,7 +136,7 @@
 					}
 				},
 				{
-					"match": "\\b(do|if|else|end|for|in|match|case|default)\\b",
+					"match": "\\b(do|if|else|end|for|in|while|until|loop|break|continue|match|case|default)\\b",
 					"name": "keyword.control.run"
 				}
 			]
@@ -372,13 +373,16 @@
 			]
 		},
 		"shell-condition": {
-			"$comment": "`if $ cmd` and `match $ cmd`: the condition is a shell run, so it is coloured as one. Without this the text after `$` was read as a runfile expression -- a quoted argument came out a runfile string and a redirection came out an operator.",
-			"begin": "^\\s*(if|match)[ \\t]+(\\$)(?=[ \\t]|$)",
+			"$comment": "`if $ cmd`, `match $ cmd`, and the two loops that ask the same question: the condition is a shell run, so it is coloured as one. Without this the text after `$` was read as a runfile expression -- a quoted argument came out a runfile string and a redirection came out an operator. `else if` is one of the shapes, so the `else` is captured rather than left for a keyword rule that never sees it: this rule matches first and consumes the word.",
+			"begin": "^\\s*(?:(else)[ \\t]+)?(if|match|while|until)[ \\t]+(\\$)(?=[ \\t]|$)",
 			"beginCaptures": {
 				"1": {
 					"name": "keyword.control.run"
 				},
 				"2": {
+					"name": "keyword.control.run"
+				},
+				"3": {
 					"name": "keyword.control.shell.run"
 				}
 			},

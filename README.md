@@ -370,9 +370,11 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `$ echo hi` | Hand this line to a shell. |
 | `exec python3` … `end` | Run a command with the block as its stdin. |
 | `json` … `end` | A block of JSON, as one value. |
-| `let x = 1` | Bind a value. `x = 2` rebinds. |
-| `if` / `else` / `end` | Branch. |
-| `for x in list` / `end` | Loop. |
+| `let x = 1` | Bind a value. `x = 2` rebinds. `let a, b = pair` takes a list apart. |
+| `if` / `else if` / `else` / `end` | Branch. However many `else if`s, one `end`. |
+| `for x in list` / `end` | Loop over a list. `for k, v in pairs` unpacks each item. |
+| `while c` / `until c` / `loop` / `end` | Loop on a condition, on its negation, or forever. |
+| `break` / `continue` | Leave the innermost loop, or start its next pass. |
 | `match` / `case` / `default` / `end` | Dispatch on a value. A label is a quoted string: `case "linux"`. |
 | `retry n [every s]` … `end` | Run the block again while it fails, up to `n` times. |
 | `do` … `end` | A block with no condition, so a property can cover a few commands. |
@@ -387,13 +389,18 @@ Strings, numbers, booleans and lists — **strict, with no coercion.** `"a" + 1`
 Lists nest as deep as you like, which beats packing several fields into one string and splitting it back out:
 
 ```sh
-for volume in [
+for volume, owner in [
 	["prometheus-data", "65534:65534"],
 	["kvrocks-data", "999:999"],
 ]
-	$ docker run --rm -v {{ volume[0] }}:/v alpine chown -R {{ volume[1] }} /v
+	$ docker run --rm -v {{ volume }}:/v alpine chown -R {{ owner }} /v
 end
 ```
+
+Several names on the left of a `let`, a reassignment or a `for` take a list apart in order —
+`let major, minor, patch = split(version, ".")` — with `_` for a position you have no use for. A name with
+nothing to bind is an error rather than an empty string, since the names are a claim about the shape of the
+value.
 
 `print` writes a line to stdout; `printf` writes exactly what you give it, with `%s`, `%d`, `%f`, `%.Nf` and
 `%%`, and no newline of its own.
@@ -404,17 +411,42 @@ Lists are values, and every list function answers with a **new** list, so nothin
 let recent = slice(reverse(sort(tags)), 0, 5)
 let targets = without(RUN.namespaces, "docs")
 
-for pair in zip(names, owners)
-	$ chown {{ pair[1] }} /srv/{{ pair[0] }}
+for name, owner in zip(names, owners)
+	$ chown {{ owner }} /srv/{{ name }}
 end
 ```
 
 `append`, `prepend`, `concat_lists`, `sort`, `reverse`, `unique`, `slice`, `flatten`, `zip`, `index_of` and
 `without`, beside `first`, `last`, `length` and `join`.
 
-There are 83 built-in functions — strings, lists, regex, paths, JSON, hashes, time, files. Your editor lists
+There are 85 built-in functions — strings, lists, regex, paths, JSON, hashes, time, files. Your editor lists
 them all with a description and an example; `run :list` is for targets, and the language server is for the
 language.
+
+### Loops
+
+`for` walks a list. `while` and `until` ask before each pass — `until` is the shape a wait loop wants — and
+`loop` never asks at all. `break` leaves the innermost one, `continue` starts its next pass, and both are a
+parse error anywhere else, so your editor says so rather than a run finding out.
+
+```sh
+until $ curl -sf http://localhost:8080/health
+	sleep(1)
+end
+
+for path in glob("**/*.log")
+	if !contains(read_file(path), "PANIC")
+		continue
+	end
+
+	print("first panic in {{ path }}")
+	break
+end
+```
+
+`range(n)` counts from zero and stops short of `n`; `range(a, b)` is every number from `a` to `b`, both
+included. Under `--dry-run` a conditional loop walks its body once: a preview performs none of the effects the
+condition is waiting on, so how often is not a thing it can honestly answer.
 
 ### Where values come from
 

@@ -45,10 +45,12 @@ pub const KEYWORDS: &[Keyword] = &[
 	},
 	Keyword {
 		name: "let",
-		syntax: "let <name> = <expression>",
-		doc: "Bind a value. Assigning again without `let` rebinds it. A binding in `_shared.run` is \
-		      visible to every target in that directory.",
-		example: "let part = one_of(first(ARGS), \"major\", \"minor\", \"patch\")\nlet parts = split(cur, \".\")\n\npart = \"patch\"",
+		syntax: "let <name>[, <name>…] = <expression>",
+		doc: "Bind a value. Assigning again without `let` rebinds it. Several names take a list \
+		      apart in order — `_` for a position to skip, and a name with nothing to bind is an \
+		      error rather than an empty string. A binding in `_shared.run` is visible to every \
+		      target in that directory.",
+		example: "let part = one_of(first(ARGS), \"major\", \"minor\", \"patch\")\nlet major, minor, patch = split(cur, \".\")\nlet owner, _, branch = split(ARG.ref, \"/\")\n\npart = \"patch\"",
 	},
 	Keyword {
 		name: "do",
@@ -67,22 +69,61 @@ pub const KEYWORDS: &[Keyword] = &[
 	},
 	Keyword {
 		name: "else",
-		syntax: "if … else … end",
-		doc: "The other branch of an `if`, or — after `retry` — what runs when every attempt failed.",
-		example: "retry 30 every 2\n\t$ pg_isready -h 127.0.0.1\nelse\n\terror(\"the database never came up\")\nend",
+		syntax: "if … [else if <condition> …] [else …] end",
+		doc: "The other branch of an `if`, or — after `retry` — what runs when every attempt failed. \
+		      `else if` continues the chain rather than opening a block of its own, so however many \
+		      of them there are, one `end` closes the lot.",
+		example: "if RUN.arch == \"aarch64\"\n\tlet target = \"arm64\"\nelse if RUN.arch == \"x86_64\"\n\tlet target = \"amd64\"\nelse\n\terror(\"unsupported: {{ RUN.arch }}\")\nend",
 	},
 	Keyword {
 		name: "for",
-		syntax: "for <name> in <list> … end",
-		doc: "Loop over a list. Lists nest, so a row can carry several fields and be taken apart by \
-		      index rather than packed into a string and split back out.",
-		example: "for volume in [\n\t[\"app-data\", \"999:999\"],\n\t[\"app-cache\", \"1000:1000\"],\n]\n\t$ docker run --rm -v {{ volume[0] }}:/v alpine chown -R {{ volume[1] }} /v\nend",
+		syntax: "for <name>[, <name>…] in <list> … end",
+		doc: "Loop over a list. Lists nest, so a row can carry several fields — and several names \
+		      take each row apart as it arrives, which is what `for name, owner in …` is for. \
+		      `break` leaves the loop and `continue` starts the next pass.",
+		example: "for name, owner in [\n\t[\"app-data\", \"999:999\"],\n\t[\"app-cache\", \"1000:1000\"],\n]\n\t$ docker run --rm -v {{ name }}:/v alpine chown -R {{ owner }} /v\nend",
 	},
 	Keyword {
 		name: "in",
 		syntax: "for <name> in <list>",
 		doc: "Separates a loop's binding from the list it walks.",
 		example: "for compose in glob(\"**/docker-compose.yml\")\n\t$ docker compose -f {{ compose }} config -q\nend",
+	},
+	Keyword {
+		name: "while",
+		syntax: "while <condition> … end",
+		doc: "Run the block again while the condition holds, testing it before each pass. The \
+		      condition is an ordinary expression — or a command, as in an `if`. Refused inside a \
+		      `.parallel` block, which has to know its branches before any of them runs.",
+		example: "let left = 5\n\nwhile left > 0\n\tprint(\"{{ left }} to go\")\n\tleft = left - 1\nend",
+	},
+	Keyword {
+		name: "until",
+		syntax: "until <condition> … end",
+		doc: "`while` with the question the other way round: run again until the condition holds. \
+		      `until $ cmd` is the wait loop — run the block again until the command succeeds.",
+		example: "until $ curl -sf localhost:8080/health\n\tsleep(1)\nend",
+	},
+	Keyword {
+		name: "loop",
+		syntax: "loop … end",
+		doc: "Run the block again forever. It takes no condition — `break` is how it ends, and \
+		      `while` is the form that asks a question. Under `--dry-run` the body is walked once: a \
+		      preview performs none of the effects the loop is waiting on.",
+		example: "loop\n\tif file_exists(\"build/done\")\n\t\tbreak\n\tend\n\n\tsleep(1)\nend",
+	},
+	Keyword {
+		name: "break",
+		syntax: "break",
+		doc: "Leave the innermost `for`, `while`, `until` or `loop`. Written anywhere else it is a \
+		      parse error, so an editor says so rather than a run finding out.",
+		example: "for f in glob(\"**/*.log\")\n\tif contains(read_file(f), \"PANIC\")\n\t\tprint(\"first panic in {{ f }}\")\n\t\tbreak\n\tend\nend",
+	},
+	Keyword {
+		name: "continue",
+		syntax: "continue",
+		doc: "Start the innermost loop's next pass, skipping the rest of the body.",
+		example: "for f in glob(\"src/**/*.rs\")\n\tif starts_with(basename(f), \"_\")\n\t\tcontinue\n\tend\n\n\t$ rustfmt --check {{ f }}\nend",
 	},
 	Keyword {
 		name: "match",
@@ -143,9 +184,10 @@ pub const KEYWORDS: &[Keyword] = &[
 	Keyword {
 		name: "end",
 		syntax: "end",
-		doc: "Closes the nearest open block — `if`, `for`, `match`, `retry`, `exec` or a structured \
-		      block. An `exec` body closes only on an `end` at its **opener's** indentation, so a \
-		      body may contain the word freely.",
+		doc: "Closes the nearest open block — `if`, `for`, `while`, `until`, `loop`, `match`, \
+		      `retry`, `do`, `exec` or a structured block. A chain of `else if` is one block, so one \
+		      `end` closes all of it. An `exec` body closes only on an `end` at its **opener's** \
+		      indentation, so a body may contain the word freely.",
 		example: "for f in glob(\"*.sh\")\n\t$ shellcheck {{ f }}\nend",
 	},
 ];

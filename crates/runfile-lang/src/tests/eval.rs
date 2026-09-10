@@ -1178,3 +1178,92 @@ fn every_documented_example_parses() {
 	}
 	assert!(bad.is_empty(), "examples that do not parse:\n\n{}", bad.join("\n\n"));
 }
+
+#[test]
+fn range_counts_from_zero_with_one_bound_and_between_two_with_both() {
+	// The language had no way to build a list of numbers: "do this N times"
+	// meant a list literal or a trip out to `seq`.
+	assert_eq!(
+		v("range(5)"),
+		Value::List((0..5).map(|n| Value::Num(f64::from(n))).collect()),
+		"one argument counts from zero and stops short, which is what an index wants"
+	);
+	assert_eq!(
+		v("range(1, 3)"),
+		Value::List(vec![Value::Num(1.0), Value::Num(2.0), Value::Num(3.0)]),
+		"two are bounds, and both are included"
+	);
+	assert_eq!(v("range(0)"), Value::List(Vec::new()));
+	assert_eq!(v("range(2, 2)"), Value::List(vec![Value::Num(2.0)]));
+	// An end below the start is empty rather than a count down, so
+	// `range(1, length(xs))` over an empty list is nothing rather than an
+	// error or a backwards list.
+	assert_eq!(v("range(3, 1)"), Value::List(Vec::new()));
+	assert_eq!(v("range(-3)"), Value::List(Vec::new()));
+	assert_eq!(v("length(range(4))"), Value::Num(4.0));
+}
+
+#[test]
+fn range_refuses_what_it_cannot_answer() {
+	assert!(boom("range(2.5)").contains("whole numbers"), "{}", boom("range(2.5)"));
+	assert!(boom("range(\"3\")").contains("number"), "{}", boom("range(\"3\")"));
+	// A bound, because `range(1e9)` is a typo rather than a plan -- the same
+	// reasoning `repeat` uses.
+	assert!(boom("range(99999999)").contains("surely a mistake"));
+	assert!(boom("range()").contains("1 or 2 arguments"));
+	assert!(boom("range(1, 2, 3)").contains("1 or 2 arguments"));
+}
+
+#[test]
+fn sleep_waits_but_never_under_dry_run() {
+	// Waiting changes nothing, but a preview that takes the full minute a real
+	// run takes is not a preview. Asserted as elapsed time on the mechanism's
+	// two sides rather than by noticing a slow test.
+	let e = parse_expr("sleep(0.25)", 0, 1).unwrap();
+
+	let mut dry = sc();
+	dry.dry_run = true;
+	let at = std::time::Instant::now();
+	eval(&e, &mut dry).expect("a preview does not wait");
+	assert!(at.elapsed() < std::time::Duration::from_millis(100), "a preview waited");
+
+	let at = std::time::Instant::now();
+	eval(&e, &mut sc()).expect("a real run does");
+	assert!(
+		at.elapsed() >= std::time::Duration::from_millis(200),
+		"a real run did not wait"
+	);
+
+	assert!(boom("sleep(-1)").contains("non-negative"));
+	assert!(boom("sleep(\"1\")").contains("number"));
+}
+
+#[test]
+fn unpacking_takes_the_names_it_was_given_and_no_more() {
+	use crate::eval::destructure;
+	let names = |ns: &[&str]| ns.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+	let list = Value::List(vec![Value::Num(1.0), Value::Num(2.0), Value::Num(3.0)]);
+
+	// One name binds the value whole -- a list stays a list, because unpacking
+	// is what the commas ask for and nothing else should change behaviour
+	// because a value happened to be one.
+	assert_eq!(
+		destructure(&names(&["xs"]), list.clone(), 1).unwrap(),
+		vec![list.clone()]
+	);
+	assert_eq!(
+		destructure(&names(&["a", "b"]), list.clone(), 1).unwrap(),
+		vec![Value::Num(1.0), Value::Num(2.0)],
+		"extra elements are not asked for"
+	);
+
+	let e = destructure(&names(&["a", "b", "c", "d"]), list, 1)
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("4 names to unpack, but the list has 3"), "{e}");
+
+	let e = destructure(&names(&["a", "b"]), Value::Str("ab".into()), 1)
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("needs a list, got string"), "{e}");
+}

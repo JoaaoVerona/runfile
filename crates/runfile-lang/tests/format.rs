@@ -390,3 +390,43 @@ fn a_scored_dispatch_is_spaced_like_a_run_statement() {
 		assert_eq!(format(src).unwrap(), src, "{src:?}");
 	}
 }
+
+#[test]
+fn an_else_if_chain_stays_one_level_deep() {
+	// Each `else if` continues the chain rather than opening a block, so the
+	// arms sit at the `if`'s own depth and one `end` closes the lot. Reading
+	// the tree would say otherwise -- it nests -- which is exactly why the
+	// formatter is line-oriented.
+	let out = format(
+		"if a == 1\n\
+		 print(\"one\")\n\
+		 else if a == 2\n\
+		 print(\"two\")\n\
+		 else\n\
+		 print(\"other\")\n\
+		 end\n",
+	)
+	.unwrap();
+	assert_eq!(
+		out,
+		"if a == 1\n\tprint(\"one\")\nelse if a == 2\n\tprint(\"two\")\nelse\n\tprint(\"other\")\nend\n"
+	);
+}
+
+#[test]
+fn the_loop_keywords_open_a_block_like_any_other() {
+	let out = format("while  n>0\nn = n - 1\nend\nuntil  false\nbreak\nend\nloop\ncontinue\nend\n").unwrap();
+	assert_eq!(
+		out,
+		"while n > 0\n\tn = n - 1\nend\n\nuntil false\n\tbreak\nend\n\nloop\n\tcontinue\nend\n"
+	);
+}
+
+#[test]
+fn a_list_of_binding_names_is_spaced_like_an_argument_list() {
+	let out = format("let a,b ,  c = range(3)\nfor k,_ in pairs\na,c = [c, a]\nend\n").unwrap();
+	assert_eq!(
+		out,
+		"let a, b, c = range(3)\n\nfor k, _ in pairs\n\ta, c = [c, a]\nend\n"
+	);
+}

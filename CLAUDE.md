@@ -48,8 +48,8 @@ Line-oriented. Every line is one of:
 | `$ <line>` | Hand this line to a shell. |
 | `exec <cmd>` … `end` | Run `<cmd>`, with the block's body as its stdin. |
 | `json` … `end` | A block of structured text, as one value of that format. |
-| `let x = expr`, `x = expr` | Bind and rebind. |
-| `if` / `else` / `end`, `for x in …`, `match` / `case` / `default`, `retry n [every s]`, `do` | Control flow. |
+| `let x = expr`, `x = expr` | Bind and rebind. `let a, _, c = xs` unpacks a list. |
+| `if` / `else if` / `else` / `end`, `for x in …`, `while c`, `until c`, `loop`, `break`, `continue`, `match` / `case` / `default`, `retry n [every s]`, `do` | Control flow. |
 | `run <target> [args]` | Dispatch another target, in-process. |
 | `expr` | Evaluated for effect, e.g. `write_file(…)`. |
 
@@ -205,6 +205,49 @@ exactly once, which is the least useful way for it to be wrong — and an `exit(
 than retried. It is refused inside `.parallel`: several bodies sleeping and re-running against each other has
 no useful reading of what "attempts" counted, so `RunError::RetryInParallel` says so rather than guessing.
 
+### Loops
+
+`for` walks a list; **`while`, `until` and `loop` ask a question instead**, and all four take `break` and
+`continue`. One `Statement::Loop` carries a `LoopTest` of `While(expr)` / `Until(expr)` / `Forever`, so every
+walker that handles one handles the three -- `until` exists because the reverse question is the one a wait
+loop asks, and four in the corpus were shell `until … do sleep … done`. The condition may be a capture, the
+same rule an `if` follows, which is what makes `until $ curl -sf health` read as what it is.
+
+**`break` and `continue` are refused at parse time outside a loop.** Whether a line sits inside one is a
+question about the text, so `P.loops` counts the enclosing loop bodies and an editor underlines a stray one
+rather than a run finding out half-way. They travel out as `RunError::Break` / `Continue` -- an error is the
+only path back out of a walk, the same reason `exit()` is one -- so **`is_stop` covers them**: a `retry` would
+otherwise read a `break` as a failed attempt and run the body again, and `.ignore-errors` would forgive it
+into a statement that plainly did nothing. `retry` is *not* a loop for this purpose; a `break` inside one
+leaves the `for` around it.
+
+**Under `--dry-run` a conditional loop walks its body once.** A preview performs none of the effects the
+condition is asking about, so the answer it gets back never changes: `while` ran forever or not at all, and
+neither is what would have happened. One pass is the honest thing a preview has to say. A `loop` with an empty
+body also checks the interrupt itself, since `walk` only looks *between* statements and there are none.
+
+Refused inside `.parallel`, like `retry`: a fan-out collects every branch before any of them runs, and a
+conditional loop has nothing to collect until its body has run. `break` has the same problem from the other
+end. A `for` is still expanded there, because its list is known before it starts.
+
+### Unpacking a list
+
+`let`, reassignment and `for` all take **several names**: `Statement::Let`, `Assign` and `For` carry
+`names: Vec<String>`, and `eval::destructure` is the one place the rule is spelled. **One** name binds the
+value whole -- a list stays a list, because unpacking is what the commas ask for and nothing else should
+change behaviour because a value happened to be a list. Several take the elements in order.
+
+Too **few** elements is a hard error (`EvalError::Unpack`), because the names are a claim about the shape of
+the value and a claim that does not hold is a mistake every time; extra elements are simply not asked for.
+`_` is a position matched and thrown away, may be repeated, and cannot collide with a name or shadow one --
+an identifier starts with a letter, so `_` is not one. `let _ = f()` therefore evaluates and discards.
+
+**`else if` chains rather than nests in the source and nests rather than chains in the tree.** The parser's
+`if_tail` builds the inner `If` itself, so one `end` closes the whole chain, and nothing downstream has to
+tell a chain from a nest -- the formatter is line-oriented and prints back whichever was written. Trailing
+text after `else` used to be dropped without a word, so `else x > 1` ran its block unconditionally; it is an
+error now.
+
 ### A command's exit status
 
 `if $ cmd` is true when the command succeeds, and `match $ cmd` dispatches on the exit code with `case "0"`,
@@ -288,6 +331,8 @@ crates/
 
 ### runfile-lang
 
+`ast.rs` carries `LoopTest` beside `Statement`. `eval.rs` holds `destructure`, the one description of what a
+comma-separated left-hand side means.
 `args.rs` classifies a command line against what the target reads — the one place the `--key value` rule is
 spelled, so the runner and the `--stdin-args` prompt cannot read the same words two ways.
 `format.rs` is the pretty-printer. `lexer.rs` is a hand-rolled scanner (`skip_interp`, `split_interp`, `scan_string`, `tokenize`). `parser.rs`
@@ -714,7 +759,17 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   `run` found nothing and `eval` registered nothing, silently — completions simply never appeared in a login
   shell. zsh and PowerShell still take a profile line, so that line names the binary by its full path rather
   than trusting PATH at startup. `uninstall` also removes the older `.bashrc` hook, so upgrading leaves no
-  dead line behind.
+  dead line behind. **The zsh script loads the completion system when nothing else has.** `compdef` is
+  `compinit`'s, not zsh's, so the bare `compdef _run run` the script ended in was `command not found` on every
+  startup of a shell that had never run one — and `install` *creates* `~/.zshrc` where there is none, which
+  makes the hook the only line in the file and leaves nothing there to load it. `compinit -i` rather than a
+  bare `compinit`, because the insecure-directory check is a *question*, and one asked at every shell startup
+  would be worse than the error it replaced; the `compdef` after it is guarded too, since a zsh with no
+  completion system at all has nothing to register with and going quiet beats greeting every new terminal
+  with an error. The profile line calls the binary rather than carrying a copy of the script, so an
+  already-installed hook picks this up on upgrade with no reinstall. Tested against a real zsh started with
+  `-f` — the same shell a fresh install meets — asserting that `_comps[run]` is set and that nothing reaches
+  stderr, and skipped where zsh is absent, which is most Linux boxes and no macOS one.
 - Help is data, not a string literal: `help.rs` renders `Section`/`Row` tables, bold headings and cyan names
   when stdout is a terminal and plainly into a pipe, honouring `NO_COLOR` and `TERM=dumb`. Every command
   renders through it, so they cannot drift into different shapes, and a `--help` never needs a project to
@@ -856,6 +911,16 @@ laxer than JSON and handing back a malformed document would be worse than refusi
 the write direction, reusing `Structured::render`, which is also what **`json_set` now accepts a number, bool
 or list through**: building an array meant hand-writing JSON text with the escapes the `json` block exists to
 avoid. One encoder, so a value cannot look like one thing in a block and another in a call.
+
+**`range` builds a list of numbers**, which the language had no way to do: "do this N times" meant a list
+literal or a trip out to `seq`. `range(n)` counts from zero and stops short, which is what an index wants;
+`range(a, b)` includes both bounds, which is what a run of ports or versions wants. An end below the start is
+empty rather than a count down, so `range(1, length(xs))` over an empty list is nothing rather than an error
+or a backwards list. Bounded the way `repeat` is, because `range(1e9)` is a typo rather than a plan.
+
+**`sleep(seconds)` takes a float**, and does nothing under `--dry-run` -- waiting changes nothing, but a
+preview that takes the full minute a real run takes is not a preview. It is the gap `retry … every` left: a
+pause on its own was still `$ sleep 5`.
 
 **`print` and `printf` write to stdout**, and replaced 142 `$ echo` and `$ printf` lines across the corpus —
 each of which was a shell process started to say one sentence. `print` takes one or more values, separates

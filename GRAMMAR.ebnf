@@ -18,14 +18,27 @@ exec_block  = WS , "exec" , " " , shell_text , NEWLINE ,
               WS , "end" , NEWLINE ;
 
 (* ---- statements ---- *)
-statement   = let | assign | if | else | for | match | case | default
+statement   = let | assign | if | else | for | while | until | loop
+            | break | continue | match | case | default
             | run | retry | do | end | call ;
 
-let         = "let" , ident , "=" , value ;
-assign      = ident , "=" , value ;
+let         = "let" , names , "=" , value ;
+assign      = names , "=" , value ;
+(* One name binds the value whole; several unpack a list positionally, and a
+   name with nothing to bind is an error. `_` is a position matched and thrown
+   away, and may be repeated -- it is not an ident, so it shadows nothing. *)
+names       = ( ident | "_" ) , { "," , ( ident | "_" ) } ;
 if          = "if" , ( expr | capture ) ;                   (* `if $ cmd` is true when it succeeds *)
-else        = "else" ;
-for         = "for" , ident , "in" , ( expr | capture ) ;
+else        = "else" , [ "if" , ( expr | capture ) ] ;      (* a chain of them is one block, closed by one `end` *)
+for         = "for" , names , "in" , ( expr | capture ) ;
+while       = "while" , ( expr | capture ) ;                (* again while it holds *)
+until       = "until" , ( expr | capture ) ;                (* again while it does not *)
+loop        = "loop" ;                                      (* again forever; `break` is how it ends *)
+(* Refused outside a `for`, `while`, `until` or `loop` -- a rule about where a
+   line sits rather than about its shape, so the parser states it and this
+   grammar cannot. *)
+break       = "break" ;
+continue    = "continue" ;
 match       = "match" , ( expr | capture ) ;                (* over a capture, the cases are exit codes *)
 case        = "case" , string ;                             (* a label is a value, so it is quoted *)
 default     = "default" ;

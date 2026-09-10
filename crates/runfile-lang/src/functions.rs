@@ -127,6 +127,50 @@ pub fn call_with(name: &str, v: Vec<Value>, sc: &mut Scope, sp: Span) -> Result<
 			}
 			Value::Str(out)
 		}
+		// A list of numbers, which the language had no way to build: "do this
+		// N times" meant a list literal or a trip out to `seq`. One argument
+		// counts from zero and stops short, which is what an index wants; two
+		// are the bounds and both are included, which is what a range of
+		// versions or ports wants.
+		"range" => {
+			if !(1..=2).contains(&n) {
+				return Err(arity(name, "1 or 2 arguments", n, sp));
+			}
+			let whole = |i: usize| -> Result<f64, EvalError> {
+				let x = v[i].as_num().map_err(|e| ty(sp, e))?;
+				if x.fract() != 0.0 || !x.is_finite() {
+					return Err(EvalError::Other {
+						msg: format!("`range` needs whole numbers, got {}", crate::value::format_num(x)),
+						line: sp.line,
+					});
+				}
+				Ok(x)
+			};
+			let (from, to) = match n {
+				1 => (0.0, whole(0)? - 1.0),
+				_ => (whole(0)?, whole(1)?),
+			};
+			// An end below the start is an empty range rather than a count
+			// down: `range(1, length(xs))` over an empty list has to be
+			// nothing, not an error and not a backwards list.
+			let span = to - from + 1.0;
+			// A bound, because `range(1e9)` is a typo rather than a plan --
+			// the same reasoning `repeat` uses.
+			const MAX: f64 = 8.0 * 1024.0 * 1024.0;
+			if span > MAX {
+				return Err(EvalError::Other {
+					msg: format!("`range` would build {span} elements, which is more than {MAX} and surely a mistake"),
+					line: sp.line,
+				});
+			}
+			let mut out = Vec::new();
+			let mut x = from;
+			while x <= to {
+				out.push(Value::Num(x));
+				x += 1.0;
+			}
+			Value::List(out)
+		}
 		"repeat" => {
 			want!(2, "2 arguments");
 			let times = count(num(1)?, name, "count", sp)?;
@@ -1325,6 +1369,13 @@ pub const FUNCTIONS: &[Function] = &[
 		example: "printf(\"  %s -> %s (%d files)\\n\", src, dst, n)",
 	},
 	Function {
+		name: "range",
+		signature: "range(count) | range(from, to)",
+		doc: "A list of whole numbers. With one argument, `count` of them from zero; with two, \
+		      every number from `from` to `to`, both included. An end below the start is empty.",
+		example: "let indexes = range(3)              # [0, 1, 2]\nlet ports = range(8000, 8002)       # [8000, 8001, 8002]",
+	},
+	Function {
 		name: "read_file",
 		signature: "read_file(path)",
 		doc: "The file's contents, relative to the runfiles parent.",
@@ -1401,6 +1452,12 @@ pub const FUNCTIONS: &[Function] = &[
 		signature: "sha256(s)",
 		doc: "Hex SHA-256.",
 		example: "let digest = sha256(read_file(\"dist/app.tar.gz\"))",
+	},
+	Function {
+		name: "sleep",
+		signature: "sleep(seconds)",
+		doc: "Wait. Fractions are allowed, so `sleep(0.25)` is 250ms. Does nothing under `--dry-run`.",
+		example: "$ docker compose up -d\nsleep(1.5)\n$ curl -sf localhost:8080/health",
 	},
 	Function {
 		name: "split",
@@ -1547,6 +1604,22 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 			write_stdout(&format!("{joined}{NEWLINE}")).map_err(other)
 		}
 		"printf" if n >= 1 => (|| write_stdout(&render_format(s(0)?, &v[1..], sp)?).map_err(other))(),
+		// Waiting is not a change to anything, but a preview that takes the
+		// full minute a real run takes is not a preview. Skipped under
+		// `--dry-run` for the same reason a write is.
+		"sleep" if n == 1 => (|| {
+			let secs = v[0].as_num().map_err(|e| ty(sp, e))?;
+			// `is_finite` is what rules out a NaN, which no comparison would.
+			if secs < 0.0 || !secs.is_finite() {
+				return Err(other(format!(
+					"`sleep` needs a non-negative number of seconds, got {secs}"
+				)));
+			}
+			if !sc.dry_run {
+				std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+			}
+			Ok(V::Str(String::new()))
+		})(),
 		"write_file" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would write {}>", s(0)?))))(),
 		"decrypt" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would decrypt to {}>", s(1)?))))(),
 		"write_file" if n == 2 => (|| {

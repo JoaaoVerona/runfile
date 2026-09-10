@@ -1,0 +1,220 @@
+Target {
+    description: Some(
+        "Loops: while, until, loop, and the two ways out of one",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            Let {
+                names: [
+                    "n",
+                ],
+                value: Number(
+                    3.0,
+                    Span,
+                ),
+                span: Span,
+            },
+            Loop {
+                test: While(
+                    Binary {
+                        op: Gt,
+                        lhs: Ident(
+                            "n",
+                            Span,
+                        ),
+                        rhs: Number(
+                            0.0,
+                            Span,
+                        ),
+                        span: Span,
+                    },
+                ),
+                body: Block {
+                    properties: [],
+                    statements: [
+                        Assign {
+                            names: [
+                                "n",
+                            ],
+                            value: Binary {
+                                op: Sub,
+                                lhs: Ident(
+                                    "n",
+                                    Span,
+                                ),
+                                rhs: Number(
+                                    1.0,
+                                    Span,
+                                ),
+                                span: Span,
+                            },
+                            span: Span,
+                        },
+                    ],
+                },
+                span: Span,
+            },
+            Loop {
+                test: Until(
+                    Capture {
+                        command: None,
+                        body: [
+                            [
+                                Literal(
+                                    "curl -sf localhost:8080/health",
+                                ),
+                            ],
+                        ],
+                        span: Span,
+                    },
+                ),
+                body: Block {
+                    properties: [],
+                    statements: [
+                        Call {
+                            expr: Call {
+                                name: "sleep",
+                                args: [
+                                    Number(
+                                        1.0,
+                                        Span,
+                                    ),
+                                ],
+                                span: Span,
+                            },
+                            span: Span,
+                        },
+                    ],
+                },
+                span: Span,
+            },
+            Loop {
+                test: Forever,
+                body: Block {
+                    properties: [],
+                    statements: [
+                        Break {
+                            span: Span,
+                        },
+                    ],
+                },
+                span: Span,
+            },
+            For {
+                names: [
+                    "name",
+                    "owner",
+                ],
+                iter: List(
+                    [
+                        List(
+                            [
+                                Str(
+                                    [
+                                        Literal(
+                                            "a",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                                Str(
+                                    [
+                                        Literal(
+                                            "1",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                            ],
+                            Span,
+                        ),
+                        List(
+                            [
+                                Str(
+                                    [
+                                        Literal(
+                                            "b",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                                Str(
+                                    [
+                                        Literal(
+                                            "2",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                            ],
+                            Span,
+                        ),
+                    ],
+                    Span,
+                ),
+                body: Block {
+                    properties: [],
+                    statements: [
+                        If {
+                            cond: Binary {
+                                op: Eq,
+                                lhs: Ident(
+                                    "name",
+                                    Span,
+                                ),
+                                rhs: Str(
+                                    [
+                                        Literal(
+                                            "a",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                                span: Span,
+                            },
+                            then: Block {
+                                properties: [],
+                                statements: [
+                                    Continue {
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            otherwise: None,
+                            span: Span,
+                        },
+                        Exec {
+                            command: None,
+                            body: [
+                                [
+                                    Literal(
+                                        "echo ",
+                                    ),
+                                    Expr(
+                                        Ident(
+                                            "name",
+                                            Span,
+                                        ),
+                                    ),
+                                    Literal(
+                                        " ",
+                                    ),
+                                    Expr(
+                                        Ident(
+                                            "owner",
+                                            Span,
+                                        ),
+                                    ),
+                                ],
+                            ],
+                            lines,
+                            span: Span,
+                        },
+                    ],
+                },
+                span: Span,
+            },
+        ],
+    },
+}

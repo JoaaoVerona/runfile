@@ -79,7 +79,9 @@ Target {
                 span: Span,
             },
             For {
-                name: "f",
+                names: [
+                    "f",
+                ],
                 iter: List(
                     [
                         Str(
@@ -239,6 +241,110 @@ Target {
                         },
                     ],
                 },
+                span: Span,
+            },
+            If {
+                cond: Binary {
+                    op: Eq,
+                    lhs: Source {
+                        kind: Run,
+                        key: Some(
+                            "arch",
+                        ),
+                        span: Span,
+                    },
+                    rhs: Str(
+                        [
+                            Literal(
+                                "aarch64",
+                            ),
+                        ],
+                        Span,
+                    ),
+                    span: Span,
+                },
+                then: Block {
+                    properties: [],
+                    statements: [
+                        Exec {
+                            command: None,
+                            body: [
+                                [
+                                    Literal(
+                                        "echo arm",
+                                    ),
+                                ],
+                            ],
+                            lines,
+                            span: Span,
+                        },
+                    ],
+                },
+                otherwise: Some(
+                    Block {
+                        properties: [],
+                        statements: [
+                            If {
+                                cond: Binary {
+                                    op: Eq,
+                                    lhs: Source {
+                                        kind: Run,
+                                        key: Some(
+                                            "arch",
+                                        ),
+                                        span: Span,
+                                    },
+                                    rhs: Str(
+                                        [
+                                            Literal(
+                                                "x86_64",
+                                            ),
+                                        ],
+                                        Span,
+                                    ),
+                                    span: Span,
+                                },
+                                then: Block {
+                                    properties: [],
+                                    statements: [
+                                        Exec {
+                                            command: None,
+                                            body: [
+                                                [
+                                                    Literal(
+                                                        "echo intel",
+                                                    ),
+                                                ],
+                                            ],
+                                            lines,
+                                            span: Span,
+                                        },
+                                    ],
+                                },
+                                otherwise: Some(
+                                    Block {
+                                        properties: [],
+                                        statements: [
+                                            Exec {
+                                                command: None,
+                                                body: [
+                                                    [
+                                                        Literal(
+                                                            "echo other",
+                                                        ),
+                                                    ],
+                                                ],
+                                                lines,
+                                                span: Span,
+                                            },
+                                        ],
+                                    },
+                                ),
+                                span: Span,
+                            },
+                        ],
+                    },
+                ),
                 span: Span,
             },
         ],

@@ -66,6 +66,11 @@ module.exports = grammar({
 				$.if_statement,
 				$.retry_statement,
 				$.for_statement,
+				$.while_statement,
+				$.until_statement,
+				$.loop_statement,
+				$.break_statement,
+				$.continue_statement,
 				$.match_statement,
 				$.run_statement,
 				$.expression_statement,
@@ -109,8 +114,18 @@ module.exports = grammar({
 
 		// ---- statements
 
+		// Several names unpack a list positionally; `_` is a position thrown
+		// away, and needs no rule of its own because the identifier pattern
+		// already admits it.
 		let_statement: ($) =>
-			seq("let", field("name", $.identifier), "=", field("value", choice($.capture_call, $.structured, $.capture, $._expression)), $._newline),
+			seq(
+				"let",
+				field("name", $.identifier),
+				repeat(seq(",", field("name", $.identifier))),
+				"=",
+				field("value", choice($.capture_call, $.structured, $.capture, $._expression)),
+				$._newline,
+			),
 
 		// A call whose last argument is a `$` run -- `lines($ git ls-files)`,
 		// and `code_of($ cmd)`, which is that same shape wearing a name people
@@ -144,7 +159,13 @@ module.exports = grammar({
 		_capture_content: () => token.immediate(prec(-1, /([^{)\\\r\n]|\\[^\r\n])+/)),
 
 		assignment: ($) =>
-			seq(field("name", $.identifier), "=", field("value", choice($.capture_call, $.structured, $.capture, $._expression)), $._newline),
+			seq(
+				field("name", $.identifier),
+				repeat(seq(",", field("name", $.identifier))),
+				"=",
+				field("value", choice($.capture_call, $.structured, $.capture, $._expression)),
+				$._newline,
+			),
 
 		// `json … end`: a block of structured text, as one value of that format.
 		// Its body closes on an `end` at the opener's indentation, like every
@@ -177,9 +198,25 @@ module.exports = grammar({
 				field("condition", choice($.shell_capture, $._expression)),
 				$._newline,
 				repeat($._line),
-				optional(seq("else", $._newline, repeat($._line))),
+				optional($._else_clause),
 				"end",
 				$._newline,
+			),
+
+		// `else if` continues the chain rather than opening a block of its
+		// own, so one `end` closes however many of them there are. Hidden, so
+		// the whole chain is one `if_statement` node -- which is what it is.
+		_else_clause: ($) =>
+			choice(
+				seq(
+					"else",
+					"if",
+					field("condition", choice($.shell_capture, $._expression)),
+					$._newline,
+					repeat($._line),
+					optional($._else_clause),
+				),
+				seq("else", $._newline, repeat($._line)),
 			),
 
 		// `retry n [every s]` … `[else …]` `end`: the body is run again while it
@@ -197,7 +234,32 @@ module.exports = grammar({
 			),
 
 		for_statement: ($) =>
-			seq("for", field("variable", $.identifier), "in", field("iterable", choice($.capture_call, $._expression)), $._newline, repeat($._line), "end", $._newline),
+			seq(
+				"for",
+				field("variable", $.identifier),
+				repeat(seq(",", field("variable", $.identifier))),
+				"in",
+				field("iterable", choice($.capture_call, $._expression)),
+				$._newline,
+				repeat($._line),
+				"end",
+				$._newline,
+			),
+
+		// `while` and `until` are the same block asking opposite questions.
+		// Written as two rules rather than a `choice` of keywords so the node
+		// name says which one is on the screen.
+		while_statement: ($) =>
+			seq("while", field("condition", choice($.shell_capture, $._expression)), $._newline, repeat($._line), "end", $._newline),
+
+		until_statement: ($) =>
+			seq("until", field("condition", choice($.shell_capture, $._expression)), $._newline, repeat($._line), "end", $._newline),
+
+		// Takes no condition: `break` is how it ends.
+		loop_statement: ($) => seq("loop", $._newline, repeat($._line), "end", $._newline),
+
+		break_statement: ($) => seq("break", $._newline),
+		continue_statement: ($) => seq("continue", $._newline),
 
 		match_statement: ($) =>
 			seq(

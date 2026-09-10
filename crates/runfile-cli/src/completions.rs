@@ -514,7 +514,23 @@ _run() {
 	fi
 	(( ${#out} )) && compadd -- $out
 }
-compdef _run run
+
+# `compdef` is `compinit`'s, not zsh's: a shell that has not run `compinit`
+# answers `command not found` here, once per terminal, forever. That is not an
+# exotic setup -- `install` puts this hook in `~/.zshrc`, and on a machine that
+# had no `~/.zshrc` at all the hook is the only line in the file, so nothing
+# else loads the completion system. Load it when nothing has, with `-i`:
+# `compinit`'s insecure-directory check is a *question*, and one asked at every
+# shell startup would be worse than the error it replaces.
+if (( ! $+functions[compdef] )); then
+	autoload -Uz compinit && compinit -i
+fi
+# Guarded again, because a zsh with no completion system at all has nothing to
+# register with -- and going quiet there is better than greeting every new
+# terminal with the error this replaced.
+if (( $+functions[compdef] )); then
+	compdef _run run
+fi
 "#;
 
 const FISH: &str = r#"# run(1) completion. Install: run :completions install fish
@@ -580,6 +596,23 @@ mod tests {
 				assert!(plain.contains(m), "{sh} ignores the {m} marker");
 			}
 		}
+	}
+
+	#[test]
+	fn the_zsh_script_does_not_assume_the_completion_system_is_loaded() {
+		// `compdef` is `compinit`'s, so a script that reaches it on a shell
+		// that has not run one answers `command not found` at every startup.
+		// Asserted on the shape here because zsh is absent on most Linux
+		// boxes, where the test that drives the real shell can only skip.
+		let code: Vec<&str> = ZSH.lines().map(str::trim).filter(|l| !l.starts_with('#')).collect();
+		let at = |needle: &str| code.iter().position(|l| l.contains(needle));
+		let loads = at("compinit").expect("nothing loads the completion system");
+		let registers = at("compdef _run run").expect("nothing registers `run`");
+		assert!(loads < registers, "`compinit` has to run before `compdef`");
+		assert!(
+			code[..registers].iter().any(|l| l.contains("$+functions[compdef]")),
+			"`compdef` is reached unguarded"
+		);
 	}
 
 	#[test]

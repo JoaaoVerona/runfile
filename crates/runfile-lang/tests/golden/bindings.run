@@ -6,3 +6,6 @@ let out = $ git rev-parse HEAD
 let block = exec sh
 	echo hi
 end
+let x, y, z = [1, 2, 3]
+let first, _, third = ["a", "b", "c"]
+x, y = [9, 8]

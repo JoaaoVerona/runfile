@@ -125,6 +125,15 @@ fn statement(s: &Statement, out: &mut Inputs) {
 			expr(iter, out, plain);
 			block(body, out);
 		}
+		Statement::Loop { test, body, .. } => {
+			if let Some(c) = test.cond() {
+				expr(c, out, plain);
+			}
+			block(body, out);
+		}
+		// Neither reads anything; both are here so a new statement form cannot
+		// be added without this walk being asked about it.
+		Statement::Break { .. } | Statement::Continue { .. } => {}
 		Statement::Match {
 			subject,
 			cases,

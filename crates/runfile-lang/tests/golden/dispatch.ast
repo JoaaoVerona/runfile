@@ -69,7 +69,9 @@ Target {
                 span: Span,
             },
             Let {
-                name: "failed",
+                names: [
+                    "failed",
+                ],
                 value: Call {
                     name: "code_of",
                     args: [

@@ -415,6 +415,15 @@ test("a `$` condition and a code_of body are coloured as shell", async () => {
 	for (const line of [
 		'if $ launchctl print "gui/$(id -u)/x" >/dev/null 2>&1',
 		"match $ grep -q a b",
+		// A loop asks the same question, so it gets the same rule -- and
+		// `until $ cmd` is the wait loop, which is the shape most likely to
+		// carry a redirection or a quoted argument.
+		"while $ pgrep -q app",
+		'until $ curl -sf "http://localhost:8080/health" >/dev/null',
+		// `else if` reaches the same rule, which has to consume the `else`
+		// itself: a keyword rule further down never sees a line this one has
+		// already begun on.
+		"else if $ test -f .env",
 		"let c = code_of($ mkdir out)",
 		// Any call may hold one, not just `code_of`. Matched by shape rather
 		// than by name: while the rule spelled `code_of` out, every other call

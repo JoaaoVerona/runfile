@@ -305,3 +305,118 @@ end
         (shell_content)
         (interpolation
           (identifier))))))
+
+================================================================================
+Loops: while, until, loop, and the two ways out of one
+================================================================================
+while n > 0
+	n = n - 1
+end
+until $ curl -sf localhost:8080/health
+	sleep(1)
+end
+loop
+	if done
+		break
+	end
+	continue
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (while_statement
+    (binary_expression
+      (identifier)
+      (number))
+    (assignment
+      (identifier)
+      (binary_expression
+        (identifier)
+        (number))))
+  (until_statement
+    (shell_capture
+      (shell_text
+        (shell_content)))
+    (expression_statement
+      (call_expression
+        (identifier)
+        (arguments
+          (number)))))
+  (loop_statement
+    (if_statement
+      (identifier)
+      (break_statement))
+    (continue_statement)))
+
+================================================================================
+Unpacking a list: in a let, a reassignment, and a for
+================================================================================
+let x, _, z = [1, 2, 3]
+x, z = [z, x]
+for name, owner in pairs
+	$ echo {{ name }}
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (identifier)
+    (identifier)
+    (list
+      (number)
+      (number)
+      (number)))
+  (assignment
+    (identifier)
+    (identifier)
+    (list
+      (identifier)
+      (identifier)))
+  (for_statement
+    (identifier)
+    (identifier)
+    (identifier)
+    (shell_line
+      (shell_text
+        (shell_content)
+        (interpolation
+          (identifier))))))
+
+================================================================================
+An else-if chain is one block, closed by one end
+================================================================================
+if a == 1
+	$ echo one
+else if a == 2
+	$ echo two
+else if $ test -f x
+	$ echo three
+else
+	$ echo other
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    (binary_expression
+      (identifier)
+      (number))
+    (shell_line
+      (shell_text
+        (shell_content)))
+    (binary_expression
+      (identifier)
+      (number))
+    (shell_line
+      (shell_text
+        (shell_content)))
+    (shell_capture
+      (shell_text
+        (shell_content)))
+    (shell_line
+      (shell_text
+        (shell_content)))
+    (shell_line
+      (shell_text
+        (shell_content)))))

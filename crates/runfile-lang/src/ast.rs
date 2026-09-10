@@ -30,12 +30,61 @@ pub struct Property {
 	pub span: Span,
 }
 
+/// What a loop asks before each pass.
+///
+/// One type rather than three statements: `while`, `until` and `loop` differ
+/// only in the question, so every walker that handles one handles all three.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoopTest {
+	/// `while cond`: run again while it holds.
+	While(Expr),
+	/// `until cond`: run again while it does **not**. The shape a wait loop
+	/// wants -- `until $ curl -sf health` reads as what it is.
+	Until(Expr),
+	/// `loop`: never ask. `break` is how it ends.
+	Forever,
+}
+
+impl LoopTest {
+	/// The condition, for a walker that has no reason to care which way round
+	/// the question is put.
+	pub fn cond(&self) -> Option<&Expr> {
+		match self {
+			LoopTest::While(e) | LoopTest::Until(e) => Some(e),
+			LoopTest::Forever => None,
+		}
+	}
+
+	/// The keyword this was written as.
+	pub fn keyword(&self) -> &'static str {
+		match self {
+			LoopTest::While(_) => "while",
+			LoopTest::Until(_) => "until",
+			LoopTest::Forever => "loop",
+		}
+	}
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
-	/// `let name = expr`
-	Let { name: String, value: Expr, span: Span },
-	/// `name = expr` — reassignment of an existing binding.
-	Assign { name: String, value: Expr, span: Span },
+	/// `let name = expr`, or `let a, b, _ = expr` to unpack a list.
+	///
+	/// `names` is what the line binds, in order, with `_` standing for a
+	/// position that is matched and thrown away. One name is the ordinary
+	/// binding and does no unpacking at all -- a list bound to a single name
+	/// stays a list.
+	Let {
+		names: Vec<String>,
+		value: Expr,
+		span: Span,
+	},
+	/// `name = expr`, or `a, b = expr` — reassignment, unpacking by the same
+	/// rule as `let`.
+	Assign {
+		names: Vec<String>,
+		value: Expr,
+		span: Span,
+	},
 	/// A bare call evaluated for its effect, e.g. `decrypt(a, b)`.
 	Call { expr: Expr, span: Span },
 	/// `do … end`: a block with no condition.
@@ -63,13 +112,31 @@ pub enum Statement {
 		otherwise: Option<Block>,
 		span: Span,
 	},
-	/// `for name in iter … end`
+	/// `for name in iter … end`, or `for a, b in pairs … end`.
+	///
+	/// `names` follows the `let` rule: several names unpack each item, and `_`
+	/// discards one.
 	For {
-		name: String,
+		names: Vec<String>,
 		iter: Expr,
 		body: Block,
 		span: Span,
 	},
+	/// `while cond … end`, `until cond … end`, `loop … end`.
+	///
+	/// Unlike a `for`, what this runs is not known before it starts, which is
+	/// why a `.parallel` block refuses one: a fan-out collects its branches
+	/// up front, and there is nothing to collect until the body has run.
+	Loop { test: LoopTest, body: Block, span: Span },
+	/// `break` — leave the innermost loop.
+	///
+	/// Refused by the parser outside a loop, so an editor underlines it rather
+	/// than a run finding out. It travels as a `RunError` for the same reason
+	/// `exit()` travels as an `EvalError`: that is the only path back out of a
+	/// walk, and every catcher along the way has to let it through.
+	Break { span: Span },
+	/// `continue` — start the innermost loop's next pass.
+	Continue { span: Span },
 	/// `match subject … case … default … end`
 	Match {
 		subject: Expr,

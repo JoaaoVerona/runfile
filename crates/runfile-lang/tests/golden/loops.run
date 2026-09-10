@@ -1,0 +1,23 @@
+# Loops: while, until, loop, and the two ways out of one
+
+let n = 3
+
+while n > 0
+	n = n - 1
+end
+
+until $ curl -sf localhost:8080/health
+	sleep(1)
+end
+
+loop
+	break
+end
+
+for name, owner in [["a", "1"], ["b", "2"]]
+	if name == "a"
+		continue
+	end
+
+	$ echo {{ name }} {{ owner }}
+end

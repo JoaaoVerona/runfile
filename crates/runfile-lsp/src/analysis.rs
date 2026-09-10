@@ -160,7 +160,12 @@ fn sub_blocks(st: &Statement) -> Vec<&runfile_lang::Block> {
 			v.extend(otherwise.iter());
 			v
 		}
-		Statement::For { body, .. } => vec![body],
+		Statement::For { body, .. } | Statement::Loop { body, .. } | Statement::Do { body, .. } => vec![body],
+		Statement::Retry { body, otherwise, .. } => {
+			let mut v = vec![body];
+			v.extend(otherwise.iter());
+			v
+		}
 		Statement::Match { cases, default, .. } => {
 			let mut v: Vec<&runfile_lang::Block> = cases.iter().map(|c| &c.body).collect();
 			v.extend(default.iter());
@@ -477,16 +482,16 @@ fn bindings(b: &runfile_lang::ast::Block, name: &str, hit: &mut impl FnMut(usize
 	use runfile_lang::ast::Statement;
 	for s in &b.statements {
 		match s {
-			Statement::Let { name: n, span, .. } if n == name => hit(span.line),
-			Statement::For {
-				name: n, body, span, ..
-			} => {
-				if n == name {
+			// A destructuring `let` or `for` binds several names on one line;
+			// `_` is a position rather than a name and binds nothing.
+			Statement::Let { names, span, .. } if names.iter().any(|n| n == name) => hit(span.line),
+			Statement::For { names, body, span, .. } => {
+				if names.iter().any(|n| n == name) {
 					hit(span.line);
 				}
 				bindings(body, name, hit);
 			}
-			Statement::Do { body, .. } => bindings(body, name, hit),
+			Statement::Do { body, .. } | Statement::Loop { body, .. } => bindings(body, name, hit),
 			Statement::If { then, otherwise, .. } => {
 				bindings(then, name, hit);
 				if let Some(o) = otherwise {
@@ -580,11 +585,12 @@ pub fn hover(line: &str, col: usize) -> Option<String> {
 /// Whether the `$` at `col` is the shell marker rather than a `$` inside a
 /// command -- `$HOME`, `$(date)` and the `$` in a regex are not this one.
 ///
-/// It is the marker when only whitespace precedes it, or when it follows `if`
-/// or `match`, which is where the other two `$` forms live.
+/// It is the marker when only whitespace precedes it, or when it follows one
+/// of the keywords a command may stand behind -- `if`, `match`, and the two
+/// loops that ask the same question of one.
 fn is_shell_marker(line: &str, col: usize) -> bool {
 	let before = line[..line.char_indices().nth(col).map_or(line.len(), |(i, _)| i)].trim_end();
-	before.is_empty() || before.ends_with("if") || before.ends_with("match")
+	before.is_empty() || ["if", "match", "while", "until"].iter().any(|k| before.ends_with(k))
 }
 
 /// The identifier-ish word around `col`, including a leading `.` and any dots
