@@ -420,7 +420,7 @@ language.
 
 | Source | From |
 | --- | --- |
-| `ARG.name` | `--name=value` |
+| `ARG.name` | `--name=value`, or `--name value` |
 | `FLAG.name` | `--name` (a boolean) |
 | `ARGS` | positional arguments, as a list |
 | `ENV.NAME` | the environment |
@@ -432,8 +432,12 @@ language.
 let port = ARG.port ? ENV.PORT ? "3000"
 ```
 
-Arguments are `--key=value`. Writing `--key value` gives you a flag and a positional, because nothing declares
-which names take values — and if you meant an argument, the error says so.
+An argument takes its value two ways, `--key=value` and `--key value`, and nothing is declared to make the
+second one work: `run` walks the target's parsed tree, so it already knows `ARG.target` takes a value and
+`FLAG.force` does not. `--target aarch64` is the triple; `--force x` is a flag and a positional. Where a name
+is read both ways the bare `--name` is the flag, and `--name=value` is the argument. A value starting with a
+dash needs the `=` form — `--target --release` is refused rather than quietly setting the triple to
+`--release`.
 
 **A flag a target cannot read is an error**, not a typo you find out about later. `run` knows exactly what a
 target reads by walking its parsed tree, so `--forse` stops the run and points at `--help`:
@@ -456,8 +460,9 @@ Environment
 Nothing is declared for that — a `?` chain is what makes a value optional, and the literal it ends in is the
 default. `run --stdin-args deploy` asks for the same list, in the same order, **before anything runs**.
 
-Everything after a bare `--` is passed through untouched, flags included. That is how a wrapper forwards a
-command line it does not understand:
+That refusal has one exception, and it is the useful one: **a target that reads `ARGS`**. A wrapper can read
+any word, so it gets any word — a `--flag` it does not claim for itself joins the positionals where it was
+written, and forwarding a whole command line needs nothing special.
 
 ```sh
 # runfiles/aws.run
@@ -467,7 +472,15 @@ $ docker run --rm amazon/aws-cli {{ ARGS }}
 ```
 
 ```bash
-run aws -- s3api list-buckets --output json
+run aws s3api list-buckets --output json
+```
+
+Everything after a bare `--` is passed through untouched, whatever the target reads. That is how a wrapper
+forwards a word the target would otherwise claim — its own `--output`, or a `--help` meant for the command
+inside:
+
+```bash
+run aws -- s3api list-buckets --help
 ```
 
 ### Interpolation quotes itself

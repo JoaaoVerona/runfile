@@ -19,15 +19,23 @@ pub enum RunError {
 	Env(#[from] crate::env::EnvError),
 	#[error("line {line}: `for` needs a list, got {actual}")]
 	ForNeedsList { actual: &'static str, line: usize },
-	/// A `--flag` or `--key=value` the target never reads. Exact rather than a
-	/// guess, because what a target reads is walked from its tree, so this can
-	/// refuse rather than warn.
+	/// A `--flag` or `--key=value` the target never reads, on a target that
+	/// reads no positionals either -- so there is nowhere for it to go. Exact
+	/// rather than a guess, because what a target reads is walked from its
+	/// tree, so this can refuse rather than warn.
 	#[error("{}", unknown_input(name, key, target, reads))]
 	UnknownInput {
 		name: String,
 		key: String,
 		target: String,
 		reads: Box<runfile_lang::Inputs>,
+	},
+	/// `--key` named something read as `ARG.key`, with no value to put in it.
+	#[error("{}", missing_arg_value(key, next.as_deref(), target))]
+	MissingArgValue {
+		key: String,
+		next: Option<String>,
+		target: String,
 	},
 	#[error("line {line}: no case matched `{subject}`; valid cases: {cases}")]
 	NoCase {
@@ -56,16 +64,29 @@ pub enum RunError {
 /// in the middle of a sentence.
 fn unknown_input(name: &str, key: &str, target: &str, reads: &runfile_lang::Inputs) -> String {
 	let mut out = format!("`{name}` was passed to `{target}`, which never reads `FLAG.{key}` or `ARG.{key}`; ");
-	// A target reading `ARGS` is exactly the case where `--` is the answer:
-	// the value was meant for the command it wraps, not for the target.
-	if reads.positional {
-		out.push_str(&format!(
-			"`{target}` passes its positional arguments through, so `{name}` needs a `--` before it: run {target} -- {name} …"
-		));
-	} else if reads.args.is_empty() && reads.flags.is_empty() {
+	// A target reading `ARGS` never reaches here -- it can read the word, so
+	// the word is given to it as a positional rather than refused.
+	if reads.args.is_empty() && reads.flags.is_empty() {
 		out.push_str(&format!("`{target}` reads no arguments or flags at all"));
 	} else {
 		out.push_str(&format!("run `run {target} --help` to see what it does read"));
+	}
+	out
+}
+
+/// What to say about a `--key` that names an argument and carries no value.
+///
+/// The same shape as `unknown_input`: the word, the target, then the one thing
+/// that helps. Which that is depends on whether something *was* there -- with
+/// a word after it, saying "put the value after it" describes what the person
+/// just did, so the message has to name the word it declined to take instead.
+fn missing_arg_value(key: &str, next: Option<&str>, target: &str) -> String {
+	let mut out = format!("`--{key}` was passed to `{target}` with no value; ");
+	match next {
+		Some(n) => out.push_str(&format!(
+			"`{n}` looks like another flag, so write `--{key}={n}` if it is the value"
+		)),
+		None => out.push_str(&format!("write `--{key}=<value>`, or put the value after it")),
 	}
 	out
 }

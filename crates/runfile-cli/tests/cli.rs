@@ -897,12 +897,25 @@ fn the_bash_script_offers_names_after_a_leading_flag() {
 }
 
 #[test]
-fn passing_an_argument_with_a_space_explains_itself() {
-	// `--name you` is a flag plus a positional, because nothing declares which
-	// names take values. The error has to say so, or it reads as a bug.
+fn passing_an_argument_with_a_space_reads_it_as_the_value() {
+	// `--name you` used to be a flag plus a positional, because nothing
+	// declared which names take values. `inputs::of` declares it: the tree
+	// says `ARG.name`, so the word after it is what goes in.
 	let p = project(&[("runfiles/greet.run", "$ echo {{ ARG.name }}\n")]);
 	let o = p.run(&["greet", "--name", "you"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "you");
+}
+
+#[test]
+fn the_flag_hint_survives_for_a_name_read_as_a_flag_as_well() {
+	// The bare form belongs to the flag when a name is read both ways, so the
+	// argument is unset and the hint that says why is still the useful one.
+	let src = "if FLAG.name\n\t$ echo {{ ARG.name }}\nend\n";
+	let p = project(&[("runfiles/greet.run", src)]);
+	let o = p.run(&["greet", "--name"]);
 	assert!(!o.status.success());
+	assert!(err(&o).contains("it was passed as a flag"), "{}", err(&o));
 	assert!(err(&o).contains("--name=<value>"), "{}", err(&o));
 }
 
@@ -1117,30 +1130,210 @@ fn a_double_dash_forwards_the_rest_of_the_line_untouched() {
 }
 
 #[test]
-fn a_forgotten_double_dash_is_refused() {
-	// It used to warn and run anyway, because the check was textual guesswork.
-	// Walked from the tree it is exact, so the flag that would have gone
-	// nowhere stops the run instead of being discovered later.
+fn a_wrapper_needs_no_double_dash_for_a_flag_it_forwards() {
+	// This used to be refused outright, with the message telling you to write
+	// the `--` yourself. A target that reads `ARGS` can read the word, so it
+	// gets the word: an unclaimed `--flag` is a positional like any other.
 	let p = project(&[("runfiles/wrap.run", "$ echo {{ ARGS }}\n")]);
 	let o = p.run(&["wrap", "s3api", "--bucket", "x"]);
-	assert!(!o.status.success());
-	assert!(
-		err(&o).starts_with("[runfile] error: `--bucket` was passed to `wrap`"),
-		"{}",
-		err(&o)
-	);
-	// A wrapper is exactly where `--` is the answer, so the message says so
-	// rather than pointing at `--help`.
-	assert!(
-		err(&o).contains("passes its positional arguments through"),
-		"{}",
-		err(&o)
-	);
-	assert!(err(&o).contains("run wrap -- --bucket"), "{}", err(&o));
-	// And written the documented way, it goes through untouched.
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "s3api --bucket x");
+	assert!(err_from_commands(&o).is_empty(), "nothing to warn about: {}", err(&o));
+	// And the explicit form is unchanged, word for word.
 	let o = p.run(&["wrap", "--", "s3api", "--bucket", "x"]);
 	assert!(o.status.success(), "{}", err(&o));
 	assert_eq!(out(&o).trim(), "s3api --bucket x");
+}
+
+#[test]
+fn the_motivating_case_reaches_the_wrapped_command_intact() {
+	// `--target aarch64-…` was a flag plus a positional, so the triple arrived
+	// at `cargo` with no `--target` in front of it -- and, once unread inputs
+	// became an error, did not arrive at all.
+	let p = project(&[("runfiles/build.run", "$ echo cargo build {{ ARGS }}\n")]);
+	let o = p.run(&["build", "--target", "aarch64-unknown-linux-gnu"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "cargo build --target aarch64-unknown-linux-gnu");
+}
+
+#[test]
+fn a_forwarded_word_keeps_its_place_among_the_positionals() {
+	// A wrapper hands its list to somebody else's parser, so the order it was
+	// written in is the whole of what it means.
+	let p = project(&[("runfiles/wrap.run", "$ echo {{ ARGS }}\n")]);
+	let o = p.run(&["wrap", "a", "--x", "b", "--y=1", "c"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "a --x b --y=1 c");
+}
+
+#[test]
+fn a_wrapper_that_reads_a_name_of_its_own_keeps_it_for_itself() {
+	// The target's own flag is claimed; everything else is forwarded. `--` is
+	// what says the word was meant for the wrapped command after all.
+	let src = "$ echo {{ ARG.mode }} -- {{ ARGS }}\n";
+	let p = project(&[("runfiles/wrap.run", src)]);
+	let o = p.run(&["wrap", "--mode", "fast", "--other", "x"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "fast -- --other x");
+
+	let o = p.run(&["wrap", "--mode=fast", "--", "--mode", "slow"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "fast -- --mode slow");
+}
+
+#[test]
+fn an_unread_flag_is_still_refused_when_there_are_no_positionals_to_take_it() {
+	// The other half of the rule: with no `ARGS` there is nowhere for the word
+	// to go and nothing to forward it to, so a mistyped `--forse` is still
+	// caught rather than silently doing nothing.
+	let p = project(&[("runfiles/t.run", "# T.\nprint(ARG.env ? \"dev\")\n")]);
+	let o = p.run(&["t", "--forse"]);
+	assert!(!o.status.success());
+	assert!(
+		err(&o).starts_with("[runfile] error: `--forse` was passed to `t`"),
+		"{}",
+		err(&o)
+	);
+	assert!(err(&o).contains("run `run t --help`"), "{}", err(&o));
+}
+
+// ----------------------------------------------------- `--key value` values
+
+#[test]
+fn a_key_the_target_reads_as_an_argument_takes_the_next_word() {
+	let p = project(&[("runfiles/t.run", "print(\"env={{ ARG.env }}\")\n")]);
+	for form in [["--env", "prod"], ["--env=prod", ""]] {
+		let argv: Vec<&str> = std::iter::once("t")
+			.chain(form.iter().copied())
+			.filter(|w| !w.is_empty())
+			.collect();
+		let o = p.run(&argv);
+		assert!(o.status.success(), "{argv:?}: {}", err(&o));
+		assert_eq!(out(&o).trim(), "env=prod", "{argv:?}");
+	}
+}
+
+#[test]
+fn a_key_the_target_reads_as_a_flag_does_not_take_one() {
+	// Nothing here changed, and that is the point: the word after a flag is
+	// still a positional.
+	let p = project(&[("runfiles/t.run", "if FLAG.force\n\tprint(\"forced {{ ARGS }}\")\nend\n")]);
+	let o = p.run(&["t", "--force", "now"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "forced now");
+}
+
+#[test]
+fn a_name_read_as_both_an_argument_and_a_flag_stays_a_flag_when_bare() {
+	// The one shape where a working command line could have changed meaning.
+	let src = "if FLAG.mode\n\tprint(\"flag {{ ARGS }}\")\nelse\n\tprint(\"arg {{ ARG.mode }}\")\nend\n";
+	let p = project(&[("runfiles/t.run", src)]);
+	let o = p.run(&["t", "--mode", "fast"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "flag fast");
+	// The `=` form is still an argument, so both readings stay reachable.
+	let o = p.run(&["t", "--mode=fast"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "arg fast");
+}
+
+#[test]
+fn a_missing_value_is_refused_with_what_was_there_instead() {
+	let p = project(&[("runfiles/t.run", "print(ARG.env)\n")]);
+	let o = p.run(&["t", "--env"]);
+	assert!(!o.status.success());
+	let m = err(&o);
+	assert!(m.contains("`--env` was passed to `t` with no value"), "{m}");
+	assert!(m.contains("write `--env=<value>`"), "{m}");
+
+	// With a word after it, "put the value after it" describes what was just
+	// done, so the message names the word it declined to take.
+	let o = p.run(&["t", "--env", "--verbose"]);
+	assert!(!o.status.success());
+	let m = err(&o);
+	assert!(m.contains("`--verbose` looks like another flag"), "{m}");
+	assert!(m.contains("write `--env=--verbose`"), "{m}");
+
+	// One line each: a continuation would not carry the `[runfile]` prefix.
+	assert_eq!(m.trim().lines().count(), 1, "{m}");
+}
+
+#[test]
+fn a_value_starting_with_a_dash_is_written_with_an_equals() {
+	let p = project(&[("runfiles/t.run", "print(\"[{{ ARG.msg }}]\")\n")]);
+	let o = p.run(&["t", "--msg=--not-a-flag"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "[--not-a-flag]");
+}
+
+#[test]
+fn a_consumed_value_does_not_also_land_in_args() {
+	// Two readings of one word would be the worst of both rules.
+	let p = project(&[("runfiles/t.run", "print(\"{{ ARG.env }}|{{ length(ARGS) }}\")\n")]);
+	let o = p.run(&["t", "--env", "prod", "extra"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "prod|1");
+}
+
+#[test]
+fn a_name_only_a_shared_file_reads_takes_a_value_too() {
+	// `_shared.run` reads for every target under it, so the whole chain has to
+	// be walked before the command line can be classified -- which is why
+	// `prepare` parses the chain, classifies, and only then evaluates it.
+	let p = project(&[
+		("runfiles/_shared.run", "let region = ARG.region ? \"us\"\n"),
+		("runfiles/t.run", "print(\"{{ region }}|{{ length(ARGS) }}\")\n"),
+	]);
+	let o = p.run(&["t", "--region", "eu"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "eu|0");
+}
+
+#[test]
+fn a_nested_shared_file_counts_for_the_targets_under_it() {
+	let p = project(&[
+		("runfiles/_shared.run", "let a = ARG.top ? \"-\"\n"),
+		("runfiles/api/_shared.run", "let b = ARG.deep ? \"-\"\n"),
+		("runfiles/api/t.run", "print(\"{{ a }}|{{ b }}\")\n"),
+	]);
+	let o = p.run(&["api:t", "--top", "1", "--deep", "2"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "1|2");
+}
+
+#[test]
+fn a_dispatched_target_classifies_its_own_command_line() {
+	// `run w --env prod` hands values, not shell text -- and `w` reads them by
+	// the same rule the CLI does.
+	let p = project(&[
+		("runfiles/outer.run", "run inner --env prod x\n"),
+		("runfiles/inner.run", "print(\"{{ ARG.env }}|{{ ARGS }}\")\n"),
+	]);
+	let o = p.run(&["outer"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "prod|x");
+}
+
+#[test]
+fn runner_flags_before_the_target_are_still_the_runners_own() {
+	// The boundary is unchanged: a `--dry-run` before the target name is the
+	// runner's, and one after it belongs to the target.
+	let p = project(&[("runfiles/wrap.run", "$ echo {{ ARGS }}\n")]);
+	let o = p.run(&["--dry-run", "wrap", "--target", "arm"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(dry_commands(&o), ["echo --target arm"]);
+}
+
+#[test]
+fn help_after_a_target_is_still_the_targets_help_and_a_double_dash_still_forwards_it() {
+	let p = project(&[("runfiles/wrap.run", "# Wraps.\n$ echo {{ ARGS }}\n")]);
+	let o = p.run(&["wrap", "--help"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(out(&o).contains("Wraps."), "{}", out(&o));
+
+	let o = p.run(&["wrap", "--", "--help"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "--help");
 }
 
 #[test]
@@ -2719,23 +2912,34 @@ fn stdin_args_without_a_terminal_asks_nothing_and_does_not_hang() {
 #[test]
 fn stdin_args_does_not_ask_for_what_was_already_given() {
 	let p = project(&[("runfiles/t.run", "# T.\nprint(ARG.token)\n")]);
-	let o = p.run(&["--stdin-args", "t", "--token=given"]);
-	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(out(&o).trim(), "given");
+	// Both spellings, because the prompt classifies the command line with the
+	// runner's own parser: if it read `--token given` as a flag and a
+	// positional, it would ask for a token that was already supplied and then
+	// there would be no terminal to answer on.
+	for given in [vec!["--token=given"], vec!["--token", "given"]] {
+		let argv: Vec<&str> = ["--stdin-args", "t"].into_iter().chain(given.iter().copied()).collect();
+		let o = p.run(&argv);
+		assert!(o.status.success(), "{argv:?}: {}", err(&o));
+		assert_eq!(out(&o).trim(), "given", "{argv:?}");
+	}
 }
 
 #[test]
 fn the_refusal_says_the_thing_that_helps_for_this_target() {
-	// Three shapes, because the useful sentence differs: a wrapper wants
-	// `--`, a target with inputs wants `--help`, and one with neither should
-	// say so plainly instead of sending someone to an empty page.
+	// A target with inputs wants `--help`, and one with neither should say so
+	// plainly instead of sending someone to an empty page. A wrapper is no
+	// longer refused at all, which is the third shape and the reason the
+	// sentence about `--` is gone.
 	let p = project(&[
 		("runfiles/wrap.run", "# Wrap.\n$ echo {{ ARGS }}\n"),
 		("runfiles/opts.run", "# Opts.\nprint(ARG.env ? \"dev\")\n"),
 		("runfiles/plain.run", "# Plain.\n$ true\n"),
 	]);
-	let wrap = err(&p.run(&["wrap", "--x"]));
-	assert!(wrap.contains("passes its positional arguments through"), "{wrap}");
+	// A wrapper does not refuse at all any more: it reads `ARGS`, so the word
+	// is forwarded rather than turned down.
+	let wrap = p.run(&["wrap", "--x"]);
+	assert!(wrap.status.success(), "{}", err(&wrap));
+	assert_eq!(out(&wrap).trim(), "--x");
 
 	let opts = err(&p.run(&["opts", "--x"]));
 	assert!(opts.contains("run `run opts --help`"), "{opts}");
@@ -2744,7 +2948,7 @@ fn the_refusal_says_the_thing_that_helps_for_this_target() {
 	assert!(plain.contains("reads no arguments or flags at all"), "{plain}");
 
 	// One line each: a continuation would not carry the `[runfile]` prefix.
-	for m in [&wrap, &opts, &plain] {
+	for m in [&opts, &plain] {
 		assert_eq!(m.trim().lines().count(), 1, "{m}");
 	}
 }

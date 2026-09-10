@@ -92,17 +92,42 @@ it.
 `ARG.x` (from `--x=value`), `ENV.X`, `FLAG.x` (bool, from `--x`), `ARGS` (a list of positionals), and
 `RUN.os` / `RUN.arch` / `RUN.cwd` / `RUN.file` / `RUN.parent` / `RUN.namespaces` / `RUN.user`.
 
-**Arguments are `--key=value` only.** `--key value` is a flag plus a positional, because nothing declares which
-names take values, so it cannot be disambiguated. It also cannot be silently guessed — so when `ARG.x` is
-missing and a flag `x` was passed, the error says exactly that.
+**`--key value` works, and nothing declares that it does.** It used to be a flag plus a positional -- the
+argument was `--key=value` only, because nothing said which names take values, so it could not be
+disambiguated. But `inputs::of` already answers exactly that question, and the answer is exact: a name read as
+`ARG.key` takes a value, a name read as `FLAG.key` does not. `args::parse` is the one place the rule is
+spelled, and both the runner and the `--stdin-args` prompt read it, so the two cannot disagree about whether
+`--token given` supplied a token.
 
-**A bare `--` ends parsing**: everything after it is a positional exactly as typed, flags included. That is how
-a wrapper forwards a command line (`run _aws -- s3api --bucket X`). Chosen over an `ARGV` source or making
-`ARGS` mean everything, so `ARGS` keeps one meaning. Because forgetting the `--` drops the flag silently, `Host`
-warns (via `Host::warn`) when a target is handed a `--flag` or `--key=value` it never reads. What a target
-reads is answered by **`inputs::of`, which walks the tree** — `ARG.x`, `FLAG.x`, `ENV.X` and `ARGS`, from every
-position one can sit in, and from every `_shared.run` above it, since a name a shared file reads is read for
-every target under it. It runs once per real run, not per `header_props` lookup.
+**No command line that worked before means something different now.** `--key=value` is untouched, a bare
+`--key` read as `FLAG.key` is still a flag, and a bare `--key` that is *not* read as a flag was a hard error
+-- so every word this newly claims came from a command line that already failed. That is what made the rule
+safe to change rather than a break. It is also why a name read **both** ways is a flag in its bare form:
+`run x --verbose hello` is a flag and a positional today, and preferring the flag is what keeps it one. The
+`=` form still reaches the argument, so both readings stay available, and `EvalError::MissingArgSawFlag` --
+"it was passed as a flag" -- is now exactly the case it describes.
+
+A value beginning with `-` is **refused rather than swallowed**: `run build --target --release` would
+otherwise set the triple to `--release` and fail inside `cargo`, where the mistake is no longer visible.
+`--target=--release` is how to mean it, and `RunError::MissingArgValue` names the word it declined to take,
+since "put the value after it" describes what the person just did.
+
+**A bare `--` ends parsing**: everything after it is a positional exactly as typed, flags included. It is no
+longer how a wrapper forwards an ordinary command line -- it is how one forwards a word the target *would*
+claim (its own `--output`, or a `--help` meant for the command inside). Chosen over an `ARGV` source, so
+`ARGS` keeps one meaning.
+
+**An input no name reads goes to `ARGS` when the target reads `ARGS`, and is refused when it does not.** A
+wrapper can read the word, so it gets the word, in the position it was written -- which is what makes
+`run build --target aarch64-…` reach `cargo` intact with no `--` in front of it. A target with no positionals
+has nowhere to put it and nothing to forward it to, so a mistyped `--forse` is still an error there rather
+than a flag that quietly did not take effect. The cost is honest: a wrapper now forwards `--targt` to the
+command it wraps instead of catching it, and that command is the only thing that knows its own flags. What a
+target reads is answered by **`inputs::of`, which walks the tree** — `ARG.x`, `FLAG.x`, `ENV.X` and `ARGS`,
+from every position one can sit in, and from every `_shared.run` above it, since a name a shared file reads is
+read for every target under it. That chain is walked for what it reads **before** the command line is
+classified and evaluated afterwards -- two passes over one parse, because evaluating a shared file reads
+`ARG.x` out of the scope the classification is about to fill.
 
 It scanned the **text** for `ARG.` until it did not. The keys have no dynamic form — `ARG[k]`, `ARG.{{ k }}`
 and `ARG."k"` are all refused by the parser — so every use is spelled out, which made scanning look exact. But
@@ -111,10 +136,11 @@ as a use. So `run <target> --help` listed inputs the target never reads, and, wo
 itself* — a comment saying `ARG.legacy` was enough for a mistyped `--legacy` to pass without a word. A tree has
 no comments in it and no strings to confuse.
 
-Because it is exact, **an input a target cannot read is now an error** rather than a warning: a flag that
-warns is a flag that did not take effect, found out later. The message is one line — everything the runner
-says while a target runs carries the `[runfile]` prefix, and a continuation line would not — so it points at
-`run <target> --help` rather than listing what the target does read.
+Because it is exact, **an input a target cannot read is an error** rather than a warning: a flag that warns is
+a flag that did not take effect, found out later. The message is one line — everything the runner says while a
+target runs carries the `[runfile]` prefix, and a continuation line would not — so it points at
+`run <target> --help` rather than listing what the target does read. It quotes the word **as typed**, so a
+message about `--region=eu` does not name a `--region` nobody wrote.
 
 `Use` carries the other two things the tree knows: **whether a name can fail** (read bare, with no `?` chain
 or `try` around it) and **what it falls back to** (the literal a chain ends in). `a ? b ? c` is
@@ -262,6 +288,8 @@ crates/
 
 ### runfile-lang
 
+`args.rs` classifies a command line against what the target reads — the one place the `--key value` rule is
+spelled, so the runner and the `--stdin-args` prompt cannot read the same words two ways.
 `format.rs` is the pretty-printer. `lexer.rs` is a hand-rolled scanner (`skip_interp`, `split_interp`, `scan_string`, `tokenize`). `parser.rs`
 classifies lines, then climbs precedence for expressions. `eval.rs` holds `Scope` and evaluation; `functions.rs`
 holds the pure standard library plus `call_io` for filesystem and regex; `value.rs` holds `Value` and shell
@@ -384,8 +412,9 @@ second time as the global. This replaced `includes` entirely.
   the runner reads them from; an environment answer is set in this process, which the target's environment is
   built on top of. The lazy prompt stays as a backstop.
 - `Host::header_props` **probes**: it evaluates the declaration region only to read `.watch`, so it neither
-  warns about unread inputs nor lets a writing function write. Without the second half, `.env.X =
-  temp_file(...)` made two files per run, one an orphan nothing referenced.
+  refuses an unread input -- a probe rejecting the command line would report the failure before the run that
+  owns it -- nor lets a writing function write. Without the second half, `.env.X = temp_file(...)` made two
+  files per run, one an orphan nothing referenced.
 - **Ctrl+C** is caught so the run can stop between statements, delete its temp files, and exit 130. The flag
   is process-global because a signal handler has nowhere else to write, but the runtime reads an injected
   predicate (`Host::interrupted`), so it reaches for no process state of its own and one test cannot
@@ -394,11 +423,14 @@ second time as the global. This replaced `includes` entirely.
   parallel siblings are not mistaken for a cycle.
 - `.parallel`: bindings evaluate in source order, then executable leaves fan out via `std::thread::scope`.
   Control flow expands into the same batch, and every branch completes before a failure surfaces.
-- **Everything the runner says while a target runs carries `[runfile]`** — the announcement, `error:`,
-  `warning:`, the `.confirm` question, the `--stdin-args` prompt, watch-mode notices. A person reading a
-  terminal is watching two things talk at once, and without the prefix `error: …` could as easily be the
-  target's own output. `exec::tag()` is the one place it is spelled; the credential-store warning in
-  `runfile-state` writes a plain one because that crate sits below the one that owns it. `run :env`'s own
+- **Everything the runner says while a target runs carries `[runfile]`** — the announcement, `error:`, the
+  `.confirm` question, the `--stdin-args` prompt, watch-mode notices. A person reading a terminal is watching
+  two things talk at once, and without the prefix `error: …` could as easily be the target's own output.
+  `exec::tag()` is the one place it is spelled; the credential-store warning in `runfile-state` writes a plain
+  one because that crate sits below the one that owns it, and is the **only** `warning:` left — the runtime
+  had a `Host::warn` hook for non-fatal advice, and it went dead the day an unread input became a refusal
+  rather than a warning. Nothing had called it since. A runner that warns about something is a runner that
+  did it anyway, so the hook is gone rather than kept for a case that has not appeared. `run :env`'s own
   chatter is not target execution and is left alone.
 - **`.logging` announces each command on stderr, and is off unless asked for** — the same default the old
   `logging` field had (`unwrap_or(false)`), and for the same reason: a target is run for its output, and a

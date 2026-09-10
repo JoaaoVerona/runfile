@@ -227,10 +227,8 @@ fn real_main() -> Result<ExitCode, String> {
 		prepare::enforce(&cat, target)?;
 	}
 
-	let warn = |m: &str| eprintln!("{} warning: {m}", runfile_runtime::exec::tag());
 	let interrupted = || runfile_runtime::interrupt::interrupted();
 	let mut host = Host::new(&cat);
-	host.warn = Some(&warn);
 	host.interrupted = Some(&interrupted);
 	host.assume_yes = flags.assume_yes || ci_detect::is_ci();
 	host.confirm = Some(prompt::confirm);

@@ -6,6 +6,7 @@
 //! `#` comment, `.name` property, `$ ` shell, `exec …`/`end` block, otherwise
 //! a statement. Language is the default; shell is explicitly marked.
 
+pub mod args;
 pub mod ast;
 pub mod eval;
 pub mod format;
@@ -18,6 +19,7 @@ pub mod span;
 pub mod structured;
 pub mod value;
 
+pub use args::Arg;
 pub use ast::{Block, Expr, InterpPart, Property, SourceKind, Statement, Target};
 pub use eval::{EvalError, Keys, Scope, TempFiles, eval};
 pub use format::format;

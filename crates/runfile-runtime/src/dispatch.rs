@@ -8,8 +8,8 @@
 use crate::props::Props;
 use crate::run::{Dispatch, RunError, Runner};
 use runfile_discovery::Catalog;
-use runfile_lang::Value;
 use runfile_lang::eval::Scope;
+use runfile_lang::{Arg, Value};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -45,9 +45,6 @@ pub struct Host<'a> {
 	pub confirm: Option<fn(&str) -> bool>,
 	/// Whether the run has been interrupted; see `Runner::interrupted`.
 	pub interrupted: Option<&'a (dyn Fn() -> bool + Sync)>,
-	/// Where non-fatal advice goes. The runtime never prints, so the CLI
-	/// decides what a warning looks like and tests can capture it.
-	pub warn: Option<&'a (dyn Fn(&str) + Sync)>,
 	/// Every shell body that ran. Order is arrival order, which under
 	/// `.parallel` is completion order rather than source order.
 	pub trace: Mutex<Vec<String>>,
@@ -65,7 +62,6 @@ impl<'a> Host<'a> {
 			keys: Vec::new,
 			confirm: None,
 			interrupted: None,
-			warn: None,
 			trace: Mutex::new(Vec::new()),
 			temps: runfile_lang::TempFiles::default(),
 		}
@@ -149,10 +145,11 @@ impl<'a> Host<'a> {
 	///
 	/// `real` separates an actual run from a probe. `header_props` probes: it
 	/// evaluates the declaration region only to read `.watch`, so it must
-	/// neither warn about unread inputs (warning twice teaches people to
-	/// ignore it) nor let a writing function write. Without the second half,
-	/// `.env.X = temp_file(...)` created two files per run, one of them an
-	/// orphan nothing referenced.
+	/// neither refuse an unread input -- a probe rejecting the command line
+	/// would report the failure before the run that owns it -- nor let a
+	/// writing function write. Without the second half, `.env.X =
+	/// temp_file(...)` created two files per run, one of them an orphan
+	/// nothing referenced.
 	fn prepare(
 		&self,
 		target: &runfile_discovery::Target,
@@ -161,9 +158,29 @@ impl<'a> Host<'a> {
 	) -> Result<(runfile_lang::Target, Scope, Props), RunError> {
 		let (ast, _) = parse_file(&target.path)?;
 		let mut reads = runfile_lang::inputs::of(&ast);
+
+		// The whole `_shared.run` chain is walked for what it reads *before* the
+		// command line is classified: a name only a shared file reads is still a
+		// name this target takes a value for. It cannot simply be folded in where
+		// it used to be, because evaluating those files reads `ARG.x` out of the
+		// scope -- so the parse and the evaluation are two passes over one list.
+		let shared: Vec<runfile_lang::Target> = self
+			.catalog
+			.shared_chain(target)
+			.iter()
+			.map(|p| parse_file(p).map(|(a, _)| a))
+			.collect::<Result<_, _>>()?;
+		for s in &shared {
+			reads.extend(runfile_lang::inputs::of(s));
+		}
+
 		let mut scope = Scope::new();
 		populate_run_context(&mut scope, target, self.catalog);
-		parse_args(&mut scope, args);
+		let unknown = parse_args(&mut scope, args, &reads).map_err(|e| RunError::MissingArgValue {
+			key: e.key,
+			next: e.next,
+			target: target.name.clone(),
+		})?;
 		scope.ask = self.ask;
 		scope.confirm = self.confirm;
 		scope.assume_yes = self.assume_yes;
@@ -172,31 +189,29 @@ impl<'a> Host<'a> {
 		scope.temps = self.temps.clone();
 		scope.private_keys = runfile_lang::Keys::new(self.keys);
 
+		// An input the target does not read is a mistake, and used to be a
+		// warning only because the check was textual guesswork. Walked from the
+		// tree it is exact, so it says no -- a mistyped `--forse` that merely
+		// warns is a flag that did not take effect, discovered later. A target
+		// reading `ARGS` is the exception and is handled in `parse_args`: it can
+		// read the word, so it gets it.
+		if real && let Some((name, key)) = unknown {
+			return Err(RunError::UnknownInput {
+				name,
+				key,
+				target: target.name.clone(),
+				reads: Box::new(reads),
+			});
+		}
+
 		// `_shared.run` is the globals analog: its properties and bindings apply
 		// to every target in the directory, so they are evaluated first into the
 		// same scope. Outermost first, so a nested directory's settings layer
 		// over the one above it.
 		let mut shared_props = Props::default();
-		for p in self.catalog.shared_chain(target) {
-			let (shared, _) = parse_file(&p)?;
-			shared_props = shared_props.extend(&shared.body, &mut scope, false)?;
-			crate::run::run_block_bindings(&shared.body, &mut scope)?;
-			// A flag a shared file reads is read for every target under it.
-			reads.extend(runfile_lang::inputs::of(&shared));
-		}
-
-		// An input the target does not read is a mistake, and used to be a
-		// warning only because the check was textual guesswork. Walked from
-		// the tree it is exact, so it says no -- a mistyped `--forse` that
-		// merely warns is a flag that did not take effect, discovered later.
-		if real && let Some(unread) = unread_inputs(&scope, &reads).first() {
-			let (_, key) = unread.split_at(2);
-			return Err(RunError::UnknownInput {
-				name: unread.clone(),
-				key: key.to_string(),
-				target: target.name.clone(),
-				reads: Box::new(reads),
-			});
+		for s in &shared {
+			shared_props = shared_props.extend(&s.body, &mut scope, false)?;
+			crate::run::run_block_bindings(&s.body, &mut scope)?;
 		}
 		Ok((ast, scope, shared_props))
 	}
@@ -305,49 +320,44 @@ fn populate_run_context(sc: &mut Scope, t: &runfile_discovery::Target, cat: &Cat
 	sc.env = std::env::vars().collect();
 }
 
-/// `--key=value` is an argument, `--key` a flag, anything else a positional.
+/// Apply a command line to the scope, answering the first word the target
+/// reads under no name.
 ///
-/// A bare `--` ends parsing: everything after it is a positional exactly as
-/// typed, flags included. That is how a wrapper forwards a command line it
-/// does not understand -- `run _aws -- s3api --bucket X` -- without the
-/// runner claiming `--bucket` for itself.
-fn parse_args(sc: &mut Scope, args: &[String]) {
-	let mut passthrough = false;
-	for a in args {
-		if passthrough {
-			sc.positional.push(a.clone());
-		} else if a == "--" {
-			passthrough = true;
-		} else if let Some(rest) = a.strip_prefix("--") {
-			match rest.split_once('=') {
-				Some((k, v)) => {
-					sc.args.insert(k.to_string(), v.to_string());
-				}
-				None => sc.flags.push(rest.to_string()),
+/// The classification itself is `runfile_lang::args::parse`, which the
+/// `--stdin-args` prompt reads from too, so the two cannot disagree about
+/// whether `--target aarch64` supplied `ARG.target`.
+///
+/// An unknown `--key` reaches `ARGS` when the target reads `ARGS`: a wrapper
+/// can read the word, and forwarding is what it was written to do -- which is
+/// what makes `run build --target aarch64` reach `cargo` with no `--` in front
+/// of it. When the target reads no positionals there is nowhere for the word
+/// to go and nothing to forward it to, so it stays the error it has always
+/// been, and a mistyped `--forse` is still caught.
+///
+/// The unknown is answered rather than raised here, because whether it is an
+/// error depends on `real`: a probe evaluates the declaration region to read
+/// `.watch` and must not refuse. It is the first in **command-line order**,
+/// which is where a reader will look for it.
+fn parse_args(
+	sc: &mut Scope,
+	args: &[String],
+	reads: &runfile_lang::Inputs,
+) -> Result<Option<(String, String)>, runfile_lang::args::MissingValue> {
+	let mut unknown = None;
+	for a in runfile_lang::args::parse(args, reads)? {
+		match a {
+			Arg::Arg { key, value } => {
+				sc.args.insert(key, value);
 			}
-		} else {
-			sc.positional.push(a.clone());
+			Arg::Flag(key) => sc.flags.push(key),
+			Arg::Positional(v) => sc.positional.push(v),
+			Arg::Unknown { token, .. } if reads.positional => sc.positional.push(token),
+			Arg::Unknown { token, key } => {
+				unknown.get_or_insert((token, key));
+			}
 		}
 	}
-}
-
-/// Flags and arguments the target was given but never reads.
-///
-/// A wrapper that forwards `{{ ARGS }}` drops any `--flag` handed to it
-/// without a `--` before it, silently and with no error -- the command that
-/// runs is simply wrong. This is the check that makes it not silent. Textual
-/// rather than an AST walk, because `FLAG.x` and `ARG.x` are literal keys with
-/// no dynamic form; a mention inside a comment suppresses the warning, which
-/// is a harmless way for a heuristic to be wrong.
-fn unread_inputs(sc: &Scope, reads: &runfile_lang::Inputs) -> Vec<String> {
-	let mut names: Vec<&String> = sc.flags.iter().chain(sc.args.keys()).collect();
-	names.sort();
-	names
-		.into_iter()
-		.filter(|k| !k.is_empty())
-		.filter(|k| !reads.flags.contains(*k) && !reads.args.contains_key(*k))
-		.map(|k| format!("--{k}"))
-		.collect()
+	Ok(unknown)
 }
 
 fn os_name() -> &'static str {

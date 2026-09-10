@@ -12,6 +12,7 @@
 //! showing what each falls back to.
 
 use runfile_discovery::{Catalog, Target};
+use runfile_lang::Arg;
 
 /// Ask for everything the target reads that was not already supplied.
 ///
@@ -20,7 +21,7 @@ use runfile_discovery::{Catalog, Target};
 /// the target's environment is built on top of.
 pub(crate) fn collect(cat: &Catalog, target: &Target, args: &mut Vec<String>) {
 	let reads = crate::target_help::inputs(cat, target);
-	let (given_args, given_flags) = supplied(args);
+	let (given_args, given_flags) = supplied(args, &reads);
 
 	for (name, u) in &reads.args {
 		if given_args.contains(name) {
@@ -54,15 +55,22 @@ pub(crate) fn collect(cat: &Catalog, target: &Target, args: &mut Vec<String>) {
 
 /// What the caller already put on the command line, so it is not asked for
 /// again. Everything after a bare `--` is the target's own and is left alone.
-fn supplied(args: &[String]) -> (Vec<String>, Vec<String>) {
+///
+/// Classified by the runner's own parser rather than by a second reading of
+/// the same words: `--token given` supplies `ARG.token` exactly when the
+/// runner will read it as one, so this cannot ask for something that was
+/// given, or skip something that was not.
+///
+/// A command line the parser refuses -- a `--key` whose value is missing --
+/// counts as supplying nothing. It is about to fail on that word either way,
+/// and asking for one input too many is the harmless direction to be wrong in.
+fn supplied(args: &[String], reads: &runfile_lang::Inputs) -> (Vec<String>, Vec<String>) {
 	let (mut a, mut f) = (Vec::new(), Vec::new());
-	for x in args.iter().take_while(|x| *x != "--") {
-		let Some(rest) = x.strip_prefix("--") else {
-			continue;
-		};
-		match rest.split_once('=') {
-			Some((k, _)) => a.push(k.to_string()),
-			None => f.push(rest.to_string()),
+	for x in runfile_lang::args::parse(args, reads).unwrap_or_default() {
+		match x {
+			Arg::Arg { key, .. } => a.push(key),
+			Arg::Flag(key) => f.push(key),
+			Arg::Positional(_) | Arg::Unknown { .. } => {}
 		}
 	}
 	(a, f)
