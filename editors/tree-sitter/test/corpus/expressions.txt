@@ -64,6 +64,7 @@ Strings: escapes, an interpolation holding a quoted string, and a raw string
 ================================================================================
 let s = "say \"hi\"\n{{ ARG.name ? "world" }}"
 let r = r"(?m)^version = \"(.+)\""
+let c = "\e[1mbold\e[0m"
 --------------------------------------------------------------------------------
 
 (source_file
@@ -87,6 +88,13 @@ let r = r"(?m)^version = \"(.+)\""
       (string_content)
       (string_content)
       (string_content)
+      (string_content)))
+  (let_statement
+    (identifier)
+    (string
+      (escape_sequence)
+      (string_content)
+      (escape_sequence)
       (string_content))))
 
 ================================================================================

@@ -111,18 +111,17 @@ fn a_previewed_loop_walks_its_body_once() {
 }
 
 #[test]
-fn a_conditional_loop_is_refused_inside_a_parallel_block() {
-	// A fan-out collects every branch before any of them runs, and a `while`
-	// has nothing to collect until its body has run at least once.
-	for src in [
-		".parallel\n\nwhile true\n\trun a\nend\n",
-		".parallel\n\nloop\n\trun a\nend\n",
-		".parallel\n\nfor n in [\"a\"]\n\tbreak\nend\n",
-	] {
-		let d = Recorder::default();
-		let e = run_src(src, &d).expect_err("a fan-out cannot hold one");
-		assert!(e.to_string().contains(".parallel"), "{src}: {e}");
-	}
+fn a_conditional_loop_can_be_a_parallel_branch() {
+	// `.parallel` refused one: it collected every command before any ran, and
+	// a `while` has none to collect until its body has run. A branch is
+	// ordinary code, so it simply runs.
+	let d = Recorder::default();
+	run_src(
+		"parallel do\n\tlet _ = 0\n\tfor n in [1]\n\t\tlet k = 0\n\t\twhile k < 2\n\t\t\trun a\n\t\t\tk = k + 1\n\t\tend\n\tend\nend\n",
+		&d,
+	)
+	.expect("a while inside a branch");
+	assert_eq!(d.calls(), ["a", "a"]);
 }
 
 // ---- unpacking

@@ -12,6 +12,9 @@
 //      character *before* the `#`, which a grammar regex cannot see: by the
 //      time one is matched the whitespace in front of it has been skipped.
 //      Here the whitespace is still there to look at.
+//   5. `parallel` and `detach` are markers only in front of what they mark,
+//      and names everywhere else. That is a rule about the word *after* them,
+//      which the grammar's lexer cannot look ahead to see.
 //
 // Newlines are external too, only so that a file without a trailing one still
 // ends its last line.
@@ -31,6 +34,8 @@ enum TokenType {
 	RUN_WORD,
 	DISPATCH_WORD,
 	STRUCTURED_KEYWORD,
+	PARALLEL_MARKER,
+	DETACH_MARKER,
 };
 
 #define MAX_INDENT 64
@@ -145,11 +150,32 @@ static bool scan_newline(Scanner *s, TSLexer *lexer) {
 	return false;
 }
 
-// A comment, or the `exec` that opens a block. Both start by reading the
-// whitespace in front of them, and both are decided here because a scanner
+// `parallel` in front of `do` or `for`, or `detach` in front of `$` or `exec`:
+// the marker, and only the marker -- the token ends with the word, and what
+// follows is read only to decide. Anywhere else the word is an ordinary name,
+// as the runner reads it: `parallel = 5` is a binding. As a plain token it was
+// a keyword wherever a statement may start, since the grammar's lexer picks
+// the keyword whenever one is allowed and cannot look past it to see the `=`.
+static bool scan_marker(TSLexer *lexer, const char *word, const char *const *marked, enum TokenType symbol) {
+	if (!read_word(lexer, word, true)) return false;
+	lexer->mark_end(lexer);
+	while (is_blank(lexer->lookahead)) advance(lexer);
+	for (int i = 0; marked[i]; i++) {
+		if (lexer->lookahead != marked[i][0]) continue;
+		if (!read_bare_word(lexer, marked[i])) return false;
+		if (!is_blank(lexer->lookahead) && !at_eol(lexer)) return false;
+		lexer->result_symbol = symbol;
+		return true;
+	}
+	return false;
+}
+
+// A comment, the `exec` that opens a block, or a marker in front of one. All
+// of them start by reading the
+// whitespace in front of them, and all are decided here because a scanner
 // that reads it and then fails has moved the position for whoever runs next:
-// `exec` is recognised at column 0, and would be answered by the blanks a
-// separate comment check had already skipped.
+// `exec` and the markers are recognised at column 0, and would be answered by
+// the blanks a separate comment check had already skipped.
 //
 // A `#` is a comment where it begins a **word** -- at the start of a line, or
 // after a blank. That is the shell's own rule, and the text after `$ ` is the
@@ -177,12 +203,29 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
 		lexer->result_symbol = COMMENT;
 		return true;
 	}
-	if (!valid[EXEC_KEYWORD] || !at_column_0 || !read_exec_word(lexer)) return false;
-	lexer->mark_end(lexer);
-	s->exec_indent_len = s->line_indent_len;
-	memcpy(s->exec_indent, s->line_indent, MAX_INDENT);
-	lexer->result_symbol = EXEC_KEYWORD;
-	return true;
+	if (!at_column_0) return false;
+	// One pass reads the line's first word, so the three are told apart by its
+	// first letter: a check that read part of the word and failed would leave
+	// the next one looking at the rest of it.
+	switch (lexer->lookahead) {
+	case 'e':
+		if (!valid[EXEC_KEYWORD] || !read_exec_word(lexer)) return false;
+		lexer->mark_end(lexer);
+		s->exec_indent_len = s->line_indent_len;
+		memcpy(s->exec_indent, s->line_indent, MAX_INDENT);
+		lexer->result_symbol = EXEC_KEYWORD;
+		return true;
+	case 'p': {
+		static const char *const marked[] = {"do", "for", NULL};
+		return valid[PARALLEL_MARKER] && scan_marker(lexer, "parallel", marked, PARALLEL_MARKER);
+	}
+	case 'd': {
+		static const char *const marked[] = {"$", "exec", NULL};
+		return valid[DETACH_MARKER] && scan_marker(lexer, "detach", marked, DETACH_MARKER);
+	}
+	default:
+		return false;
+	}
 }
 
 // After `=` in a binding: the same block, opened from the middle of a line.
@@ -373,7 +416,9 @@ bool tree_sitter_runfile_external_scanner_scan(void *payload, TSLexer *lexer, co
 	// Before the word scanners, which would otherwise take the comment after a
 	// `run` for one more argument, and after `EXEC_CONTENT`, whose body owns
 	// every `#` in it -- a body is somebody else's language.
-	if ((valid[COMMENT] || valid[EXEC_KEYWORD]) && scan_line_start(s, lexer, valid)) return true;
+	if ((valid[COMMENT] || valid[EXEC_KEYWORD] || valid[PARALLEL_MARKER] || valid[DETACH_MARKER]) &&
+	    scan_line_start(s, lexer, valid))
+		return true;
 	if (valid[RUN_WORD]) return scan_run_word(lexer);
 	if (valid[DISPATCH_WORD]) return scan_dispatch_word(lexer);
 	if (valid[STRUCTURED_KEYWORD] && scan_structured_keyword(s, lexer)) return true;

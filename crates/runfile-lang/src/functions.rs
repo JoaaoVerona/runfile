@@ -1585,6 +1585,15 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		// approve, and asking made previewing a guarded target impossible.
 		"confirm" if n == 1 => (|| {
 			let question = s(0)?;
+			// Two questions at once on one terminal cannot be answered. Only
+			// when it would actually ask: `-y`, CI and a preview answer without
+			// the terminal, and do so here too.
+			if sc.branch.is_some() && !(sc.assume_yes || sc.dry_run) {
+				return Err(other(
+					"`confirm()` cannot ask inside a parallel branch, where every branch shares one terminal -- ask before the block"
+						.to_string(),
+				));
+			}
 			let allowed = sc.assume_yes || sc.dry_run || sc.confirm.is_some_and(|ask| ask(question));
 			if allowed {
 				Ok(V::Bool(true))
@@ -1601,9 +1610,9 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		// preview that hides what a run would say is a worse preview.
 		"print" if n >= 1 => {
 			let joined = v.iter().map(V::to_string).collect::<Vec<_>>().join(" ");
-			write_stdout(&format!("{joined}{NEWLINE}")).map_err(other)
+			emit(sc, &format!("{joined}{NEWLINE}")).map_err(other)
 		}
-		"printf" if n >= 1 => (|| write_stdout(&render_format(s(0)?, &v[1..], sp)?).map_err(other))(),
+		"printf" if n >= 1 => (|| emit(sc, &render_format(s(0)?, &v[1..], sp)?).map_err(other))(),
 		// Waiting is not a change to anything, but a preview that takes the
 		// full minute a real run takes is not a preview. Skipped under
 		// `--dry-run` for the same reason a write is.
@@ -1823,13 +1832,36 @@ const NEWLINE: &str = "\r\n";
 #[cfg(not(windows))]
 const NEWLINE: &str = "\n";
 
+/// Write what `print` or `printf` produced. Inside a parallel branch it goes
+/// behind the branch's label, a whole line at a time, the way the commands in
+/// the branch are relayed: several branches write at once, and a line with no
+/// label -- or half of one -- could belong to any of them. So a `printf`
+/// without a newline ends its line there, rather than waiting for the rest
+/// while another branch writes in between. A branch with an empty label -- a
+/// nested `parallel` block, whose own branches are the ones named -- still
+/// writes whole lines, with nothing in front of them.
+fn emit(sc: &Scope, text: &str) -> Result<Value, String> {
+	match sc.branch.as_deref() {
+		None => write_stdout(text),
+		Some(label) => {
+			let lines: String = text
+				.lines()
+				.map(|l| match label {
+					"" => format!("{l}{NEWLINE}"),
+					_ => format!("{label} | {l}{NEWLINE}"),
+				})
+				.collect();
+			write_stdout(&lines)
+		}
+	}
+}
+
 /// One locked write, then a flush.
 ///
-/// Locked because a target dispatched into a `.parallel` branch may be
-/// printing at the same moment, and half a line from each is worse than
-/// either. Flushed because the next thing to write is usually a child process
-/// holding the same descriptor, and a buffered line would arrive after output
-/// that came later.
+/// Locked because a parallel branch may be printing at the same moment, and
+/// half a line from each is worse than either. Flushed because the next thing
+/// to write is usually a child process holding the same descriptor, and a
+/// buffered line would arrive after output that came later.
 fn write_stdout(text: &str) -> Result<Value, String> {
 	use std::io::Write;
 	let mut out = std::io::stdout().lock();

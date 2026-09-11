@@ -628,7 +628,7 @@ fn alias_is_not_a_property() {
 	let p = project(&[("runfiles/build.run", ".alias = \"b\"\n$ true\n")]);
 	let o = p.run(&["build"]);
 	assert!(!o.status.success(), "the property is refused where it is written");
-	assert!(err(&o).contains("unknown property `.alias`"), "{}", err(&o));
+	assert!(err(&o).contains("`.alias` is gone"), "{}", err(&o));
 }
 
 // ------------------------------------------------------- workdir and add-path
@@ -2215,14 +2215,83 @@ fn parallel_branches_prefix_every_line_they_print() {
 	// from. Sorted, because the interleaving is the point: order is not fixed.
 	let p = project(&[(
 		"runfiles/t.run",
-		".parallel = true\n\n$ printf 'a1\\na2\\n'\nlet x = \"1\"\n$ printf 'b1\\n'\n",
+		"parallel do\n\t$ printf 'a1\\na2\\n'\n\t$ echo b1\nend\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
 	let text = out(&o);
 	let mut lines: Vec<&str> = text.lines().collect();
 	lines.sort_unstable();
-	assert_eq!(lines, ["printf | a1", "printf | a2", "printf | b1"], "{text}");
+	assert_eq!(lines, ["echo | b1", "printf | a1", "printf | a2"], "{text}");
+}
+
+#[test]
+fn sibling_branches_are_told_apart_by_their_words() {
+	// `echo` twice would say nothing about which line came from which.
+	let p = project(&[("runfiles/t.run", "parallel do\n\t$ echo one\n\t$ echo two\nend\n")]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(lines, ["echo one | one", "echo two | two"], "{text}");
+}
+
+#[test]
+fn a_nested_parallel_block_names_only_its_own_branches() {
+	// `a`, not `parallel:2/a`: the block adds nothing its branches do not say.
+	let p = project(&[(
+		"runfiles/t.run",
+		"parallel do\n\tparallel for n in [\"a\", \"b\"]\n\t\tprint(n)\n\tend\n\t$ echo c\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(lines, ["a | a", "b | b", "echo | c"], "{text}");
+}
+
+#[test]
+fn a_print_inside_a_branch_carries_its_label_too() {
+	// `print` runs in the branch, not ahead of the block, so its line needs
+	// the same label a command's does -- a whole line at a time.
+	let p = project(&[(
+		"runfiles/t.run",
+		"parallel do\n\tprint(\"hello\")\n\tprintf(\"no newline\")\n\t$ echo x\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(lines, ["echo | x", "print | hello", "printf | no newline"], "{text}");
+}
+
+#[test]
+fn a_dispatched_target_prints_behind_its_branchs_label() {
+	let p = project(&[
+		("runfiles/all.run", "parallel do\n\trun one\n\trun two\nend\n"),
+		("runfiles/one.run", "print(\"from one\")\n"),
+		("runfiles/two.run", "print(\"from two\")\n"),
+	]);
+	let o = p.run(&["all"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(lines, ["one | from one", "two | from two"], "{text}");
+}
+
+#[test]
+fn confirm_refuses_to_ask_inside_a_parallel_branch() {
+	// Every branch shares one terminal, so two questions at once could not be
+	// answered. Refused where it would ask; `-y` answers without asking.
+	let p = project(&[("runfiles/t.run", "parallel do\n\tconfirm(\"sure?\")\n\t$ true\nend\n")]);
+	let o = p.run(&["t"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("cannot ask inside a parallel branch"), "{}", err(&o));
+	assert!(p.run(&["-y", "t"]).status.success(), "`-y` asks nothing");
 }
 
 #[test]
@@ -2238,18 +2307,18 @@ fn a_sequential_run_prints_no_labels() {
 fn a_parallel_branch_labels_its_stderr_too() {
 	let p = project(&[(
 		"runfiles/t.run",
-		".parallel = true\n\n$ printf 'oops\\n' >&2\nlet x = \"1\"\n$ printf 'fine\\n'\n",
+		"parallel do\n\t$ echo oops >&2\n\t$ printf 'fine\\n'\nend\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(err_from_commands(&o).trim(), "printf | oops", "{}", err(&o));
+	assert_eq!(err_from_commands(&o).trim(), "echo | oops", "{}", err(&o));
 	assert_eq!(out(&o).trim(), "printf | fine");
 }
 
 #[test]
 fn a_dispatched_branch_is_labelled_with_its_target_name() {
 	let p = project(&[
-		("runfiles/all.run", ".parallel = true\n\nrun one\nrun two\n"),
+		("runfiles/all.run", "parallel do\n\trun one\n\trun two\nend\n"),
 		("runfiles/one.run", "$ printf 'from-one\\n'\n"),
 		("runfiles/two.run", "$ printf 'from-two\\n'\n"),
 	]);
@@ -2268,7 +2337,7 @@ fn a_branch_label_reaches_the_whole_subtree() {
 	// A dependency of a branch is still that branch's output, so it carries the
 	// same name rather than its own.
 	let p = project(&[
-		("runfiles/all.run", ".parallel = true\n\nrun one\n"),
+		("runfiles/all.run", "parallel do\n\trun one\nend\n"),
 		("runfiles/one.run", "run deep\n$ printf 'mine\\n'\n"),
 		("runfiles/deep.run", "$ printf 'nested\\n'\n"),
 	]);
@@ -2439,12 +2508,11 @@ fn a_target_without_detach_still_waits() {
 }
 
 #[test]
-fn parallel_on_a_for_block_runs_the_iterations_at_once() {
-	// The spec's own example shape. `.parallel` inside the loop means the
-	// iterations are the branches, not just each body's statements.
+fn parallel_for_runs_the_iterations_at_once() {
+	// Each iteration is a branch, and the loop ends when the last one does.
 	let p = project(&[(
 		"runfiles/t.run",
-		"for n in [\"1\", \"2\", \"3\"]\n\t.parallel\n\t$ sleep 1; echo {{ n }} >> out.txt\nend\n",
+		"parallel for n in [\"1\", \"2\", \"3\"]\n\t$ sleep 1; echo {{ n }} >> out.txt\nend\n",
 	)]);
 	let started = std::time::Instant::now();
 	let o = p.run(&["t"]);

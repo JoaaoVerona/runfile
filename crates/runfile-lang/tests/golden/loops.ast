@@ -214,6 +214,7 @@ Target {
                         },
                     ],
                 },
+                parallel: false,
                 span: Span,
             },
         ],

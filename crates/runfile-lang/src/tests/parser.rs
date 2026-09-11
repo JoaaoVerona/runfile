@@ -400,3 +400,111 @@ fn detach_is_only_a_marker_in_front_of_a_command() {
 	crate::parse("let detach = 5\ndetach = 6\n").expect("an ordinary binding and reassignment");
 	crate::parse("let x = detach\n").expect("an ordinary read");
 }
+
+// ---- `parallel do` and `parallel for`
+
+/// How many statements a `parallel do`'s body holds -- one per branch.
+fn branches(src: &str) -> usize {
+	let t = crate::parse(src).expect("parses");
+	match &t.body.statements[0] {
+		crate::Statement::Do {
+			body, parallel: true, ..
+		} => body.statements.len(),
+		other => panic!("not a parallel do: {other:?}"),
+	}
+}
+
+#[test]
+fn every_dollar_line_directly_inside_parallel_do_is_a_branch_of_its_own() {
+	// Folded, `$ lint` and `$ test` were one process, run one after the
+	// other, under a block that said they were not.
+	assert_eq!(branches("parallel do\n\t$ lint\n\t$ test\n\n\t$ build\nend\n"), 3);
+	// A continuation is still one line.
+	assert_eq!(branches("parallel do\n\t$ lint \\\n\t\t--fix\n\t$ test\nend\n"), 2);
+}
+
+#[test]
+fn inside_a_branch_the_dollar_lines_fold_again() {
+	// A branch is ordinary code; only the block's own statements are split.
+	let t = crate::parse("parallel do\n\tdo\n\t\t$ a\n\t\t$ b\n\tend\nend\n").unwrap();
+	let crate::Statement::Do { body, .. } = &t.body.statements[0] else {
+		panic!()
+	};
+	let crate::Statement::Do { body: inner, .. } = &body.statements[0] else {
+		panic!()
+	};
+	assert_eq!(inner.statements.len(), 1, "one process, as anywhere else");
+}
+
+#[test]
+fn a_parallel_for_body_is_ordinary_code() {
+	let t = crate::parse("parallel for s in [\"a\"]\n\t$ build\n\t$ push\nend\n").unwrap();
+	let crate::Statement::For { body, parallel, .. } = &t.body.statements[0] else {
+		panic!()
+	};
+	assert!(parallel);
+	assert_eq!(
+		body.statements.len(),
+		1,
+		"an iteration's `$` lines fold, as in any body"
+	);
+}
+
+#[test]
+fn a_let_directly_inside_parallel_do_is_refused_unless_it_binds_nothing() {
+	let e = crate::parse("parallel do\n\tlet x = 1\n\t$ true\nend\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("binds nothing anyone can read"), "{e}");
+	// `let _` binds nothing, so it is only a call run for its effect.
+	crate::parse("parallel do\n\tlet _ = print(\"x\")\nend\n").expect("a discarded value is a branch like a call");
+}
+
+#[test]
+fn a_branch_may_reassign_only_what_it_bound_itself() {
+	for ok in [
+		"parallel for n in [1]\n\tn = n + 1\nend\n",
+		"parallel for n in [1]\n\tlet t = 0\n\tt = t + n\nend\n",
+		"parallel do\n\tdo\n\t\tlet t = 0\n\t\tt = 1\n\tend\nend\n",
+		"parallel do\n\tfor i in [1]\n\t\ti = 2\n\tend\nend\n",
+		// Outside any parallel block, nothing changes.
+		"let t = 0\nfor n in [1]\n\tt = t + n\nend\n",
+	] {
+		crate::parse(ok).unwrap_or_else(|e| panic!("{ok:?}: {e}"));
+	}
+	for bad in [
+		"let t = 0\nparallel for n in [1]\n\tt = t + n\nend\n",
+		"let t = 0\nparallel do\n\tdo\n\t\tt = 1\n\tend\nend\n",
+		// A loop variable is put back when its loop ends, so after it the name
+		// is whatever it was outside.
+		"let i = 0\nparallel do\n\tdo\n\t\tfor i in [1]\n\t\tend\n\t\ti = 2\n\tend\nend\n",
+		// A nested parallel branch is a branch of its own.
+		"parallel for n in [1]\n\tlet t = 0\n\tparallel do\n\t\tdo\n\t\t\tt = 1\n\t\tend\n\tend\nend\n",
+	] {
+		let e = crate::parse(bad).expect_err(bad).to_string();
+		assert!(e.contains("bound outside this parallel branch"), "{bad:?}: {e}");
+	}
+}
+
+#[test]
+fn break_and_continue_cannot_reach_past_a_parallel_block() {
+	let e = crate::parse("parallel for n in [1]\n\tbreak\nend\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("cannot stop a `parallel for`"), "{e}");
+	crate::parse("parallel for n in [1]\n\tcontinue\nend\n").expect("continue ends one iteration");
+	let e = crate::parse("for n in [1]\n\tparallel do\n\t\tcontinue\n\tend\nend\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("cannot reach a loop outside"), "{e}");
+	// A loop inside a branch is the branch's own to leave.
+	crate::parse("parallel do\n\tfor n in [1]\n\t\tbreak\n\tend\nend\n").expect("its own loop");
+	crate::parse("parallel for s in [1]\n\tfor n in [1]\n\t\tbreak\n\tend\nend\n").expect("its own loop");
+}
+
+#[test]
+fn parallel_is_claimed_only_in_front_of_a_keyword() {
+	let e = crate::parse("parallel if true\n\t$ x\nend\n").unwrap_err().to_string();
+	assert!(e.contains("takes `do` or `for`"), "{e}");
+	crate::parse("let parallel = 5\nparallel = 6\n").expect("an ordinary name everywhere else");
+}

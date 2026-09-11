@@ -420,3 +420,77 @@ end
     (shell_line
       (shell_text
         (shell_content)))))
+
+================================================================================
+A parallel do and a parallel for
+================================================================================
+parallel do
+	$ lint
+	run api:check
+end
+parallel for svc in services
+	run build
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (do_statement
+    (shell_line
+      (shell_text
+        (shell_content)))
+    (run_statement
+      target: (target)))
+  (for_statement
+    variable: (identifier)
+    iterable: (identifier)
+    (run_statement
+      target: (target))))
+
+================================================================================
+A parallel block nested in another block
+================================================================================
+if ready
+	parallel do
+		$ lint
+	end
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    (identifier)
+    (do_statement
+      (shell_line
+        (shell_text
+          (shell_content))))))
+
+================================================================================
+parallel and detach are still ordinary names
+================================================================================
+let parallel = 5
+parallel = parallel + 1
+detach = 2
+if parallel > detach
+	detach = parallel
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (number))
+  (assignment
+    (identifier)
+    (binary_expression
+      (identifier)
+      (number)))
+  (assignment
+    (identifier)
+    (number))
+  (if_statement
+    (binary_expression
+      (identifier)
+      (identifier))
+    (assignment
+      (identifier)
+      (identifier))))

@@ -65,9 +65,20 @@ pub const KEYWORDS: &[Keyword] = &[
 		name: "do",
 		syntax: "do … end",
 		doc: "A block with no condition. Properties are block-scoped, so this is where `.workdir`, \
-		      `.env-file`, `.shell` or `.ignore-errors` go when they should cover a few commands and \
+		      `.env`, `.env-file` or `.ignore-errors` go when they should cover a few commands and \
 		      not the whole target — without inventing an `if true` to hold them.",
 		example: "do\n\t.workdir = \"web\"\n\n\t$ pnpm install\n\t$ pnpm exec vite build\nend",
+	},
+	Keyword {
+		name: "parallel",
+		syntax: "parallel do … end   ·   parallel for <name> in <list> … end",
+		doc: "Run branches at once, and wait for the last. In `parallel do` every statement directly \
+		      inside is a branch — a `$` line, a `run`, a call, a whole `if` or `for` — and in \
+		      `parallel for` every iteration is. What is inside a branch runs in order, as anywhere \
+		      else. Each branch works on its own copy of the variables, so one may not assign a name \
+		      bound outside it; every branch runs to completion before a failure is reported; and \
+		      each line a branch prints carries its label.",
+		example: "parallel do\n\t$ cargo test\n\t$ pnpm lint\n\trun docs:build\nend\n\nparallel for svc in [\"api\", \"web\"]\n\trun {{ svc }}:build\n\trun {{ svc }}:push\nend",
 	},
 	Keyword {
 		name: "if",
@@ -102,8 +113,7 @@ pub const KEYWORDS: &[Keyword] = &[
 		name: "while",
 		syntax: "while <condition> … end",
 		doc: "Run the block again while the condition holds, testing it before each pass. The \
-		      condition is an ordinary expression — or a command, as in an `if`. Refused inside a \
-		      `.parallel` block, which has to know its branches before any of them runs.",
+		      condition is an ordinary expression — or a command, as in an `if`.",
 		example: "let left = 5\n\nwhile left > 0\n\tprint(\"{{ left }} to go\")\n\tleft = left - 1\nend",
 	},
 	Keyword {

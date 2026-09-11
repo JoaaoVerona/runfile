@@ -79,6 +79,12 @@ impl EvalError {
 
 /// Everything an expression can read. Sources are fixed for a target; `vars`
 /// changes as `let` bindings and loop variables come and go.
+///
+/// `Clone` because a parallel branch runs on a copy of its own: what a branch
+/// binds must reach neither its siblings nor the code after the block. What is
+/// shared between the copies -- the temp files, the key pool -- is shared on
+/// purpose, and behind an `Arc`.
+#[derive(Clone)]
 pub struct Scope {
 	pub vars: HashMap<String, Value>,
 	pub args: HashMap<String, String>,
@@ -109,12 +115,17 @@ pub struct Scope {
 	/// What `temp_file` and `temp_dir` created, for the caller to delete when
 	/// the run ends.
 	pub temps: TempFiles,
+	/// The parallel branch this scope runs in, as the label its output
+	/// carries; `None` outside one. `print` writes behind it a line at a time,
+	/// the way a branch's commands are relayed, and `confirm()` refuses to ask:
+	/// every branch shares one terminal.
+	pub branch: Option<String>,
 }
 
 /// Paths created by `temp_file` / `temp_dir`, shared by every scope in a run.
 ///
 /// A handle rather than a process-global: a run owns its temp files, and
-/// `.parallel` hands the same handle to each branch. The host drains it on the
+/// every parallel branch gets the same handle. The host drains it on the
 /// way out, whether the run succeeded, failed, or is a watch iteration about to
 /// start another.
 #[derive(Clone, Default)]
@@ -198,6 +209,7 @@ impl Scope {
 			private_keys: Keys::default(),
 			dry_run: false,
 			temps: TempFiles::default(),
+			branch: None,
 		}
 	}
 

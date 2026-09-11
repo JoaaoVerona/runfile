@@ -298,6 +298,21 @@ fn exec_body(
 	j + 1
 }
 
+/// A `for` line, from the keyword on: `for a, b in list`.
+fn for_line(line: &str, no: usize) -> Result<String, ParseError> {
+	let rest = line[3..].trim();
+	Ok(match rest.find(" in ") {
+		// The list may be a call holding a `$` run, which `rhs` knows not to
+		// re-space.
+		Some(k) => format!(
+			"for {} in {}",
+			name_list(rest[..k].trim()),
+			rhs(rest[k + 4..].trim(), no)?
+		),
+		None => line.to_string(),
+	})
+}
+
 /// A statement line, plus any lines a list literal spills onto.
 fn statement(
 	raw: &[&str],
@@ -330,21 +345,16 @@ fn statement(
 			format!("match {}", condition(trimmed[5..].trim(), no)?),
 			Some(Frame::Match),
 		),
-		"for" => {
-			let rest = trimmed[3..].trim();
-			match rest.find(" in ") {
-				// The list may be a call holding a `$` run, which `rhs` knows
-				// not to re-space.
-				Some(k) => (
-					format!(
-						"for {} in {}",
-						name_list(rest[..k].trim()),
-						rhs(rest[k + 4..].trim(), no)?
-					),
-					Some(Frame::Body),
-				),
-				None => (trimmed.to_string(), Some(Frame::Body)),
-			}
+		"for" => (for_line(trimmed, no)?, Some(Frame::Body)),
+		// The block it prefixes, laid out as it would be on its own. Claimed
+		// only in front of `do` and `for`, as the parser claims it.
+		"parallel" if matches!(trimmed[8..].split_whitespace().next(), Some("do" | "for")) => {
+			let rest = trimmed[8..].trim_start();
+			let block = match rest.split_whitespace().next() {
+				Some("do") => "do".to_string(),
+				_ => for_line(rest, no)?,
+			};
+			(format!("parallel {block}"), Some(Frame::Body))
 		}
 		// A `run` argument is one whitespace-delimited word; the words are
 		// separated by exactly one space and otherwise left as written.

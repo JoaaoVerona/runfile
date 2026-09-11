@@ -7,7 +7,7 @@
 //! run created, and exit 130 so a caller can tell an interrupt from a failure.
 //!
 //! The flag is process-global because a signal handler has nowhere else to
-//! write, and because `.parallel` branches all need to see it.
+//! write, and because every parallel branch needs to see it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

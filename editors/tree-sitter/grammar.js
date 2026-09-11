@@ -59,6 +59,8 @@ module.exports = grammar({
 		$.run_word,
 		$.dispatch_word,
 		$._structured_keyword,
+		$._parallel_marker,
+		$._detach_marker,
 	],
 
 	word: ($) => $.identifier,
@@ -115,8 +117,12 @@ module.exports = grammar({
 
 		// `detach` marks the command it prefixes. A `detach $` line is one
 		// command: the `$` lines below it are separate statements, which is the
-		// runner's rule too.
-		shell_line: ($) => seq(optional(field("detach", "detach")), "$", optional($.shell_text), $._newline),
+		// runner's rule too. The marker comes from the scanner, which can see
+		// what follows it: as a plain token it was a keyword wherever a
+		// statement may start, and `detach = 5` -- a binding to the runner --
+		// did not parse.
+		shell_line: ($) =>
+			seq(optional(field("detach", alias($._detach_marker, "detach"))), "$", optional($.shell_text), $._newline),
 
 		shell_text: ($) => repeat1(choice($.shell_content, alias($._lone_brace, $.shell_content), $.interpolation, $.line_continuation)),
 
@@ -139,7 +145,7 @@ module.exports = grammar({
 					$._eol,
 				),
 				seq(
-					field("detach", "detach"),
+					field("detach", alias($._detach_marker, "detach")),
 					alias($._capture_exec_keyword, "exec"),
 					field("command", $.command),
 					$._eol,
@@ -249,7 +255,13 @@ module.exports = grammar({
 
 		// `do` … `end`: a block with no condition, so a property has somewhere
 		// to go without inventing a question.
-		do_statement: ($) => seq("do", $._eol, repeat($._line), "end", $._eol),
+		// `parallel` in front of `do` or `for` runs its branches at once. A
+		// marker on the block rather than a block of its own, the way `detach`
+		// is a marker on a command, and recognised the same way: by the
+		// scanner, only in front of the word it marks, so `parallel = 5` is a
+		// binding here as it is to the runner.
+		do_statement: ($) =>
+			seq(optional(field("parallel", alias($._parallel_marker, "parallel"))), "do", $._eol, repeat($._line), "end", $._eol),
 
 		if_statement: ($) =>
 			seq(
@@ -295,6 +307,7 @@ module.exports = grammar({
 
 		for_statement: ($) =>
 			seq(
+				optional(field("parallel", alias($._parallel_marker, "parallel"))),
 				"for",
 				field("variable", $.identifier),
 				repeat(seq(",", field("variable", $.identifier))),
@@ -405,7 +418,9 @@ module.exports = grammar({
 		string: ($) => seq('"', repeat(choice($.string_content, alias($._string_brace, $.string_content), $.escape_sequence, $.interpolation)), '"'),
 		string_content: () => token.immediate(/[^"\\{]+/),
 		_string_brace: () => token.immediate("{"),
-		escape_sequence: () => token.immediate(/\\["\\ntr{]/),
+		// Exactly the runner's escapes: `\e` is ESC, which `printf` colours with,
+		// and anything else is an error there, so it is one here too.
+		escape_sequence: () => token.immediate(/\\["\\ntre]/),
 
 		// Keeps its backslashes, but `\"` still does not terminate it.
 		raw_string: ($) =>

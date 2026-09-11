@@ -137,27 +137,27 @@ $ docker exec -i db psql -U app < seed.sql
 
 ### Doing several things at once
 
-`.parallel` on a `for` fans out its iterations, and labels every line so you can tell them apart.
-
-It is block-scoped, so **where it sits is what it covers**: inside the loop it parallelises the iterations and
-nothing else, and at the top of the file it would cover every command in the target.
+`parallel for` runs every iteration at once and waits for the last. What is inside one iteration still runs in
+order, so each service is built before it is pushed, and every line carries the name of the iteration it came
+from.
 
 ```sh
-# runfiles/pull.run
-# Pull every service image
+# runfiles/release.run
+# Build and push every service image, then say so
 
-for compose in glob("**/docker-compose.yml")
-	.parallel
-	.ignore-errors
-
-	$ docker compose -f {{ compose }} pull
+parallel for svc in ["api", "web", "worker"]
+	$ docker build -t {{ svc }} services/{{ svc }}
+	$ docker push {{ svc }}
 end
+
+print("all three pushed")
 ```
 
 ```
-[docker] api      Pulling
-[docker] web      Pulling
-[docker] postgres Pull complete
+web | Successfully built 9a0c41e2b7d3
+api | Successfully built 1f2e86c0a4b5
+worker | The push refers to repository [docker.io/library/worker]
+all three pushed
 ```
 
 ### JSON without the backslashes
@@ -375,6 +375,7 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `let x = 1` | Bind a value. `x = 2` rebinds. `let a, b = pair` takes a list apart. |
 | `if` / `else if` / `else` / `end` | Branch. However many `else if`s, one `end`. |
 | `for x in list` / `end` | Loop over a list. `for k, v in pairs` unpacks each item. |
+| `parallel do` / `parallel for x in list` … `end` | Run each statement inside, or each iteration, at once. |
 | `while c` / `until c` / `loop` / `end` | Loop on a condition, on its negation, or forever. |
 | `break` / `continue` | Leave the innermost loop, or start its next pass. |
 | `match` / `case` / `default` / `end` | Dispatch on a value. A label is a quoted string: `case "linux"`. |
@@ -454,6 +455,37 @@ end
 `range(n)` counts from zero and stops short of `n`; `range(a, b)` is every number from `a` to `b`, both
 included. Under `--dry-run` a conditional loop walks its body once: a preview performs none of the effects the
 condition is waiting on, so how often is not a thing it can honestly answer.
+
+### Parallel blocks
+
+`parallel do` runs every statement directly inside it at once — a `$` line, a `run`, a call, a whole `if` or
+`for` — and waits for the last. `parallel for` does the same with every iteration. Inside a branch everything
+runs in order, as it does anywhere else: only what is marked `parallel` fans out, so nesting one fans out again.
+
+```sh
+# runfiles/check.run
+# Every check at once: tests, lint, and each subproject's own
+
+parallel do
+	$ cargo test
+	$ cargo clippy -- -D warnings
+
+	parallel for ns in RUN.namespaces
+		run {{ ns }}:check
+	end
+end
+```
+
+- Each branch works on **its own copy of the variables**. Nothing it binds reaches the other branches or the code
+  after the block, so assigning a name bound outside the branch is a parse error — that value would be lost. A
+  `let` directly inside `parallel do` binds nothing anyone can read, and is one too.
+- Every branch **runs to completion before a failure is reported**, so a set of services is never left half
+  started. `.ignore-errors` on the block forgives each branch.
+- Every line a branch prints carries its name: the target it runs, the iteration's value, or as many words of its
+  command as tell it from its siblings — `cargo test` and `cargo clippy`. A branch reads nothing from the
+  terminal, and `confirm()` refuses to ask inside one.
+- Branches run at once, so neither `break` nor `continue` can reach a loop outside the block, and `break` cannot
+  stop a `parallel for`, whose iterations are already running; `continue` ends one of them.
 
 ### Where values come from
 
@@ -640,7 +672,6 @@ Set at the top of the file, or inside a block where marked.
 | `.shell` | Which POSIX shell `$` lines use. | | |
 | `.env.NAME` | Set an environment variable. | ✅ | |
 | `.workdir` | Where commands run. | ✅ | |
-| `.parallel` | Run this block's commands at once. On a `for`, its iterations. | ✅ | ✅ |
 | `.ignore-errors` | Keep going when a command fails. | ✅ | ✅ |
 | `.logging` | Announce each command on stderr before it runs. Off unless set. | | ✅ |
 | `.env-file` | Load a `.env` file (encrypted values are decrypted in memory). Appends. | ✅ | |
@@ -649,9 +680,9 @@ Set at the top of the file, or inside a block where marked.
 | `.only-in-directories` | Machine-wide targets only: offer this one inside these directories. Appends. | | |
 
 A **flag** is written bare for `= true`, or given a bool. A constant that can never be one is refused where it
-is written — `.parallel = 23` and `.parallel = "true"` are both errors, and the second says to drop the
-quotes. A value the run works out is left to the run: `.parallel = ENV.CI` and
-`.parallel = ARG.p ? ENV.CI ? "false"` are how a flag is decided from outside the file, and there `true`,
+is written — `.ignore-errors = 23` and `.ignore-errors = "true"` are both errors, and the second says to drop
+the quotes. A value the run works out is left to the run: `.ignore-errors = ENV.CI` and
+`.ignore-errors = ARG.p ? ENV.CI ? "false"` are how a flag is decided from outside the file, and there `true`,
 `false`, `1` and `0` are all understood. Anything else stops the run rather than reading as `false`, because
 a flag that quietly did not take effect is found out much later.
 
@@ -680,8 +711,8 @@ $ ls
 $ sqlx migrate run
 ```
 
-Five of them describe the whole block rather than the commands under it — `.parallel`, `.shell`, `.logging`,
-`.watch` and `.only-in-directories` — and those have to be written above the block's first statement.
+Four of them describe the whole file rather than the commands under them — `.shell`, `.logging`, `.watch` and
+`.only-in-directories` — and those have to be written above its first statement.
 
 `.shell` names one of the eight shells `$` knows how to drive: `sh`, `bash`, `dash`, `ash`, `zsh`, `ksh`,
 `busybox` or `brush`. Any other interpreter is named on the line instead, with `exec` — which is the same

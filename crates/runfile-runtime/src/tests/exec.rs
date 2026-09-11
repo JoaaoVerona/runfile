@@ -217,11 +217,10 @@ fn a_property_in_the_declaration_region_still_resolves_before_the_body() {
 
 #[test]
 fn a_property_that_describes_the_whole_block_has_to_be_written_above_it() {
-	// `.parallel` decides what fans out, and a fan-out collects every branch
-	// before any of them runs -- so half a block fanning out is a second
-	// meaning for one word rather than a useful one.
+	// `.watch` is answered once, around the run, so "from here down" is not
+	// a reading it has.
 	let d = Recorder::default();
-	let e = run_src("$ true\n.parallel\n$ true\n", &d).unwrap_err();
+	let e = run_src("$ true\n.watch = \"src/**\"\n$ true\n", &d).unwrap_err();
 	assert!(e.to_string().contains("above the block's first statement"), "{e}");
 }
 
@@ -365,10 +364,12 @@ fn an_exit_inside_a_retry_is_not_retried() {
 }
 
 #[test]
-fn retry_is_refused_inside_a_parallel_block() {
+fn the_parallel_property_says_where_it_went() {
+	// It became `parallel do` and `parallel for`; a file still carrying it is
+	// told what to write rather than only that the name is unknown.
 	let d = Recorder::default();
 	let e = run_src(".parallel = true\nretry 2\n\t$ false\nend\n", &d).unwrap_err();
-	assert!(e.to_string().contains("cannot be inside a `.parallel`"), "{e}");
+	assert!(e.to_string().contains("`parallel do"), "{e}");
 }
 
 #[test]

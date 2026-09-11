@@ -68,7 +68,7 @@ pub fn fingerprint(target: &Target) -> u64 {
 /// A field added to the tree with a default that means "as before" belongs
 /// here, in the same change. A test pins a real `setup.run` to the fingerprint
 /// the runner recorded for it before `detach` existed, so forgetting shows.
-const UNASKED: &[&str] = &["detach: false, "];
+const UNASKED: &[&str] = &["detach: false, ", "parallel: false, "];
 
 /// Replace every `open …close` run with `open`, so positional detail drops out
 /// of the rendering without a walk over every variant.

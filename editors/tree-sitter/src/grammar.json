@@ -189,7 +189,12 @@
               "type": "FIELD",
               "name": "detach",
               "content": {
-                "type": "STRING",
+                "type": "ALIAS",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_detach_marker"
+                },
+                "named": false,
                 "value": "detach"
               }
             },
@@ -334,7 +339,12 @@
               "type": "FIELD",
               "name": "detach",
               "content": {
-                "type": "STRING",
+                "type": "ALIAS",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_detach_marker"
+                },
+                "named": false,
                 "value": "detach"
               }
             },
@@ -947,6 +957,27 @@
       "type": "SEQ",
       "members": [
         {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "parallel",
+              "content": {
+                "type": "ALIAS",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_parallel_marker"
+                },
+                "named": false,
+                "value": "parallel"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
           "type": "STRING",
           "value": "do"
         },
@@ -1234,6 +1265,27 @@
     "for_statement": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "parallel",
+              "content": {
+                "type": "ALIAS",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_parallel_marker"
+                },
+                "named": false,
+                "value": "parallel"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
         {
           "type": "STRING",
           "value": "for"
@@ -2330,7 +2382,7 @@
       "type": "IMMEDIATE_TOKEN",
       "content": {
         "type": "PATTERN",
-        "value": "\\\\[\"\\\\ntr{]"
+        "value": "\\\\[\"\\\\ntre]"
       }
     },
     "raw_string": {
@@ -2465,6 +2517,14 @@
     {
       "type": "SYMBOL",
       "name": "_structured_keyword"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_parallel_marker"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_detach_marker"
     }
   ],
   "inline": [],

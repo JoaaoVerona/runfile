@@ -13,7 +13,6 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Default)]
 pub struct Props {
 	pub shell: Option<String>,
-	pub parallel: bool,
 	pub ignore_errors: bool,
 	/// Announce each command on stderr before it runs. Off unless asked for:
 	/// most targets are run for their output, and a runner talking over it is
@@ -56,11 +55,13 @@ pub struct KnownProperty {
 	pub flag: bool,
 	/// Whether it has to be written above the block's first statement.
 	///
-	/// These describe the shape of the whole block rather than the environment
-	/// of the commands under them, so "from here down" is not a reading they
-	/// have: a fan-out collects every branch before any of them runs, and
-	/// `.watch` and `.detach` are answered once, around the run. Everything
-	/// header-only is also this; `parallel` is the one that is not.
+	/// These describe the whole file rather than the environment of the
+	/// commands under them, so "from here down" is not a reading they have:
+	/// `.watch` is answered once, around the run, and `.shell` and `.logging`
+	/// are one fact about a file. Everything header-only is also this. It was a
+	/// column of its own because `.parallel` was the one block-scoped property
+	/// that was; that became `parallel do` and `parallel for`, and the two
+	/// columns now agree -- kept apart because they answer different questions.
 	pub declaration_only: bool,
 	pub doc: &'static str,
 	/// What it looks like in a file. A property is a line someone writes
@@ -119,14 +120,6 @@ pub const PROPERTIES: &[KnownProperty] = &[
 		example: ".only-in-directories = [\"~/work/acme\", \"~/work/zed\"]",
 	},
 	KnownProperty {
-		name: "parallel",
-		block_scoped: true,
-		flag: true,
-		declaration_only: true,
-		doc: "Run this block's commands at once, each branch labelled in the output.",
-		example: "for compose in glob(\"**/docker-compose.yml\")\n\t.parallel\n\n\t$ docker compose -f {{ compose }} pull\nend",
-	},
-	KnownProperty {
 		name: "shell",
 		block_scoped: false,
 		flag: false,
@@ -175,6 +168,14 @@ fn as_bool(v: &Value) -> Option<bool> {
 pub enum PropError {
 	#[error("line {line}: unknown property `.{name}`")]
 	Unknown { name: String, line: usize },
+	/// A property that became syntax. Said apart from a spelling mistake,
+	/// since the fix is not a nearer name but a different line.
+	#[error("line {line}: `.{name}` is gone -- {instead}")]
+	Replaced {
+		name: String,
+		line: usize,
+		instead: &'static str,
+	},
 	#[error("line {line}: `.{name}` is header-only and cannot be set inside a block")]
 	NotBlockScoped { name: String, line: usize },
 	#[error("line {line}: `.{name}` needs a value")]
@@ -226,6 +227,20 @@ pub fn describe_constant(c: &runfile_lang::Constant) -> String {
 	}
 }
 
+/// Properties that became syntax, and what to write instead: a file carrying
+/// one is told where it went rather than only that it is unknown.
+const REPLACED: &[(&str, &str)] = &[
+	(
+		"parallel",
+		"write `parallel do … end`, or `parallel for` to run a loop's iterations at once",
+	),
+	(
+		"detach",
+		"write `detach` in front of the command itself, as `detach $ …`",
+	),
+	("alias", "a target is reached by its file name, and by nothing else"),
+];
+
 /// Whether applying this property changes the environment a value reads.
 pub(crate) fn changes_env(p: &Property) -> bool {
 	matches!(p.path[0].as_str(), "env" | "env-file" | "add-path")
@@ -262,6 +277,13 @@ pub fn check(p: &Property, nested: bool, trailing: bool) -> Result<&'static Know
 	// `.ignore-error` inside a `for` that it was header-only -- sending them
 	// after a rule instead of a spelling mistake.
 	let Some(known) = PROPERTIES.iter().find(|k| k.name == head) else {
+		if let Some((_, instead)) = REPLACED.iter().find(|(name, _)| *name == head) {
+			return Err(PropError::Replaced {
+				name: p.path.join("."),
+				line,
+				instead,
+			});
+		}
 		return Err(PropError::Unknown {
 			name: p.path.join("."),
 			line,
@@ -283,7 +305,7 @@ pub fn check(p: &Property, nested: bool, trailing: bool) -> Result<&'static Know
 		});
 	}
 	// A flag written with a constant that can never be a bool is answered here
-	// rather than by evaluating it: `.parallel = 23` has one reading and it is
+	// rather than by evaluating it: `.logging = 23` has one reading and it is
 	// a mistake, so it is reported whether or not the line would have been
 	// reached.
 	if known.flag
@@ -382,7 +404,7 @@ impl Props {
 		};
 		let flag = |p: &Property, sc: &mut Scope| -> Result<bool, PropError> {
 			match &p.value {
-				None => Ok(true), // bare `.parallel` means `= true`
+				None => Ok(true), // bare `.logging` means `= true`
 				Some(e) => {
 					let v = eval_boundary(e, sc)?;
 					as_bool(&v).ok_or_else(|| PropError::FlagValue {
@@ -402,7 +424,6 @@ impl Props {
 				self.shell = Some(v);
 			}
 			"logging" => self.logging = flag(p, sc)?,
-			"parallel" => self.parallel = flag(p, sc)?,
 			"ignore-errors" => self.ignore_errors = flag(p, sc)?,
 			"workdir" => self.workdir = Some(value(p, sc)?.to_string()),
 			"env" => {

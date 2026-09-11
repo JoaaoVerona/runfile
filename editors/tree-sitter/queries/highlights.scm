@@ -1,6 +1,6 @@
 ; Keywords
-["let" "if" "else" "end" "for" "in" "while" "until" "loop" "break" "continue"
- "match" "case" "default" "run" "exec"
+["let" "do" "if" "else" "end" "for" "in" "while" "until" "loop" "break" "continue"
+ "match" "case" "default" "run" "exec" "detach" "parallel"
  ; `every` is a token only inside a `retry` header, so naming it here
  ; cannot colour a binding that happens to share the name.
  "retry" "every"] @keyword

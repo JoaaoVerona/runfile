@@ -140,6 +140,15 @@
           }
         },
         {
+          "$comment": "`parallel` only in front of `do` or `for`, as the parser claims it -- `let parallel = 5` is an ordinary name.",
+          "match": "\\b(parallel)(?=[ \\t]+(?:do|for)\\b)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.parallel.run"
+            }
+          }
+        },
+        {
           "match": "\\b(do|if|else|end|for|in|while|until|loop|break|continue|match|case|default)\\b",
           "name": "keyword.control.run"
         }

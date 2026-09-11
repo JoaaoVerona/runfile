@@ -183,7 +183,7 @@ test("the completed word starts after the dot and takes hyphens and colons", () 
 	assert.equal(at("run vscode:te"), 4)
 	assert.equal(at("RUN."), 4)
 	assert.equal(at("let x = conc"), 8)
-	assert.equal(completionPrefixStart(".parallel = true", 4), 1, "mid-line, not just at the end")
+	assert.equal(completionPrefixStart(".logging = true", 4), 1, "mid-line, not just at the end")
 })
 
 test("markdown is read from either shape the protocol allows", () => {

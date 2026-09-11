@@ -6,7 +6,7 @@ Target {
         properties: [
             Property {
                 path: [
-                    "parallel",
+                    "logging",
                 ],
                 value: None,
                 span: Span,

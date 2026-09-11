@@ -122,7 +122,14 @@ pub enum Statement {
 	/// Properties are block-scoped, and every block form until now also asked
 	/// a question. Somewhere to put `.workdir` for two commands should not
 	/// require inventing an `if true`.
-	Do { body: Block, span: Span },
+	Do {
+		body: Block,
+		/// `parallel do`: every statement directly inside is a branch of its
+		/// own, all of them run at once, and the block ends when the last one
+		/// does. What is inside a branch runs in order, as anywhere else.
+		parallel: bool,
+		span: Span,
+	},
 	/// `if cond … else … end`
 	If {
 		cond: Expr,
@@ -150,13 +157,18 @@ pub enum Statement {
 		names: Vec<String>,
 		iter: Expr,
 		body: Block,
+		/// `parallel for`: every iteration is a branch, all of them run at
+		/// once, and the loop ends when the last one does. The body runs in
+		/// order within each.
+		parallel: bool,
 		span: Span,
 	},
 	/// `while cond … end`, `until cond … end`, `loop … end`.
 	///
 	/// Unlike a `for`, what this runs is not known before it starts, which is
-	/// why a `.parallel` block refuses one: a fan-out collects its branches
-	/// up front, and there is nothing to collect until the body has run.
+	/// why there is no `parallel while`: a branch per pass would need the pass
+	/// count before the first one ran. Inside a parallel branch it is ordinary
+	/// code.
 	Loop { test: LoopTest, body: Block, span: Span },
 	/// `break` — leave the innermost loop.
 	///

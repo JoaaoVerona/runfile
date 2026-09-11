@@ -15,7 +15,7 @@ use runfile_lang::Value;
 use runfile_lang::eval::Scope;
 
 /// Records dispatched targets instead of running them. Behind a Mutex because
-/// Dispatch is Sync -- a `.parallel` block calls it from several threads.
+/// Dispatch is Sync -- a parallel block calls it from several threads.
 #[derive(Default)]
 pub struct Recorder {
 	pub calls: std::sync::Mutex<Vec<String>>,

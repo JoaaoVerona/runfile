@@ -50,6 +50,7 @@ Line-oriented. Every line is one of:
 | `json` … `end` | A block of structured text, as one value of that format. |
 | `let x = expr`, `x = expr` | Bind and rebind. `let a, _, c = xs` unpacks a list. |
 | `if` / `else if` / `else` / `end`, `for x in …`, `while c`, `until c`, `loop`, `break`, `continue`, `match` / `case` / `default`, `retry n [every s]`, `do` | Control flow. |
+| `parallel do` … `end`, `parallel for x in …` … `end` | Run each statement inside, or each iteration, at once, and wait for all of them. |
 | `detach $ <line>`, `detach exec <cmd>` … `end` | Start one command and do not wait for it. |
 | `run <target> [args]` | Dispatch another target, in-process. |
 | `expr` | Evaluated for effect, e.g. `write_file(…)`. |
@@ -224,8 +225,9 @@ its quotes, and the AWS CLI was being handed a JSON *string* where an object was
 shell `until … do sleep … done`, three of them re-implementing an attempt counter and an error message by
 hand. The block is run with **`ignore_errors` forced off** — a retry that could not see failure would run
 exactly once, which is the least useful way for it to be wrong — and an `exit()` inside is re-raised rather
-than retried. It is refused inside `.parallel`: several bodies sleeping and re-running against each other has
-no useful reading of what "attempts" counted, so `RunError::RetryInParallel` says so rather than guessing.
+than retried. It may be a parallel branch or sit inside one: a branch is ordinary code walked in order, so its
+attempts are its own. (`.parallel` had to refuse it, having no way to collect what a body would run before
+it had run.)
 
 ### Loops
 
@@ -248,9 +250,71 @@ condition is asking about, so the answer it gets back never changes: `while` ran
 neither is what would have happened. One pass is the honest thing a preview has to say. A `loop` with an empty
 body also checks the interrupt itself, since `walk` only looks *between* statements and there are none.
 
-Refused inside `.parallel`, like `retry`: a fan-out collects every branch before any of them runs, and a
-conditional loop has nothing to collect until its body has run. `break` has the same problem from the other
-end. A `for` is still expanded there, because its list is known before it starts.
+There is no `parallel while`, `until` or `loop`: an iteration of one exists only once the iteration before it
+has answered the question. Inside a branch any of them is ordinary code. `break` and `continue` meet a
+parallel block as a wall -- see below.
+
+### Parallel blocks
+
+**`parallel do … end` makes every statement directly inside it a branch, and `parallel for` every
+iteration.** The branches start together and the block waits for the last. A branch is a `$` line, a `run`, a
+call, or a whole block -- an `if` with its `else`, a `for`, a `retry` -- and inside one everything runs in
+order, like any other code: only what is marked `parallel` fans out, so a `parallel do` inside a branch fans
+out again. `Statement::Do` and `For` carry `parallel: bool`; the walker's two arms hand a `true` to
+`run::parallel_do` and `run::parallel_for`. `parallel` is claimed only in front of a keyword, so
+`parallel = 5` is still a binding, and in front of any keyword but `do` or `for` it is refused with what it
+takes.
+
+It replaced the `.parallel` property, which was a **second walker**. `collect` went through a block ahead of
+time and gathered its commands into one batch of `Leaf`s, so everything that was not a command ran first, in
+order: every `let`, `print` and `sleep` before anything was parallel at all. Two adjacent `$` lines were
+folded into one process and so were one branch, run one after the other under a block that said otherwise; a
+`for` became one flat batch, so a service's `push` could finish before its own `build`; and it had to refuse
+`retry` and every conditional loop, having no way to know what they would run. It also drifted from the real
+walker three times -- over a nested block's properties, over the captures in its preamble, and over what a
+leaf had to carry -- and each drift had cost a paragraph here. A branch is walked by the ordinary walker, so
+there is no second description of anything left to drift.
+
+- **A branch is a `Runner::fork`**: a runner with a copy of the scope, the chain, the environment and a label,
+  walked by the ordinary `statement` / `walk` on a thread of its own under `std::thread::scope`
+  (`run_branches`). `Scope` is `Clone`, and what must stay one thing across branches is a shared handle already
+  -- the temp-file registry and the key pool -- so a branch's temp files are still cleaned up and the keyring
+  still prompts once.
+- **Nothing a branch binds reaches its siblings or the code after the block**, and so **assigning a name bound
+  outside the branch is a parse error**: the value would be gone when the block ends -- a lost write rather
+  than a race, but lost all the same, and an editor can say so. `P.branch` holds the names the branch being
+  parsed bound itself: a `parallel for`'s names, each `let`, and a plain `for`'s names for the extent of its
+  body only, since the runner puts a loop variable back when the loop ends. `check_reassign` refuses the rest.
+  A `let` directly inside `parallel do` is refused too: it would be a branch of its own, binding a name nobody
+  could read.
+- **The `$` fold is broken inside `parallel do`**, so each `$` line is its own branch. `P.unfold_next` is set
+  for the one statement parsed as a branch and taken by it, so nothing nested inside that statement is
+  affected. Folded, `$ lint` and `$ test` were one process run in turn -- which is what `.parallel` did.
+- **Every branch runs to completion before a failure is reported.** Stopping the others would leave a
+  half-started set of services behind, and one failing says nothing about whether the rest should. A stop --
+  Ctrl+C, `exit()` -- is reported ahead of any failure, since the first command to fail may be one the signal
+  killed; among equals the first in source order wins. `.ignore-errors` on the block forgives each branch, the
+  way it forgives each statement of a block walked in order.
+- **`break` and `continue` cannot leave a parallel block**, whose branches run at once and so have no order to
+  leave in. `P.fence` records the loop depth the innermost one opened at, and a `break` or `continue` may only
+  reach a loop opened inside it. A `parallel for` is one of those loops for `continue`, which ends the
+  iteration it is in -- that iteration is the branch -- and not for `break`, since every iteration is already
+  running.
+- **A branch reads nothing from the terminal.** A shell's stdin is null in one -- a label is what says it is
+  a branch -- a missing input is an error rather than a prompt, since `fork` clears `Scope::ask`, and
+  `confirm()` refuses unless `-y`, CI or `--dry-run` answers without asking. Two questions at once on one
+  terminal cannot be answered. `Scope.branch` is how the pure library knows: it holds the branch's label.
+- **The block's properties are every branch's**, and one written between two branches is the ones below it:
+  `branches_of` sets the branches up in order before any starts, applying each trailing property where it
+  sits. A `parallel for`'s list and its body's properties are worked out once, before any iteration starts, as
+  a sequential `for`'s are.
+- **Concurrency is unbounded**: a branch is a thread, and so is every iteration of a `parallel for`. A limit is
+  a question for later, with no syntax yet.
+- **Under `--dry-run` the branches run in turn**, in source order, so a preview reads the same way every time.
+
+The formatter prints `parallel do` and `parallel for …` the way it prints the plain forms. In the tree-sitter
+grammar `parallel` is an optional field on `do_statement` and `for_statement`, recognised by the scanner the
+way `detach` is (see *editors/tree-sitter*); in TextMate it is a keyword only in front of `do` or `for`.
 
 ### Unpacking a list
 
@@ -500,7 +564,7 @@ second time as the global. This replaced `includes` entirely.
   in the loosest possible way: a list literal registered nothing, `"k{{ x }}"` silently registered `k`, and
   `"{{ x }}k"` silently registered nothing. Meanwhile `Props.aliases` was filled by the *evaluator* and read
   by nobody, so `.alias = concat("a","b")` ran, succeeded, and registered nothing while `.alias = nope` failed
-  the run. One name per target instead, and `.alias` is an unknown property like any other spelling mistake.
+  the run. One name per target instead, and `.alias` is refused with that sentence (`PropError::Replaced`).
 - **`.only-in-directories` scopes a machine-wide target, per file.** Registered everywhere, active only
   inside the paths it names. Compared on path components, so `work/acme` does not admit `work/acme-other`;
   `~` expands, and a relative entry anchors to **home** at every level, so one spelling means one directory
@@ -575,28 +639,8 @@ terminal's width, and how wide text is on it).
   interrupt another. `.ignore-errors` does not apply to it.
 - `Dispatch` is `Sync` with `&self` and an explicit `chain: &[String]`. Per-path rather than shared, so
   parallel siblings are not mistaken for a cycle.
-- `.parallel`: bindings evaluate in source order, then executable leaves fan out via `std::thread::scope`.
-  Control flow expands into the same batch, and every branch completes before a failure surfaces.
-- **A block inside a fan-out layers its own properties, and the leaf carries them.** `collect` recursed into a
-  nested `do` / `if` / `for` / `match` with the *enclosing* properties, so every block-scoped property inside a
-  `.parallel` block was parsed, accepted, and then ignored -- a `.workdir` ran in the anchor, a `.env` reached
-  nobody, a `.env-file` was never read. `collect_nested` is `nested` for the collecting walk: `extend` plus
-  `with_block_env`, so the same `.env-file`/`.add-path` rebuild happens and is put back after. The rest had to
-  move *into* `Leaf`, because a leaf is rendered where it is collected and spawned somewhere else: `.shell`
-  resolved through `command_for`, `.logging` as `announce`, and `.ignore-errors` paired with its own branch --
-  read off the batch, a block that asked to be forgiven either took its siblings with it or was not forgiven
-  at all. `detach` needed none of this: it rides on `Statement::Exec`, so a leaf carries it wherever the leaf
-  was collected.
-- **A fan-out's preamble runs through the process host, like every other statement.** `collect` reached the
-  *pure* evaluator for an `if` condition, a `for` list and a bare call, so `if $ cmd`,
-  `for f in lines($ git ls-files)` and `code_of($ cmd)` were an error inside a `.parallel` block -- *"capture
-  needs a process host"*, an internal sentence about the walker, for a line that works one indent out. They
-  are `cond_of` and `value_of` now, the two the sequential walk uses. Not a new decision: `collect`'s `let`
-  arm already ran its captures this way, and these sit in the same place -- the preamble is what decides
-  *what* fans out, so it is answered in source order before any leaf exists. `Statement::Match` was already
-  right, since `subject_of` runs a capture itself; a test pins it so the four cannot drift apart again. What a
-  preamble capture runs under is the *nested* block's properties, because `props` is what the collecting walk
-  is holding -- which is the bullet above.
+- **A parallel branch is a `Runner::fork`**, walked by the same `statement` and `walk` as everything else --
+  see *Parallel blocks* above.
 - **Everything the runner says while a target runs carries `[runfile]`** — the announcement, `error:`, the
   `.confirm` question, the `--stdin-args` prompt, watch-mode notices. A person reading a terminal is watching
   two things talk at once, and without the prefix `error: …` could as easily be the target's own output.
@@ -617,7 +661,7 @@ terminal's width, and how wide text is on it).
   `$` lines is one command to the shell, and so is a quote or a heredoc that spans them, so anything ending
   in a continuation and anything opening a quote falls back. Measured over the corpus: 238 of 242 multi-line
   blocks are traced, 4 fall back, and none is broken by it. A failure **never names the shell**, for the same
-  reason a `.parallel` branch is not labelled `bash`: `` `docker compose up -d` exited with status 1 `` where
+  reason a parallel branch is not labelled `bash`: `` `docker compose up -d` exited with status 1 `` where
   the runner knows the command, and *"the command above"* where several share a shell and only the
   announcements can say which one stopped — but only when the block was traced. A block announced whole has
   no single line above to point at, so it is named instead (*"a command in `for f in a b; do …`"*): pointing
@@ -643,7 +687,7 @@ terminal's width, and how wide text is on it).
   *uses*, not what it *holds*, and `CreateProcessW` is called with `bInheritHandles: TRUE`, so every
   inheritable handle in the runner is duplicated into the child anyway, the pipes its own stdout and stderr
   arrived on included. `exec::KeepHandles` clears `HANDLE_FLAG_INHERIT` on the three standard handles across a
-  detached spawn and restores it after. Safe for whatever else is spawning at the time, `.parallel` included,
+  detached spawn and restores it after. Safe for whatever else is spawning at the time, parallel branches included,
   because `Stdio::inherit()` does not depend on that flag: the standard library duplicates the handle it passes
   with `bInheritHandle` set regardless. Unix needs none of it -- everything but the three descriptors a child
   is handed is close-on-exec. **What it cannot guard is a copy `run` never knew it had**: a parent that spawns
@@ -652,14 +696,22 @@ terminal's width, and how wide text is on it).
   step's output pipe -- so the `detach` tests' `sleep 30` held a Gitea step open past its last test, and
   act_runner failed it after ten seconds with "WaitDelay expired before I/O complete". `cli.rs` clears the
   flag on its own standard handles before it spawns anything (`keep_our_std_handles`).
-- **`.parallel` on a `for` body fans out the iterations**, not just each body's statements. Leaves are
-  collected across every iteration first, so they form one batch. Without that the property read as
-  "parallel" and behaved as "in turn".
-- **Parallel output is labelled per line**, since several children write at once. The label is the target
-  name for a `run` leaf and the `exec` header otherwise, falling back to the first word of the body — never
-  the shell, or every `$` branch would be called `bash`. It is threaded through `Dispatch::run`, so a
-  branch's dependencies carry the branch's name rather than their own. A sequential run inherits the
-  terminal and adds no prefix: nothing to disambiguate, and a pipeline reading `run`'s output keeps working.
+- **Parallel output is labelled per line**, since several branches write at once: `label | line`, whole
+  lines, stderr as well as stdout, and a `print` too (`functions::emit`, which reads `Scope.branch`). A
+  `parallel for` iteration is labelled by its value, fitted to 40 columns -- the path out of a `glob` is
+  exactly what tells two apart, where the command's first word, `docker`, told none of them apart. A
+  `parallel do` branch is labelled by what it runs, **in as few words as tell it from its siblings**
+  (`branch_labels`), so `cargo test` and `cargo clippy` rather than `cargo` twice: a dispatch is its target
+  and arguments, a command its words -- the `exec` header's unless that names a shell, since every `$` branch
+  would otherwise be called `bash` -- and a call its function. A block is its keyword and line (`if:12`), and
+  so is anything no number of words tells apart (`print:3` beside `print:5`). The words are read off the tree
+  and stop at the first interpolation: rendering would run what is interpolated a second time, and a
+  `{{ temp_file(…) }}` would make two files. A nested `parallel` block gets an empty label and adds no segment
+  -- its branches are what get named, so `web` rather than `parallel:9/web` -- while other nested branches
+  join theirs, `web/cargo test`. An empty label is still a branch (`relay` and `emit` print its lines bare).
+  The label is threaded through `Dispatch::run`, so a branch's dependencies carry the branch's name rather
+  than their own. A sequential run inherits the terminal and adds no prefix: nothing to disambiguate, and a
+  pipeline reading `run`'s output keeps working.
 - `.add-path` is this target's own. The ancestor chain the old model carried across a re-exec is gone with
   the re-exec: dispatch is in-process, and every target builds PATH from its own properties.
 - `env::build` receives the same deferred key pool the `decrypt` function uses. It was previously passed `None`,
@@ -720,8 +772,9 @@ terminal's width, and how wide text is on it).
   prose, an **Example** block, and for a property a rule and whether it may sit inside a block — fenced as
   `runfile`, which is the extension's own language id, so an editor colours the example with the same grammar
   as the file. Completion sends the example too, in its markdown `documentation`.
-- **`keywords::KEYWORDS` documents the line forms** — `#`, `$`, `exec`, `run`, `let`, `if`, `else`, `for`,
-  `in`, `match`, `case`, `default`, `retry`, `every`, `json`, `code_of`, `end`. These are what a person meets
+- **`keywords::KEYWORDS` documents the line forms** — `#`, `$`, `exec`, `detach`, `run`, `let`, `do`,
+  `parallel`, `if`, `else`, `for`, `in`, `while`, `until`, `loop`, `break`, `continue`, `match`, `case`,
+  `default`, `retry`, `every`, `json`, `code_of`, `end`. These are what a person meets
   first and the only things in the language with no signature to read and no completion entry to hover. `$`
   and `#` are matched as *characters* rather than words, and only where they are the marker: `is_shell_marker`
   accepts a `$` at the start of a line or after `if` / `match`, so `$HOME` and `$(date)` inside a command are
@@ -919,11 +972,22 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   look at. `at_line_tail` is the shared answer to "nothing after this but blanks and perhaps a comment", which
   both the block terminator and the `json` keyword ask.
 - **A scanner that skips blanks and then fails has moved the position for whoever runs next.** `scan_line_start`
-  is one pass over that whitespace answering for both the comment and the `exec` keyword, because the second
-  is recognised at column 0 and would otherwise be answered by the blanks the first had skipped. The string rule needs no
+  is one pass over that whitespace answering for the comment, the `exec` keyword and the two markers below,
+  because the rest are recognised at column 0 and would otherwise be answered by the blanks the first had
+  skipped -- and it tells those three apart by the line's first letter, since a check that read part of a
+  word and failed would leave the next one looking at the rest of it. The string rule needs no
   scanner: the interpolation's expression is parsed as an expression, quotes and all. A dispatch's word inside
   `code_of(…)` is a second token, because there the `)` closing the call ends it — unless a `(` in the word
   opened it, which is how the parser reads one too.
+- **`parallel` and `detach` are scanner tokens, not keywords** (`scan_marker`). Each is a marker only in
+  front of what it marks -- `do` or `for`, `$` or `exec` -- and an ordinary name everywhere else, as the
+  runner reads them. As plain tokens they were keywords wherever a statement may start, because the grammar's
+  lexer takes the keyword whenever one is allowed and cannot look past it to see the `=`: `parallel = 5` and
+  `detach = 5`, both bindings to the runner, did not parse. The scanner reads the next word to decide, and
+  ends the token at the marker itself.
+- **An escape is exactly the runner's**: `\"`, `\\`, `\n`, `\t`, `\r` and `\e`. The grammar lacked `\e` --
+  ESC, which `printf` colours with -- so a string holding one failed the whole file, and it accepted a `\{`
+  the runner refuses.
 - **Scanner state is carried forward only by a successful token**; what a false return records is discarded.
   The indentation a capture `exec` needs is therefore recorded on the newline token that precedes its line, by
   looking past the token's marked end — not in the column-0 check, which says no to every non-`exec` line.
@@ -1042,9 +1106,9 @@ Four axes, all of them `PROPERTIES` columns:
 
 | Axis | Yes | No |
 | --- | --- | --- |
-| Block-scoped (may sit inside `if` / `for` / `match`) | `parallel`, `ignore-errors`, `workdir`, `env`, `env-file`, `add-path` | `shell`, `logging`, `watch`, `only-in-directories` |
-| Declaration-only (must be above the block's first statement) | `parallel`, `shell`, `logging`, `watch`, `only-in-directories` | the rest |
-| Flag (bare means `= true`, takes a bool) | `parallel`, `ignore-errors`, `logging` | the rest |
+| Block-scoped (may sit inside `if` / `for` / `match`) | `ignore-errors`, `workdir`, `env`, `env-file`, `add-path` | `shell`, `logging`, `watch`, `only-in-directories` |
+| Declaration-only (must be above the block's first statement) | `shell`, `logging`, `watch`, `only-in-directories` | the rest |
+| Flag (bare means `= true`, takes a bool) | `ignore-errors`, `logging` | the rest |
 | Machine-wide files only | `only-in-directories` | the rest |
 
 `env` is addressed by sub-key, `.env.NAME = "value"`, and exactly two segments: `.env` and `.env.A.B` are
@@ -1099,15 +1163,16 @@ The environment is the part that has to be put back. A trailing `.env`, `.env-fi
 -- `with_block_env` cannot, because it decides whether to save by comparing list *lengths* at block entry,
 before a trailing property has been applied.
 
-**Five properties describe the whole block and have to be written above its first statement**
-(`PropError::NotInDeclaration`): `parallel`, `shell`, `logging`, `watch`, `only-in-directories`. Everything header-only
-is also this; `parallel` is the one that is not, because a fan-out collects every branch before any of them
-runs and half a block fanning out would be a second meaning for one word. Refused by `extend` at block entry
+**Four properties describe the whole file and have to be written above its first statement**
+(`PropError::NotInDeclaration`): `shell`, `logging`, `watch`, `only-in-directories`. They are exactly the
+header-only ones now. `.parallel` was the one block-scoped property that was declaration-only too, and it is
+a keyword now, so the two columns agree -- and are kept apart all the same, because they answer different
+questions and the next property may split them again. Refused by `extend` at block entry
 rather than by `walk` where the line sits, so the message arrives whether or not the line would have been
 reached -- after a `break`, or in an `if` that went the other way.
 
 **A flag takes a bool, and a constant that can never be one is refused where it is written.**
-`.parallel`, `.ignore-errors` and `.logging` are the three. `matches!(v, Value::Bool(true))` used to
+`.ignore-errors` and `.logging` are the two. `matches!(v, Value::Bool(true))` used to
 answer every other value with `false` and say nothing, so `.ignore-errors = "true"` was *off* -- in a language
 that refuses `"a" + 1` and `"1" == 1`. Now `Expr::constant_non_bool` answers whether the right-hand side is
 something the parser can read straight off the page and is not a bool -- a number, a list, or a string with no
@@ -1116,8 +1181,8 @@ interpolation in it -- and `PropError::NotABool` names what it found, with the h
 because a flag written as arithmetic is not the mistake this is looking for.
 
 The rule is about **constants, not types**, because a flag decided from outside the file has no other shape to
-arrive in: `ENV.CI` is a string on every platform there is, and so is `ARG.p`. So `.parallel = ENV.CI`,
-`.parallel = "{{ ENV.CI }}"` and `.parallel = ARG.p ? ENV.CI ? "false"` all pass the static check and are
+arrive in: `ENV.CI` is a string on every platform there is, and so is `ARG.p`. So `.ignore-errors = ENV.CI`,
+`.ignore-errors = "{{ ENV.CI }}"` and `.ignore-errors = ARG.p ? ENV.CI ? "false"` all pass the static check and are
 resolved at run time by `as_bool`, which takes a bool, or `true`/`1`/`false`/`0` case-insensitively and
 trimmed -- the words the places a flag is read from spell one with. Anything else is
 `PropError::FlagValue`, naming the value: silently off is the failure this replaced, and a run that stops is
@@ -1171,7 +1236,7 @@ sixteenth, `kico/runfiles/test.run`, is now visible.
 
 A nested block inherits behaviour but never a parent's one-shot header state.
 
-**`do … end` is a block with no condition** (`Statement::Do`, one arm in `walk` and one in `collect`). Every
+**`do … end` is a block with no condition** (`Statement::Do`, one arm in `walk`). Every
 block form until it asked a question, so a property covering two commands meant inventing an `if true` — or
 writing `cd web &&` on every line, which is what 35 sites in the corpus did. It takes nothing after the
 keyword, and says so: anything there would read as a condition it does not have.
@@ -1293,7 +1358,7 @@ Adding `detach` to `Statement::Exec` did exactly that to 83 of the author's 88 p
 as they render at their default, separator included, and the fingerprint drops them; a file that does use the
 field renders differently and still counts as changed. A test pins a real `setup.run` to the hash the runner
 recorded for it before `detach` existed, so a field added without an entry fails there rather than on every
-machine. The five projects set up with the one build that shipped the field had their stored hashes
+machine. `parallel` on `Statement::Do` and `For` is the second entry, added with the field. The five projects set up with the one build that shipped the field had their stored hashes
 rewritten to the new rendering rather than being asked again: each one's stored value was exactly the old
 rendering of its current file, which is proof setup had run for it. State lives in `state.json` in the platform state directory — **except in
 CI, where there is none**. A runner is built from scratch and thrown away, so asking whether an earlier `setup`
@@ -1307,13 +1372,20 @@ settings file: global registrations, path aliases and custom shell paths were al
 
 ## Removed, and not coming back
 
-MCP server, `.alias` (a target is its file name), `.detach` (now the `detach` marker), `:convert`, `:config` (all subcommands), the user settings
+MCP server, `.alias` (a target is its file name), `.detach` (now the `detach` marker), `.parallel` (now
+`parallel do` and `parallel for`), `:convert`, `:config` (all subcommands), the user settings
 file, `-p` / target globs, `capture()`
 (now `$` in value position), `shell_quote()` (interpolation self-quotes), `set_cwd()` (now `.workdir`),
 `define()` (now `let`), `nth()` / `count_parts()` (now `split()` and indexing), the arithmetic and comparison
 functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKillOnSigInt`, the JSON schema,
 `VAR.` (replaced by `let`), and `RUNFILE_TARGET`. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
 `shlex`.
+
+The three properties that became something else are refused with what replaced them
+(`PropError::Replaced`, from `props::REPLACED`) rather than as unknown: *"`.parallel` is gone -- write
+`parallel do … end`, or `parallel for` to run a loop's iterations at once"*. An unknown property is most
+often a typo, and these three are not -- they are a file written for an older runner, and the person reading
+the message needs to know what to write instead.
 
 Every other function from the old surface is present. Seventeen were missing at one point, dropped by
 oversight rather than decision, and all are back. `try` is the one exception, replaced by `a ? b`.
@@ -1385,9 +1457,10 @@ time. Types are not coerced: `%d` refuses a string and refuses 2.5.
 
 Both write under `--dry-run`, for the same reason `now` and `uuid` answer with real values there — printing
 changes nothing, and a preview that hides what a run would say is a worse preview. Both take a locked handle
-and flush, because a target dispatched into a `.parallel` branch may be printing at the same moment, and
-because the next thing to write is usually a child process holding the same descriptor. A `print` is never
-itself a parallel branch: `collect` evaluates `Statement::Call` in source order before any leaf fans out.
+and flush, because a parallel branch may be printing at the same moment, and because the next thing to write
+is usually a child process holding the same descriptor. Inside a branch a `print` is labelled like the
+commands around it, and a `printf` without a newline ends its line there rather than waiting for the rest
+while another branch writes in between -- a line with no label, or half of one, could belong to any of them.
 
 What did *not* convert is as much the point: a pipe, a redirect, `>&2`, a `~` the shell would expand, and the
 ANSI-coloured `printf`s in `~/.runfiles/check-git-status.run` — the language has `\n`, `\t`, `\r`, `\"` and
@@ -1450,7 +1523,7 @@ tests that assert the mechanism rather than the symptom.
 
 `README.md` is the public documentation, and is written for someone deciding whether to use this rather than
 for someone working on it: it opens with a gallery of **complete** runfiles — cross-platform setup, a gate
-that loops, `retry`, `.parallel`, a `json` block, secrets, a pre-commit hook, watch mode — each captioned with
+that loops, `retry`, `parallel for`, a `json` block, secrets, a pre-commit hook, watch mode — each captioned with
 the one capability it shows. Rationale lives at the end, under *Why a language*.
 
 **Every ```sh block in it is a runfile, and is gated**: `runfile-lang/tests/readme.rs` parses each one and

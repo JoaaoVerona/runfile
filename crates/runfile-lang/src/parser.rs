@@ -3,6 +3,7 @@
 use crate::ast::*;
 use crate::lexer::{self, LexError, RawPart, Spanned, Token};
 use crate::span::Span;
+use std::collections::BTreeSet;
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -135,6 +136,9 @@ pub fn parse(src: &str) -> Result<Target, ParseError> {
 		lines: &lines,
 		i: 0,
 		loops: 0,
+		unfold_next: false,
+		branch: None,
+		fence: None,
 	};
 	let description = p.take_description();
 	let body = p.block(None)?;
@@ -155,6 +159,29 @@ struct P<'a> {
 	/// loop is a question about the text, and a run that finds out has already
 	/// done half the work.
 	loops: usize,
+	/// Set for the one statement being parsed directly inside a `parallel do`,
+	/// where a `$` line is a branch of its own rather than the first of a run:
+	/// folded, `$ lint` and `$ test` were one process, run one after the other,
+	/// under a block that said they were not.
+	unfold_next: bool,
+	/// The names the parallel branch being parsed binds itself, when there is
+	/// one. Every branch works on its own copy of the scope, so assigning a
+	/// name bound outside it would be lost when the block ends -- which is
+	/// refused here, where an editor can say so, rather than silently dropped.
+	branch: Option<BTreeSet<String>>,
+	/// The innermost parallel block, as the loop depth it opened at. `break`
+	/// and `continue` cannot reach a loop outside it: its branches run at once,
+	/// so there is no order for them to leave.
+	fence: Option<Fence>,
+}
+
+/// Where a parallel block sits among the loops around it.
+#[derive(Clone, Copy)]
+struct Fence {
+	/// `P.loops` when the block opened.
+	loops: usize,
+	/// `parallel for`, whose own iterations `continue` may end.
+	iterates: bool,
 }
 
 impl<'a> P<'a> {
@@ -194,6 +221,12 @@ impl<'a> P<'a> {
 
 	/// Parse statements until the block's terminator. `kw` is `None` at file level.
 	fn block(&mut self, kw: Option<&str>) -> Result<Block, ParseError> {
+		self.block_of(kw, false)
+	}
+
+	/// A block, whose statements are each a branch of their own when it is the
+	/// body of a `parallel do`.
+	fn block_of(&mut self, kw: Option<&str>, branches: bool) -> Result<Block, ParseError> {
 		let mut b = Block::default();
 		loop {
 			while self.i < self.lines.len() {
@@ -220,7 +253,11 @@ impl<'a> P<'a> {
 			if line.trimmed.starts_with('.') {
 				b.properties.push(self.property()?);
 			} else {
-				let mut st = self.statement()?;
+				let mut st = if branches {
+					self.branch_statement()?
+				} else {
+					self.statement()?
+				};
 				// Whatever the statement read, the last line of it is the one
 				// before where parsing resumes: a block's `end`, a spilled list's
 				// `]`, a run's last `$` line.
@@ -282,12 +319,14 @@ impl<'a> P<'a> {
 	}
 
 	fn statement(&mut self) -> Result<Statement, ParseError> {
+		// Taken here, so it applies to this statement and to nothing nested in it.
+		let unfold = std::mem::take(&mut self.unfold_next);
 		let line = &self.lines[self.i];
 		let no = line.no;
 		let indent = line.indent;
 
 		if line.trimmed == "$" || line.trimmed.starts_with("$ ") {
-			return self.shell_run(false);
+			return self.shell_run(false, unfold);
 		}
 		if line.trimmed.starts_with("exec ") {
 			return self.exec_block(false);
@@ -297,7 +336,7 @@ impl<'a> P<'a> {
 		// everywhere else -- `detach = 5` is still a reassignment.
 		if let Some(rest) = line.trimmed.strip_prefix("detach ").map(str::trim_start) {
 			if rest == "$" || rest.starts_with("$ ") {
-				return self.shell_run(true);
+				return self.shell_run(true, true);
 			}
 			if rest.starts_with("exec ") {
 				return self.exec_block(true);
@@ -315,12 +354,43 @@ impl<'a> P<'a> {
 		let span = Span::new(offset, offset + text.len(), no);
 
 		match head {
+			// Claimed only in front of a keyword, so it stays an ordinary name
+			// everywhere else -- `parallel = 5` is still a binding.
+			"parallel"
+				if matches!(
+					text[8..].split_whitespace().next(),
+					Some(
+						"do" | "for"
+							| "if" | "while" | "until"
+							| "loop" | "match" | "retry"
+							| "exec" | "run" | "detach"
+							| "$"
+					)
+				) =>
+			{
+				let rest = text[8..].trim_start();
+				match rest.split_whitespace().next() {
+					Some("do") => self.parallel_do(rest, no, span),
+					Some("for") => self.parallel_for(rest, offset + (text.len() - rest.len()), no, span),
+					Some(other) => err(
+						no,
+						format!(
+							"`parallel` takes `do` or `for`, not `{other}`: `parallel do` makes each statement inside a branch, `parallel for` each iteration"
+						),
+					),
+					None => unreachable!("the guard saw a word"),
+				}
+			}
 			"let" => {
 				let rest = text[3..].trim_start();
 				let Some(eq) = rest.find('=') else {
 					return err(no, "`let` needs `= value`");
 				};
 				let names = binding_names(rest[..eq].trim(), no)?;
+				// Inside a parallel branch, a name bound here is the branch's own.
+				if let Some(own) = &mut self.branch {
+					own.extend(names.iter().filter(|n| *n != "_").cloned());
+				}
 				let base = offset + (text.len() - rest.len()) + eq + 1;
 				let raw_rhs = rest[eq + 1..].trim();
 				let value = match self.capture_rhs(raw_rhs, indent, base, no)? {
@@ -338,7 +408,11 @@ impl<'a> P<'a> {
 				}
 				let body = self.block(Some("do"))?;
 				self.expect_end(no)?;
-				Ok(Statement::Do { body, span })
+				Ok(Statement::Do {
+					body,
+					parallel: false,
+					span,
+				})
 			}
 			"if" => {
 				let cond = condition(text[2..].trim(), offset + 3, no)?;
@@ -391,6 +465,24 @@ impl<'a> P<'a> {
 						format!("`{head}` is only meaningful inside a `for`, `while`, `until` or `loop`"),
 					);
 				}
+				if let Some(fence) = self.fence {
+					// Loops opened inside the parallel block, `parallel for` included.
+					let opened = self.loops - fence.loops;
+					if opened == 0 {
+						return err(
+							no,
+							format!(
+								"`{head}` cannot reach a loop outside a `parallel` block: its branches run at once, so there is no order to leave"
+							),
+						);
+					}
+					if fence.iterates && opened == 1 && head == "break" {
+						return err(
+							no,
+							"`break` cannot stop a `parallel for`: every iteration is already running -- `continue` ends this one",
+						);
+					}
+				}
 				Ok(if head == "break" {
 					Statement::Break { span }
 				} else {
@@ -429,21 +521,14 @@ impl<'a> P<'a> {
 				})
 			}
 			"for" => {
-				let rest = text[3..].trim();
-				let Some(k) = rest.find(" in ") else {
-					return err(no, "`for` needs `in`");
-				};
-				let names = binding_names(rest[..k].trim(), no)?;
-				// `for f in lines($ git ls-files)` -- the same rule as a `let`,
-				// and the shape a loop over a command's output actually wants.
-				let list = rest[k + 4..].trim();
-				let iter = condition(list, offset + 3 + k + 4, no)?;
-				let body = self.loop_body("for")?;
+				let (names, iter) = for_header(&text[3..], offset + 3, no)?;
+				let body = self.for_body(&names)?;
 				self.expect_end(no)?;
 				Ok(Statement::For {
 					names,
 					iter,
 					body,
+					parallel: false,
 					span,
 				})
 			}
@@ -494,6 +579,7 @@ impl<'a> P<'a> {
 				}
 				if let Some(eq) = assignment_split(&text) {
 					let names = binding_names(text[..eq].trim(), no)?;
+					self.check_reassign(&names, no)?;
 					let raw_rhs = text[eq + 1..].trim();
 					let value = match self.capture_rhs(raw_rhs, indent, offset + eq + 1, no)? {
 						Some(e) => e,
@@ -555,6 +641,116 @@ impl<'a> P<'a> {
 		})
 	}
 
+	/// One statement directly inside a `parallel do`: a branch of its own.
+	fn branch_statement(&mut self) -> Result<Statement, ParseError> {
+		self.unfold_next = true;
+		let outer = self.branch.replace(BTreeSet::new());
+		let st = self.statement();
+		self.branch = outer;
+		self.unfold_next = false;
+		let st = st?;
+		if let Statement::Let { names, .. } = &st
+			&& names.iter().any(|n| n != "_")
+		{
+			return err(
+				st.span().line,
+				"a `let` directly inside `parallel do` binds nothing anyone can read: each statement there is a branch of its own, and what a branch binds ends with it -- bind it before the block, or inside the branch that uses it",
+			);
+		}
+		Ok(st)
+	}
+
+	/// `parallel do` and its body. `rest` starts at `do`.
+	fn parallel_do(&mut self, rest: &str, no: usize, span: Span) -> Result<Statement, ParseError> {
+		if !rest[2..].trim().is_empty() {
+			return err(
+				no,
+				"`parallel do` takes nothing after it; each statement inside is a branch",
+			);
+		}
+		let fence = self.fence.replace(Fence {
+			loops: self.loops,
+			iterates: false,
+		});
+		let body = self.block_of(Some("do"), true);
+		self.fence = fence;
+		let body = body?;
+		self.expect_end(no)?;
+		Ok(Statement::Do {
+			body,
+			parallel: true,
+			span,
+		})
+	}
+
+	/// `parallel for` and its body, which is one branch per iteration. `rest`
+	/// starts at `for`, at byte `base` of the source.
+	fn parallel_for(&mut self, rest: &str, base: usize, no: usize, span: Span) -> Result<Statement, ParseError> {
+		let (names, iter) = for_header(&rest[3..], base + 3, no)?;
+		// The loop's names are each iteration's own, and nothing an iteration
+		// binds reaches the next one or the code after the loop.
+		let branch = self
+			.branch
+			.replace(names.iter().filter(|n| *n != "_").cloned().collect());
+		let fence = self.fence.replace(Fence {
+			loops: self.loops,
+			iterates: true,
+		});
+		let body = self.loop_body("for");
+		self.branch = branch;
+		self.fence = fence;
+		let body = body?;
+		self.expect_end(no)?;
+		Ok(Statement::For {
+			names,
+			iter,
+			body,
+			parallel: true,
+			span,
+		})
+	}
+
+	/// A plain `for`'s body. Inside a parallel branch its names are the
+	/// branch's own for the extent of the loop, and gone again after it: the
+	/// runner puts a loop variable back when the loop ends, so a later
+	/// assignment to one reaches whatever it named outside.
+	fn for_body(&mut self, names: &[String]) -> Result<Block, ParseError> {
+		let added: Vec<String> = match &mut self.branch {
+			Some(own) => names
+				.iter()
+				.filter(|n| *n != "_" && own.insert((*n).clone()))
+				.cloned()
+				.collect(),
+			None => Vec::new(),
+		};
+		let body = self.loop_body("for");
+		if let Some(own) = &mut self.branch {
+			for n in &added {
+				own.remove(n);
+			}
+		}
+		body
+	}
+
+	/// Refuse assigning, inside a parallel branch, a name the branch did not
+	/// bind itself. Each branch works on its own copy of the scope, so the
+	/// value would be gone when the block ends -- a lost write rather than a
+	/// race, but lost all the same.
+	fn check_reassign(&self, names: &[String], no: usize) -> Result<(), ParseError> {
+		let Some(own) = &self.branch else {
+			return Ok(());
+		};
+		match names.iter().find(|n| *n != "_" && !own.contains(*n)) {
+			Some(n) => err(
+				no,
+				format!(
+					"`{n}` is bound outside this parallel branch, and every branch works on its own copy -- what it assigns here is gone when the block ends; compute it before the block, or `let` a name inside the branch"
+				),
+			),
+			None => Ok(()),
+		}
+	}
+
 	/// A loop's body, with the depth `break` and `continue` are checked
 	/// against raised for its extent.
 	fn loop_body(&mut self, kw: &str) -> Result<Block, ParseError> {
@@ -580,7 +776,10 @@ impl<'a> P<'a> {
 
 	/// A run of `$` lines becomes one process. Blank lines and comments are
 	/// transparent -- reformatting a file must not change what shares a shell.
-	fn shell_run(&mut self, detach: bool) -> Result<Statement, ParseError> {
+	/// `detach` marks the run's opening line; `single` ends the run with it --
+	/// true for a detached command, and for a `$` line that is a parallel
+	/// branch of its own.
+	fn shell_run(&mut self, detach: bool, single: bool) -> Result<Statement, ParseError> {
 		let first = &self.lines[self.i];
 		let (no, offset) = (first.no, first.offset);
 		let mut body = Vec::new();
@@ -611,7 +810,7 @@ impl<'a> P<'a> {
 				last = j;
 				j += 1;
 				// One command, so the run ends with its own line.
-				if detach {
+				if single {
 					break;
 				}
 			} else if l.trimmed.is_empty() || l.trimmed.starts_with('#') {
@@ -765,6 +964,21 @@ impl<'a> P<'a> {
 			span: Span::new(offset, end, no),
 		})
 	}
+}
+
+/// The part of a `for` line after the keyword -- its names, and its list --
+/// which `for` and `parallel for` share. `base` is where `rest` starts.
+fn for_header(rest: &str, base: usize, no: usize) -> Result<(Vec<String>, Expr), ParseError> {
+	let lead = rest.len() - rest.trim_start().len();
+	let rest = rest.trim();
+	let Some(k) = rest.find(" in ") else {
+		return err(no, "`for` needs `in`");
+	};
+	let names = binding_names(rest[..k].trim(), no)?;
+	// `for f in lines($ git ls-files)` -- the same rule as a `let`, and the
+	// shape a loop over a command's output actually wants.
+	let iter = condition(rest[k + 4..].trim(), base + lead + k + 4, no)?;
+	Ok((names, iter))
 }
 
 /// Whether an expression can do anything when evaluated for effect.

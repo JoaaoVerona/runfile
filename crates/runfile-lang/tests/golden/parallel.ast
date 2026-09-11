@@ -1,0 +1,172 @@
+Target {
+    description: Some(
+        "`parallel do` makes each statement a branch; `parallel for` each iteration",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            Do {
+                body: Block {
+                    properties: [
+                        Property {
+                            path: [
+                                "workdir",
+                            ],
+                            value: Some(
+                                Str(
+                                    [
+                                        Literal(
+                                            "web",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                            ),
+                            span: Span,
+                        },
+                    ],
+                    statements: [
+                        Exec {
+                            command: None,
+                            body: [
+                                [
+                                    Literal(
+                                        "npm run lint",
+                                    ),
+                                ],
+                            ],
+                            detach: false,
+                            lines,
+                            span: Span,
+                        },
+                        Exec {
+                            command: None,
+                            body: [
+                                [
+                                    Literal(
+                                        "npm run test",
+                                    ),
+                                ],
+                            ],
+                            detach: false,
+                            lines,
+                            span: Span,
+                        },
+                        Run {
+                            target: [
+                                Literal(
+                                    "api:check",
+                                ),
+                            ],
+                            args: [],
+                            span: Span,
+                        },
+                        For {
+                            names: [
+                                "f",
+                            ],
+                            iter: List(
+                                [
+                                    Str(
+                                        [
+                                            Literal(
+                                                "a",
+                                            ),
+                                        ],
+                                        Span,
+                                    ),
+                                    Str(
+                                        [
+                                            Literal(
+                                                "b",
+                                            ),
+                                        ],
+                                        Span,
+                                    ),
+                                ],
+                                Span,
+                            ),
+                            body: Block {
+                                properties: [],
+                                statements: [
+                                    Call {
+                                        expr: Call {
+                                            name: "print",
+                                            args: [
+                                                Ident(
+                                                    "f",
+                                                    Span,
+                                                ),
+                                            ],
+                                            span: Span,
+                                        },
+                                        span: Span,
+                                    },
+                                ],
+                            },
+                            parallel: false,
+                            span: Span,
+                        },
+                    ],
+                },
+                parallel: true,
+                span: Span,
+            },
+            For {
+                names: [
+                    "svc",
+                ],
+                iter: Source {
+                    kind: Run,
+                    key: Some(
+                        "namespaces",
+                    ),
+                    span: Span,
+                },
+                body: Block {
+                    properties: [],
+                    statements: [
+                        Let {
+                            names: [
+                                "target",
+                            ],
+                            value: Call {
+                                name: "concat",
+                                args: [
+                                    Ident(
+                                        "svc",
+                                        Span,
+                                    ),
+                                    Str(
+                                        [
+                                            Literal(
+                                                ":build",
+                                            ),
+                                        ],
+                                        Span,
+                                    ),
+                                ],
+                                span: Span,
+                            },
+                            span: Span,
+                        },
+                        Run {
+                            target: [
+                                Expr(
+                                    Ident(
+                                        "target",
+                                        Span,
+                                    ),
+                                ),
+                            ],
+                            args: [],
+                            span: Span,
+                        },
+                    ],
+                },
+                parallel: true,
+                span: Span,
+            },
+        ],
+    },
+}

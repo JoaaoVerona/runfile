@@ -483,7 +483,18 @@
   {
     "type": "do_statement",
     "named": true,
-    "fields": {},
+    "fields": {
+      "parallel": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "parallel",
+            "named": false
+          }
+        ]
+      }
+    },
     "children": {
       "multiple": true,
       "required": false,
@@ -798,6 +809,16 @@
           {
             "type": "unary_expression",
             "named": true
+          }
+        ]
+      },
+      "parallel": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "parallel",
+            "named": false
           }
         ]
       },
@@ -2904,6 +2925,10 @@
   {
     "type": "number",
     "named": true
+  },
+  {
+    "type": "parallel",
+    "named": false
   },
   {
     "type": "r\"",

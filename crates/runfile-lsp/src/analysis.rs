@@ -1284,6 +1284,30 @@ mod tests {
 	}
 
 	#[test]
+	fn the_parallel_property_is_underlined_with_where_it_went() {
+		let m = messages(".parallel\n$ true\n");
+		assert_eq!(m.len(), 1, "{m:?}");
+		assert!(m[0].contains("`parallel do"), "the message is the fix: {}", m[0]);
+	}
+
+	#[test]
+	fn a_parallel_block_s_rules_are_underlined_where_they_are_broken() {
+		// The parser's, so an editor says so while the block is being written.
+		for (src, says) in [
+			("parallel do\n\tlet x = 1\nend\n", "binds nothing"),
+			(
+				"let n = 0\nparallel for i in [1]\n\tn = i\nend\n",
+				"bound outside this parallel branch",
+			),
+			("parallel for i in [1]\n\tbreak\nend\n", "cannot stop a `parallel for`"),
+		] {
+			let m = messages(src);
+			assert!(m.iter().any(|m| m.contains(says)), "{src}: {m:?}");
+		}
+		assert!(messages("parallel do\n\t$ true\n\t$ true\nend\n").is_empty());
+	}
+
+	#[test]
 	fn a_clean_file_has_no_diagnostics() {
 		assert!(messages("# Builds\n.shell = \"bash\"\n$ echo hi\n").is_empty());
 	}
@@ -1292,23 +1316,23 @@ mod tests {
 	fn a_flag_given_a_constant_that_is_not_a_bool_is_underlined() {
 		// The runner's own rule, asked of the runner: these two used to be
 		// described in two places, and the scope rule had already drifted once.
-		for src in [".parallel = 23\n$ true\n", ".logging = \"abc\"\n$ true\n"] {
+		for src in [".ignore-errors = 23\n$ true\n", ".logging = \"abc\"\n$ true\n"] {
 			let m = messages(src);
 			assert_eq!(m.len(), 1, "{src}: {m:?}");
 			assert!(m[0].contains("is a flag and takes a bool"), "{}", m[0]);
 		}
 		assert!(
-			messages(".parallel = \"true\"\n$ true\n")[0].contains("without the quotes"),
+			messages(".ignore-errors = \"true\"\n$ true\n")[0].contains("without the quotes"),
 			"the near miss is named"
 		);
 		// A value the run works out is not the parser's business.
-		assert!(messages(".parallel = ENV.CI\n$ true\n").is_empty());
-		assert!(messages(".parallel = \"{{ ENV.CI }}\"\n$ true\n").is_empty());
+		assert!(messages(".ignore-errors = ENV.CI\n$ true\n").is_empty());
+		assert!(messages(".ignore-errors = \"{{ ENV.CI }}\"\n$ true\n").is_empty());
 	}
 
 	#[test]
 	fn a_property_that_describes_the_block_is_underlined_below_the_first_statement() {
-		let m = messages("$ true\n.parallel\n$ true\n");
+		let m = messages("$ true\n.watch = \"src/**\"\n$ true\n");
 		assert_eq!(m.len(), 1, "{m:?}");
 		assert!(m[0].contains("above the block's first statement"), "{}", m[0]);
 		// One that takes effect from where it sits is fine there.
@@ -1965,9 +1989,9 @@ mod tests {
 		let up = fns.iter().find(|i| i.label == "to_upper").expect("to_upper");
 		assert_eq!(up.detail, "to_upper(s)");
 		assert!(up.doc.contains("```runfile"), "{}", up.doc);
-		let props = items(complete_line(".par"));
-		let par = props.iter().find(|i| i.label == "parallel").expect("parallel");
-		assert!(par.doc.contains("```runfile"), "{}", par.doc);
+		let props = items(complete_line(".work"));
+		let wd = props.iter().find(|i| i.label == "workdir").expect("workdir");
+		assert!(wd.doc.contains("```runfile"), "{}", wd.doc);
 	}
 
 	#[test]

@@ -1,0 +1,19 @@
+# `parallel do` makes each statement a branch; `parallel for` each iteration
+
+parallel do
+	.workdir = "web"
+
+	$ npm run lint
+	$ npm run test
+	run api:check
+
+	for f in ["a", "b"]
+		print(f)
+	end
+end
+
+parallel for svc in RUN.namespaces
+	let target = concat(svc, ":build")
+
+	run {{ target }}
+end

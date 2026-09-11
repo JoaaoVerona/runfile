@@ -50,14 +50,6 @@ pub enum RunError {
 	Interrupted,
 	#[error("line {line}: `run` is not wired to a target resolver here")]
 	NoResolver { line: usize },
-	#[error("line {line}: a `retry` cannot be inside a `.parallel` block")]
-	RetryInParallel { line: usize },
-	/// A `while`, `until`, `loop`, `break` or `continue` inside a fan-out. A
-	/// `for` is expanded there because its list is known before it starts; a
-	/// conditional loop's passes are not, and neither is which one a `break`
-	/// would leave once every branch is already collected.
-	#[error("line {line}: a `{kind}` cannot be inside a `.parallel` block")]
-	NotInParallel { kind: &'static str, line: usize },
 	/// `break` -- travelling as an error because that is the only way back out
 	/// of a walk. The message is a net: the parser refuses one outside a loop,
 	/// so nothing should ever print this.
@@ -151,14 +143,14 @@ impl RunError {
 /// and the step counter are ordinary data rather than an env-var protocol.
 /// Writing `$ run <target>` instead re-execs the binary, which is just a shell
 /// line and never reaches this.
-/// `Sync` and `&self` because a `.parallel` block fans out across threads.
+/// `Sync` and `&self` because a parallel block runs its branches on threads.
 /// The call chain is passed rather than held: parallel branches have separate
 /// paths, so a shared stack would make one branch look like a cycle to another.
 pub trait Dispatch: Sync {
 	/// Run `target`, returning its dry-run trace.
 	///
-	/// `label` prefixes everything the target prints, when it is one branch of a
-	/// `.parallel` fan-out. It is inherited by whatever the target dispatches in
+	/// `label` prefixes everything the target prints, when it runs inside a
+	/// parallel branch. It is inherited by whatever the target dispatches in
 	/// turn, so a whole subtree reads as one branch.
 	///
 	/// The trace comes back rather than being written to shared state so the
@@ -178,42 +170,6 @@ pub struct NoDispatch;
 impl Dispatch for NoDispatch {
 	fn run(&self, _t: &str, _a: &[String], _c: &[String], _l: Option<&str>) -> Result<Vec<String>, RunError> {
 		Err(RunError::NoResolver { line: 0 })
-	}
-}
-
-/// One unit of concurrent work, fully rendered so a thread needs no scope.
-///
-/// Every property a branch runs under is resolved here, at collect time, and
-/// carried rather than re-read from the batch's own properties: a nested block
-/// inside a fan-out layers its own `.shell`, `.logging` and `.ignore-errors`
-/// the same way it layers `.workdir`, and only the leaf knows which block it
-/// came out of.
-enum Leaf {
-	Exec {
-		/// Already through `command_for`, so a block's own `.shell` is the one
-		/// that runs it.
-		command: Option<String>,
-		body: String,
-		env: Vec<(String, String)>,
-		dir: PathBuf,
-		/// What to prefix this branch's output with.
-		label: String,
-		detach: bool,
-		announce: bool,
-		ignore_errors: bool,
-	},
-	Run {
-		target: String,
-		args: Vec<String>,
-		ignore_errors: bool,
-	},
-}
-
-impl Leaf {
-	fn ignore_errors(&self) -> bool {
-		match self {
-			Leaf::Exec { ignore_errors, .. } | Leaf::Run { ignore_errors, .. } => *ignore_errors,
-		}
 	}
 }
 
@@ -292,9 +248,6 @@ pub fn run_target_with(target: &Target, base: Props, r: &mut Runner<'_>) -> Resu
 }
 
 fn walk(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	if props.parallel {
-		return walk_parallel(block, props, r);
-	}
 	// A block almost always writes its properties at the top, and those are
 	// already in `props`. Only when one is written below a statement is there
 	// anything to apply mid-walk -- and only then is there an environment to
@@ -374,6 +327,9 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			value_of(expr, props, r)?;
 			Ok(())
 		}
+		Statement::Do {
+			body, parallel: true, ..
+		} => parallel_do(body, props, r),
 		Statement::Do { body, .. } => nested(body, props, r),
 		Statement::If {
 			cond,
@@ -425,7 +381,15 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			names,
 			iter,
 			body,
+			parallel: true,
 			span,
+		} => parallel_for(names, iter, body, props, r, span.line),
+		Statement::For {
+			names,
+			iter,
+			body,
+			span,
+			..
 		} => {
 			// Through `value_of`, so `for f in lines($ git ls-files)` can run
 			// its command -- the pure evaluator has no process to run it in.
@@ -441,9 +405,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			};
 			let priors: Vec<Option<Value>> = names.iter().map(|n| r.scope.vars.remove(n)).collect();
 			let inner = props.extend(body, &mut r.scope, true)?;
-			let out = with_block_env(props, &inner, r, |r| {
-				for_body(names, items, body, &inner, &priors, span.line, r)
-			});
+			let out = with_block_env(props, &inner, r, |r| for_body(names, items, body, &inner, span.line, r));
 			restore_all(names, &priors, r);
 			out
 		}
@@ -590,22 +552,9 @@ fn for_body(
 	items: Vec<Value>,
 	body: &Block,
 	inner: &Props,
-	priors: &[Option<Value>],
 	line: usize,
 	r: &mut Runner<'_>,
 ) -> Result<(), RunError> {
-	// `.parallel` on a loop body means the *iterations* are the branches, not
-	// just each body's own statements. Collecting across every iteration first
-	// is what makes them one batch.
-	if inner.parallel {
-		let mut leaves = Vec::new();
-		for item in items {
-			bind_item(names, item, line, r)?;
-			collect(body, inner, r, &mut leaves)?;
-		}
-		restore_all(names, priors, r);
-		return run_leaves(leaves, r);
-	}
 	for item in items {
 		bind_item(names, item, line, r)?;
 		match walk(body, inner, r) {
@@ -882,279 +831,369 @@ fn merged_env(r: &Runner<'_>) -> Vec<(String, String)> {
 }
 
 // ------------------------------------------------------------------ parallel
+//
+// `parallel do` and `parallel for` are structured concurrency: every statement
+// directly inside a `parallel do`, and every iteration of a `parallel for`, is
+// a branch; the branches run at once, each on a thread of its own; and the
+// block ends when the last one does. A branch is ordinary code, walked by the
+// one walker, in the order it is written.
+//
+// It replaced the `.parallel` property, which was a second walker: it
+// collected the commands out of a block ahead of time and ran only those at
+// once. Every `let`, `print` and `sleep` ran first, in order, before anything
+// was parallel at all; two adjacent `$` lines were folded into one process and
+// so were one branch, run one after the other; and a `for` became one flat
+// batch, so a service's `push` finished before its own `build`. It also had to
+// refuse `retry` and every conditional loop, having no way to collect what
+// they would run -- and it drifted from the real walker three times, over
+// nested properties, preamble captures and leaf properties.
 
-/// A parallel block evaluates its bindings in source order, then fans out the
-/// executable leaves. Rendering happens first and sequentially, so a thread
-/// carries a finished command rather than a borrow of the scope.
-fn walk_parallel(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let mut leaves = Vec::new();
-	collect(block, props, r, &mut leaves)?;
-	run_leaves(leaves, r)
-}
-
-/// A block nested inside a fan-out, layering its own properties over the
-/// enclosing ones -- `nested` for the collecting walk.
-///
-/// A leaf is rendered where it is collected, so a `.workdir`, `.env` or
-/// `.shell` not applied here is applied never: the parser accepted the
-/// property and the branch then ran without it.
-fn collect_nested(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>) -> Result<(), RunError> {
-	let inner = props.extend(block, &mut r.scope, true)?;
-	with_block_env(props, &inner, r, |r| collect(block, &inner, r, out))
-}
-
-fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>) -> Result<(), RunError> {
-	// A fan-out's preamble runs in source order, so a property written inside
-	// one is applied in source order too -- from there down, over the leaves
-	// collected after it. The environment is not put back here: `walk_parallel`
-	// is called from `walk`, which already wraps a block that has one.
-	let mut props = Cow::Borrowed(props);
-	let mut trailing = block.trailing().iter().peekable();
-	for st in &block.statements {
-		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
-			apply_trailing(p, &mut props, r)?;
-		}
-		let props = props.as_ref();
-		match st {
-			Statement::Let { names, value, span } | Statement::Assign { names, value, span } => {
-				let v = value_of(value, props, r)?;
-				let parts = runfile_lang::eval::destructure(names, v, span.line)?;
-				r.scope.bind_names(names, parts);
-			}
-			Statement::Call { expr, .. } => {
-				// Through `value_of`, so a bare `code_of($ cmd)` runs the
-				// command rather than reaching the pure evaluator, which has
-				// no shell -- the same reason the sequential walk does.
-				value_of(expr, props, r)?;
-			}
-			Statement::Exec {
-				command, body, detach, ..
-			} => {
-				let (cmd, text) = render(command.as_deref(), body, r)?;
-				out.push(Leaf::Exec {
-					// From the header as written, before `.shell` is folded in:
-					// a `$` branch under `.shell = "python3"` is still named by
-					// its own first word.
-					label: exec_label(cmd.as_deref(), &text),
-					command: command_for(cmd.as_deref(), props).map(str::to_string),
-					detach: *detach,
-					announce: props.logging,
-					ignore_errors: props.ignore_errors,
-					body: text,
-					env: merged_env(r),
-					dir: cwd(props, &r.anchor),
-				});
-			}
-			Statement::Run { target, args, .. } => {
-				let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
-				let a = run_args(args, &mut r.scope)?;
-				out.push(Leaf::Run {
-					target: t,
-					args: a,
-					ignore_errors: props.ignore_errors,
-				});
-			}
-			// Control flow is expanded here so its leaves join the same batch.
-			Statement::Do { body, .. } => collect_nested(body, props, r, out)?,
-			Statement::If {
-				cond,
-				then,
-				otherwise,
-				span,
-			} => {
-				// A condition decides which branches join the batch, so it is
-				// answered before the batch exists -- and `if $ cmd` is a
-				// condition like any other, which needs a process to ask.
-				let taken = cond_of(cond, props, r, span.line)?;
-				match (taken, otherwise) {
-					(true, _) => collect_nested(then, props, r, out)?,
-					(false, Some(b)) => collect_nested(b, props, r, out)?,
-					(false, None) => {}
-				}
-			}
-			Statement::For {
-				names,
-				iter,
-				body,
-				span,
-			} => {
-				// Through `value_of` too: a fan-out's list is what says how
-				// many branches there are, and `for f in lines($ git ls-files)`
-				// cannot answer that from the pure evaluator.
-				let items = match value_of(iter, props, r)? {
-					Value::List(v) => v,
-					other => {
-						return Err(RunError::ForNeedsList {
-							actual: other.type_name(),
-							line: span.line,
-						});
-					}
-				};
-				let priors: Vec<Option<Value>> = names.iter().map(|n| r.scope.vars.remove(n)).collect();
-				let inner = props.extend(body, &mut r.scope, true)?;
-				let res = with_block_env(props, &inner, r, |r| {
-					for item in items {
-						bind_item(names, item, span.line, r)?;
-						collect(body, &inner, r, out)?;
-					}
-					Ok(())
-				});
-				restore_all(names, &priors, r);
-				res?;
-			}
-			// A fan-out collects every branch before any of them runs, and a
-			// conditional loop has nothing to collect until its body has run
-			// at least once. `break` has the same problem from the other end:
-			// by the time one could be honoured, the batch is already built.
-			Statement::Loop { test, span, .. } => {
-				return Err(RunError::NotInParallel {
-					kind: test.keyword(),
-					line: span.line,
-				});
-			}
-			Statement::Break { span } => {
-				return Err(RunError::NotInParallel {
-					kind: "break",
-					line: span.line,
-				});
-			}
-			Statement::Continue { span } => {
-				return Err(RunError::NotInParallel {
-					kind: "continue",
-					line: span.line,
-				});
-			}
-			// Retrying inside a fan-out would mean several bodies sleeping and
-			// re-running against each other, with no useful reading of what
-			// "attempts" counted. Refused rather than guessed at.
-			Statement::Retry { span, .. } => return Err(RunError::RetryInParallel { line: span.line }),
-			Statement::Match {
-				subject,
-				cases,
-				default,
-				span,
-			} => {
-				let v = subject_of(subject, props, r)?;
-				match cases.iter().find(|c| c.label == v) {
-					Some(c) => collect_nested(&c.body, props, r, out)?,
-					None => match default {
-						Some(b) => collect_nested(b, props, r, out)?,
-						None => {
-							return Err(RunError::NoCase {
-								subject: v,
-								cases: cases.iter().map(|c| c.label.clone()).collect::<Vec<_>>().join(", "),
-								line: span.line,
-							});
-						}
-					},
-				}
-			}
+impl<'a> Runner<'a> {
+	/// A runner for one branch, labelled `label`.
+	///
+	/// It has a copy of this one's scope, so what the branch binds reaches
+	/// neither its siblings nor the code after the block -- and the parser
+	/// refuses a branch assigning anything it did not bind itself, since that
+	/// write would be lost. Branches that nest join their labels, so the output
+	/// of `parallel do` inside `parallel for` says which iteration it is.
+	///
+	/// An empty label adds nothing. It is what a `parallel` block that is
+	/// itself a branch gets: its own branches are what tell the output apart,
+	/// so `web` says everything `parallel:9/web` would. It is a branch all the
+	/// same, which is what keeps the terminal out of its reach.
+	fn fork(&self, label: &str) -> Runner<'a> {
+		let label = match self.label.as_deref() {
+			Some(outer) if !outer.is_empty() && !label.is_empty() => format!("{outer}/{label}"),
+			Some(outer) if label.is_empty() => outer.to_string(),
+			_ => label.to_string(),
+		};
+		let mut scope = self.scope.clone();
+		// Every branch shares one terminal, so nothing in one asks it anything:
+		// `confirm()` refuses, and a missing input is an error, not a prompt.
+		scope.branch = Some(label.clone());
+		scope.ask = None;
+		Runner {
+			scope,
+			chain: self.chain.clone(),
+			env: self.env.clone(),
+			anchor: self.anchor.clone(),
+			dispatch: self.dispatch,
+			interrupted: self.interrupted,
+			label: Some(label),
+			dry_run: self.dry_run,
+			trace: Vec::new(),
 		}
 	}
-	// As in `walk_body`: applied where it sits, even with nothing below it.
-	for p in trailing {
-		apply_trailing(p, &mut props, r)?;
-	}
-	Ok(())
 }
 
-/// What to call a branch in the output.
+/// Run every branch at once and wait for the last of them.
 ///
-/// From the `exec` header when there is one, since `exec python3` names itself,
-/// and otherwise the first word of the body -- which for a `$` line is the
-/// command being run. The default shell is never the label: every `$` branch
-/// would be called `bash`.
-#[cfg(test)]
-pub(crate) fn exec_label_for_test(command: Option<&str>, body: &str) -> String {
-	exec_label(command, body)
-}
-
-fn exec_label(command: Option<&str>, body: &str) -> String {
-	let from_header = command.and_then(|c| c.split_whitespace().next());
-	let from_body = || {
-		body.lines()
-			.map(str::trim)
-			.find(|l| !l.is_empty() && !l.starts_with('#'))
-			.and_then(|l| l.split_whitespace().next())
+/// Every branch runs to completion before a failure surfaces: stopping the
+/// others would leave a half-started set of services behind, and one failing
+/// says nothing about whether the rest should. A stop -- Ctrl+C, `exit()` -- is
+/// reported ahead of any failure, so an interrupted run says it was
+/// interrupted rather than naming whichever command the signal killed first;
+/// among equals, the first in source order wins. Under `--dry-run` the
+/// branches run in turn instead, so a preview reads the same way every time.
+fn run_branches<'a, F>(branches: Vec<Runner<'a>>, run: F, r: &mut Runner<'a>) -> Result<(), RunError>
+where
+	F: Fn(usize, &mut Runner<'a>) -> Result<(), RunError> + Sync,
+{
+	let finish = |i: usize, mut b: Runner<'a>| {
+		let res = run(i, &mut b);
+		(b.trace, res)
 	};
-	// A shell is never the label: every `$` branch would be called `bash`.
-	const SHELLS: &[&str] = &["sh", "bash", "dash", "ash", "zsh", "ksh", "busybox", "brush"];
-	from_header
-		.filter(|c| !SHELLS.contains(c))
-		.or_else(from_body)
-		.unwrap_or("exec")
-		.to_string()
-}
-
-fn run_leaves(leaves: Vec<Leaf>, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let dispatch = r.dispatch;
-	let chain = r.chain.clone();
-	let dry_run = r.dry_run;
-	let results: Vec<Result<Option<String>, RunError>> = std::thread::scope(|s| {
-		let handles: Vec<_> = leaves
-			.iter()
-			.map(|leaf| {
-				let chain = &chain;
-				s.spawn(move || match leaf {
-					Leaf::Exec {
-						command,
-						body,
-						env,
-						dir,
-						label,
-						detach,
-						announce,
-						..
-					} => exec::spawn(Spawn {
-						command: command.as_deref(),
-						body,
-						cwd: dir,
-						env,
-						capture: false,
-						dry_run,
-						label: Some(label),
-						detach: *detach,
-						announce: *announce && !dry_run,
-					})
-					.map(|_| Some(body.clone()))
-					.map_err(RunError::from),
-					// Branches finish in whatever order they finish, so a
-					// dispatched target's trace joins the parent's as one block
-					// rather than being interleaved line by line.
-					// A dispatched target labels its own leaves, so nothing is
-					// added here; its trace joins the parent's as one block.
-					Leaf::Run { target, args, .. } => dispatch
-						.run(target, args, chain, Some(target))
-						.map(|t| Some(t.join("\n"))),
-				})
-			})
-			.collect();
-		handles
-			.into_iter()
-			.map(|h| h.join().expect("branch panicked"))
-			.collect()
-	});
-
-	let mut first_error = None;
-	// Paired with its leaf, because `.ignore-errors` is block-scoped: a branch
-	// out of a nested block that named it is forgiven while its siblings are
-	// not.
-	for (leaf, res) in leaves.iter().zip(results) {
+	let results: Vec<(Vec<String>, Result<(), RunError>)> = if r.dry_run {
+		branches.into_iter().enumerate().map(|(i, b)| finish(i, b)).collect()
+	} else {
+		std::thread::scope(|s| {
+			let finish = &finish;
+			let handles: Vec<_> = branches
+				.into_iter()
+				.enumerate()
+				.map(|(i, b)| s.spawn(move || finish(i, b)))
+				.collect();
+			handles
+				.into_iter()
+				.map(|h| h.join().expect("a parallel branch panicked"))
+				.collect()
+		})
+	};
+	let (mut stop, mut failure) = (None, None);
+	for (trace, res) in results {
+		// In source order, however the branches finished.
+		r.trace.extend(trace);
 		match res {
-			Ok(Some(body)) => r.trace.push(body),
-			Ok(None) => {}
-			Err(e) if leaf.ignore_errors() && !e.is_stop() => {}
-			Err(e) => {
-				if first_error.is_none() {
-					first_error = Some(e);
-				}
+			Err(e) if e.is_stop() => {
+				stop.get_or_insert(e);
 			}
+			Err(e) => {
+				failure.get_or_insert(e);
+			}
+			Ok(()) => {}
 		}
 	}
-	// Every branch runs to completion before a failure surfaces -- stopping the
-	// others would leave a half-started fan-out behind.
-	match first_error {
+	match stop.or(failure) {
 		Some(e) => Err(e),
 		None => Ok(()),
 	}
+}
+
+/// `parallel do`: every statement directly inside it is a branch.
+///
+/// The block's own properties are every branch's, and one written between two
+/// branches is the ones below it: properties are applied where they are
+/// written, and the branches are set up in order before any of them starts.
+fn parallel_do(body: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
+	let inner = props.extend(body, &mut r.scope, true)?;
+	with_block_env(props, &inner, r, |r| {
+		// A trailing property rebuilds the environment it applies to; the
+		// block's own is put back once the branches have their copies.
+		let saved = (!body.trailing().is_empty()).then(|| (r.env.clone(), r.scope.env.clone()));
+		let set_up = branches_of(body, &inner, r);
+		if let Some((env, scope_env)) = saved {
+			r.env = env;
+			r.scope.env = scope_env;
+		}
+		let (work, forks): (Vec<_>, Vec<_>) = set_up?.into_iter().unzip();
+		run_branches(
+			forks,
+			|i, b| {
+				let (st, props): &(&Statement, Props) = &work[i];
+				// `.ignore-errors` on the block forgives each branch, the way it
+				// forgives each statement of a block walked in order.
+				statement(st, props, b).or_else(|e| {
+					if props.ignore_errors && !e.is_stop() {
+						Ok(())
+					} else {
+						Err(e)
+					}
+				})
+			},
+			r,
+		)
+	})
+}
+
+/// Each statement of a `parallel do`, with the properties it runs under and
+/// the runner it runs in.
+#[allow(clippy::type_complexity)]
+fn branches_of<'b, 'a>(
+	body: &'b Block,
+	inner: &Props,
+	r: &mut Runner<'a>,
+) -> Result<Vec<((&'b Statement, Props), Runner<'a>)>, RunError> {
+	let mut props = Cow::Borrowed(inner);
+	let mut trailing = body.trailing().iter().peekable();
+	let mut out = Vec::with_capacity(body.statements.len());
+	for (st, label) in body.statements.iter().zip(branch_labels(&body.statements)) {
+		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
+			apply_trailing(p, &mut props, r)?;
+		}
+		let fork = r.fork(&label);
+		out.push(((st, props.clone().into_owned()), fork));
+	}
+	// Below the last branch there is nothing left for it to affect, but it is
+	// still applied where it sits, as in any block.
+	for p in trailing {
+		apply_trailing(p, &mut props, r)?;
+	}
+	Ok(out)
+}
+
+/// `parallel for`: every iteration is a branch, and its body runs in order
+/// within it. The list and the body's own properties are worked out once,
+/// before any iteration starts, as a sequential `for` does.
+fn parallel_for(
+	names: &[String],
+	iter: &Expr,
+	body: &Block,
+	props: &Props,
+	r: &mut Runner<'_>,
+	line: usize,
+) -> Result<(), RunError> {
+	let items = match value_of(iter, props, r)? {
+		Value::List(v) => v,
+		other => {
+			return Err(RunError::ForNeedsList {
+				actual: other.type_name(),
+				line,
+			});
+		}
+	};
+	let inner = props.extend(body, &mut r.scope, true)?;
+	with_block_env(props, &inner, r, |r| {
+		let mut forks = Vec::with_capacity(items.len());
+		for item in items {
+			let mut fork = r.fork(&item_label(&item));
+			bind_item(names, item, line, &mut fork)?;
+			forks.push(fork);
+		}
+		run_branches(
+			forks,
+			|_, b| match walk(body, &inner, b) {
+				// `continue` ends this iteration, and this iteration is the branch.
+				Err(RunError::Continue { .. }) => Ok(()),
+				other => other,
+			},
+			r,
+		)
+	})
+}
+
+/// What each branch of a `parallel do` prefixes its output with: what it
+/// runs, in as few words as tell it from its siblings -- `cargo test` and
+/// `cargo clippy`, not `cargo` twice. Where no number of words does, a label
+/// is its first word and its line, `print:3` beside `print:5`, which is also
+/// what a block is: `if:12`, since nothing shorter tells two `if`s apart. A
+/// nested `parallel` block is the one with no label: its own branches are
+/// what get named.
+fn branch_labels(statements: &[Statement]) -> Vec<String> {
+	let words: Vec<Vec<String>> = statements.iter().map(label_words).collect();
+	let mut labels: Vec<String> = words
+		.iter()
+		.enumerate()
+		.map(|(i, own)| {
+			let apart = |k: &usize| {
+				words
+					.iter()
+					.enumerate()
+					.all(|(j, other)| j == i || other.get(..*k) != own.get(..*k))
+			};
+			let k = (1..=own.len()).find(apart).unwrap_or(own.len().min(1));
+			crate::term::fit(&own[..k].join(" "), 40).into_owned()
+		})
+		.collect();
+	let shared: Vec<bool> = (0..labels.len())
+		.map(|i| !labels[i].is_empty() && (0..labels.len()).any(|j| j != i && labels[j] == labels[i]))
+		.collect();
+	for ((label, st), shared) in labels.iter_mut().zip(statements).zip(shared) {
+		if shared {
+			*label = format!("{label}:{}", st.span().line);
+		}
+	}
+	labels
+}
+
+/// The words a branch's label is cut from: a dispatch's target and arguments,
+/// a command's words, a call's function. Read off the tree rather than
+/// rendered -- rendering runs what is interpolated, and the branch renders it
+/// again when it runs, so a `{{ temp_file(…) }}` would make two files -- which
+/// is why they stop at the first interpolation.
+fn label_words(st: &Statement) -> Vec<String> {
+	let keyword = match st {
+		Statement::Run { target, args, .. } => {
+			return match whole(target) {
+				Some(t) => std::iter::once(t).chain(args.iter().map_while(|a| whole(a))).collect(),
+				None => vec!["run".to_string()],
+			};
+		}
+		Statement::Exec { command, body, .. } => return command_words(command.as_deref(), body),
+		Statement::Call {
+			expr: Expr::Call { name, .. },
+			..
+		} => return vec![name.clone()],
+		Statement::Do { parallel: true, .. } | Statement::For { parallel: true, .. } => return Vec::new(),
+		Statement::Call { .. } => "call",
+		Statement::If { .. } => "if",
+		Statement::Do { .. } => "do",
+		Statement::For { .. } => "for",
+		Statement::Loop { test, .. } => match test {
+			LoopTest::While(_) => "while",
+			LoopTest::Until(_) => "until",
+			LoopTest::Forever => "loop",
+		},
+		Statement::Match { .. } => "match",
+		Statement::Retry { .. } => "retry",
+		// The parser keeps these out of a parallel block's own statements.
+		Statement::Let { .. } | Statement::Assign { .. } | Statement::Break { .. } | Statement::Continue { .. } => {
+			"branch"
+		}
+	};
+	vec![format!("{keyword}:{}", st.span().line)]
+}
+
+/// The text of `parts`, or `None` when an interpolation is part of it.
+fn whole(parts: &[InterpPart]) -> Option<String> {
+	parts
+		.iter()
+		.map(|p| match p {
+			InterpPart::Literal(t) => Some(t.as_str()),
+			InterpPart::Expr(_) => None,
+		})
+		.collect()
+}
+
+/// The words of `parts` up to its first interpolation, and whether it had
+/// one. A word the interpolation runs into is only part of a word, so it is
+/// left out.
+fn literal_words(parts: &[InterpPart]) -> (Vec<String>, bool) {
+	let mut text = String::new();
+	let mut cut = false;
+	for p in parts {
+		match p {
+			InterpPart::Literal(t) => text.push_str(t),
+			InterpPart::Expr(_) => {
+				cut = true;
+				break;
+			}
+		}
+	}
+	let mut words: Vec<String> = text.split_whitespace().map(str::to_string).collect();
+	if cut && !text.ends_with(char::is_whitespace) {
+		words.pop();
+	}
+	(words, cut)
+}
+
+/// The words of the command an `exec` or `$` branch runs.
+///
+/// From the `exec` header when there is one, since `exec python3` names itself,
+/// and otherwise the body's first command, over its continuation lines -- which
+/// for a `$` line is the command being run. The default shell is never the
+/// label: every `$` branch would be called `bash`.
+fn command_words(command: Option<&[InterpPart]>, body: &[Vec<InterpPart>]) -> Vec<String> {
+	const SHELLS: &[&str] = &["sh", "bash", "dash", "ash", "zsh", "ksh", "busybox", "brush"];
+	if let Some((header, _)) = command.map(literal_words)
+		&& header.first().is_some_and(|w| !SHELLS.contains(&w.as_str()))
+	{
+		return header;
+	}
+	let mut words = Vec::new();
+	let skipped = |line: &&Vec<InterpPart>| {
+		let (w, cut) = literal_words(line);
+		(w.is_empty() && !cut) || w.first().is_some_and(|w| w.starts_with('#'))
+	};
+	// A continuation may arrive as its own line or folded into this one; the
+	// backslash is not a word either way.
+	for line in body.iter().skip_while(skipped) {
+		let (w, cut) = literal_words(line);
+		let continued = !cut && w.last().is_some_and(|w| w == "\\");
+		words.extend(w.into_iter().filter(|w| w != "\\"));
+		if !continued {
+			break;
+		}
+	}
+	if words.is_empty() {
+		vec!["exec".to_string()]
+	} else {
+		words
+	}
+}
+
+/// The labels `parallel do` gives the branches of `src`, which opens with one.
+#[cfg(test)]
+pub(crate) fn labels_for_test(src: &str) -> Vec<String> {
+	match &runfile_lang::parse(src).expect("parses").body.statements[0] {
+		Statement::Do { body, .. } => branch_labels(&body.statements),
+		other => panic!("not a `parallel do`: {other:?}"),
+	}
+}
+
+/// An iteration's label: its value, on one line and short enough to leave the
+/// output room -- the path out of a `glob` is exactly what tells two apart,
+/// where the first word of the command, `docker`, told none of them apart.
+fn item_label(item: &Value) -> String {
+	let one_line = item.to_string().split_whitespace().collect::<Vec<_>>().join(" ");
+	crate::term::fit(&one_line, 40).into_owned()
 }

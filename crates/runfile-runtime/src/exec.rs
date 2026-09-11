@@ -34,9 +34,10 @@ pub struct Spawn<'a> {
 	/// text, so dry-run shows exactly what the command would receive -- more
 	/// faithful than it could ever be over an opaque script file.
 	pub dry_run: bool,
-	/// Prefix every output line with this, for a `.parallel` fan-out where
-	/// several children write at once. `None` inherits the terminal, which is
-	/// what a sequential run wants: no prefix, no extra pipe, colours intact.
+	/// Prefix every output line with this, for a parallel branch, where several
+	/// children write at once; its stdin is null too. `None` inherits the
+	/// terminal, which is what a sequential run wants: no prefix, no extra pipe,
+	/// colours intact.
 	pub label: Option<&'a str>,
 	/// Start it and do not wait. For a fire-and-forget command whose whole
 	/// point is to outlive the run: a dev server, a log tailer.
@@ -197,8 +198,8 @@ fn windows_quoted(arg: &str) -> String {
 /// Unix needs none of this: everything but the three descriptors a child is
 /// given is close-on-exec.
 ///
-/// Clearing the flag is safe for the children spawned meanwhile, `.parallel`
-/// included, because `Stdio::inherit()` does not rely on it -- the standard
+/// Clearing the flag is safe for the children spawned meanwhile, parallel
+/// branches included, because `Stdio::inherit()` does not rely on it -- the standard
 /// library duplicates the handle it passes with `bInheritHandle` set, whatever
 /// the original says. It is restored on drop all the same.
 #[cfg(windows)]
@@ -292,8 +293,15 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		// asking for a password -- reading a pipe that was already at EOF.
 		push_script(&mut c, script.as_deref().unwrap_or(s.body));
 		// Except when detached: a background process must not hold the
-		// terminal's input after the run that started it is over.
-		c.stdin(if s.detach { Stdio::null() } else { Stdio::inherit() });
+		// terminal's input after the run that started it is over. And except
+		// in a parallel branch -- which a label says it is -- where several
+		// commands would be reading one terminal at once, each getting whatever
+		// keystrokes it happened to take.
+		c.stdin(if s.detach || s.label.is_some() {
+			Stdio::null()
+		} else {
+			Stdio::inherit()
+		});
 	} else {
 		// `exec <command>` hands the body to that command's stdin; that is
 		// what `exec tee file` and `exec python3` are for.
@@ -388,10 +396,13 @@ fn relay(stream: Option<impl std::io::Read>, label: &str, is_err: bool) {
 			buf.pop();
 		}
 		let line = String::from_utf8_lossy(&buf);
-		if is_err {
-			eprintln!("{label} | {line}");
-		} else {
-			println!("{label} | {line}");
+		// An empty label is a branch with no name of its own -- see
+		// `Runner::fork` -- whose lines still arrive whole.
+		match (is_err, label) {
+			(true, "") => eprintln!("{line}"),
+			(true, _) => eprintln!("{label} | {line}"),
+			(false, "") => println!("{line}"),
+			(false, _) => println!("{label} | {line}"),
 		}
 	}
 }
@@ -478,7 +489,7 @@ fn standalone(line: &str) -> bool {
 /// Never the shell. A person wrote `$ docker compose up -d`, not bash, and
 /// being told that `/usr/bin/bash` exited with status 1 names an
 /// implementation detail and nothing they can act on -- the same reason a
-/// `.parallel` branch is never labelled `bash`.
+/// parallel branch is never labelled `bash`.
 ///
 /// Several `$` lines share one shell and `-e` stops at the one that failed,
 /// which the runner cannot see. Where the script announces each command as it

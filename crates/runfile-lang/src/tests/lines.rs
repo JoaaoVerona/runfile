@@ -52,7 +52,7 @@ fn backslash_continues_a_shell_line() {
 
 #[test]
 fn properties_attach_to_their_block() {
-	let x = t(".parallel\nfor c in glob(\"*\")\n\t.ignore-errors\n\t$ echo {{ c }}\nend\n");
+	let x = t(".logging\nfor c in glob(\"*\")\n\t.ignore-errors\n\t$ echo {{ c }}\nend\n");
 	assert_eq!(x.body.properties.len(), 1);
 	let Statement::For { body, .. } = &x.body.statements[0] else {
 		panic!()
@@ -68,7 +68,7 @@ fn dotted_property_names_address_a_namespace() {
 
 #[test]
 fn bare_property_has_no_value() {
-	let x = t(".parallel\n$ echo hi\n");
+	let x = t(".logging\n$ echo hi\n");
 	assert!(x.body.properties[0].value.is_none());
 }
 
@@ -298,9 +298,9 @@ fn a_hash_that_does_not_begin_a_word_is_not_a_comment() {
 #[test]
 fn a_case_label_and_a_bare_property_take_one_too() {
 	let x = t(
-		".parallel # fan out\nmatch RUN.os # which\n\tcase \"linux\" # penguins\n\t\t$ true\n\tdefault # the rest\n\t\t$ true\nend\n",
+		".logging # announce\nmatch RUN.os # which\n\tcase \"linux\" # penguins\n\t\t$ true\n\tdefault # the rest\n\t\t$ true\nend\n",
 	);
-	assert_eq!(x.body.properties[0].path, vec!["parallel"]);
+	assert_eq!(x.body.properties[0].path, vec!["logging"]);
 	let Statement::Match { cases, default, .. } = &x.body.statements[0] else {
 		panic!()
 	};

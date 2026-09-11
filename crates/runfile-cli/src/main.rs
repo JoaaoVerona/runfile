@@ -1,7 +1,7 @@
 //! The `run` command.
 //!
 //! Invocation is exactly `run <target> [args…]` -- one target, trailing args.
-//! Concurrency is `.parallel` on a block, so there is no flag for it and no
+//! Concurrency is `parallel do` and `parallel for` in a file, so there is no flag for it and no
 //! target globs, which also means no wildcard that can match the target doing
 //! the fanning out.
 

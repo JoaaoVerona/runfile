@@ -129,6 +129,7 @@ Target {
                         },
                     ],
                 },
+                parallel: false,
                 span: Span,
             },
             Match {
@@ -247,6 +248,7 @@ Target {
                         },
                     ],
                 },
+                parallel: false,
                 span: Span,
             },
             If {

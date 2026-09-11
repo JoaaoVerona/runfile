@@ -614,3 +614,12 @@ test("a detached exec body is embedded the same way an ordinary one is", async (
 	const python = await scopesOf("detach exec python3\n\timport sys\nend\n")
 	assert.ok(!python[1]?.includes("test.shell"), "another language is not shell")
 })
+
+test("parallel is a keyword in front of do and for, and a name anywhere else", async () => {
+	const [pdo] = await scopesOf("parallel do\n")
+	assert.ok(pdo?.includes("keyword.control.parallel.run"), `${pdo?.join(" ")}`)
+	const [pfor] = await scopesOf("parallel for x in xs\n")
+	assert.ok(pfor?.includes("keyword.control.parallel.run"), `${pfor?.join(" ")}`)
+	const [name] = await scopesOf("let parallel = 5\n")
+	assert.ok(!name?.includes("keyword.control.parallel.run"), `${name?.join(" ")}`)
+})

@@ -34,19 +34,20 @@ pub struct Host<'a> {
 	pub dry_run: bool,
 	/// Asked for an input a target needs but was not given, under
 	/// `--stdin-args`. A function pointer rather than a closure so it can cross
-	/// a `.parallel` fan-out.
+	/// into a parallel branch -- which then drops it, since a branch shares the
+	/// terminal with its siblings and asks it nothing.
 	pub ask: Option<fn(&str, &str) -> Option<String>>,
 	/// Where `decrypt` gets its keys. Injected so the runtime never reaches
 	/// into a credential store itself.
 	pub keys: fn() -> Vec<String>,
-	/// Asked by `confirm(…)`.
-	/// `Sync` so a `.parallel` fan-out can ask; a prompt during one is the
-	/// caller's problem to serialise.
+	/// Asked by `confirm(…)`. Never from inside a parallel branch: every branch
+	/// shares one terminal, so `confirm()` refuses there rather than asking two
+	/// questions at once.
 	pub confirm: Option<fn(&str) -> bool>,
 	/// Whether the run has been interrupted; see `Runner::interrupted`.
 	pub interrupted: Option<&'a (dyn Fn() -> bool + Sync)>,
-	/// Every shell body that ran. Order is arrival order, which under
-	/// `.parallel` is completion order rather than source order.
+	/// Every shell body that ran, in arrival order. A parallel block's branches
+	/// are spliced in by source order once they have all finished.
 	pub trace: Mutex<Vec<String>>,
 	/// What `temp_file` and `temp_dir` created during this run.
 	pub temps: runfile_lang::TempFiles,
@@ -244,7 +245,13 @@ impl<'a> Host<'a> {
 		chain: Vec<String>,
 		label: Option<&str>,
 	) -> Result<Vec<String>, RunError> {
-		let (ast, scope, shared_props) = self.prepare(target, args, true)?;
+		let (ast, mut scope, shared_props) = self.prepare(target, args, true)?;
+		// Dispatched from a parallel branch, it is part of that branch: what it
+		// prints carries the branch's label, and it asks the terminal nothing.
+		if let Some(l) = label {
+			scope.branch = Some(l.to_string());
+			scope.ask = None;
+		}
 
 		let adapter = HostDispatch { host: self };
 		let mut r = Runner {
