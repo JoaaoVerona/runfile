@@ -157,7 +157,6 @@ impl<'a> Host<'a> {
 		real: bool,
 	) -> Result<(runfile_lang::Target, Scope, Props), RunError> {
 		let (ast, _) = parse_file(&target.path)?;
-		let mut reads = runfile_lang::inputs::of(&ast);
 
 		// The whole `_shared.run` chain is walked for what it reads *before* the
 		// command line is classified: a name only a shared file reads is still a
@@ -170,9 +169,7 @@ impl<'a> Host<'a> {
 			.iter()
 			.map(|p| parse_file(p).map(|(a, _)| a))
 			.collect::<Result<_, _>>()?;
-		for s in &shared {
-			reads.extend(runfile_lang::inputs::of(s));
-		}
+		let reads = runfile_lang::inputs::of_chain(&ast, &shared);
 
 		let mut scope = Scope::new();
 		populate_run_context(&mut scope, target, self.catalog);
@@ -226,8 +223,7 @@ impl<'a> Host<'a> {
 			..Props::default()
 		};
 		for s in &shared {
-			shared_props = shared_props.extend(&s.body, &mut scope, false)?;
-			crate::run::run_block_bindings(&s.body, &mut scope)?;
+			shared_props = crate::run::fold_shared(&s.body, &shared_props, &mut scope)?;
 		}
 		Ok((ast, scope, shared_props))
 	}

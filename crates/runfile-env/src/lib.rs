@@ -180,18 +180,23 @@ pub fn load_env_files(
 ///
 /// Merge order (lowest → highest priority for non-PATH vars):
 /// 1. `.env-file` — loaded left-to-right, later files override earlier
-/// 2. `env` — with substitution; overrides `.env-file` per key
-/// 3. **Current shell env** — `std::env::vars()` re-overlaid; the inherited shell
-///    value ALWAYS beats whatever the Runfile's `.env-file` / `env` set
+/// 2. **Current shell env** — `std::env::vars()` re-overlaid, so the caller's
+///    exported value beats a file's. A file is a default, which is the dotenv
+///    convention: a checked-in `.env` must not clobber what someone exported.
+/// 3. `env` — the target's own `.env.NAME = value`, which beats both. It is an
+///    assignment written in the file, and the one place a target can *force* a
+///    value; a default the caller may override is spelled out instead, as
+///    `.env.PORT = ENV.PORT ? "3000"`. It used to sit below the shell here while
+///    the runtime overlaid it back on top for commands, so one target saw two
+///    answers: `$PORT` was the property's and `{{ ENV.PORT }}` the caller's.
 /// 4. `.add-path` chain — for PATH only, prepended in innermost-first order
 ///    (`[this target's `.add-path`..., parent's..., grandparent's..., shell PATH]`)
 /// 5. Decryption — `encrypted:` values rewritten in place
 ///
 /// For top-level invocations (`base_env: None`), step 1 starts from
 /// `std::env::vars()` so `{{ ENV.X }}` substitution sees the inherited shell
-/// values. The system-env re-overlay in step 3 is what actually ENFORCES
-/// shell-wins on the final env (Runfile overrides during step 2 are undone for
-/// any key the shell defines).
+/// values. The re-overlay in step 2 is what enforces shell-over-file on the
+/// final env.
 ///
 /// For dependency invocations (`base_env: Some(parent's resolved env)`),
 /// step 1 starts from the parent's resolved env, so the dep inherits parent's
@@ -239,23 +244,23 @@ pub fn build_env(
 		runfile_crypto::decrypt_env_values(&mut env_map, &key_hex).map_err(|e| EnvError::Encryption(e.to_string()))?;
 	}
 
-	// Layer env vars (substitution sees the env_map built so far; same-key
-	// values override the file layer at this stage — though shell will win in
-	// the next step). At this point any encrypted file values have been
-	// decrypted, so substitutions like `{{ base64_decode(ENV.X) }}` work
-	// without the user having to think about decryption ordering.
+	// Re-overlay the current shell env. Any key the shell defines now beats
+	// whatever a `.env-file` set, restoring the inherited value. PATH is
+	// case-aware (Windows uses "Path", Unix "PATH") so we don't end up with
+	// two case-different PATH keys.
+	overlay_shell_env(&mut env_map);
+
+	// Layer the target's own `env` last, so it beats the shell as well as the
+	// files: see step 3 above. Substitution sees the env_map built so far, and
+	// any encrypted file values have been decrypted by now, so substitutions
+	// like `{{ base64_decode(ENV.X) }}` work without the user having to think
+	// about decryption ordering.
 	if let Some(env_vars) = params.env {
 		for (key, raw) in env_vars {
 			let resolved = substitute(raw, &env_map).map_err(EnvError::Substitution)?;
 			env_map.insert(key.clone(), resolved);
 		}
 	}
-
-	// Re-overlay the current shell env. Any key the shell defines now beats
-	// whatever `.env-file` / `.env` set, restoring the inherited value. PATH is
-	// case-aware (Windows uses "Path", Unix "PATH") so we don't end up with
-	// two case-different PATH keys.
-	overlay_shell_env(&mut env_map);
 
 	// Prepend this target's `.add-path` to PATH. After the shell-env overlay
 	// PATH is the shell's, so this re-prepends on top of it.

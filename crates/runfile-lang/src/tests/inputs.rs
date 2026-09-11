@@ -154,3 +154,101 @@ fn every_kind_of_literal_can_be_a_default() {
 		"an empty default is a default"
 	);
 }
+
+// ---- a name a `.env` property sets is not an input
+
+/// The environment names a target reads under a `_shared.run` chain.
+fn env_under(src: &str, shared: &[&str]) -> Vec<String> {
+	let target = crate::parse(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+	let chain: Vec<_> = shared.iter().map(|s| crate::parse(s).expect("parses")).collect();
+	crate::inputs::of_chain(&target, &chain).env.keys().cloned().collect()
+}
+
+fn env(src: &str) -> Vec<String> {
+	env_under(src, &[])
+}
+
+#[test]
+fn a_name_a_property_has_set_is_not_an_input() {
+	// `--help` said `PORT required` for this, and `--stdin-args` asked for it.
+	// The property beats whatever the caller exports, so there is nothing for
+	// them to supply: a value they pass is ignored.
+	assert!(env(".env.PORT = \"3000\"\nprint(ENV.PORT)\n").is_empty());
+	assert!(env(".env.PORT = \"3000\"\n$ serve --port {{ ENV.PORT }}\n").is_empty());
+	// The same in any block below it.
+	assert!(env(".env.PORT = \"3000\"\nif true\n\tprint(ENV.PORT)\nend\n").is_empty());
+}
+
+#[test]
+fn a_default_the_caller_may_override_is_still_one() {
+	// Spelled out on purpose, which is how a target says the caller may set
+	// it -- and what `--help` shows as `defaults to 3000`.
+	let i = walk(".env.PORT = ENV.PORT ? \"3000\"\nprint(ENV.PORT)\n");
+	let port = &i.env["PORT"];
+	assert_eq!(port.default.as_deref(), Some("3000"), "{port:?}");
+	assert!(!port.required, "the chain catches it: {port:?}");
+}
+
+#[test]
+fn a_property_reading_its_own_name_reads_the_callers() {
+	// Its value is worked out before it is assigned, so the read inside it is
+	// of whatever was there already.
+	assert_eq!(env(".env.P = concat(ENV.P, \":/x\")\nprint(ENV.P)\n"), ["P"]);
+}
+
+#[test]
+fn a_property_covers_only_what_is_below_it_and_inside_its_block() {
+	// Above a trailing property the name is not set yet.
+	assert_eq!(env("print(ENV.PORT)\n.env.PORT = \"3000\"\n$ true\n"), ["PORT"]);
+	// Below it, it is.
+	assert!(env("$ true\n.env.PORT = \"3000\"\nprint(ENV.PORT)\n").is_empty());
+	// And a block's own property is undone when the block closes.
+	assert_eq!(env("if true\n\t.env.PORT = \"3000\"\nend\nprint(ENV.PORT)\n"), ["PORT"]);
+}
+
+#[test]
+fn a_header_value_reads_the_names_set_above_it() {
+	// The runner applied a header as one step and built the environment after,
+	// so `.env.B = ENV.A` read the caller's `A` -- and this listed `A`, which
+	// was true. A value reads the environment as it stands at its own line
+	// now, in a header as below a statement, so it is not an input either way.
+	assert!(env(".env.A = \"a\"\n.env.B = ENV.A\n$ true\n").is_empty());
+	assert!(env("$ true\n.env.A = \"a\"\n.env.B = ENV.A\n").is_empty());
+	// In a nested block's header too.
+	assert!(env("if true\n\t.env.A = \"a\"\n\t.env.B = ENV.A\n\t$ true\nend\n").is_empty());
+	// Only what is above it: the other way round, `A` is still the caller's.
+	assert_eq!(env(".env.B = ENV.A\n.env.A = \"a\"\n$ true\n"), ["A"]);
+}
+
+#[test]
+fn a_name_a_shared_file_sets_is_not_an_input_for_the_target() {
+	assert!(env_under("print(ENV.DIR)\n", &[".env.DIR = \"x\"\n"]).is_empty());
+	// Below a `let` in the shared file too: it is folded, not walked, so every
+	// property in it applies.
+	assert!(env_under("print(ENV.DIR)\n", &["let d = \"x\"\n.env.DIR = d\n"]).is_empty());
+}
+
+#[test]
+fn what_a_shared_file_sets_reaches_the_rest_of_the_chain_and_the_target_header() {
+	// Its own `let` below it, a later shared file, and the target's own header
+	// all read it. They used to see nothing the chain set, because the runner
+	// had not built the environment yet when they were evaluated.
+	assert!(env_under("$ true\n", &[".env.A = \"a\"\nlet x = ENV.A\n"]).is_empty());
+	assert!(env_under("$ true\n", &[".env.A = \"a\"\n", "let x = ENV.A\n"]).is_empty());
+	assert!(env_under(".env.B = ENV.A\n$ true\n", &[".env.A = \"a\"\n"]).is_empty());
+}
+
+#[test]
+fn a_name_an_env_file_might_set_is_still_an_input() {
+	// Which names a file sets is only known once it is read, at run time, and
+	// the file may well not exist -- a project whose `.env` is git-ignored
+	// still has to run. Listing the name is the answer that is never a lie.
+	assert_eq!(env(".env-file = \".env\"\nprint(ENV.DB)\n"), ["DB"]);
+}
+
+#[test]
+fn a_property_is_matched_by_the_exact_name_it_sets() {
+	// `ENV.PORT` looks for `PORT` exactly before it tries another case, so a
+	// caller's `PORT` still reaches it under a `.env.port`.
+	assert_eq!(env(".env.port = \"3000\"\nprint(ENV.PORT)\n"), ["PORT"]);
+}

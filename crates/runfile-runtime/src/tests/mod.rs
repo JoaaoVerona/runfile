@@ -7,6 +7,7 @@ mod interrupt;
 mod keys;
 mod loops;
 mod parallel;
+mod term;
 mod walk;
 
 use crate::run::{Dispatch, RunError, Runner};

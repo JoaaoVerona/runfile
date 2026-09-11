@@ -6,7 +6,7 @@
 //! in the JSON model -- this makes that uniform.
 
 use runfile_lang::Value;
-use runfile_lang::ast::{Block, Property};
+use runfile_lang::ast::{Block, Expr, Property};
 use runfile_lang::eval::{EvalError, Scope, eval_boundary};
 use std::collections::BTreeMap;
 
@@ -203,6 +203,11 @@ pub enum PropError {
 	NotAShell { line: usize, got: String },
 	#[error(transparent)]
 	Eval(#[from] EvalError),
+	/// Building the environment part-way through a declaration region, for a
+	/// value about to read it: an `.env-file` above it that will not parse or
+	/// decrypt says so here rather than at the block's first statement.
+	#[error(transparent)]
+	Env(#[from] crate::env::EnvError),
 }
 
 /// How a constant that is not a bool reads in a message, with the hint that
@@ -219,6 +224,29 @@ pub fn describe_constant(c: &runfile_lang::Constant) -> String {
 			_ => "a string".to_string(),
 		},
 	}
+}
+
+/// Whether applying this property changes the environment a value reads.
+pub(crate) fn changes_env(p: &Property) -> bool {
+	matches!(p.path[0].as_str(), "env" | "env-file" | "add-path")
+}
+
+/// Rebuild the environment `sc` reads from `props`, when something since the
+/// last build changed it (`stale`) and `value` is about to read it.
+///
+/// Shared by a declaration region and a `_shared.run` fold, the two places
+/// properties are applied without the walker rebuilding after each one.
+pub(crate) fn keep_current(
+	props: &Props,
+	value: Option<&Expr>,
+	sc: &mut Scope,
+	stale: &mut bool,
+) -> Result<(), PropError> {
+	if *stale && value.is_some_and(Expr::reads_env) {
+		sc.env = crate::env::for_props(props, &sc.base_dir, &sc.private_keys)?;
+		*stale = false;
+	}
+	Ok(())
 }
 
 /// Everything about a property line that is answerable without running it.
@@ -289,6 +317,18 @@ impl Props {
 	/// above it. The ones that could not mean that are refused here rather than
 	/// there -- this runs before the block does, so the message arrives whether
 	/// or not the line would have been reached.
+	///
+	/// **A value reads the environment as it stands at its own line.** The
+	/// region is applied one property at a time, and the walker builds the
+	/// environment only once it is done -- so `.env.B = ENV.A` below
+	/// `.env.A = "a"` read the caller's `A`, and a value composed from what an
+	/// `.env-file` above it had loaded found nothing there. `keep_current`
+	/// rebuilds before a value that is about to look, and only then: a header
+	/// that never reads `ENV` costs exactly what it did, which matters because
+	/// the watch probe evaluates every header a second time. Whatever was
+	/// rebuilt here is put back before returning, since the block's own
+	/// environment is the walker's to build and to undo -- left in place, it
+	/// would be what `with_block_env` saves, and outlive the block.
 	pub fn extend(&self, block: &Block, sc: &mut Scope, nested: bool) -> Result<Props, PropError> {
 		let mut out = self.clone();
 		// A nested block inherits behaviour but never a parent's one-shot header
@@ -299,10 +339,32 @@ impl Props {
 		for p in block.trailing() {
 			check(p, nested, true)?;
 		}
-		for p in block.declaration() {
+		let region = block.declaration();
+		// Only a region where some value reads the environment can need it
+		// rebuilt part-way; every other one clones nothing.
+		let saved = region
+			.iter()
+			.any(|p| p.value.as_ref().is_some_and(Expr::reads_env))
+			.then(|| sc.env.clone());
+		// A nested block is entered with its enclosing environment already
+		// built. The top of a target is not: the `_shared.run` chain has been
+		// folded into `self`, and the environment is only built after this.
+		let mut stale = !nested && self.touches_env();
+		let applied = region.iter().try_for_each(|p| {
+			keep_current(&out, p.value.as_ref(), sc, &mut stale)?;
 			out.apply(p, sc, nested)?;
+			stale |= changes_env(p);
+			Ok::<(), PropError>(())
+		});
+		if let Some(env) = saved {
+			sc.env = env;
 		}
-		Ok(out)
+		applied.map(|()| out)
+	}
+
+	/// Whether these properties contribute anything to the environment.
+	pub(crate) fn touches_env(&self) -> bool {
+		!self.env.is_empty() || !self.env_files.is_empty() || !self.add_paths.is_empty()
 	}
 
 	pub(crate) fn apply(&mut self, p: &Property, sc: &mut Scope, nested: bool) -> Result<(), PropError> {

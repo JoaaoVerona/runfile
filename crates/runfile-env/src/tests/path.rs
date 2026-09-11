@@ -1,11 +1,15 @@
 use super::*;
 
 #[test]
-fn shell_path_beats_runfile_env_path_override() {
-	// User tries to set PATH via Runfile env; shell's PATH must win.
+fn a_target_path_assignment_replaces_the_search_path() {
+	// `.env.PATH` is an assignment like any other, so it wins over the shell's
+	// PATH. The shell used to win *here* while the runtime laid the property
+	// back on top for commands -- so a command ran with the property's PATH
+	// anyway, and `{{ ENV.PATH }}` said something else. To add a directory
+	// rather than replace the whole path, `.add-path` is the property.
 	let dir = TempDir::new().unwrap();
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("PATH".to_string(), "/should/be/wiped/by/shell".to_string());
+	cmd_env.insert("PATH".to_string(), "/opt/only/this".to_string());
 
 	let params = EnvBuildParams {
 		env_files: None,
@@ -17,17 +21,7 @@ fn shell_path_beats_runfile_env_path_override() {
 		base_env: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
-	let path = get_path_value(&env);
-	let shell_path = std::env::var("PATH").unwrap_or_default();
-
-	assert!(
-		!path.contains("/should/be/wiped/by/shell"),
-		"shell PATH must win over the Runfile-set PATH; got {path}"
-	);
-	assert_eq!(
-		path, shell_path,
-		"with no addToPath, final PATH should equal shell PATH"
-	);
+	assert_eq!(get_path_value(&env), "/opt/only/this", "the assignment is the path");
 }
 
 #[test]
@@ -108,12 +102,14 @@ fn add_to_path_prepends_to_shell_path_after_overlay() {
 }
 
 #[test]
-fn add_to_path_wins_even_when_runfile_env_tries_to_replace_path() {
-	// User sets PATH via Runfile env AND has addToPath. Shell wipes the
-	// Runfile-set PATH (step 3), then addToPath prepends to shell PATH (step 4).
+fn add_path_prepends_onto_a_target_path_assignment() {
+	// Both at once: the assignment sets the path, and `.add-path` goes in
+	// front of whatever the path turned out to be. The runtime's old overlay
+	// replaced the whole value for commands, so an `.add-path` beside a
+	// `.env.PATH` was silently dropped.
 	let dir = TempDir::new().unwrap();
 	let mut cmd_env = HashMap::new();
-	cmd_env.insert("PATH".to_string(), "/should/be/wiped".to_string());
+	cmd_env.insert("PATH".to_string(), "/opt/only/this".to_string());
 	let paths = vec!["my_bin".to_string()];
 
 	let params = EnvBuildParams {
@@ -129,11 +125,8 @@ fn add_to_path_wins_even_when_runfile_env_tries_to_replace_path() {
 	let path = get_path_value(&env).replace('\\', "/");
 	let resolved = dir.path().join("my_bin").to_string_lossy().replace('\\', "/");
 
-	assert!(path.contains(&resolved), "addToPath entry should be in PATH");
-	assert!(
-		!path.contains("/should/be/wiped"),
-		"the Runfile-set PATH should never reach the final env"
-	);
+	assert!(path.starts_with(&resolved), "the `.add-path` entry comes first: {path}");
+	assert!(path.ends_with("/opt/only/this"), "onto the assignment: {path}");
 }
 
 #[test]
@@ -168,9 +161,9 @@ fn dep_runfile_env_beats_parent_runfile_env_when_shell_does_not_have_key() {
 }
 
 #[test]
-fn shell_beats_dep_runfile_env_too_for_keys_in_shell() {
-	// Shell-wins applies to dep contributions, not just top-level. Setting PATH
-	// in dep's env doesn't survive — shell overlay wipes it.
+fn a_dependency_path_assignment_wins_over_the_parent_and_the_shell() {
+	// The same order under a `base_env`: the parent's layer, then the shell,
+	// then this invocation's own assignment.
 	let dir = TempDir::new().unwrap();
 	let mut parent_resolved = HashMap::new();
 	parent_resolved.insert("PATH".to_string(), "/parent/baked/path".to_string());
@@ -188,12 +181,7 @@ fn shell_beats_dep_runfile_env_too_for_keys_in_shell() {
 		base_env: Some(&parent_resolved),
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
-	let path = get_path_value(&env);
-	let shell_path = std::env::var("PATH").unwrap_or_default();
-
-	assert!(!path.contains("/dep/tries/to/win"));
-	assert!(!path.contains("/parent/baked/path"));
-	assert_eq!(path, shell_path);
+	assert_eq!(get_path_value(&env), "/dep/tries/to/win");
 }
 
 #[test]

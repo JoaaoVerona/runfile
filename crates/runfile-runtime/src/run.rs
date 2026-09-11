@@ -243,16 +243,43 @@ pub fn run_target(target: &Target, r: &mut Runner<'_>) -> Result<(), RunError> {
 	run_target_with(target, Props::default(), r)
 }
 
-/// Evaluate only the `let` bindings of a block, used to fold `_shared.run`
-/// values into a target's scope without running its statements.
-pub fn run_block_bindings(block: &Block, sc: &mut Scope) -> Result<(), RunError> {
+/// Fold a `_shared.run` into a scope and a set of properties, in source order.
+///
+/// A shared file's statements never run -- it holds settings, not actions --
+/// but its `let`s are bound and its properties applied, interleaved the way
+/// they are written, so a property below a binding can read it. That is the
+/// rule a target follows too; a shared file is never walked, so it has to be
+/// spelled here or a property below a `let` is never applied at all. Unlike a
+/// walk, a property below the last binding still counts: in a shared file,
+/// after the value it is computed from is exactly where a setting sits.
+pub fn fold_shared(block: &Block, base: &Props, sc: &mut Scope) -> Result<Props, RunError> {
+	let mut props = base.extend(block, sc, false)?;
+	// Nothing here is walked, so nothing rebuilds the environment between one
+	// line and the next -- `keep_current` does it, for the lines that read it,
+	// the way it does inside a header. `extend` put back what it rebuilt, so
+	// everything folded so far is still to be brought in.
+	let mut stale = props.touches_env();
+	let apply = |p: &Property, props: &mut Props, sc: &mut Scope, stale: &mut bool| -> Result<(), RunError> {
+		crate::props::keep_current(props, p.value.as_ref(), sc, stale)?;
+		props.apply(p, sc, false)?;
+		*stale |= crate::props::changes_env(p);
+		Ok(())
+	};
+	let mut trailing = block.trailing().iter().peekable();
 	for st in &block.statements {
+		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
+			apply(p, &mut props, sc, &mut stale)?;
+		}
 		if let Statement::Let { names, value, span } = st {
+			crate::props::keep_current(&props, Some(value), sc, &mut stale)?;
 			let v = eval_boundary(value, sc)?;
 			sc.bind_names(names, runfile_lang::eval::destructure(names, v, span.line)?);
 		}
 	}
-	Ok(())
+	for p in trailing {
+		apply(p, &mut props, sc, &mut stale)?;
+	}
+	Ok(props)
 }
 
 pub fn run_target_with(target: &Target, base: Props, r: &mut Runner<'_>) -> Result<(), RunError> {
@@ -293,8 +320,7 @@ fn walk_body(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), Run
 		// Properties written above this line but below the one before it. They
 		// read the scope as it stands here -- which is the whole point: the
 		// binding they name was made by a statement already run.
-		while trailing.peek().is_some_and(|p| p.span.line < st.span().line) {
-			let p = trailing.next().expect("peeked");
+		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
 			apply_trailing(p, &mut props, r)?;
 		}
 		// Between statements, not inside one: a child already took the same
@@ -309,6 +335,13 @@ fn walk_body(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), Run
 		{
 			return Err(e);
 		}
+	}
+	// Below the last statement there is nothing left for it to affect, but it
+	// is still applied where it sits: its value is evaluated, so a broken one
+	// says so rather than being skipped, and a `_shared.run` -- which is folded
+	// rather than walked -- treats one the same way.
+	for p in trailing {
+		apply_trailing(p, &mut props, r)?;
 	}
 	Ok(())
 }
@@ -455,7 +488,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 		} => {
 			let (cmd, text) = render(command.as_deref(), body, r)?;
 			r.trace.push(text.clone());
-			let env = merged_env(r, props);
+			let env = merged_env(r);
 			let dir = cwd(props, &r.anchor);
 			exec::spawn(Spawn {
 				command: command_for(cmd.as_deref(), props),
@@ -478,12 +511,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 /// the scope -- the second is what lets `{{ ENV.x }}` read what a `.env-file`
 /// brought in.
 fn build_env(props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let workdir = cwd(props, &r.anchor);
-	// The same deferred pool the `decrypt` function uses, so an encrypted
-	// `.env-file` value resolves -- and an unencrypted one still never touches
-	// the credential store.
-	let keys = crate::env::Provider(r.scope.private_keys.clone());
-	let built = crate::env::build(props, &r.anchor, &workdir, Some(&keys))?;
+	let built = crate::env::for_props(props, &r.anchor, &r.scope.private_keys)?;
 	r.scope.env = built.clone();
 	r.env = built.into_iter().collect();
 	r.env.sort();
@@ -495,8 +523,11 @@ fn build_env(props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
 ///
 /// `.env-file` and `.add-path` are block-scoped, and both append -- so a block
 /// that named one has a longer list than the block around it, which is how
-/// this tells. Rebuilt only then: reading and decrypting the files again for
-/// every `if` would be work nothing asked for. Restoring afterwards is what
+/// this tells. A block's own `.env` counts too: it was left out, and a command
+/// saw it only because `merged_env` laid it back on top, so `$X` inside the
+/// block was the property's while `{{ ENV.X }}` was the enclosing one. Rebuilt
+/// only when one of the three changed: reading and decrypting the files again
+/// for every `if` would be work nothing asked for. Restoring afterwards is what
 /// keeps a loop from carrying one iteration's files into the next, and is why
 /// every block form has to come through here rather than calling `walk`.
 fn with_block_env<T>(
@@ -505,7 +536,10 @@ fn with_block_env<T>(
 	r: &mut Runner<'_>,
 	f: impl FnOnce(&mut Runner<'_>) -> Result<T, RunError>,
 ) -> Result<T, RunError> {
-	if inner.env_files.len() == props.env_files.len() && inner.add_paths.len() == props.add_paths.len() {
+	if inner.env_files.len() == props.env_files.len()
+		&& inner.add_paths.len() == props.add_paths.len()
+		&& inner.env == props.env
+	{
 		return f(r);
 	}
 	let saved_env = std::mem::take(&mut r.env);
@@ -666,7 +700,7 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		return Ok(eval_boundary(e, &mut r.scope)?);
 	};
 	let (cmd, text) = render(command.as_deref(), body, r)?;
-	let env = merged_env(r, props);
+	let env = merged_env(r);
 	let dir = cwd(props, &r.anchor);
 	let out = exec::spawn(Spawn {
 		command: command_for(cmd.as_deref(), props),
@@ -715,7 +749,7 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 		}));
 	};
 	let (cmd, text) = render(command.as_deref(), body, r)?;
-	let env = merged_env(r, props);
+	let env = merged_env(r);
 	let dir = cwd(props, &r.anchor);
 	Ok(exec::spawn_code(Spawn {
 		command: command_for(cmd.as_deref(), props),
@@ -835,16 +869,16 @@ fn cwd(props: &Props, anchor: &Path) -> PathBuf {
 	}
 }
 
-/// The target's env, with any block-scoped `.env` layered on top.
-fn merged_env(r: &Runner<'_>, props: &Props) -> Vec<(String, String)> {
-	let mut out = r.env.clone();
-	for (k, v) in &props.env {
-		match out.iter_mut().find(|(ek, _)| ek == k) {
-			Some(slot) => slot.1 = v.clone(),
-			None => out.push((k.clone(), v.clone())),
-		}
-	}
-	out
+/// The environment a command is spawned with: exactly what `ENV.X` reads.
+///
+/// It used to lay the block's `.env` back on top of the built one, because a
+/// block that set only `.env` was never rebuilt -- and that made it a second
+/// description of precedence, disagreeing with the first: the property won
+/// here and the caller's shell won in `build_env`, so one target gave two
+/// answers for one name. Every block that changes `.env` is rebuilt now, and
+/// `build_env` puts the property on top, so there is nothing left to overlay.
+fn merged_env(r: &Runner<'_>) -> Vec<(String, String)> {
+	r.env.clone()
 }
 
 // ------------------------------------------------------------------ parallel
@@ -877,8 +911,7 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 	let mut props = Cow::Borrowed(props);
 	let mut trailing = block.trailing().iter().peekable();
 	for st in &block.statements {
-		while trailing.peek().is_some_and(|p| p.span.line < st.span().line) {
-			let p = trailing.next().expect("peeked");
+		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
 			apply_trailing(p, &mut props, r)?;
 		}
 		let props = props.as_ref();
@@ -908,7 +941,7 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 					announce: props.logging,
 					ignore_errors: props.ignore_errors,
 					body: text,
-					env: merged_env(r, props),
+					env: merged_env(r),
 					dir: cwd(props, &r.anchor),
 				});
 			}
@@ -1017,6 +1050,10 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 				}
 			}
 		}
+	}
+	// As in `walk_body`: applied where it sits, even with nothing below it.
+	for p in trailing {
+		apply_trailing(p, &mut props, r)?;
 	}
 	Ok(())
 }

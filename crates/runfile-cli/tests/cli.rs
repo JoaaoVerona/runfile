@@ -3120,3 +3120,186 @@ fn the_refusal_says_the_thing_that_helps_for_this_target() {
 		assert_eq!(m.trim().lines().count(), 1, "{m}");
 	}
 }
+
+// ------------------------------------------------ `.env` and who wins over it
+
+#[test]
+fn help_does_not_list_a_name_the_target_sets_itself() {
+	// The property beats whatever the caller exports, so `PORT` is not an
+	// input: telling someone to pass it is telling them to pass something that
+	// is then ignored. `--stdin-args` asks from the same list.
+	let p = project(&[
+		("runfiles/_shared.run", ".env.FROM_SHARED = \"x\"\n"),
+		(
+			"runfiles/serve.run",
+			"# Serve.\n\n.env.PORT = \"3000\"\n\nprint(ENV.PORT)\nprint(ENV.FROM_SHARED)\nprint(ENV.TOKEN)\n",
+		),
+	]);
+	let text = out(&p.run(&["serve", "--help"]));
+	assert!(!text.contains("PORT"), "{text}");
+	assert!(!text.contains("FROM_SHARED"), "{text}");
+	assert!(text.contains("TOKEN"), "one it does not set is still listed: {text}");
+}
+
+#[test]
+fn a_target_env_property_wins_over_the_callers_for_every_reader() {
+	// `$PORT` was the property's while `{{ ENV.PORT }}` was the caller's: two
+	// answers for one name in one target. The property wins for both now --
+	// which is what commands had been receiving all along.
+	let p = project(&[(
+		"runfiles/t.run",
+		".env.PORT = \"3000\"\n\nprint(concat(\"env=\", ENV.PORT))\n\n$ echo \"sh=$PORT\"\n",
+	)]);
+	let o = p.command(p.dir.path(), &["t"]).env("PORT", "4000").output().unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).lines().collect::<Vec<_>>(), ["env=3000", "sh=3000"]);
+}
+
+#[test]
+fn a_blocks_env_reaches_env_reads_and_is_undone_when_it_closes() {
+	// A block that set only `.env` was never rebuilt, so a command saw the
+	// value -- laid back on top at spawn -- while `ENV.X` beside it did not.
+	let p = project(&[(
+		"runfiles/t.run",
+		"if true\n\t.env.X = \"inner\"\n\tprint(concat(\"in=\", ENV.X))\n\t$ echo \"sh=$X\"\nend\nprint(concat(\"out=\", ENV.X ? \"unset\"))\n",
+	)]);
+	let o = p.command(p.dir.path(), &["t"]).env_remove("X").output().unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o).lines().collect::<Vec<_>>(),
+		["in=inner", "sh=inner", "out=unset"]
+	);
+}
+
+#[test]
+fn an_env_file_is_a_default_the_caller_overrides() {
+	// The dotenv rule, kept: a checked-in `.env` must not clobber what someone
+	// exported. Only the target's own `.env` assignment beats the caller.
+	let p = project(&[
+		("runfiles/t.run", ".env-file = \".env\"\nprint(ENV.X)\n"),
+		(".env", "X=from-file\n"),
+	]);
+	let o = p.command(p.dir.path(), &["t"]).env("X", "caller").output().unwrap();
+	assert_eq!(out(&o).trim(), "caller", "{}", err(&o));
+	let o = p.command(p.dir.path(), &["t"]).env_remove("X").output().unwrap();
+	assert_eq!(out(&o).trim(), "from-file", "{}", err(&o));
+}
+
+#[test]
+fn a_shared_property_below_a_let_applies() {
+	// A shared file is folded rather than walked, and folding applied only the
+	// region above its first `let` -- so this property was dropped without a
+	// word, where it used to be at least an error.
+	let p = project(&[
+		("runfiles/_shared.run", "let dir = \"from-shared\"\n.env.MARK = dir\n"),
+		("runfiles/t.run", "print(ENV.MARK)\n"),
+	]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "from-shared");
+}
+
+#[test]
+fn a_property_below_the_last_statement_is_still_evaluated() {
+	// Nothing below it for it to affect, but it is applied where it sits like
+	// any other, so a broken one says so rather than being skipped.
+	let p = project(&[("runfiles/t.run", "$ true\n.env.X = undefined_name\n")]);
+	let o = p.run(&["t"]);
+	assert!(!o.status.success(), "it ran without complaint");
+	assert!(err(&o).contains("undefined_name"), "{}", err(&o));
+}
+
+#[test]
+fn a_header_value_reads_the_environment_as_it_stands_at_its_line() {
+	// The header was applied as one step and the environment built after it,
+	// so `.env.B = ENV.A` read the caller's `A` rather than the `.env.A` above
+	// it -- in a file that reads top to bottom, and while the same two lines
+	// below a statement already worked.
+	let p = project(&[(
+		"runfiles/t.run",
+		".env.A = \"a\"\n.env.B = concat(\"from-\", ENV.A)\n\n$ echo \"$B\"\n",
+	)]);
+	let o = p.command(p.dir.path(), &["t"]).env("A", "caller").output().unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "from-a");
+}
+
+#[test]
+fn a_header_value_can_be_composed_from_an_env_file_above_it() {
+	let p = project(&[
+		(
+			"runfiles/t.run",
+			".env-file = \".env\"\n.env.URL = concat(\"postgres://\", ENV.DB_HOST, \"/app\")\n\n$ echo \"$URL\"\n",
+		),
+		(".env", "DB_HOST=db.local\n"),
+	]);
+	let o = p.command(p.dir.path(), &["t"]).env_remove("DB_HOST").output().unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "postgres://db.local/app");
+}
+
+#[test]
+fn what_a_shared_file_sets_reaches_its_own_lets_and_the_target_header() {
+	let p = project(&[
+		(
+			"runfiles/_shared.run",
+			".env.REGION = \"eu\"\nlet bucket = concat(\"logs-\", ENV.REGION)\n.env.BUCKET = bucket\n",
+		),
+		(
+			"runfiles/t.run",
+			".env.WHERE = concat(ENV.BUCKET, \"@\", ENV.REGION)\n\n$ echo \"$WHERE\"\n",
+		),
+	]);
+	let o = p
+		.command(p.dir.path(), &["t"])
+		.env_remove("REGION")
+		.env_remove("BUCKET")
+		.output()
+		.unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "logs-eu@eu");
+}
+
+// ---------------------------------------------------------- `:list`, one line
+
+#[test]
+fn the_listing_shows_only_the_first_line_of_a_description() {
+	// The rest is for `--help`, which prints the whole block. A description
+	// is often a sentence broken across comment lines, and the listing is
+	// scanned down its left edge, so a second line there reads as another
+	// target.
+	let p = project(&[(
+		"runfiles/backup.run",
+		"# Downloads the latest backup from S3 into\n# the directory named by DEST\n#\n# Needs AWS credentials.\n$ true\n",
+	)]);
+	let listed = out(&p.run(&[":list"]));
+	assert!(listed.contains("Downloads the latest backup from S3 into"), "{listed}");
+	assert!(
+		!listed.contains("DEST"),
+		"the second line stays out of the listing: {listed}"
+	);
+	assert!(!listed.contains("AWS"), "{listed}");
+
+	let help = out(&p.run(&["backup", "--help"]));
+	assert!(
+		help.contains("the directory named by DEST"),
+		"--help has the rest: {help}"
+	);
+	assert!(help.contains("Needs AWS credentials."), "{help}");
+}
+
+#[test]
+fn a_listing_into_a_pipe_keeps_every_description_whole() {
+	// Only a terminal is cut to its width. A pipe has none, and whatever reads
+	// it -- `grep`, a script -- wants the whole line; an exported `COLUMNS`
+	// does not change that, since it describes a terminal nobody is reading.
+	let long = "Checks every project directly under the workspace for uncommitted changes and unpushed commits";
+	let p = project(&[("runfiles/status.run", &format!("# {long}\n$ true\n"))]);
+	let o = p
+		.command(p.dir.path(), &[":list"])
+		.env("COLUMNS", "30")
+		.output()
+		.unwrap();
+	assert!(out(&o).contains(long), "{}", out(&o));
+	assert!(!out(&o).contains('…'), "{}", out(&o));
+}

@@ -400,6 +400,36 @@ impl Statement {
 }
 
 impl Expr {
+	/// Whether evaluating this reads the environment: an `ENV.X` anywhere in
+	/// it, interpolations included.
+	///
+	/// What decides whether a property's value needs the environment brought up
+	/// to date before it is worked out. Rebuilding reads and decrypts every
+	/// `.env-file` there is, and the one place a header is evaluated twice --
+	/// the probe that looks for `.watch`, on every run -- must not do that for
+	/// a header that never looks. A capture or a dispatch counts, since the
+	/// process it starts is handed the environment whole.
+	pub fn reads_env(&self) -> bool {
+		let parts = |ps: &[InterpPart]| {
+			ps.iter().any(|p| match p {
+				InterpPart::Expr(e) => e.reads_env(),
+				InterpPart::Literal(_) => false,
+			})
+		};
+		match self {
+			Expr::Source { kind, .. } => *kind == SourceKind::Env,
+			Expr::Number(..) | Expr::Bool(..) | Expr::Ident(..) => false,
+			Expr::Str(ps, _) => parts(ps),
+			Expr::List(items, _) => items.iter().any(Expr::reads_env),
+			Expr::Unary { rhs, .. } => rhs.reads_env(),
+			Expr::Binary { lhs, rhs, .. } | Expr::Chain { lhs, rhs, .. } => lhs.reads_env() || rhs.reads_env(),
+			Expr::Index { base, index, .. } => base.reads_env() || index.reads_env(),
+			Expr::Call { args, .. } => args.iter().any(Expr::reads_env),
+			Expr::Structured { body, .. } => body.lines.iter().any(|l| parts(l)),
+			Expr::Capture { .. } | Expr::Dispatch { .. } => true,
+		}
+	}
+
 	/// This expression as a constant that is not a bool, if that is what it is.
 	///
 	/// `None` covers the two things a flag may be written with: a bool literal,

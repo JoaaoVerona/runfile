@@ -9,6 +9,7 @@ pub mod interrupt;
 pub mod props;
 pub mod run;
 pub mod shell;
+pub mod term;
 
 pub use props::Props;
 pub use run::{RunError, Runner, run_target};

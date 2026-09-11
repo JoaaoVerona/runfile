@@ -121,6 +121,12 @@ pub fn print(cat: &Catalog) {
 		return;
 	}
 	let width = shown.iter().map(|(t, _)| t.name.len()).max().unwrap_or(0);
+	// One line per target, whatever the terminal. A description that wrapped
+	// put its tail at the start of the next line, where it read as the next
+	// target -- and a listing is scanned down its left edge. Only the
+	// description gives way: the name is what gets typed, and the indent, the
+	// padded name and the gutter are the four columns before it.
+	let room = runfile_runtime::term::columns().map(|c| c.saturating_sub(width + 4));
 	let mut first = true;
 	for origin in [Origin::Global, Origin::Local, Origin::Included] {
 		let group: Vec<&(&Target, Facts)> = shown.iter().filter(|(t, _)| t.origin == origin).collect();
@@ -138,7 +144,10 @@ pub fn print(cat: &Catalog) {
 		}
 		first = false;
 		for (t, f) in group {
-			let described = f.description.clone();
+			let described = match room {
+				Some(r) => runfile_runtime::term::fit(&f.description, r),
+				None => f.description.as_str().into(),
+			};
 			if described.is_empty() {
 				println!("  {}", t.name);
 			} else {

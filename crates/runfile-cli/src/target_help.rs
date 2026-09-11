@@ -28,18 +28,20 @@ pub(crate) fn wants_help(args: &[String]) -> bool {
 /// and in the literal halves of `$` lines, so this listed inputs a target
 /// never reads.
 pub(crate) fn inputs(cat: &Catalog, target: &Target) -> runfile_lang::Inputs {
-	let read = |p: &std::path::Path| {
+	let parse = |p: &std::path::Path| {
 		std::fs::read_to_string(p)
 			.ok()
 			.and_then(|src| runfile_lang::parse(&src).ok())
-			.map(|t| runfile_lang::inputs::of(&t))
-			.unwrap_or_default()
 	};
-	let mut out = read(&target.path);
-	for p in cat.shared_chain(target) {
-		out.extend(read(&p));
-	}
-	out
+	// A file that does not parse contributes nothing, as before: it will say
+	// what is wrong with it when the target runs, and `--help` must still
+	// answer with what the rest of the chain reads.
+	let own = parse(&target.path).unwrap_or_else(|| runfile_lang::Target {
+		description: None,
+		body: Default::default(),
+	});
+	let shared: Vec<_> = cat.shared_chain(target).iter().filter_map(|p| parse(p)).collect();
+	runfile_lang::inputs::of_chain(&own, &shared)
 }
 
 pub(crate) fn render(cat: &Catalog, target: &Target) -> String {

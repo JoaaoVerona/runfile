@@ -23,7 +23,8 @@ web/runfiles/build.run → run web:build
 ```
 
 A target is a file, its name is its path, and its first comment block is its description. There is no central
-file to merge, so two people adding a task never conflict.
+file to merge, so two people adding a task never conflict. `run :list` shows the first line of each description
+— one line per target, cut to the terminal's width — and `run <target> --help` shows the whole block.
 
 ```sh
 # runfiles/dev.run
@@ -496,7 +497,9 @@ Environment
 ```
 
 Nothing is declared for that — a `?` chain is what makes a value optional, and the literal it ends in is the
-default. `run --stdin-args deploy` asks for the same list, in the same order, **before anything runs**.
+default. `run --stdin-args deploy` asks for the same list, in the same order, **before anything runs**. A name
+the target sets for itself with `.env.NAME` — above the read, or in a `_shared.run` — is not on the list at all,
+since nothing the caller passes would reach it.
 
 That refusal has one exception, and it is the useful one: **a target that reads `ARGS`**. A wrapper can read
 any word, so it gets any word — a `--flag` it does not claim for itself joins the positionals where it was
@@ -653,7 +656,8 @@ quotes. A value the run works out is left to the run: `.parallel = ENV.CI` and
 a flag that quietly did not take effect is found out much later.
 
 A property is applied **where it is written**: it can read a binding above it, and it takes effect from there
-down.
+down. The environment works the same way — a value reads it as it stands at its own line, so a property can be
+built from what a `.env-file` above it loaded, or from another `.env` above it:
 
 ```sh
 # runfiles/build.run
@@ -664,6 +668,16 @@ let out = concat("target-", ARG.profile ? "debug")
 .workdir = out
 
 $ ls
+```
+
+```sh
+# runfiles/migrate.run
+# Migrate the database the local .env points at
+
+.env-file = ".env"
+.env.DATABASE_URL = concat("postgres://", ENV.DB_HOST, "/app")
+
+$ sqlx migrate run
 ```
 
 Five of them describe the whole block rather than the commands under it — `.parallel`, `.shell`, `.logging`,
@@ -684,6 +698,21 @@ if RUN.os == "windows"
 else
 	$ ls -la
 end
+```
+
+**The target's own `.env.NAME` wins over the caller's environment; a `.env-file` does not.** An assignment
+written in the file is the one way a target can force a value, so `PORT=4000 run serve` still serves on 3000
+under `.env.PORT = "3000"` — and `ENV.PORT` and a command's `$PORT` both say 3000. A file is a default, the
+dotenv convention: what the caller exported beats it. A default the caller *may* override is spelled out, and
+`--help` shows it as one:
+
+```sh
+# runfiles/serve.run
+# Serve locally
+
+.env.PORT = ENV.PORT ? "3000"
+
+$ node server.js
 ```
 
 `.env-file` and `.add-path` **append**, so a block adds to what it inherited rather than replacing it, and a

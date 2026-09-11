@@ -17,9 +17,10 @@ fn counting_loader() -> Vec<String> {
 	Vec::new()
 }
 
-/// Serialised, because the counter is process-global.
+/// Serialises every test that reads the counter, since it is process-global.
+static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn loads_during(files: &[(&str, &str)], target: &str) -> (usize, Result<(), crate::RunError>) {
-	static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	let d = project(files);
 	let cat = runfile_discovery::discover(d.path(), None).unwrap();
@@ -77,6 +78,53 @@ fn keys_are_loaded_at_most_once_per_run() {
 		loads <= 1,
 		"asked {loads} times; an unlock prompt must appear at most once"
 	);
+}
+
+/// Loads while the watch probe reads a target's header -- which the CLI does
+/// before **every** run that is not `--dry-run`, to learn whether it declares
+/// `.watch`. Anything a header costs, it costs twice.
+fn loads_probing(files: &[(&str, &str)], target: &str) -> usize {
+	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+	let d = project(files);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.keys = counting_loader;
+	LOADS.store(0, Ordering::SeqCst);
+	let _ = h.header_props(cat.resolve(target).expect("the target"), &[]);
+	LOADS.load(Ordering::SeqCst)
+}
+
+const ENCRYPTED: &str = "RUNFILE_ENCRYPTION_PUBLIC_KEY=aa\nSECRET=encrypted:Zm9vYmFy\n";
+
+#[test]
+fn the_watch_probe_builds_no_environment_for_a_header_that_never_reads_it() {
+	// A header value reads the environment as it stands at its own line, which
+	// can mean building it part-way -- reading and decrypting every file. Done
+	// eagerly, that would unlock the keyring in the probe as well as in the
+	// run, on every run of a target with an encrypted file. So it is built
+	// only for a value that is about to look.
+	let files = &[
+		(
+			"runfiles/e.run",
+			".env-file = \".env\"\n.env.MODE = \"dev\"\n.shell = \"sh\"\n$ true\n",
+		),
+		(".env", ENCRYPTED),
+	];
+	assert_eq!(loads_probing(files, "e"), 0, "nothing in the header reads `ENV`");
+}
+
+#[test]
+fn a_header_value_that_reads_the_environment_is_the_one_case_that_builds_it() {
+	// The counterpart: when a value below the file does read `ENV`, it has to
+	// see what the file loaded, and that is only knowable by reading it.
+	let files = &[
+		(
+			"runfiles/e.run",
+			".env-file = \".env\"\n.env.COPY = ENV.SECRET ? \"none\"\n$ true\n",
+		),
+		(".env", ENCRYPTED),
+	];
+	assert_eq!(loads_probing(files, "e"), 1, "the value reads what the file holds");
 }
 
 // ---- temp files

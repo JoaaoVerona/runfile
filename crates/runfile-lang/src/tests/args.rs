@@ -203,8 +203,9 @@ fn a_value_may_be_anything_that_is_not_a_flag() {
 fn a_name_a_shared_file_reads_takes_a_value_too() {
 	// The chain is folded in before a command line is classified, which is the
 	// whole reason `prepare` walks it in two passes.
-	let mut all = reads("$ echo {{ ARGS }}\n");
-	all.extend(reads("let e = ARG.env\n"));
+	let target = crate::parse("$ echo {{ ARGS }}\n").unwrap();
+	let shared = crate::parse("let e = ARG.env\n").unwrap();
+	let all = crate::inputs::of_chain(&target, &[shared]);
 	let argv = ["--env".to_string(), "prod".to_string()];
 	assert_eq!(
 		parse(&argv, &all).unwrap(),

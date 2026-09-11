@@ -26,6 +26,23 @@ impl PrivateKeyProvider for Provider {
 	}
 }
 
+/// The environment these properties describe, for a target anchored at
+/// `anchor`: what `ENV.X` reads and what a command is handed.
+///
+/// The one builder. The walker rebuilds through it at block boundaries, and a
+/// declaration region rebuilds through it part-way when a value is about to
+/// read the environment -- so the two cannot come to describe it differently.
+/// The same deferred pool the `decrypt` function uses, so an encrypted
+/// `.env-file` value resolves, and an unencrypted one never touches the
+/// credential store.
+pub fn for_props(props: &Props, anchor: &Path, keys: &runfile_lang::Keys) -> Result<HashMap<String, String>, EnvError> {
+	let workdir = match &props.workdir {
+		Some(w) => anchor.join(w),
+		None => anchor.to_path_buf(),
+	};
+	build(props, anchor, &workdir, Some(&Provider(keys.clone())))
+}
+
 /// Merge process env, the declared env files and `.env` into one map, with
 /// `.add-path` entries prepended to PATH.
 pub fn build(

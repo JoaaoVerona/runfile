@@ -273,3 +273,47 @@ fn collect_runfile_env_sorted() {
 // ══════════════════════════════════════════════════════════════════════
 // Encrypted env tests
 // ══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn a_file_is_a_default_the_shell_overrides_and_the_target_overrides_both() {
+	// The whole precedence in one place: `.env-file` < the caller's shell <
+	// the target's own `.env`. Any variable this process already has will do,
+	// which is what keeps this from racing the other tests the way setting
+	// one would. A plain name, so the dotenv parser takes it as written.
+	let (key, from_shell) = std::env::vars()
+		.find(|(k, v)| {
+			!k.eq_ignore_ascii_case("PATH")
+				&& !k.starts_with("RUNFILE_")
+				&& !v.starts_with("encrypted:")
+				&& k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+				&& k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+		})
+		.expect("a process with no plain environment variable at all");
+	let dir = TempDir::new().unwrap();
+	std::fs::write(dir.path().join(".env"), format!("{key}=from_file\n")).unwrap();
+	let files = vec![".env".to_string()];
+	let build = |own: Option<&HashMap<String, String>>| {
+		let params = EnvBuildParams {
+			env_files: Some(&files),
+			env: own,
+			add_to_path: None,
+			working_dir: dir.path(),
+			env_files_base_dir: dir.path(),
+			available_private_keys: None,
+			base_env: None,
+		};
+		build_env(&params, &no_substitute).unwrap()
+	};
+
+	// A file is a default: what the caller exported beats it.
+	assert_eq!(build(None)[&key], from_shell, "the shell beats a file");
+
+	// The target's own assignment beats both. It is written in the file, and
+	// it is the one way a target can force a value.
+	let own = HashMap::from([(key.clone(), "from_target".to_string())]);
+	assert_eq!(
+		build(Some(&own))[&key],
+		"from_target",
+		"the target's `.env` beats the shell"
+	);
+}

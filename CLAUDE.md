@@ -128,7 +128,28 @@ target reads is answered by **`inputs::of`, which walks the tree** — `ARG.x`, 
 from every position one can sit in, and from every `_shared.run` above it, since a name a shared file reads is
 read for every target under it. That chain is walked for what it reads **before** the command line is
 classified and evaluated afterwards -- two passes over one parse, because evaluating a shared file reads
-`ARG.x` out of the scope the classification is about to fill.
+`ARG.x` out of the scope the classification is about to fill. **`inputs::of_chain(target, shared)` is the one
+description of the chain**: `prepare` and `target_help::inputs` each used to fold it by hand with
+`Inputs::extend`, and both ask it now, so the command line, `--help` and `--stdin-args` cannot disagree.
+
+**A name a `.env` property has already set where it is read is not an input.** `--help` said `PORT required`
+for `.env.PORT = "3000"` above a `print(ENV.PORT)`, and `--stdin-args` asked for it -- telling someone to
+pass a value that the property then overrides. The walk carries the set of names a `.env` has supplied (in
+`At`, beside the guard and the default, since it is another fact about where a read sits) and skips a read of
+one. It follows the runner exactly, which is the only way it can be trusted: a property covers what is below
+it and inside its block; its own value reads what was there before it, so `.env.P = concat(ENV.P, ":x")`
+still lists `P`; a `?`-guarded default like `.env.PORT = ENV.PORT ? "3000"` is listed as `defaults to 3000`,
+which is how a target says the caller may override. Since a value reads the environment as it stands at its
+own line (see *Properties*), the walk is one rule with no exceptions: the set runs forward through the
+`_shared.run` chain, into the target's header and down through its body, and a nested block adds to it only
+for itself -- `walk` hands back what is set by the end of a block, which `of_chain` carries from one shared
+file to the next. It had two regions that saw nothing, while the runner built the environment only after a
+header; they went when the runner stopped doing that. A `.env-file` supplies
+nothing here, since which names a file sets is only known once it is read and it may well not exist; and a
+name is matched exactly as the property sets it, because `ENV.X` tries the exact name before any other case,
+so a caller's `PORT` still reaches `ENV.PORT` under a `.env.port`. One place is deliberately loose: a loop's
+condition is read under the enclosing environment, though the runner asks it inside the body's, which can
+only list a name the caller need not pass, never hide one they must.
 
 It scanned the **text** for `ARG.` until it did not. The keys have no dynamic form — `ARG[k]`, `ARG.{{ k }}`
 and `ARG."k"` are all refused by the parser — so every use is spelled out, which made scanning look exact. But
@@ -452,8 +473,15 @@ second time as the global. This replaced `includes` entirely.
   the target's own **path**, never looked up by namespace — a namespace is not unique across trees, the
   machine-wide one has none, and `Catalog.shared` records a key whether or not the file is there, so keying
   by it meant that merely *having* a `~/.runfiles` silently disabled the root `_shared.run` of every project
-  on the machine. Its properties *and* its `let` bindings apply (`run_block_bindings`), which is what makes
-  it the `globals` analog.
+  on the machine. Its properties *and* its `let` bindings apply, which is what makes it the `globals` analog
+  -- **folded in source order** (`run::fold_shared`), so a property below a `let` reads it. Shared files are
+  never walked, so when properties became applied-where-written the fold had to learn it separately: it kept
+  applying only the region above the first statement, and `let d = "x"` then `.env.DIR = d` dropped the
+  property **without a word**, where it had at least been an error before. Unlike a walk, a property below the
+  last `let` still applies -- in a shared file, after the value it is computed from is exactly where a
+  setting sits. A `let` there reads the environment the lines above it set, through `keep_current`, the same
+  as a header value does. Its other statements never run: a `print` in a `_shared.run` is not an action taken
+  once per target, it is nothing.
 - **`resolve` is one hash lookup, and a target is reached by its file name only.** `.alias` is gone: a target
   used to answer to a second name declared in its own file, found by scanning every *other* file's declaration
   region on a miss. The property was the last thing in the language read from the **text** rather than from a
@@ -492,7 +520,8 @@ second time as the global. This replaced `includes` entirely.
 ### runfile-runtime
 
 `props.rs` (property resolution), `env.rs` (env building), `exec.rs` (spawning), `run.rs` (the walker),
-`dispatch.rs` (`Host`, target resolution, cycle detection), `shell.rs` (shell selection).
+`dispatch.rs` (`Host`, target resolution, cycle detection), `shell.rs` (shell selection), `term.rs` (the
+terminal's width, and how wide text is on it).
 
 - **`PROPERTIES` carries the whole taxonomy, and is the only copy of it.** Three booleans per name --
   `block_scoped`, `declaration_only`, `flag` -- each tested against `extend`'s actual behaviour the way
@@ -619,6 +648,19 @@ second time as the global. This replaced `includes` entirely.
   the re-exec: dispatch is in-process, and every target builds PATH from its own properties.
 - `env::build` receives the same deferred key pool the `decrypt` function uses. It was previously passed `None`,
   which meant an encrypted `.env-file` value could never be decrypted at all.
+- **Precedence is decided in one place, `runfile_env::build_env`: `.env-file` < the caller's shell < the
+  target's `.env`.** A file is a default -- the dotenv convention, so a checked-in `.env` does not clobber what
+  someone exported -- and the target's own assignment beats both, since it is the one way a target can force
+  a value; a default the caller may override is written `.env.PORT = ENV.PORT ? "3000"`. It used to be
+  described twice, with opposite answers: `build_env` put the shell on top, while `merged_env` laid the
+  block's `.env` back over the built environment at spawn. So `.env.PORT = "3000"` under `PORT=4000 run t`
+  printed `4000` for `{{ ENV.PORT }}` and `3000` for `$PORT`. The overlay existed because a block that set
+  only `.env` was never rebuilt; `with_block_env` now rebuilds when `.env` differs too, so `merged_env` is
+  `r.env` and nothing else. **What commands receive did not change** -- they always got the property; only
+  `ENV.X` moved to agree -- with one exception: an `.add-path` beside a `.env.PATH` used to vanish, because
+  the overlay replaced the whole value, and now it is prepended onto the assignment. That is also why three
+  `runfile-env` tests that pinned "the shell's PATH beats `.env.PATH`" were rewritten rather than kept: they
+  held for `build_env`'s output and for no command that ever ran.
 
 ### runfile-lsp
 
@@ -854,6 +896,19 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   without a machine-wide directory -- an unheaded run of names under `global:` would read as more global ones.
   The order is the human listing's; `--names` and `--json` stay in the catalog's own (sorted) order, since
   their readers work by name.
+- **`:list` prints one line per target, whatever the terminal.** The description is its first line only --
+  `take_description` keeps the whole comment block and `facts` takes `lines().next()`, and a test with a
+  description broken across comment lines pins it, since the one that existed used a single-line description
+  and so pinned nothing -- and on a terminal it is cut to the width with `…` (`term::fit`). A description that
+  wrapped put its tail at the start of the next line, where it read as the next target, and a listing is
+  scanned down its left edge. Only the description gives way: the name is what gets typed. **A pipe is never
+  cut**, `COLUMNS` or not, because `run :list | grep deploy` wants whole lines and a pipe has no width. The
+  width is `COLUMNS` when it is a positive number, then `TIOCGWINSZ` or the console's visible window, from
+  `runfile-runtime::term` -- which already makes the `libc` and console calls for Ctrl+C, so asking the width
+  added no dependency and no lockfile change. It is measured in **display columns**, not characters: a small
+  `wcwidth`-style table counts East Asian wide characters and emoji as two and combining marks as none,
+  because counting characters would let a description holding a `🚀` run past the edge -- which the first
+  cut of that table did, until a test asked about the rocket.
 - `:list` has three forms: human, `--names` (for completion scripts), `--json` (for tooling). The JSON is
   serialized by hand — four string fields do not justify a serde dependency in the CLI — and carries a
   `formatVersion` that CI checks against the extension's constant. **Version 2** dropped the `aliases` array
@@ -928,7 +983,8 @@ exists and so a literal string or a list of them, refused with `DiscoverError::U
 
 **`env-file` and `add-path` are block-scoped, and both append.** A block that names one has a longer list than
 the block around it, which is how `with_block_env` tells it has to rebuild -- reading and decrypting the files
-again for every `if` would be work nothing asked for. The environment the block inherited is put back when it
+again for every `if` would be work nothing asked for. A block whose `.env` differs from the enclosing one is
+rebuilt too; it was not, and `ENV.X` inside it read the enclosing value while `$X` read the block's. The environment the block inherited is put back when it
 closes, which is what stops a loop carrying one iteration's files into the next, and is why **every** block
 form goes through that one function: `if` and `match` via `nested`, and `for` and `retry` via their own arms,
 whose bodies were extracted into `for_body` and `retry_attempts` so the wrapper has something to wrap. A
@@ -943,10 +999,29 @@ one and then the other -- so `let x = "sub"` followed by `.workdir = x` was `` `
 file that reads top to bottom. `Block::declaration()` and `Block::trailing()` split the list at the first
 statement's line: the declaration region is what `Props::extend` applies at block entry, exactly as before,
 and anything below a statement is applied by `walk` when it reaches that line. So a property reads the
-bindings above it, and takes effect from there down. Nothing existing moved -- not one `.run` file in the
+bindings above it, and takes effect from there down -- including one below the last statement, which has
+nothing left to affect but is still evaluated, so a broken one says so. Nothing existing moved -- not one `.run` file in the
 repository or on the author's machine had a property below a statement -- which is what made the ordering
 safe to define rather than a break. `Cow<Props>` is what keeps the common path free: a block with no trailing
 property walks on the borrowed properties it was handed and clones nothing.
+
+**A value reads the environment as it stands at its own line, in a header too.** A declaration region is
+applied one property at a time, but the walker builds the environment only once it is done, so `.env.B =
+ENV.A` below `.env.A = "a"` read the caller's `A`, a value composed from what an `.env-file` above it had
+loaded found nothing, and neither a target's header nor a shared `let` saw anything the `_shared.run` chain
+set -- while the same lines below a statement, where each property rebuilds as it goes, worked. `extend`
+and `fold_shared` now call `props::keep_current` before each value: it rebuilds, through the walker's own
+`env::for_props`, **only when a property above has changed the environment and this value reads it**
+(`Expr::reads_env`). The laziness is the point rather than an optimisation. `Host::header_props` evaluates
+every header a second time, on every run that is not `--dry-run`, to learn whether it declares `.watch`, and
+a rebuild reads and decrypts every `.env-file` -- so rebuilding after every property would have unlocked the
+keyring in the probe as well as in the run for any target with an encrypted file. A header that never reads
+`ENV` costs exactly what it did, and `tests/keys.rs` counts the loads to hold it there: none in the probe for
+such a header, one for a header that does read. What `extend` rebuilt it puts back before returning, because
+the block's own environment is the walker's to build and to undo -- left in place, it is what
+`with_block_env` would save, and it would outlive the block. A nested block starts current, since the one
+around it was built; the top of a target starts stale whenever the chain folded into it touches the
+environment.
 
 The environment is the part that has to be put back. A trailing `.env`, `.env-file`, `.add-path` or
 `.workdir` rebuilds it mid-walk, so `walk` saves the block's own environment and restores it on the way out
