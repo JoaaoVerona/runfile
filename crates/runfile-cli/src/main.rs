@@ -144,8 +144,11 @@ fn real_main() -> Result<ExitCode, String> {
 			return cmd_generate::dispatch(&cat, &args);
 		}
 		":update" => {
-			cmd_update::cmd_update(args.first().map(String::as_str));
-			return Ok(ExitCode::SUCCESS);
+			if help::wants_help(&args) {
+				print!("{}", cmd_update::usage());
+				return Ok(ExitCode::SUCCESS);
+			}
+			return cmd_update::cmd_update(&args);
 		}
 		"--version" | "-v" | "-V" => {
 			println!("run {}", env!("CARGO_PKG_VERSION"));

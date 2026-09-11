@@ -1,0 +1,55 @@
+# Mirror Gitea's master to GitHub: fast-forward the `github` branch and push it with its release tags
+#
+# GitHub is a mirror, updated when you choose rather than on every push: master
+# goes to Gitea, which runs CI and cuts every release, and this is the one thing
+# that sends anything to GitHub. The `github` branch landing there runs GitHub's
+# CI and mirrors the newest release in it (.github/workflows/release.yml): the
+# archives the setup action installs, its `v1` alias and the npm package.
+#
+# What is mirrored is Gitea's master, fetched first, not the local one: a commit
+# that has not reached Gitea has not been tested or released there, and the
+# mirror is of what has.
+#
+# The release tags go with the branch, by `--follow-tags`, which sends only
+# annotated tags -- so never the `v1` alias GitHub moves itself. GitHub reads the
+# version to mirror from Cargo.toml and fails when its tag has not arrived,
+# rather than mirroring nothing.
+#
+# Fast-forward only. The mirror has no commits of its own, so a `github` that
+# Gitea's master does not contain means something landed on GitHub first -- a
+# pull request merged there -- and it has to come back through master.
+#
+# Once per clone, to name the remote it pushes to:
+#
+#   git branch github master
+#   git push -u <github-remote> github
+
+let source = $ git config --default "" --get branch.master.remote
+let mirror = $ git config --default "" --get branch.github.remote
+
+if source == ""
+	error("master tracks no remote; it should track Gitea's")
+end
+
+if mirror == ""
+	error("no `github` branch tracking a remote yet; once: git branch github master && git push -u <github-remote> github")
+end
+
+$ git fetch {{ source }}
+
+let upstream = $ git rev-parse --symbolic-full-name master@{upstream}
+
+# `git fetch .` rather than `git branch -f`: forced onto a remote-tracking
+# branch, `branch` also makes it the upstream, and the next mirror would read
+# Gitea as the remote to push to.
+if $ git merge-base --is-ancestor github {{ upstream }}
+	$ git fetch --quiet . {{ concat(upstream, ":refs/heads/github") }}
+else
+	error("`github` has commits Gitea's master does not; bring them into master first")
+end
+
+let cargo = $ git show {{ concat(upstream, ":Cargo.toml") }}
+let version = regex_capture(cargo, "(?m)^version = \"([^\"]+)\"", 1)
+
+print("Mirroring {{ upstream }} to {{ mirror }}/github; GitHub releases v{{ version }} unless it already has")
+$ git push --follow-tags {{ mirror }} github

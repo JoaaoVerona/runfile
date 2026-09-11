@@ -1,8 +1,12 @@
+# GitHub is a mirror: master lives on git.joaoverona.com, whose own CI
+# (.cicd/ci.yml) runs on every push, and this repository hears about it only
+# when `run mirror` pushes the `github` branch here -- so that branch, not
+# master, is what runs this.
 name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [github]
   pull_request:
   workflow_dispatch:
 

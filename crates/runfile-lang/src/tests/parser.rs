@@ -344,6 +344,38 @@ fn detach_is_refused_on_a_dispatch() {
 }
 
 #[test]
+fn a_statement_span_reaches_its_last_line() {
+	// Where a block ends is in the tree nowhere else, and an editor completing
+	// a loop variable has to know whether the cursor is still inside the loop.
+	let src = "for x in [\"a\"]\n\tif x == \"a\"\n\t\t$ echo \\\n\t\t\tmore\n\tend\nend\nlet xs = [\n\t1,\n]\n$ a\n\n# note\nprint(xs)\n";
+	let t = crate::parse(src).expect("parses");
+	let lines = |s: &crate::Statement| (s.span().line, src[..s.span().end].matches('\n').count() + 1);
+	let [f, l, run, p] = &t.body.statements[..] else {
+		panic!("four statements: {:?}", t.body.statements)
+	};
+	assert_eq!(lines(f), (1, 6), "a block reaches its `end`");
+	let crate::Statement::For { body, .. } = f else {
+		panic!("a for")
+	};
+	let crate::Statement::If { then, .. } = &body.statements[0] else {
+		panic!("an if")
+	};
+	assert_eq!(lines(&body.statements[0]), (2, 5), "and so does one inside it");
+	assert_eq!(
+		lines(&then.statements[0]),
+		(3, 4),
+		"a continued `$` line reaches its continuation"
+	);
+	assert_eq!(lines(l), (7, 9), "a spilled list reaches its `]`");
+	assert_eq!(
+		lines(run),
+		(10, 10),
+		"a run stops at its last `$` line, not the blanks after it"
+	);
+	assert_eq!(lines(p), (13, 13));
+}
+
+#[test]
 fn detach_is_only_a_marker_in_front_of_a_command() {
 	// Claimed narrowly, so it stays an ordinary name everywhere else.
 	crate::parse("let detach = 5\ndetach = 6\n").expect("an ordinary binding and reassignment");

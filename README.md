@@ -46,7 +46,7 @@ $ run :list
 ## Quick start
 
 ```bash
-curl -fsSL https://github.com/JoaaoVerona/runfile/releases/latest/download/install.sh | sh
+curl -fsSL https://git.joaoverona.com/joaaoverona/runfile/releases/download/latest/install.sh | sh
 run :init             # creates runfiles/ with an example
 run :list             # every target, with descriptions
 run <target> --help   # what one target does, and what it reads
@@ -847,7 +847,7 @@ whose state is still worth keeping, so a `setup` run under it is still recorded.
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
 | `run :completions <command> <shell>` | `install`, `uninstall` or `output` a completion script for `bash`, `zsh`, `fish` or `powershell` |
 | `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
-| `run :update` | Update the binary |
+| `run :update [version]` | Update the binary to the newest release, or to the tag named; `--channel=github` takes it from the GitHub mirror, `--force` reinstalls |
 
 | Flag | |
 | --- | --- |
@@ -897,6 +897,11 @@ disagrees with what will actually happen. There is nothing extra to install.
 Hover anything: a function shows its signature, what it does and a worked example; a property adds whether it
 may sit inside a block; `$`, `exec`, `run`, `retry`, `match` and the rest explain the line form itself.
 
+Completion knows where it is. At the start of a line it offers the keywords that fit there — `break` inside a
+loop, `case` inside a `match`, `end` only when something is open — and everywhere a value goes, the variables in
+scope: the file's own, its loop's, and those bound in the `_shared.run` above it. Inside `{{ … }}` on a `$` line
+it completes the same way, and in the rest of a shell line or an `exec` body it stays out of the way.
+
 Ctrl+click a `run <target>` to open that target's file, or a variable to jump to where it was bound — including
 into the `_shared.run` above it, which is the one definition you cannot find by reading the file in front of
 you.
@@ -904,7 +909,7 @@ you.
 It also hands `$` lines and shell `exec` bodies to [shellcheck](https://www.shellcheck.net) when it is
 installed, mapping findings back to the lines you wrote.
 
-**VS Code** — install the `.vsix` from the [latest release](https://github.com/JoaaoVerona/runfile/releases).
+**VS Code** — install the `.vsix` from the [latest release](https://git.joaoverona.com/joaaoverona/runfile/releases).
 You get a Run button on every target, a task provider, a sidebar tree, and shell lines coloured exactly as the
 same command in a `.sh` file. Set `"editor.formatOnSave": true` and saving formats.
 

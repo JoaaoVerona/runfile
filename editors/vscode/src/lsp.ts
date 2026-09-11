@@ -27,6 +27,7 @@ interface CompletionItem {
 	kind?: number;
 	detail?: string;
 	documentation?: unknown;
+	sortText?: string;
 }
 
 interface Diagnostic {
@@ -186,11 +187,14 @@ export class LanguageClient implements vscode.Disposable {
 	}
 
 	/**
-	 * What may be written at this position: properties after a `.`, functions
-	 * and sources, `RUN.` keys, target names after `run `.
+	 * What may be written at this position: keywords, the names in scope
+	 * (the `_shared.run` chain's included), functions and sources, properties
+	 * after a `.`, `RUN.` keys, target names after `run `.
 	 *
 	 * The range is given explicitly. VS Code's own idea of a word ends at a
 	 * `-` and a `:`, which would make `.env-file` complete to `.env-env-file`.
+	 * The sort order is the server's: without it every list is alphabetical,
+	 * and `region` three lines up sorts below `read_file`.
 	 */
 	async completion(doc: vscode.TextDocument, pos: vscode.Position): Promise<vscode.CompletionItem[]> {
 		const result = (await this.position("textDocument/completion", doc, pos)) as {
@@ -210,6 +214,7 @@ export class LanguageClient implements vscode.Disposable {
 		return items.map((i) => {
 			const item = new vscode.CompletionItem(i.label, completionKind(i.kind) as vscode.CompletionItemKind);
 			item.detail = i.detail;
+			item.sortText = i.sortText;
 			const doc = markdownOf(i.documentation);
 			if (doc) {
 				item.documentation = new vscode.MarkdownString(doc);

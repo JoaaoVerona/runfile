@@ -345,7 +345,8 @@ escape hatch is quoting, which `split_command` honours; a `run` argument keeps i
 `lexer::code` is the one place a line is stripped, and it is called from `logical` (so a spilled list's lines
 are stripped before they are joined), from `property`, `case_label` and the `exec` header, and from
 `parser::closes_body` — which the formatter shares, since a closer rule the two disagreed about would move a
-line into or out of a body. The formatter re-attaches the comment one space out and never touches its text:
+line into or out of a body, and which the language server asks to find a body in a document that does not
+parse. The formatter re-attaches the comment one space out and never touches its text:
 it is prose, and re-spacing an author's sentence is not what a formatter is for. Nothing in the tree records
 a comment, so the fingerprint check cannot catch a dropped one — only a test can.
 
@@ -364,6 +365,9 @@ the rest.
 
 ```
 GRAMMAR.ebnf                   # Normative grammar reference
+.cicd/                         # Gitea Actions (git.joaoverona.com reads only this): CI, audit, every release
+.cicd/release-assets/          # install.sh / install.ps1 -- RUNFILE_CHANNEL picks gitea (default) or github
+.github/workflows/             # GitHub Actions for the mirror: run on the `github` branch `run mirror` pushes
 .github/actions/setup/         # The only shipped action: installs `run`, PATH, optional secret keys
 runfiles/                      # This project's own targets (self-hosting); ci/ and wsl/ are namespaces
 editors/vscode/                # The VS Code extension (TypeScript) + its own runfiles/
@@ -447,6 +451,13 @@ quoting.
 - `Statement::Exec` carries `lines: Vec<usize>`, the source line of each body line. The two are not derivable
   from each other: a `$` run skips blank and comment lines, and a backslash continuation folds several source
   lines into one.
+- **A statement's span reaches its last line.** `block` stretches every statement's `span.end` to the end of
+  the last line it read — a block's `end`, a spilled list's `]`, a run's last `$` line — which an `exec`
+  block's already did. Where a block *ends* was otherwise nowhere in the tree, and completion has to know
+  whether the cursor is still inside the `for` that binds a name. Nothing else notices: every other reader of
+  a statement's span reads `.line`, and spans are stripped from the fingerprint and the golden trees. An
+  `else if` is the one exception — an `If` of its own inside its chain's `else`, closed by the chain's one
+  `end` — so only the `if` that opened the chain reaches it.
 
 ### runfile-discovery
 
@@ -717,6 +728,39 @@ terminal's width, and how wide text is on it).
 - Hover reads the word under the cursor rather than the tree, so it keeps working
   while the document does not parse. `RUN.` is the only source whose keys are known ahead of time; `ARG`,
   `ENV` and `FLAG` are whatever the caller passed, so there is nothing to offer for them.
+- **Completion reads the line for what kind of thing goes there, and the tree for what is in scope.** It used
+  to read only the line, and so offered the same ninety functions and sources everywhere: no keyword, and no
+  name the file had bound. The line so far says the kind — a keyword or a call at the start of a line, a
+  value after an `=` (where `json` and `exec` may open one too), `in` after a loop's names, `every` after a
+  retry's count, a property after a leading `.`, a target after `run ` or `code_of(run `, and nothing in a
+  string or in shell text except inside a `{{ … }}`. The tree says which names are in scope and which blocks
+  are open: a `let` from the end of its statement down (the runner's variables are flat, so one inside an `if`
+  outlives its `end`), a loop's names only inside its body (the runner puts them back as the loop exits), and
+  the top-level `let`s of every `_shared.run` above the file, which a binding in the file shadows. The nearest
+  binding of a name is the one offered, with the line that binds it. `else`, `case`, `default`, `break`,
+  `continue` and `end` are offered only where the blocks around the cursor take them, since anywhere else
+  each is a parse error.
+- **The tree is of a repaired copy, because the document is mid-edit.** `print(re` does not parse, and a
+  block opened a moment ago has no `end`. `parse_around` blanks the line the parser stops at and tries again,
+  as often as it takes (up to sixteen lines), and gives a block left open up to three `end`s. Every parse
+  error names its line, which is what makes the repair exact rather than a guess. Blanking keeps every other
+  line where it was, so a position in the repaired tree is a position in the document. That is also why
+  there is no "last version that parsed" to fall back on: its lines have moved since.
+- **A body is found from the lines, not the tree.** An `exec` body, a structured block and a `$` line's
+  backslash continuation are somebody else's text, where only `{{ … }}` completes. `bodies` walks the lines
+  with the parser's own `closes_body`, because a body is where a document spends most of its time not
+  parsing: a `json` block is validated as it is read, and is not valid JSON halfway through a line. With the
+  cursor in one, its whole statement is set aside before the repair, so the code around it still parses.
+- **The `_shared.run` chain is asked only where a name could go.** `complete` takes it as a closure, and a
+  test hands it one that panics, because answering means discovery and reading files. A target's chain is
+  the catalog's; a `_shared.run` is not a target, so its chain is that of any target at or below its
+  directory, cut off at its own. An open shared file is read as the editor has it, unsaved edits and all —
+  for go-to-definition too.
+- **Every item carries its own kind and a rank**, sent as `sortText`. An editor sorts by how well the typed
+  prefix fits and only then by `sortText`, so the rank decides exactly the ties it should: `region`, bound
+  three lines up, above `read_file` for `re`, and a keyword above a binding at the start of a line. A source is
+  a `Module` (read through a dot), except `ARGS`, and is not offered at the start of a line, where a line
+  that is only a value is an error.
 - **Go to definition** answers for a `run <target>` *and* for a binding. A `run` target is matched by
   **position** rather than by word, because `word_at` stops at `:` and a namespaced `build:release` is two
   words to it -- clicking either half, the `:` between them, or the keyword, means the same thing. The span
@@ -834,7 +878,9 @@ format-on-save needed a reply, so it now correlates requests by id with a **time
 a wedged server must not take the editor's save with it. Telling a reply from a notification is `replyId` in
 `pure.ts`, extracted so the rule has a test on it rather than sitting in a class that cannot be loaded outside
 an extension host. Registering `DocumentFormattingEditProvider` is what makes `editor.formatOnSave` apply to
-`.run` files; every other editor gets the same thing straight from the LSP.
+`.run` files; every other editor gets the same thing straight from the LSP. Completion forwards the server's
+`sortText`, without which every list is alphabetical, and maps its kinds through `completionKind` — a list of
+the kinds the server sends, so a new one has to be added there or it is drawn as plain text.
 
 ### editors/tree-sitter
 
@@ -890,6 +936,26 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 
 - **Runner flags are recognised only before the target name**; everything after it belongs to the target. So
   `run echoes --dry-run` passes `--dry-run` through as `FLAG.dry-run`.
+- **`:update` is installing again, and it decides before it downloads.** A `cmd_update::Channel` is one URL,
+  a repository's releases: `gitea` (the default, where every release is cut) or `github` (the mirror, which
+  lags until `run mirror`). Two things are the same on both hosts and nothing else is used: `/releases/latest`
+  redirects to the newest release's `/releases/tag/<tag>`, so following it with `curl -w '%{url_effective}'`
+  names the version with no JSON to parse; and `/releases/download/<tag>/<asset>` serves a named release. Each
+  host's own `latest` *download* alias is a different shape (Gitea `/releases/download/latest/…`, GitHub
+  `/releases/latest/download/…`), so a URL with its host swapped 404s -- which is why the installers resolve
+  `latest` to a tag the same way instead. Knowing the version first is what the output is for: `Plan` says up to
+  date, **ahead** (this binary is newer than the channel's newest -- a source build or an unpushed mirror, and
+  only naming a version or `--force` goes back), upgrade, reinstall or downgrade. The installer that runs is
+  the one *that release* shipped, given the tag, `RUNFILE_CHANNEL` and `RUNFILE_INSTALL_DIR`; its stdout is kept
+  back unless it fails, since the updater says the same with both versions in hand. Afterwards the new file's
+  own `--version` is what gets reported, and a mismatch with the tag is an error -- it is the one account that
+  cannot disagree with what was installed. On Unix the script is **downloaded first and then piped to `sh -s
+  --`**, not run as `curl … | sh`: a pipeline's status is its last command's, and `sh` given an empty script
+  succeeds, so a failed download used to be reported as a successful update that had changed nothing. `1.2.0`
+  is taken as `v1.2.0`; a version starting with `-` is refused, and `:update --help` prints its usage -- both
+  were read as a release name and sent to the server. `tests/update.rs` walks every outcome against a fake
+  `curl` serving the repository's real `install.sh`; its tests take turns, because each writes an executable
+  and runs it, and a fork from a parallel test in between holds the file open for writing ("Text file busy").
 - **`:list` shows the machine-wide targets first**, under `global:`. They are reachable from every directory
   and appear in no file a reader of the project can see, so they are the group worth meeting first; the local
   ones follow. `local:` is the unlabelled default only while nothing precedes it, which is every project
@@ -1119,6 +1185,82 @@ which CI no longer writes. A workflow that wants a materialized env file writes 
 at the path — one step in the workflow rather than a capability in the action, and the CLI keeps
 `RUNFILE_ENV_FILE_TARGET` for whoever sets it. Deleting `$HOME/.runfiles` had also turned actively wrong once
 the CLI stopped reading it in CI: on a self-hosted runner it destroyed a directory the run was already ignoring.
+
+## Gitea, and GitHub as a mirror
+
+The repository lives on git.joaoverona.com, and **GitHub is a mirror, pushed when wanted rather than on every
+push.** Master goes to Gitea only: its CI runs on every push, `run release` tags and pushes to master's
+upstream there, and the tag cuts the release (`.cicd/release.yml`). Gitea is configured with
+`WORKFLOW_DIRS=.cicd` and reads nothing else; GitHub reads `.github/workflows/` and nothing else, so neither
+sees the other's files.
+
+**`run mirror` is the one thing that sends anything to GitHub.** It fetches Gitea's master, fast-forwards the
+local `github` branch to it -- Gitea's, not the local master, since a commit that has not reached Gitea has not
+been tested or released there -- and pushes that branch to the remote it tracks, with `--follow-tags`. On
+GitHub the `github` branch runs CI, and a release workflow that mirrors **one** release: the version Cargo.toml
+names at the pushed commit, built from that version's tag. So a mirror pushed long after a release, with
+commits past it, still gets exactly what Gitea released; several releases between two pushes arrive as the
+newest, since npm's `latest` and the `v1` alias only want that one and would race if each were built; and a push
+with no new release is CI and nothing more. Tags were the trigger until the mirror, and would have built every
+intermediate release at once. A version whose tag did not arrive fails the release rather than skipping it.
+
+- **Fast-forward only.** A `github` that Gitea's master does not contain means something landed on GitHub first
+  -- a pull request merged there -- and it has to come back through master; `run mirror` says so and stops. It
+  moves the branch with `git fetch . <src>:refs/heads/github`, never `git branch -f`: forced onto a
+  remote-tracking branch, `branch` also makes it the upstream, so the next mirror read Gitea as the remote to
+  push to. The one-time setup is `git branch github master && git push -u <github-remote> github`.
+- **`run release` refuses to run off master**, which is what Gitea builds and what the mirror follows; a tag made
+  anywhere else is one the mirror could never reach.
+- **GitHub's default branch should be `github`**: it is what the repository page, a clone, a pull request and the
+  scheduled audit all read. Nothing here can set that; it is a repository setting.
+
+What each side publishes is decided by what it can do:
+
+| | Gitea (`.cicd/release.yml`) | GitHub (`.github/workflows/release.yml`) |
+| --- | --- | --- |
+| When | every `v*.*.*` tag | the newest release, when `run mirror` pushes |
+| Six archives, `.vsix`, installers | yes | yes |
+| What `run :update` and the installers download by default | **yes** | with `--channel=github` |
+| What the setup action downloads, and its `v1` alias | no | **yes** |
+| npm | no | **yes** |
+
+- **The setup action stays on GitHub.** Consumers write `JoaaoVerona/runfile/.github/actions/setup@v1`, and
+  Gitea resolves a bare `owner/repo` against `DEFAULT_ACTIONS_URL`, which is github.com on this instance -- so a
+  Gitea job already fetches the action, and the archive it installs, from GitHub. It moves when the mirror
+  does. Pointing it at Gitea is a change to every consumer's supply chain and was not made in passing.
+- **npm stays on GitHub** because trusted publishing accepts only GitHub's OIDC issuer, the provenance it
+  generates requires `repository` in `npm/package.json` to be that GitHub repository, and a version can be
+  published once -- so exactly one side does it.
+- **Both releases ship the same installers**, Gitea by default and GitHub under `RUNFILE_CHANNEL=github`. A
+  binary built before `:update` moved runs it against GitHub's `latest/download/install.sh`; that copy is what
+  moves it over. Anonymous reads need the Gitea repository to be **public** (the instance has
+  `REQUIRE_SIGNIN_VIEW=false`, so visibility is what decides); while it is private the installer, the default
+  `:update` and the Gitea leg of CI's `update` job all 404.
+- **A tag with a `-` is published as a prerelease on Gitea**, since Gitea's `latest` leaves prereleases out and
+  `latest` is what every update installs. `v*.*.*` matches `v1.3.0-rc.1`.
+
+What differs on Gitea's side is forced by the fleet (`gitea-easy-runners` documents it):
+
+- **The toolchain is `shared-actions/rust-toolchain-and-cache` with `cache: false`.** The cache exports
+  `CARGO_TARGET_DIR` to a path outside the workspace, and `runfiles/ci/_shared.run` pins its own -- a target's
+  `.env` beats the caller's shell, by design -- so turned on it would send the from-source build somewhere the
+  setup action does not look, and cache a directory the tests never build into. Making it work would mean
+  `_shared.run` honouring a caller's `CARGO_TARGET_DIR`, which changes local builds too.
+- **`macos-26` is an Intel Mac**, so `aarch64-apple-darwin` is cross-compiled there and nothing on Gitea runs
+  aarch64 code; GitHub's `macos-15` is Apple Silicon and covers it. `aarch64-unknown-linux-musl` is
+  cross-linked by zig on `ubuntu-24.04` (`rust-cross-linux`); `ubuntu-24.04-arm` is qemu emulating the compiler.
+- **Windows builds natively on `windows-2025`**, both targets, with the MSVC host named outright (read from
+  `rust-toolchain.toml`, since rustup settles a machine's host ABI once and settles on GNU if Visual Studio
+  arrived later). `rust-cross-windows` would free the fleet's one Windows runner, but `+crt-static` lives in
+  `.cargo/config.toml` and cargo's own MSVC build is the path known to carry it into the binary. The runner has
+  no 7-Zip, so it zips with PowerShell 7's `Compress-Archive` -- 5.1's writes `\` into entry names.
+- **Artifacts go through `shared-actions/gitea-upload-artifact` and `gitea-download-artifact`**: upstream's
+  refuse any server that is not github.com.
+- **CI's `update` job walks `:update` against the real hosts**, once per channel: it copies the from-source
+  binary aside, runs `:update --force`, and asserts the file changed -- an update that downloaded nothing and
+  exited 0 is the failure it exists for. `--force` because a build of master is usually the newest release's
+  version already, and would rightly do nothing. Like `action`, it reports on the newest published releases as
+  well as the commit.
 
 ## Preparation targets
 

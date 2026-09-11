@@ -1,0 +1,224 @@
+# Gitea Actions. git.joaoverona.com reads workflows from .cicd/ and nowhere else
+# (WORKFLOW_DIRS=.cicd), and GitHub reads .github/workflows/ and nowhere else,
+# so each runs its own copy and neither sees the other's. This one is
+# .github/workflows/ci.yml on the fleet's runners, and differs where the fleet
+# does:
+#
+# - The toolchain comes from shared-actions' rust-toolchain-and-cache, with the
+#   cache OFF. That cache works by exporting CARGO_TARGET_DIR to a path outside
+#   the workspace, and this repository's `ci:` targets pin their own in
+#   runfiles/ci/_shared.run -- a target's `.env` beats the caller's shell, by
+#   design. Turned on, it would send the from-source build somewhere the setup
+#   action does not look, and cache a directory the tests never build into.
+#   Its `rustflags` default is empty, which `.cargo/config.toml` needs.
+# - macos-26 here is an Intel Mac, so no job in this file runs aarch64 code.
+#   GitHub's macos-15 leg is Apple Silicon and still does.
+# - The Windows leg names its MSVC host, below.
+# - `update` has no GitHub counterpart: it is the path `run :update` takes,
+#   and that path leads here.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Rust toolchain
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
+        with:
+          cache: false
+
+      # From source, like every job here that runs a target: the released CLI
+      # is a previous version of this repository's own task files, so it breaks
+      # exactly when the language changes.
+      - name: Setup Runfile (from source)
+        uses: ./.github/actions/setup
+        with:
+          from-source: true
+
+      - name: Check (format + clippy + type-check)
+        run: run ci:check
+
+      - name: Verify Cargo.lock is in sync
+        run: git diff --exit-code Cargo.lock
+
+      # The VS Code extension reads the `run :list --json` document this CLI
+      # emits. Both live in this repo, so a bumped format version must not
+      # silently outrun the extension's parser.
+      - name: Verify catalog format version matches the VS Code extension
+        run: |
+          set -euo pipefail
+          emitted=$(run :list --json | sed -n 's/.*"formatVersion": *\([0-9]*\).*/\1/p' | head -n1)
+          expected=$(sed -n 's/.*SUPPORTED_FORMAT_VERSION = \([0-9]*\).*/\1/p' editors/vscode/src/pure.ts | head -n1)
+          echo "CLI emits formatVersion=$emitted; extension supports $expected"
+          test -n "$emitted" && test -n "$expected" && test "$emitted" = "$expected"
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, ubuntu-24.04, windows-2025]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      # rustup settles a Windows machine's host ABI once, when it is installed,
+      # and settles on GNU if Visual Studio was not there yet -- which still
+      # builds, for an ABI nothing ships (gitea-easy-runners, "C++ build tools
+      # and the Rust ABI"). Naming the MSVC host takes the runner's history out
+      # of it, and reading the channel from rust-toolchain.toml keeps that file
+      # the one place the version is written. Skipped elsewhere, which leaves
+      # the toolchain input empty and the file in charge.
+      - name: Name the MSVC host toolchain
+        id: host
+        if: matrix.os == 'windows-2025'
+        shell: bash
+        run: echo "toolchain=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)-x86_64-pc-windows-msvc" >> "$GITEA_OUTPUT"
+
+      - name: Rust toolchain
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
+        with:
+          cache: false
+          toolchain: ${{ steps.host.outputs.toolchain }}
+
+      - name: Setup Runfile (from source)
+        uses: ./.github/actions/setup
+        with:
+          from-source: true
+
+      - name: Test
+        run: run ci:test
+
+  extension:
+    name: VS Code extension
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      # Must precede setup-node: `cache: pnpm` needs the pnpm binary to resolve
+      # the store path. The version comes from `packageManager` in package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.0.10
+        with:
+          package_json_file: editors/vscode/package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: editors/vscode/pnpm-lock.yaml
+
+      - name: Rust toolchain
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
+        with:
+          cache: false
+
+      - name: Setup Runfile (from source)
+        uses: ./.github/actions/setup
+        with:
+          from-source: true
+
+      - name: Install extension dependencies
+        run: run vscode:setup
+
+      - name: Test the extension
+        run: run vscode:test
+
+      # The grammar's tests compile the generated parser with the system C
+      # compiler, then parse every target in this repository.
+      - name: Set up the tree-sitter grammar
+        run: run tree-sitter:setup
+
+      - name: Test the tree-sitter grammar
+        run: run tree-sitter:test
+
+      - name: Compile and package extension
+        run: run vscode:package
+
+      - name: Upload .vsix
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/gitea-upload-artifact@v1
+        with:
+          if-no-files-found: error
+          name: runfile-vscode-extension
+          path: editors/vscode/*.vsix
+
+  # The path every consumer on this instance takes. `JoaaoVerona/runfile/...`
+  # resolves against DEFAULT_ACTIONS_URL, which is github.com here, so the
+  # action and the archive it installs both come from GitHub -- but it runs on
+  # these runners, and act_runner reports RUNNER_OS and RUNNER_ARCH in its own
+  # spellings, which the action has to normalise. Like the job of the same name
+  # in .github/workflows/ci.yml, it reports on the newest GitHub release rather
+  # than on this commit.
+  action:
+    name: Install from the published GitHub release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Runfile
+        uses: ./.github/actions/setup
+
+      - name: The binary is on PATH and serves the protocol
+        run: |
+          run --version
+          # Fed a shutdown rather than asked for `--version`: `:lsp` does not
+          # take one and would sit reading stdin for a request instead.
+          printf 'Content-Length: 44\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"shutdown"}' |
+            run :lsp | grep -q Content-Length
+
+  # `run :update` looks up a channel's newest release, fetches the install.sh
+  # that release shipped, and runs it, and the script fetches its archive from
+  # the same place. crates/runfile-cli/tests/update.rs walks all of that
+  # against a fake server; this walks it against the real ones: the updater as
+  # this commit builds it, against whatever is published now. So it reports on
+  # the newest releases as well as on the commit, and the Gitea leg fails while
+  # the repository is private, because nothing on that path sends a token.
+  update:
+    name: Update from the published releases
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Rust toolchain
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
+        with:
+          cache: false
+
+      - name: Setup Runfile (from source)
+        uses: ./.github/actions/setup
+        with:
+          from-source: true
+
+      # A fresh copy per channel, because `:update` installs into the directory
+      # the running binary lives in, and the second leg has to run this
+      # commit's updater rather than the release the first one installed.
+      # `--force`, because a build of this commit is usually the newest
+      # release's version already, and would rightly have nothing to do.
+      # Comparing the file is the assertion that matters: an update that
+      # downloaded nothing and still exited 0 is the failure this is here for.
+      - name: run :update replaces the binary it runs from
+        run: |
+          set -euo pipefail
+          for channel in gitea github; do
+            dir="$RUNNER_TEMP/update-$channel"
+            mkdir -p "$dir"
+            cp "$(command -v run)" "$dir/run"
+            before=$(sha256sum < "$dir/run")
+            "$dir/run" :update --force --channel="$channel"
+            test "$before" != "$(sha256sum < "$dir/run")"
+          done

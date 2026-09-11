@@ -231,34 +231,87 @@ fn edits(a: &str, b: &str) -> usize {
 	prev[b.len()]
 }
 
-/// What to offer at `position`. The prefix already typed is matched by the
-/// client, so everything applicable is returned.
+/// What kind of thing a completion is, which is the icon an editor draws beside
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+	Function,
+	/// A binding, a loop variable, `ARGS`, a key of `RUN`.
+	Variable,
+	/// A source whose keys follow a dot: `ARG`, `ENV`, `FLAG`, `RUN`.
+	Module,
+	Property,
+	/// A target name.
+	Value,
+	Keyword,
+}
+
+impl Kind {
+	/// LSP's `CompletionItemKind`.
+	pub fn lsp(self) -> u8 {
+		match self {
+			Kind::Function => 3,
+			Kind::Variable => 6,
+			Kind::Module => 9,
+			Kind::Property => 10,
+			Kind::Value => 12,
+			Kind::Keyword => 14,
+		}
+	}
+}
+
 /// One offered completion: what to insert, and what to show beside it.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Item {
 	pub label: String,
 	pub detail: String,
 	pub doc: String,
+	pub kind: Kind,
+	/// Where it sorts among matches that are otherwise as good, lowest first.
+	/// An editor ranks by how well the typed prefix fits and only then by
+	/// this, so it decides what comes first when `re` fits `region` and
+	/// `read_file` equally well -- the name bound three lines up.
+	pub rank: u8,
 }
 
 impl Item {
-	fn new(label: &str, detail: &str, doc: &str) -> Self {
+	fn new(label: &str, detail: &str, doc: &str, kind: Kind, rank: u8) -> Self {
 		Self {
 			label: label.into(),
 			detail: detail.into(),
 			doc: doc.into(),
+			kind,
+			rank,
 		}
 	}
 }
 
+/// What to offer at a position. The prefix already typed is matched by the
+/// client, so everything applicable is returned.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Completions {
-	Properties(Vec<Item>),
-	Functions(Vec<Item>),
-	/// The keys of one source, e.g. everything after `RUN.`.
-	Sources(Vec<Item>),
+	Items(Vec<Item>),
+	/// Target names, which only discovery can list.
 	Targets,
 	None,
+}
+
+/// How a name came to be bound, which is what an editor says beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Binder {
+	Let,
+	For,
+	/// A top-level `let` in a `_shared.run` above the document.
+	Shared,
+}
+
+/// A name completion may offer, and the line that binds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+	pub name: String,
+	/// That line as written, shown with the name so a reader sees what it holds.
+	pub line: String,
+	pub binder: Binder,
 }
 
 /// What `RUN.` offers, and what each one means. The only source with a fixed
@@ -340,72 +393,615 @@ fn with_example(doc: &str, example: &str) -> String {
 	format!("{doc}\n\n```runfile\n{example}\n```")
 }
 
-/// Completion depends only on the line so far, which is what makes it usable
-/// on a document that does not currently parse.
-pub fn complete(line_prefix: &str) -> Completions {
-	let t = line_prefix.trim_start();
+/// What may be written at zero-based line `no`, character `col`.
+///
+/// The line so far decides what *kind* of thing goes there -- a property after
+/// a leading `.`, a target after `run `, nothing in shell text -- and the tree
+/// decides which names are in scope and which blocks are open around it. The
+/// document is usually mid-edit and not parsing, so the tree is of a repaired
+/// copy; see [`parse_around`].
+///
+/// `shared` lists what the `_shared.run` files above the document bind, and is
+/// only called where a name could go: answering it means discovery.
+pub fn complete(src: &str, no: usize, col: usize, shared: impl FnOnce() -> Vec<Binding>) -> Completions {
+	let line = src.lines().nth(no).unwrap_or("");
+	let prefix = &line[..byte_at(line, col)];
+	let body = bodies(src).into_iter().find(|b| b.lines.contains(&no));
+	let foreign = body.is_some();
+	let here = Place::of(src, no + 1, body.as_ref().map(|b| &b.whole));
 	// Prose, not code. A comment runs to the end of its line, so a prefix that
 	// has already passed the `#` is inside one -- and the runner's own rule is
 	// what says which `#` that is, so a `#` in a string or in shell text still
 	// completes as the code it is.
-	if lexer::comment_at(line_prefix).is_some() {
+	if !foreign && lexer::comment_at(prefix).is_some() {
 		return Completions::None;
 	}
-	if let Some(rest) = t.strip_prefix('.')
-		&& !rest.contains('=')
-	{
-		return Completions::Properties(
-			PROPERTIES
-				.iter()
-				.map(|p| {
-					Item::new(
-						p.name,
-						if p.block_scoped {
-							"property"
-						} else {
-							"property, header-only"
-						},
-						&with_example(p.doc, p.example),
-					)
-				})
-				.collect(),
-		);
+	match region(prefix, foreign) {
+		Region::Text => Completions::None,
+		Region::Interp(at) => expression(&prefix[at..], here.as_ref(), shared, false),
+		Region::Code => code(prefix.trim_start(), here.as_ref(), shared),
 	}
-	// `RUN.` is the one source whose keys are known ahead of time.
-	if t.ends_with("RUN.")
-		|| t.rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
-			.next()
-			.is_some_and(|w| w.starts_with("RUN."))
-	{
-		return Completions::Sources(
-			RUN_KEYS
-				.iter()
-				.map(|(k, d, e)| Item::new(k, "run context", &with_example(d, e)))
-				.collect(),
-		);
+}
+
+/// Keywords that are written after something rather than at the start of a
+/// line, and so are offered only there: `in` after a loop's names, `every`
+/// after a retry's count, `json` as a value, and `$` and `#`, which are
+/// characters. `code_of` is a call, and goes wherever a function does.
+const NOT_OPENERS: &[&str] = &["$", "#", "in", "every", "json", "code_of"];
+
+/// A line of this language, up to the cursor, with its indentation dropped.
+fn code(t: &str, here: Option<&Place>, shared: impl FnOnce() -> Vec<Binding>) -> Completions {
+	// `.name` is a property until its `=`, and a value after it. A dotted name
+	// addresses a sub-key -- `.env.PORT` -- whose names are the environment's.
+	if let Some(rest) = t.strip_prefix('.') {
+		return match rest.split_once('=') {
+			Some((_, value)) => expression(value, here, shared, false),
+			None if rest.contains(|c: char| c == '.' || c.is_whitespace()) => Completions::None,
+			None => Completions::Items(properties()),
+		};
 	}
-	// `run ` wants a target name; `run x ` is already past it.
-	if let Some(rest) = t.strip_prefix("run ")
-		&& !rest.trim_start().contains(' ')
+	// `run ` wants a target name; `run x ` is already past it, and what follows
+	// is words handed over as written.
+	if let Some(rest) = t.strip_prefix("run ") {
+		return match rest.trim_start().contains(' ') {
+			true => Completions::None,
+			false => Completions::Targets,
+		};
+	}
+	let (before, _) = split_word(t);
+	let before = before.trim_end();
+	if before.is_empty() {
+		return statement(here, shared);
+	}
+	let spaced = format!("{before} ");
+	match before.split_whitespace().next().unwrap_or_default() {
+		// A name being introduced, which nothing here can guess.
+		"let" if !before.contains('=') => Completions::None,
+		"for" if before == "for" => Completions::None,
+		"for" if !spaced.contains(" in ") => keywords(&["in"]),
+		"retry" if before != "retry" && !spaced.contains(" every ") => keywords(&["every"]),
+		"else" if before == "else" => keywords(&["if"]),
+		"detach" if before == "detach" => keywords(&["exec"]),
+		// A label is a quoted string, and `default` takes nothing.
+		"case" | "default" => Completions::None,
+		_ => expression(t, here, shared, opens_value(before)),
+	}
+}
+
+/// The start of a line: a keyword, a call, or a name being rebound.
+fn statement(here: Option<&Place>, shared: impl FnOnce() -> Vec<Binding>) -> Completions {
+	let mut items: Vec<Item> = KEYWORDS
+		.iter()
+		.filter(|k| !NOT_OPENERS.contains(&k.name) && fits(k.name, here))
+		.map(|k| keyword_item(k, Kind::Keyword, 0))
+		.collect();
+	items.extend(in_scope(here, shared, 1));
+	items.extend(functions(2));
+	Completions::Items(items)
+}
+
+/// Somewhere a value can start -- or, straight after a source's dot, what that
+/// source holds. `opening` is the first word of a `let` or a reassignment's
+/// value, the one place a `json` block or an `exec` capture may begin.
+fn expression(text: &str, here: Option<&Place>, shared: impl FnOnce() -> Vec<Binding>, opening: bool) -> Completions {
+	// The dispatch `code_of` may hold wants a target name, as `run ` does.
+	if let Some((_, target)) = text.rsplit_once("code_of(run ")
+		&& !target.contains([' ', ')'])
 	{
 		return Completions::Targets;
 	}
-	// A shell line is the shell's business, not the language's.
-	if t.starts_with("$ ") || t == "$" {
+	let word = text
+		.rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-' || c == '.'))
+		.next()
+		.unwrap_or_default();
+	// `RUN.` is the one source whose keys are known ahead of time. `ARG.` and
+	// the rest hold whatever the caller passed, and nothing else has members.
+	if word.starts_with("RUN.") {
+		return Completions::Items(
+			RUN_KEYS
+				.iter()
+				.map(|(k, d, e)| Item::new(k, "run context", &with_example(d, e), Kind::Variable, 0))
+				.collect(),
+		);
+	}
+	if word.contains('.') {
 		return Completions::None;
 	}
-	// Functions and the source roots share the same position: both are things
-	// an expression can start with.
-	let mut items: Vec<Item> = runfile_lang::functions::FUNCTIONS
+	let mut items = in_scope(here, shared, 0);
+	if opening {
+		items.extend(
+			KEYWORDS
+				.iter()
+				.filter(|k| k.name == "json" || k.name == "exec")
+				.map(|k| keyword_item(k, Kind::Keyword, 1)),
+		);
+	}
+	items.extend(functions(2));
+	items.extend(SOURCES.iter().map(|(n, d, e)| {
+		// `ARGS` is one value; the rest are read through a dot.
+		let kind = if *n == "ARGS" { Kind::Variable } else { Kind::Module };
+		Item::new(n, "source", &with_example(d, e), kind, 2)
+	}));
+	Completions::Items(items)
+}
+
+fn properties() -> Vec<Item> {
+	PROPERTIES
 		.iter()
-		.map(|f| Item::new(f.name, f.signature, &with_example(f.doc, f.example)))
-		.collect();
-	items.extend(
-		SOURCES
+		.map(|p| {
+			let detail = match p.block_scoped {
+				true => "property",
+				false => "property, header-only",
+			};
+			Item::new(p.name, detail, &with_example(p.doc, p.example), Kind::Property, 0)
+		})
+		.collect()
+}
+
+/// The library, and `code_of` with it: a keyword in that it may hold a `$` or a
+/// `run`, and a call in every way someone writing one can see.
+fn functions(rank: u8) -> impl Iterator<Item = Item> {
+	runfile_lang::functions::FUNCTIONS
+		.iter()
+		.map(move |f| {
+			Item::new(
+				f.name,
+				f.signature,
+				&with_example(f.doc, f.example),
+				Kind::Function,
+				rank,
+			)
+		})
+		.chain(
+			KEYWORDS
+				.iter()
+				.filter(|k| k.name == "code_of")
+				.map(move |k| keyword_item(k, Kind::Function, rank)),
+		)
+}
+
+fn keyword_item(k: &runfile_lang::Keyword, kind: Kind, rank: u8) -> Item {
+	Item::new(k.name, k.syntax, &with_example(k.doc, k.example), kind, rank)
+}
+
+/// Only these keywords, where nothing else can follow.
+fn keywords(names: &[&str]) -> Completions {
+	Completions::Items(
+		KEYWORDS
 			.iter()
-			.map(|(n, d, e)| Item::new(n, "source", &with_example(d, e))),
-	);
-	Completions::Functions(items)
+			.filter(|k| names.contains(&k.name))
+			.map(|k| keyword_item(k, Kind::Keyword, 0))
+			.collect(),
+	)
+}
+
+/// Every name in scope at the cursor: this document's, then the `_shared.run`
+/// chain's, which a binding here shadows as it would at run time. The nearest
+/// binding of a name is the one its value comes from, so each list is read
+/// from the bottom up and only the first of a name is kept.
+fn in_scope(here: Option<&Place>, shared: impl FnOnce() -> Vec<Binding>, rank: u8) -> Vec<Item> {
+	let shared = shared();
+	let local = here.map_or(&[][..], |p| &p.bound[..]);
+	let mut seen = std::collections::HashSet::new();
+	local
+		.iter()
+		.rev()
+		.chain(shared.iter().rev())
+		.filter(|b| seen.insert(b.name.as_str()))
+		.map(|b| {
+			let detail = match b.binder {
+				Binder::Let => "binding",
+				Binder::For => "loop variable",
+				Binder::Shared => "binding from _shared.run",
+			};
+			Item::new(
+				&b.name,
+				detail,
+				&format!("```runfile\n{}\n```", b.line),
+				Kind::Variable,
+				rank,
+			)
+		})
+		.collect()
+}
+
+/// Whether a keyword may open the line the cursor is on, as far as the blocks
+/// around it say. Without a tree to ask, every one may.
+fn fits(keyword: &str, here: Option<&Place>) -> bool {
+	let Some(p) = here else {
+		return true;
+	};
+	let innermost = p.blocks.last();
+	match keyword {
+		"else" => matches!(innermost, Some(Opener::If | Opener::Retry)),
+		"case" | "default" => innermost == Some(&Opener::Match),
+		"break" | "continue" => p.blocks.contains(&Opener::Loop),
+		"end" => innermost.is_some(),
+		_ => true,
+	}
+}
+
+/// The line split before the word being typed, which is the part a
+/// completion replaces.
+fn split_word(t: &str) -> (&str, &str) {
+	let at = t
+		.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+		.len();
+	t.split_at(at)
+}
+
+/// Whether `before` ends where the value of a `let` or a reassignment begins.
+fn opens_value(before: &str) -> bool {
+	before
+		.strip_suffix('=')
+		.is_some_and(|b| !b.ends_with(['=', '!', '<', '>']))
+}
+
+/// Where the end of a line's prefix sits.
+#[derive(Debug, PartialEq, Eq)]
+enum Region {
+	/// This language, outside any string.
+	Code,
+	/// Inside a `{{ … }}`, whose expression starts at this byte.
+	Interp(usize),
+	/// A string, a shell command, an `exec` body: text that is not ours to
+	/// complete.
+	Text,
+}
+
+/// Which region the end of `prefix` is in.
+///
+/// Scanned the way the lexer scans: a string skips `{{ … }}` whole, so a quote
+/// inside one does not end it, and a backslash keeps a quote from closing it.
+/// A `$` hands the rest of the line to a shell, and so does the command after
+/// `exec`; in either, only an interpolation is ours again. `foreign` starts the
+/// line in somebody else's text, which is what a body line is.
+fn region(prefix: &str, foreign: bool) -> Region {
+	#[derive(Clone, Copy, PartialEq)]
+	enum In {
+		Code,
+		Str,
+		Text,
+		Interp,
+	}
+	let b = prefix.as_bytes();
+	let mut open = vec![(if foreign { In::Text } else { In::Code }, 0)];
+	let mut i = 0;
+	while i < b.len() {
+		let top = open.last().map_or(In::Code, |o| o.0);
+		let rest = &b[i..];
+		match top {
+			In::Interp if rest.starts_with(b"}}") => {
+				open.pop();
+				i += 2;
+			}
+			In::Str | In::Text if rest.starts_with(b"\\{{") => i += 3,
+			In::Str if b[i] == b'\\' => i += 2,
+			_ if rest.starts_with(b"{{") => {
+				open.push((In::Interp, i + 2));
+				i += 2;
+			}
+			In::Str if b[i] == b'"' => {
+				open.pop();
+				i += 1;
+			}
+			In::Code | In::Interp if b[i] == b'"' => {
+				open.push((In::Str, i));
+				i += 1;
+			}
+			In::Code if b[i] == b'$' || starts_exec(prefix, i) => {
+				open.push((In::Text, i));
+				i += 1;
+			}
+			_ => i += 1,
+		}
+	}
+	match open.last() {
+		Some((In::Interp, at)) => Region::Interp(*at),
+		Some((In::Code, _)) | None => Region::Code,
+		Some(_) => Region::Text,
+	}
+}
+
+/// Whether the `exec` keyword starts at byte `i`: first on its line, after a
+/// `detach`, or as a value's first word. What follows it is a command line.
+fn starts_exec(prefix: &str, i: usize) -> bool {
+	if !prefix.as_bytes()[i..].starts_with(b"exec ") {
+		return false;
+	}
+	// `e` is ASCII, so `i` is a character boundary.
+	let before = prefix[..i].trim();
+	before.is_empty() || before == "detach" || opens_value(before)
+}
+
+/// A block a line can sit in, as far as the keywords that may open that line
+/// are concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opener {
+	If,
+	Retry,
+	/// `for`, `while`, `until` and `loop`: what `break` and `continue` need.
+	Loop,
+	Match,
+	Do,
+}
+
+/// What the tree says about one line of a document.
+struct Place {
+	/// Names bound above the line and still in scope on it, in source order.
+	bound: Vec<Binding>,
+	/// The blocks open around the line, outermost first.
+	blocks: Vec<Opener>,
+}
+
+impl Place {
+	/// `line` is one-based, the way the tree counts. `aside` is a statement to
+	/// leave out, zero-based -- the body the line is in, if it is in one.
+	fn of(src: &str, line: usize, aside: Option<&std::ops::Range<usize>>) -> Option<Place> {
+		let (tree, text) = parse_around(src, line, aside)?;
+		let mut p = Place::empty();
+		p.walk(&tree.body, &Text::new(&text), line);
+		Some(p)
+	}
+
+	fn empty() -> Place {
+		Place {
+			bound: Vec::new(),
+			blocks: Vec::new(),
+		}
+	}
+
+	fn walk(&mut self, block: &runfile_lang::Block, text: &Text, at: usize) {
+		for st in &block.statements {
+			let span = st.span();
+			let (first, last) = (span.line, text.line_of(span.end));
+			// Strictly between the line that opens a block and the one that
+			// closes it.
+			let inside = first < at && at < last;
+			match st {
+				// Bound once the statement is over, so a name is not offered
+				// inside its own value. A reassignment introduces nothing.
+				Statement::Let { names, .. } => {
+					if last < at {
+						self.bind(names, Binder::Let, text.line(first));
+					}
+				}
+				// The runner puts a loop's names back as it leaves, so they are
+				// in scope only inside it. A `let` is not: it outlives its block.
+				Statement::For { names, body, .. } => {
+					if inside {
+						self.bind(names, Binder::For, text.line(first));
+						self.blocks.push(Opener::Loop);
+					}
+					self.walk(body, text, at);
+				}
+				Statement::Loop { body, .. } | Statement::Do { body, .. } => {
+					if inside {
+						self.blocks.push(match st {
+							Statement::Do { .. } => Opener::Do,
+							_ => Opener::Loop,
+						});
+					}
+					self.walk(body, text, at);
+				}
+				Statement::If { then, otherwise, .. }
+				| Statement::Retry {
+					body: then, otherwise, ..
+				} => {
+					if inside {
+						self.blocks.push(match st {
+							Statement::If { .. } => Opener::If,
+							_ => Opener::Retry,
+						});
+					}
+					self.walk(then, text, at);
+					if let Some(o) = otherwise {
+						self.walk(o, text, at);
+					}
+				}
+				Statement::Match { cases, default, .. } => {
+					if inside {
+						self.blocks.push(Opener::Match);
+					}
+					for c in cases {
+						self.walk(&c.body, text, at);
+					}
+					if let Some(d) = default {
+						self.walk(d, text, at);
+					}
+				}
+				_ => {}
+			}
+		}
+	}
+
+	fn bind(&mut self, names: &[String], binder: Binder, line: &str) {
+		// `_` is a position thrown away, not a name.
+		for n in names.iter().filter(|n| *n != "_") {
+			self.bound.push(Binding {
+				name: n.clone(),
+				line: line.trim().to_string(),
+				binder,
+			});
+		}
+	}
+}
+
+/// A parsed text, for turning the tree's byte offsets back into lines.
+struct Text<'a> {
+	lines: Vec<&'a str>,
+	/// The byte each line starts at.
+	starts: Vec<usize>,
+}
+
+impl<'a> Text<'a> {
+	fn new(text: &'a str) -> Self {
+		Self {
+			lines: text.split('\n').collect(),
+			starts: std::iter::once(0)
+				.chain(text.match_indices('\n').map(|(i, _)| i + 1))
+				.collect(),
+		}
+	}
+
+	/// The one-based line byte `at` falls on.
+	fn line_of(&self, at: usize) -> usize {
+		self.starts.partition_point(|&s| s <= at)
+	}
+
+	/// One-based line `n`.
+	fn line(&self, n: usize) -> &'a str {
+		self.lines.get(n.wrapping_sub(1)).copied().unwrap_or_default()
+	}
+}
+
+/// A tree for a document that is usually in the middle of being written.
+///
+/// The line being typed is what most often stops a file parsing -- `print(re`
+/// is not a statement yet -- and a block opened a moment ago has no `end` yet.
+/// So the line the parser stops at is set aside and the parse tried again, as
+/// often as it takes, and a block still open at the end is given up to three
+/// `end`s. Every parse error names its line, which is what makes the repair
+/// exact rather than a guess at what went wrong.
+///
+/// A line inside a body sets aside the whole statement up front: a `json`
+/// block is checked as it is read and is not valid JSON halfway through a
+/// line, and an `exec` with no `end` yet closes only on one at its own
+/// indentation.
+///
+/// Blanking keeps every other line where it was, so a position in the tree is
+/// still a position in the document. The text that parsed comes back with the
+/// tree, since the tree's byte offsets index it rather than the document.
+fn parse_around(
+	src: &str,
+	line: usize,
+	aside: Option<&std::ops::Range<usize>>,
+) -> Option<(runfile_lang::Target, String)> {
+	let mut lines: Vec<&str> = src.split('\n').collect();
+	for i in aside.cloned().unwrap_or_default() {
+		lines[i] = "";
+	}
+	// Bounded, because a file broken on every line has nothing to offer.
+	for _ in 0..16 {
+		let mut text = lines.join("\n");
+		// Every line up to the cursor's is whole, so an `end` added below
+		// lands after it rather than on it.
+		if !text.ends_with('\n') {
+			text.push('\n');
+		}
+		while text.matches('\n').count() < line {
+			text.push('\n');
+		}
+		let mut stopped = None;
+		for closers in 0..=3 {
+			match runfile_lang::parse(&text) {
+				Ok(tree) => return Some((tree, text)),
+				Err(e) if closers == 0 => stopped = error_line(&e),
+				Err(_) => {}
+			}
+			text.push_str("end\n");
+		}
+		match lines.get_mut(stopped?.checked_sub(1)?) {
+			Some(l) if !l.trim().is_empty() => *l = "",
+			// Blank already, or one of the lines added: nothing left to set aside.
+			_ => return None,
+		}
+	}
+	None
+}
+
+/// The one-based line a parse error names. Every one names one -- `line N:`
+/// opens both kinds -- but a message is text, so this does not insist.
+fn error_line(e: &runfile_lang::ParseError) -> Option<usize> {
+	let msg = e.to_string();
+	msg.strip_prefix("line ")?.split_once(':')?.0.parse().ok()
+}
+
+/// A run of lines in somebody else's language, and the statement it is part of.
+struct Body {
+	/// Its own lines, zero-based: an `exec` body, a structured block's
+	/// contents, or the lines a `$` line's backslash carries it on to.
+	lines: std::ops::Range<usize>,
+	/// The whole statement -- opener, body and `end` -- which is what is set
+	/// aside when the cursor is in the body.
+	whole: std::ops::Range<usize>,
+}
+
+/// Every body in a document, found a line at a time the way the parser finds
+/// them: a `$` line continues while it ends in a backslash, and an `exec` or a
+/// structured block closes on an `end` at its opener's own indentation, which
+/// is the parser's own [`closes_body`](runfile_lang::parser::closes_body).
+///
+/// Read from the lines rather than the tree, because a body is where a
+/// document spends most of its time not parsing.
+fn bodies(src: &str) -> Vec<Body> {
+	let raw: Vec<&str> = src.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+	let mut out = Vec::new();
+	let mut i = 0;
+	while i < raw.len() {
+		let start = i;
+		let trimmed = raw[i].trim();
+		let lead = trimmed.strip_prefix("detach ").map_or(trimmed, str::trim_start);
+		if lead == "$" || lead.starts_with("$ ") {
+			let mut last = lead;
+			while last.ends_with('\\') && i + 1 < raw.len() {
+				i += 1;
+				last = raw[i];
+			}
+			if i > start {
+				out.push(Body {
+					lines: start + 1..i + 1,
+					whole: start..i + 1,
+				});
+			}
+		} else if !trimmed.starts_with('#') && opens_body(lexer::code(lead)) {
+			let indent = &raw[i][..raw[i].len() - raw[i].trim_start().len()];
+			let mut end = i + 1;
+			while end < raw.len() && !runfile_lang::parser::closes_body(raw[end], indent) {
+				end += 1;
+			}
+			out.push(Body {
+				lines: start + 1..end,
+				whole: start..(end + 1).min(raw.len()),
+			});
+			i = end;
+		}
+		i += 1;
+	}
+	out
+}
+
+/// Whether a line opens a body: `exec <command>`, or a binding whose value is
+/// an `exec` capture or a structured block.
+fn opens_body(code: &str) -> bool {
+	if code.starts_with("exec ") {
+		return true;
+	}
+	let Some((lhs, rhs)) = code.split_once('=') else {
+		return false;
+	};
+	let lhs = lhs.trim();
+	let names = lhs.strip_prefix("let ").unwrap_or(lhs);
+	let rhs = rhs.trim();
+	names.split(',').all(|n| is_name(n.trim()))
+		&& (rhs.starts_with("exec ") || runfile_lang::Structured::from_keyword(rhs).is_some())
+}
+
+/// What a `_shared.run` binds for the targets below it: its top-level `let`s,
+/// in order. Only those -- the rest of a shared file's statements never run,
+/// so a `let` inside an `if` there binds nothing.
+pub fn shared_bindings(src: &str) -> Vec<Binding> {
+	let Ok(tree) = runfile_lang::parse(src) else {
+		return Vec::new();
+	};
+	let text = Text::new(src);
+	let mut p = Place::empty();
+	for st in &tree.body.statements {
+		if let Statement::Let { names, span, .. } = st {
+			p.bind(names, Binder::Shared, text.line(span.line));
+		}
+	}
+	p.bound
 }
 
 /// What to show when the pointer rests on `col` of `line`.
@@ -814,64 +1410,421 @@ mod tests {
 		assert!(diagnose("run anything\n", &[], false).is_empty());
 	}
 
+	/// Completion at the end of a one-line document.
+	fn complete_line(line: &str) -> Completions {
+		complete(line, 0, line.chars().count(), Vec::new)
+	}
+
+	/// Completion where `‸` sits in `src`, with the marker taken out.
+	fn complete_at(src: &str) -> Completions {
+		complete_with(src, Vec::new)
+	}
+
+	fn complete_with(src: &str, shared: impl FnOnce() -> Vec<Binding>) -> Completions {
+		let (no, line) = src
+			.lines()
+			.enumerate()
+			.find(|(_, l)| l.contains('‸'))
+			.expect("a cursor");
+		let col = line[..line.find('‸').unwrap()].chars().count();
+		complete(&src.replace('‸', ""), no, col, shared)
+	}
+
+	fn items(c: Completions) -> Vec<Item> {
+		match c {
+			Completions::Items(items) => items,
+			other => panic!("expected items, got {other:?}"),
+		}
+	}
+
+	/// The labels offered, or none when the answer is not a list at all.
+	fn labels(c: Completions) -> Vec<String> {
+		match c {
+			Completions::Items(items) => items.into_iter().map(|i| i.label).collect(),
+			_ => Vec::new(),
+		}
+	}
+
+	fn has(c: Completions, want: &[&str], not: &[&str]) {
+		let got = labels(c);
+		for w in want {
+			assert!(got.iter().any(|g| g == w), "{w} missing from {got:?}");
+		}
+		for n in not {
+			assert!(!got.iter().any(|g| g == n), "{n} offered in {got:?}");
+		}
+	}
+
 	#[test]
 	fn a_leading_dot_completes_properties() {
-		let Completions::Properties(p) = complete("  .wa") else {
-			panic!("expected properties")
-		};
+		let p = items(complete_line("  .wa"));
 		let watch = p.iter().find(|i| i.label == "watch").expect("watch is offered");
 		assert_eq!(watch.detail, "property, header-only");
+		assert_eq!(watch.kind, Kind::Property);
 		assert!(!watch.doc.is_empty(), "and says what it does");
 	}
 
 	#[test]
 	fn a_property_that_already_has_a_value_completes_nothing_more() {
-		assert!(!matches!(complete(".shell = \"ba"), Completions::Properties(_)));
+		assert_eq!(complete_line(".shell = \"ba"), Completions::None, "inside a string");
+	}
+
+	#[test]
+	fn a_property_value_is_an_expression_and_a_sub_key_is_the_environments() {
+		has(
+			complete_at("let dir = \"web\"\n.workdir = d‸\n"),
+			&["dir", "to_upper", "ENV"],
+			&["watch", "json"],
+		);
+		// `.env.` is followed by a variable's name, which nothing here knows.
+		assert_eq!(complete_line(".env."), Completions::None);
 	}
 
 	#[test]
 	fn run_completes_target_names_until_one_is_chosen() {
-		assert_eq!(complete("run de"), Completions::Targets);
-		assert_ne!(complete("run deploy --x"), Completions::Targets);
+		assert_eq!(complete_line("run de"), Completions::Targets);
+		// Its arguments are words, handed over as written.
+		assert_eq!(complete_line("run deploy --x"), Completions::None);
+		// The dispatch `code_of` holds is the same one.
+		assert_eq!(complete_line("let c = code_of(run bu"), Completions::Targets);
+		assert_ne!(complete_line("let c = code_of(run build) + "), Completions::Targets);
 	}
 
 	#[test]
 	fn a_shell_line_offers_nothing() {
-		assert_eq!(complete("$ echo "), Completions::None);
+		assert_eq!(complete_line("$ echo "), Completions::None);
+		assert_eq!(complete_line("let out = $ git "), Completions::None, "a capture");
+		assert_eq!(complete_line("for f in lines($ git ls-"), Completions::None);
+		assert_eq!(complete_line("exec python3 -"), Completions::None, "an `exec` command");
+		assert_eq!(complete_line("let out = exec jq "), Completions::None);
 	}
 
 	#[test]
 	fn an_expression_offers_functions() {
-		let Completions::Functions(f) = complete("let x = to_") else {
-			panic!("expected functions")
-		};
+		let f = items(complete_line("let x = to_"));
 		let upper = f.iter().find(|i| i.label == "to_upper").expect("to_upper is offered");
 		assert_eq!(upper.detail, "to_upper(s)", "the signature is the detail");
+		assert_eq!(upper.kind, Kind::Function);
 		assert!(!upper.doc.is_empty());
+	}
+
+	// ---- keywords
+
+	#[test]
+	fn a_line_start_offers_the_keywords_that_open_a_line() {
+		let got = items(complete_at("let x = 1\n‸\n"));
+		let exec = got.iter().find(|i| i.label == "exec").expect("exec is offered");
+		assert_eq!(exec.kind, Kind::Keyword);
+		assert!(
+			exec.doc.contains("```runfile"),
+			"with the hover's example: {}",
+			exec.doc
+		);
+		has(
+			complete_at("let x = 1\n‸\n"),
+			&[
+				"let", "if", "for", "while", "until", "loop", "do", "match", "retry", "exec", "detach", "run",
+			],
+			// Written after something else, or characters rather than words.
+			&["in", "every", "json", "$", "#"],
+		);
+		// And while one is half typed.
+		has(complete_at("\tfo‸\n"), &["for"], &[]);
+	}
+
+	#[test]
+	fn a_keyword_that_closes_or_continues_a_block_is_offered_only_inside_one() {
+		// At the top level each of these is a parse error.
+		has(
+			complete_at("‸\n"),
+			&["let"],
+			&["end", "else", "case", "default", "break", "continue"],
+		);
+		has(
+			complete_at("for x in xs\n\t‸\nend\n"),
+			&["break", "continue", "end"],
+			&["else", "case"],
+		);
+		has(
+			complete_at("if FLAG.x\n\t‸\nend\n"),
+			&["else", "end"],
+			&["break", "case"],
+		);
+		// `break` leaves the loop around an `if`; `else` belongs to the `if`.
+		has(
+			complete_at("for x in xs\n\tif FLAG.x\n\t\t‸\n\tend\nend\n"),
+			&["break", "else", "end"],
+			&[],
+		);
+		has(
+			complete_at("match RUN.os\n\tcase \"linux\"\n\t\t$ true\n\t‸\nend\n"),
+			&["case", "default", "end"],
+			&["else"],
+		);
+		has(complete_at("retry 3\n\t$ true\n‸\nend\n"), &["else", "end"], &["break"]);
+		has(complete_at("do\n\t‸\nend\n"), &["end"], &["else"]);
+	}
+
+	#[test]
+	fn a_block_opened_a_moment_ago_counts_before_its_end_is_written() {
+		// No `end` yet: the file does not parse as it stands.
+		has(complete_at("while FLAG.x\n\t‸"), &["break", "end"], &[]);
+	}
+
+	#[test]
+	fn a_header_offers_what_comes_next_in_it() {
+		assert_eq!(labels(complete_line("for x i")), ["in"]);
+		assert_eq!(labels(complete_line("for a, b ")), ["in"]);
+		assert_eq!(labels(complete_line("retry 30 ev")), ["every"]);
+		assert_eq!(labels(complete_line("else i")), ["if"]);
+		assert_eq!(labels(complete_line("detach ex")), ["exec"]);
+		// A name being introduced is nothing anyone can guess.
+		assert_eq!(complete_line("let "), Completions::None);
+		assert_eq!(complete_line("let a, "), Completions::None);
+		assert_eq!(complete_line("for "), Completions::None);
+		assert_eq!(complete_line("case "), Completions::None);
+		// Past the keyword, an ordinary value.
+		has(complete_line("for x in "), &["glob", "ARGS"], &["in"]);
+		has(complete_line("retry 30 every "), &["number"], &["every"]);
+		has(complete_line("else if "), &["file_exists"], &["if"]);
+	}
+
+	#[test]
+	fn a_value_may_open_with_a_json_block_or_an_exec_capture() {
+		has(complete_line("let doc = "), &["json", "exec", "to_upper"], &["for"]);
+		has(complete_line("doc = js"), &["json"], &[]);
+		// Anywhere else in an expression they are not values.
+		has(complete_line("print("), &["to_upper"], &["json", "exec"]);
+		has(complete_line("if x == "), &["to_upper"], &["json", "exec"]);
+		has(complete_line("let ok = x != "), &["to_upper"], &["json", "exec"]);
+	}
+
+	#[test]
+	fn code_of_is_offered_as_the_call_it_is() {
+		let got = items(complete_line("let c = co"));
+		let c = got
+			.iter()
+			.find(|i| i.label == "code_of")
+			.expect("offered with the functions");
+		assert_eq!(c.kind, Kind::Function);
+		has(complete_at("‸\n"), &["code_of"], &[]);
+	}
+
+	// ---- names
+
+	#[test]
+	fn a_binding_above_the_cursor_is_offered_with_the_line_that_binds_it() {
+		let got = items(complete_at("let region = \"eu\"\nprint(‸)\n"));
+		let r = got.iter().find(|i| i.label == "region").expect("region is offered");
+		assert_eq!((r.kind, r.detail.as_str()), (Kind::Variable, "binding"));
+		assert!(r.doc.contains("let region = \"eu\""), "{}", r.doc);
+		// Unpacked names each count, and `_` is not one.
+		has(
+			complete_at("let major, _, patch = split(v, \".\")\nprint(‸)\n"),
+			&["major", "patch"],
+			&["_"],
+		);
+	}
+
+	#[test]
+	fn a_name_is_not_offered_above_its_let_or_inside_its_own_value() {
+		has(complete_at("print(‸)\nlet later = 1\n"), &["print"], &["later"]);
+		has(complete_at("let early = 1\nlet me = ea‸\n"), &["early"], &["me"]);
+		// A spilled list is one statement, and not over until its `]`.
+		has(complete_at("let xs = [\n\t‸\n]\n"), &["to_upper"], &["xs"]);
+	}
+
+	#[test]
+	fn a_loop_variable_is_in_scope_only_inside_its_loop_and_a_let_outlives_its_block() {
+		let got = items(complete_at("for host in hosts\n\tprint(‸)\nend\n"));
+		let h = got.iter().find(|i| i.label == "host").expect("the loop's name");
+		assert_eq!(h.detail, "loop variable");
+		has(
+			complete_at("for host in hosts\n\tlet seen = host\nend\nprint(‸)\n"),
+			// The runner puts a loop's names back as it leaves; a `let` inside
+			// any block is still bound after its `end`.
+			&["seen"],
+			&["host"],
+		);
+		has(
+			complete_at("for a, b in pairs\n\tfor c in xs\n\t\tprint(‸)\n\tend\nend\n"),
+			&["a", "b", "c"],
+			&[],
+		);
+	}
+
+	#[test]
+	fn the_nearest_binding_of_a_name_is_the_one_offered() {
+		let got = items(complete_at("let v = 1\nlet v = 2\nprint(‸)\n"));
+		let v: Vec<&Item> = got.iter().filter(|i| i.label == "v").collect();
+		assert_eq!(v.len(), 1, "once: {v:?}");
+		assert!(v[0].doc.contains("let v = 2"), "{}", v[0].doc);
+	}
+
+	#[test]
+	fn a_line_being_typed_does_not_hide_the_names_above_it() {
+		// `print(re` is not a statement yet, so the file does not parse.
+		has(complete_at("let region = \"eu\"\nprint(re‸\n"), &["region"], &[]);
+		// Nor, with no `end`, does the loop around it.
+		has(complete_at("for host in hosts\n\tprint(ho‸"), &["host"], &[]);
+	}
+
+	#[test]
+	fn every_line_the_parser_stops_at_is_set_aside() {
+		// Broken in three places, none of them the cursor's. Each parse error
+		// names its line, so each is blanked in turn until the rest parses --
+		// and the loop around the cursor is still a loop.
+		let src = "let region = \"eu\"\nlet = 3\nfor host in hosts\n\t$ deploy {{ ho\n\t‸\n\tx(\nend\n";
+		has(complete_at(src), &["region", "host", "break", "end"], &[]);
+		// Where a body is being written, the whole statement is set aside: a
+		// `json` block is checked as it is read, and is not valid JSON yet.
+		has(
+			complete_at("let n = 1\nif FLAG.x\n\tlet doc = json\n\t\t{\"a\": {{ ‸ }},\n"),
+			&["n"],
+			&[],
+		);
+	}
+
+	#[test]
+	fn a_shared_binding_is_offered_and_a_local_one_shadows_it() {
+		let shared = || {
+			vec![
+				Binding {
+					name: "osvImage".into(),
+					line: "let osvImage = \"ghcr.io/google/osv-scanner\"".into(),
+					binder: Binder::Shared,
+				},
+				Binding {
+					name: "region".into(),
+					line: "let region = \"us\"".into(),
+					binder: Binder::Shared,
+				},
+			]
+		};
+		let got = items(complete_with("let region = \"eu\"\nprint(‸)\n", shared));
+		let osv = got.iter().find(|i| i.label == "osvImage").expect("the shared one");
+		assert_eq!(osv.detail, "binding from _shared.run");
+		let region: Vec<&Item> = got.iter().filter(|i| i.label == "region").collect();
+		assert_eq!(region.len(), 1, "{region:?}");
+		assert_eq!(region[0].detail, "binding", "this file's, which shadows the shared one");
+	}
+
+	#[test]
+	fn the_shared_chain_is_only_asked_for_where_a_name_can_go() {
+		// Answering it means discovery, and the files it finds read from disk.
+		let never = || -> Vec<Binding> { panic!("asked for shared bindings") };
+		for line in [".wa", "$ echo ", "run de", "# note", "let ", "for x i", "let x = RUN."] {
+			complete(line, 0, line.chars().count(), never);
+		}
+	}
+
+	#[test]
+	fn shared_bindings_are_the_top_level_lets() {
+		// A shared file's other statements never run, so a `let` inside one of
+		// them binds nothing for anybody.
+		let b = shared_bindings("let a = 1\nlet b, _ = [1, 2]\nif FLAG.x\n\tlet c = 3\nend\n");
+		let names: Vec<&str> = b.iter().map(|b| b.name.as_str()).collect();
+		assert_eq!(names, ["a", "b"]);
+		assert_eq!(b[0].line, "let a = 1");
+		assert!(shared_bindings("let = broken\n").is_empty());
+	}
+
+	#[test]
+	fn a_name_ranks_above_a_function_in_a_value_and_a_keyword_first_on_a_line() {
+		let rank = |c: Completions, label: &str| {
+			items(c)
+				.into_iter()
+				.find(|i| i.label == label)
+				.unwrap_or_else(|| panic!("{label}"))
+				.rank
+		};
+		let value = "let region = \"eu\"\nlet r = re‸\n";
+		assert!(rank(complete_at(value), "region") < rank(complete_at(value), "read_file"));
+		let line = "let retries = 3\nre‸\n";
+		assert!(rank(complete_at(line), "retry") < rank(complete_at(line), "retries"));
+		assert!(rank(complete_at(line), "retries") < rank(complete_at(line), "read_file"));
+	}
+
+	// ---- text that is not ours
+
+	#[test]
+	fn an_interpolation_on_a_shell_line_completes_as_an_expression() {
+		let src = "let region = \"eu\"\n$ deploy --region {{ re‸\n";
+		has(complete_at(src), &["region", "to_upper", "ENV"], &["for"]);
+		assert_eq!(complete_at("let region = \"eu\"\n$ deploy re‸\n"), Completions::None);
+		assert_eq!(
+			complete_at("let region = \"eu\"\n$ deploy {{ region }} re‸\n"),
+			Completions::None,
+			"past the `}}` it is the shell's again"
+		);
+		// A `run` argument interpolates by the same rule.
+		has(
+			complete_at("let region = \"eu\"\nrun deploy {{ re‸\n"),
+			&["region"],
+			&[],
+		);
+	}
+
+	#[test]
+	fn a_string_offers_nothing_but_its_interpolations() {
+		assert_eq!(complete_line("print(\"hel"), Completions::None);
+		assert_eq!(complete_line("print(\"a \\\" b"), Completions::None, "an escaped quote");
+		has(complete_at("let name = \"x\"\nprint(\"hi {{ na‸\n"), &["name"], &[]);
+		// A quote inside an interpolation does not end the string around it.
+		has(
+			complete_at("let name = \"x\"\nprint(\"{{ join(xs, \",\") }} {{ na‸\n"),
+			&["name"],
+			&[],
+		);
+	}
+
+	#[test]
+	fn a_body_in_another_language_offers_nothing_but_its_interpolations() {
+		assert_eq!(complete_at("exec python3\n\tim‸\nend\n"), Completions::None);
+		has(
+			complete_at("let n = 1\nexec python3\n\tprint({{ n‸ }})\nend\n"),
+			&["n"],
+			&[],
+		);
+		assert_eq!(complete_at("let out = exec jq .\n\tke‸\nend\n"), Completions::None);
+		assert_eq!(complete_at("let doc = json\n\t{\"a\": tr‸}\nend\n"), Completions::None);
+		has(
+			complete_at("let n = 1\nlet doc = json\n\t{\"a\": {{ ‸ }}}\nend\n"),
+			&["n"],
+			&[],
+		);
+		// Where a `$` line's backslash carries it on to.
+		assert_eq!(complete_at("$ docker run \\\n\t--rm im‸\n"), Completions::None);
+		// A blank line inside a run is where a statement may yet go.
+		has(complete_at("$ a\n‸\n$ b\n"), &["let"], &[]);
 	}
 
 	// ---- sources and hover
 
 	#[test]
 	fn an_expression_offers_the_source_roots_too() {
-		let Completions::Functions(f) = complete("let x = AR") else {
-			panic!("expected functions")
-		};
-		assert!(f.iter().any(|i| i.label == "ARGS"), "a source can start an expression");
-		assert!(f.iter().any(|i| i.label == "ARG"));
+		let f = items(complete_line("let x = AR"));
+		let args = f
+			.iter()
+			.find(|i| i.label == "ARGS")
+			.expect("a source can start an expression");
+		assert_eq!(args.kind, Kind::Variable, "one value");
+		let arg = f.iter().find(|i| i.label == "ARG").expect("ARG");
+		assert_eq!(arg.kind, Kind::Module, "read through a dot");
+		// Not at the start of a line: a line that is only a value does nothing.
+		has(complete_at("‸\n"), &["print"], &["ARG", "ENV"]);
 	}
 
 	#[test]
 	fn run_dot_offers_the_keys_it_actually_has() {
 		// The one source whose keys are fixed; `ARG` and `ENV` are whatever the
 		// caller passed, so there is nothing to offer.
-		let Completions::Sources(s) = complete("$ echo {{ RUN.") else {
-			panic!("expected sources")
-		};
+		let s = items(complete_line("$ echo {{ RUN."));
 		let labels: Vec<&str> = s.iter().map(|i| i.label.as_str()).collect();
 		assert!(labels.contains(&"os"), "{labels:?}");
 		assert!(labels.contains(&"namespaces"), "{labels:?}");
 		assert!(!labels.contains(&"nonsense"));
+		assert_eq!(complete_line("let x = ARG."), Completions::None);
 	}
 
 	// ---- go to definition
@@ -1008,15 +1961,11 @@ mod tests {
 	#[test]
 	fn completion_carries_the_example_too() {
 		// The same question, one keystroke earlier.
-		let Completions::Functions(items) = complete("let x = to_") else {
-			panic!("expected functions")
-		};
-		let up = items.iter().find(|i| i.label == "to_upper").expect("to_upper");
+		let fns = items(complete_line("let x = to_"));
+		let up = fns.iter().find(|i| i.label == "to_upper").expect("to_upper");
 		assert_eq!(up.detail, "to_upper(s)");
 		assert!(up.doc.contains("```runfile"), "{}", up.doc);
-		let Completions::Properties(props) = complete(".par") else {
-			panic!("expected properties")
-		};
+		let props = items(complete_line(".par"));
 		let par = props.iter().find(|i| i.label == "parallel").expect("parallel");
 		assert!(par.doc.contains("```runfile"), "{}", par.doc);
 	}
@@ -1121,9 +2070,9 @@ mod tests {
 
 	#[test]
 	fn nothing_completes_inside_a_comment() {
-		assert!(matches!(complete("let x = 1 # about pri"), Completions::None));
-		assert!(matches!(complete("# a note on con"), Completions::None));
+		assert!(matches!(complete_line("let x = 1 # about pri"), Completions::None));
+		assert!(matches!(complete_line("# a note on con"), Completions::None));
 		// Still code: the `#` is the shell's, and the `{{ … }}` is ours.
-		assert!(!matches!(complete("$ echo # {{ RUN."), Completions::None));
+		assert!(!matches!(complete_line("$ echo # {{ RUN."), Completions::None));
 	}
 }

@@ -1,17 +1,90 @@
+# GitHub is a mirror. Every release is cut on git.joaoverona.com
+# (.cicd/release.yml); this mirrors one here when `run mirror` pushes the
+# `github` branch -- the archives the setup action installs, its `v1` alias,
+# and the npm package, which only GitHub can publish.
+#
+# So it runs on that branch rather than on a tag, and releases the version
+# Cargo.toml names at the pushed commit, built from that version's tag: a
+# mirror pushed a while after a release, with commits past it, still mirrors
+# exactly what Gitea released. Several releases between two pushes are
+# mirrored as the newest -- npm's `latest` and the `v1` alias only ever want
+# that one, and building each would have them race for it. A push that brings
+# no new release runs CI and nothing here.
 name: Release
 
 on:
   push:
-    tags: ["v*.*.*"]
+    branches: [github]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release"
+        description: "Tag to release again"
         required: true
 
 jobs:
+  resolve:
+    name: Find the release to mirror
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      publish: ${{ steps.find.outputs.publish }}
+      tag: ${{ steps.find.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+        with:
+          # Every tag, for the one Cargo.toml names.
+          fetch-depth: 0
+
+      # The tags arrive with the branch: `run mirror` pushes it with
+      # `--follow-tags`. A version whose tag did not arrive is a push that left
+      # them behind, and fails rather than mirroring nothing without a word.
+      - name: Find the release to mirror
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_TAG" ]; then
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Cargo.toml names $tag, which is not on GitHub. Push the tags with the branch; run mirror does."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag" HEAD; then
+            echo "::error::$tag is not in the history of $GITHUB_REF_NAME"
+            exit 1
+          fi
+          # Published releases only: GitHub answers a draft's tag with 404, so a
+          # release that failed half-way is mirrored again rather than skipped.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$tag")
+          case "$code" in
+            200)
+              echo "$tag is already released here; nothing to mirror"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "mirroring $tag"
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::GitHub answered $code when asked for the release $tag"
+              exit 1
+              ;;
+          esac
+
   build:
     name: Build (${{ matrix.platform.target }})
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
@@ -33,7 +106,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
       # `rustflags: ""` is load-bearing: the action defaults to exporting
       # `RUSTFLAGS=-D warnings`, and a set RUSTFLAGS makes Cargo ignore
@@ -95,12 +168,14 @@ jobs:
 
   extension:
     name: Package VS Code extension
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
       # Must precede setup-node: `cache: pnpm` needs the pnpm binary to resolve
       # the store path. The version comes from `packageManager` in package.json.
@@ -119,7 +194,7 @@ jobs:
       - name: Verify tag matches the extension version
         working-directory: editors/vscode
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           version=$(node -p "require('./package.json').version")
           echo "extension version: $version | tag: ${TAG#v}"
@@ -146,7 +221,7 @@ jobs:
       - name: Compile and package extension
         run: run vscode:package --out=runfile-vscode-${TAG#v}.vsix
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ needs.resolve.outputs.tag }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
@@ -157,7 +232,7 @@ jobs:
 
   release:
     name: Create GitHub release
-    needs: [build, extension]
+    needs: [resolve, build, extension]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -165,12 +240,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Verify tag matches the workspace version
         run: grep -Fxq "version = \"${TAG#v}\"" Cargo.toml
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ needs.resolve.outputs.tag }}
 
       - name: Download artifacts
         uses: actions/download-artifact@v5.0.0
@@ -178,8 +253,13 @@ jobs:
           merge-multiple: true
           path: dist
 
+      # The same installers as Gitea's, which download from Gitea unless told
+      # `RUNFILE_CHANNEL=github` -- `run :update --channel=github` tells them.
+      # They are published here too because a binary built before `:update`
+      # moved to Gitea runs it against this release's
+      # `latest/download/install.sh`, and this copy is what moves it over.
       - name: Stage installers
-        run: cp .github/release-assets/install.sh .github/release-assets/install.ps1 dist/
+        run: cp .cicd/release-assets/install.sh .cicd/release-assets/install.ps1 dist/
 
       - name: Generate checksums
         working-directory: dist
@@ -188,7 +268,7 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -199,13 +279,13 @@ jobs:
 
   # `…/actions/setup@v1` is what a consumer writes, so the major tag has to
   # follow the releases -- the same alias `shared-actions` keeps, which its own
-  # `release.run` moves as it tags. Here it is a job instead, because the tag
-  # only *starts* a release: six platform builds and an npm publish come after
-  # it, and a tag meaning "the newest v1" must not point at a release that
-  # never finished. `needs` is the only thing that knows whether it did.
+  # `release.run` moves as it tags. Here it is a job instead, because a release
+  # is six platform builds and an npm publish, and a tag meaning "the newest v1"
+  # must not point at a release that never finished. `needs` is the only thing
+  # that knows whether it did.
   major-tag:
     name: Move the major tag
-    needs: [release]
+    needs: [resolve, release]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -213,17 +293,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.tag }}
           # The whole history, for the tags the step below compares against.
           fetch-depth: 0
 
       - name: Point the major tag at this release
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          # This workflow's `v*.*.*` also matches a pre-release like
-          # `v1.0.0-rc.1`, and `v1` has to keep meaning the newest stable one.
+          # A pre-release like `v1.0.0-rc.1` is mirrored like any other
+          # version, and `v1` has to keep meaning the newest stable one.
           # Skipping is the answer rather than failing: a pre-release is not a
           # mistake, it just is not what the major tag points at.
           if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
@@ -245,7 +325,7 @@ jobs:
 
   npm:
     name: Publish npm package
-    needs: [build, release]
+    needs: [resolve, build, release]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -254,7 +334,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Download artifacts
         uses: actions/download-artifact@v5.0.0
@@ -302,7 +382,7 @@ jobs:
           cd "$pkg" && npm pkg set version="${TAG#v}"
           echo "PKG_DIR=$pkg" >> "$GITHUB_ENV"
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ needs.resolve.outputs.tag }}
 
       - name: Publish
         run: npm publish --access public

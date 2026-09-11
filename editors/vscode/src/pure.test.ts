@@ -161,12 +161,14 @@ test("a reply is told from a notification by its id", () => {
 
 test("completion kinds map onto VS Code's enumeration", () => {
 	// Both list the same kinds in the same order, LSP from 1 and VS Code from
-	// 0. Only the four the server sends are translated; anything else would be
+	// 0. Only the ones the server sends are translated; anything else would be
 	// a wrong icon, so it falls back to Text.
 	assert.equal(completionKind(10), 9, "Property")
 	assert.equal(completionKind(3), 2, "Function")
 	assert.equal(completionKind(6), 5, "Variable")
+	assert.equal(completionKind(9), 8, "Module")
 	assert.equal(completionKind(12), 11, "Value")
+	assert.equal(completionKind(14), 13, "Keyword")
 	assert.equal(completionKind(undefined), 0)
 	assert.equal(completionKind(99), 0)
 })

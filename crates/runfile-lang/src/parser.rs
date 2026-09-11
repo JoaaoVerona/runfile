@@ -87,9 +87,10 @@ fn after_keyword<'a>(rest: &'a str, word: &str) -> Option<&'a str> {
 /// body carry an `end` of its own (ruby, lua) without closing the block early.
 /// The `end` line itself is this language's rather than the body's, so it takes
 /// a comment like any other -- and this is the one place that has to be said
-/// twice, since the formatter finds the closer by the same rule and the two
-/// disagreeing would let it move a line out of a body.
-pub(crate) fn closes_body(raw: &str, indent: &str) -> bool {
+/// more than once, since the formatter finds the closer by the same rule and
+/// the two disagreeing would let it move a line out of a body. The language
+/// server asks it too, to find a body in a document that does not parse.
+pub fn closes_body(raw: &str, indent: &str) -> bool {
 	let Some(rest) = raw.strip_prefix(indent) else {
 		return false;
 	};
@@ -219,7 +220,13 @@ impl<'a> P<'a> {
 			if line.trimmed.starts_with('.') {
 				b.properties.push(self.property()?);
 			} else {
-				b.statements.push(self.statement()?);
+				let mut st = self.statement()?;
+				// Whatever the statement read, the last line of it is the one
+				// before where parsing resumes: a block's `end`, a spilled list's
+				// `]`, a run's last `$` line.
+				let last = &self.lines[self.i - 1];
+				st.span_mut().end = last.offset + last.raw.len();
+				b.statements.push(st);
 			}
 		}
 	}

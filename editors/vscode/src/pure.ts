@@ -133,8 +133,9 @@ export class MessageReader {
  * than landing on a wrong icon.
  */
 export function completionKind(lsp: number | undefined): number {
-	// Property, Function, Variable, Value: what `server.rs` sends.
-	if (lsp === undefined || ![3, 6, 10, 12].includes(lsp)) {
+	// Function, Variable, Module, Property, Value, Keyword: what `server.rs`
+	// sends, via `analysis::Kind::lsp`.
+	if (lsp === undefined || ![3, 6, 9, 10, 12, 14].includes(lsp)) {
 		return 0;
 	}
 	return lsp - 1;

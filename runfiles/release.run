@@ -2,10 +2,16 @@
 #
 # Takes one of major / minor / patch.
 #
+# Pushed to master's upstream, Gitea, which builds every release
+# (.cicd/release.yml). GitHub hears about it when `run mirror` next pushes the
+# mirror there, and mirrors the newest release then. From master only: it is
+# what Gitea builds and what the mirror follows, so a tag made anywhere else
+# is one the mirror could never reach.
+#
 # Only the exact `vX.Y.Z` is pushed here. The `vX` alias that consumers of the
-# setup action pin -- `…/actions/setup@v1` -- is moved by the release workflow
-# once the release is built, since a tag meaning "the newest v1" must not point
-# at a release that never finished.
+# setup action pin -- `…/actions/setup@v1` -- is moved by GitHub's release
+# workflow once the release is built, since a tag meaning "the newest v1" must
+# not point at a release that never finished.
 #
 # Which is why the tag is annotated and the push is `--follow-tags` rather than
 # `--tags`. `--tags` pushes every local tag, and `vX` is one of them: a fetch
@@ -17,6 +23,12 @@
 # pushed, and the alias is lightweight, so it is exactly this one tag.
 
 let part = one_of(first(ARGS), "major", "minor", "patch")
+let branch = $ git branch --show-current
+
+if branch != "master"
+	error("release from master, not {{ branch }}")
+end
+
 let cargo = read_file("Cargo.toml")
 
 # A normal string, not a raw one: the pattern has no backslashes to preserve,

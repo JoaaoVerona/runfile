@@ -173,27 +173,26 @@ impl Server {
 		let line = params["position"]["line"].as_u64().unwrap_or(0) as usize;
 		let col = params["position"]["character"].as_u64().unwrap_or(0) as usize;
 		let src = self.docs.get(&uri).map(String::as_str).unwrap_or_default();
-		let prefix = line_prefix(src, line, col);
+		let here = uri_to_path(&uri);
+		// Asked only where a name could go, since answering is discovery.
+		let shared = || here.as_deref().map(|p| self.shared_bindings(p)).unwrap_or_default();
 
-		// Property = 10, Function = 3, Value = 12, Variable = 6, in LSP's
-		// CompletionItemKind.
-		let (items, kind): (Vec<analysis::Item>, u8) = match analysis::complete(prefix) {
-			Completions::Properties(p) => (p, 10),
-			Completions::Functions(f) => (f, 3),
-			Completions::Sources(s) => (s, 6),
-			Completions::Targets => {
-				let names = uri_to_path(&uri).map(|p| target_names(&p)).unwrap_or_default();
-				let items = names
-					.into_iter()
-					.map(|n| analysis::Item {
-						label: n,
-						detail: "target".into(),
-						doc: String::new(),
-					})
-					.collect();
-				(items, 12)
-			}
-			Completions::None => return json!({"isIncomplete": false, "items": []}),
+		let items = match analysis::complete(src, line, col, shared) {
+			Completions::Items(items) => items,
+			Completions::Targets => here
+				.as_deref()
+				.map(target_names)
+				.unwrap_or_default()
+				.into_iter()
+				.map(|n| analysis::Item {
+					label: n,
+					detail: "target".into(),
+					doc: String::new(),
+					kind: analysis::Kind::Value,
+					rank: 0,
+				})
+				.collect(),
+			Completions::None => Vec::new(),
 		};
 		json!({
 			"isIncomplete": false,
@@ -201,12 +200,58 @@ impl Server {
 				.iter()
 				.map(|i| json!({
 					"label": i.label,
-					"kind": kind,
+					"kind": i.kind.lsp(),
 					"detail": i.detail,
 					"documentation": {"kind": "markdown", "value": i.doc},
+					// Compared only between items the typed prefix fits
+					// equally well, which is exactly where it should decide.
+					"sortText": format!("{}{}", i.rank, i.label),
 				}))
 				.collect::<Vec<_>>(),
 		})
+	}
+
+	/// What the `_shared.run` files above this document bind, outermost first,
+	/// so an inner file's binding of a name comes later and wins.
+	fn shared_bindings(&self, here: &Path) -> Vec<analysis::Binding> {
+		self.shared_chain(here)
+			.iter()
+			.filter_map(|p| self.text_of(p))
+			.flat_map(|src| analysis::shared_bindings(&src))
+			.collect()
+	}
+
+	/// Every `_shared.run` that applies to this document, outermost first.
+	///
+	/// A target's is the catalog's. A `_shared.run` is not a target, and
+	/// inherits from the ones in the directories above its own -- which is the
+	/// chain of any target at or below it, cut off at its own directory.
+	fn shared_chain(&self, here: &Path) -> Vec<PathBuf> {
+		let Some(cat) = self.catalog(here) else {
+			return Vec::new();
+		};
+		if let Some(t) = cat.targets.values().find(|t| same_file(&t.path, here)) {
+			return cat.shared_chain(t);
+		}
+		let Some(dir) = here.parent() else {
+			return Vec::new();
+		};
+		let Some(below) = cat.targets.values().find(|t| t.path.starts_with(dir)) else {
+			return Vec::new();
+		};
+		cat.shared_chain(below)
+			.into_iter()
+			.filter(|p| !same_file(p, here) && p.parent().is_some_and(|d| dir.starts_with(d)))
+			.collect()
+	}
+
+	/// A file's text as the editor has it when it is open, unsaved edits and
+	/// all, and as it is on disk when it is not.
+	fn text_of(&self, path: &Path) -> Option<String> {
+		match self.docs.get(&path_to_uri(path)) {
+			Some(open) => Some(open.clone()),
+			None => std::fs::read_to_string(path).ok(),
+		}
 	}
 
 	/// What the word under the pointer means.
@@ -257,14 +302,8 @@ impl Server {
 	/// The one place a reader most needs taking to: a shared binding applies to
 	/// every target in its directory and appears nowhere in the file using it.
 	fn in_shared(&self, here: &std::path::Path, name: &str) -> Value {
-		let Some(cat) = self.catalog(here) else {
-			return Value::Null;
-		};
-		let Some(target) = cat.targets.values().find(|t| t.path == here) else {
-			return Value::Null;
-		};
-		for path in cat.shared_chain(target).into_iter().rev() {
-			let Ok(src) = std::fs::read_to_string(&path) else {
+		for path in self.shared_chain(here).into_iter().rev() {
+			let Some(src) = self.text_of(&path) else {
 				continue;
 			};
 			if let Some((line, character)) = analysis::binding_in(&src, name, None) {
@@ -275,19 +314,9 @@ impl Server {
 	}
 }
 
-/// The text of `line` up to `col`, which is all completion needs.
-fn line_prefix(src: &str, line: usize, col: usize) -> &str {
-	let Some(text) = src.lines().nth(line) else { return "" };
-	// `col` counts UTF-16 units in LSP, but clamping to a char boundary is
-	// enough here: completion only looks at what kind of line this is.
-	let end = text
-		.char_indices()
-		.map(|(i, _)| i)
-		.chain(std::iter::once(text.len()))
-		.take(col + 1)
-		.last()
-		.unwrap_or(0);
-	&text[..end]
+/// Whether two paths name one file, however each was spelled.
+fn same_file(a: &Path, b: &Path) -> bool {
+	a == b || a.canonicalize().ok().is_some_and(|c| Some(c) == b.canonicalize().ok())
 }
 
 fn capabilities() -> Value {
@@ -323,8 +352,7 @@ fn target_names(doc: &Path) -> Vec<String> {
 		return Vec::new();
 	};
 	let mut names: Vec<String> = c.targets.keys().cloned().collect();
-	let same = |a: &Path| a == doc || a.canonicalize().ok() == doc.canonicalize().ok();
-	if let Some(me) = c.targets.values().find(|t| same(&t.path))
+	if let Some(me) = c.targets.values().find(|t| same_file(&t.path, doc))
 		&& let Some((prefix, _)) = me.name.rsplit_once(':')
 	{
 		let prefix = format!("{prefix}:");

@@ -4,11 +4,21 @@ $ErrorActionPreference = 'Stop'
 # it so the download doesn't appear to hang.
 $ProgressPreference = 'SilentlyContinue'
 
-$repo = 'JoaaoVerona/runfile'
 $installDir = if ($env:RUNFILE_INSTALL_DIR) { $env:RUNFILE_INSTALL_DIR } else { "$env:LOCALAPPDATA\runfile\bin" }
 # Version precedence: positional arg, then $env:RUNFILE_VERSION (the
 # `iwr ... | iex` invocation form can't pass positional args), then latest.
 $version = if ($args[0]) { $args[0] } elseif ($env:RUNFILE_VERSION) { $env:RUNFILE_VERSION } else { 'latest' }
+
+# Where releases come from. Gitea cuts every one; GitHub mirrors them when the
+# mirror is pushed, so it can lag. `run :update --channel=github` sets this.
+$channel = if ($env:RUNFILE_CHANNEL) { $env:RUNFILE_CHANNEL } else { 'gitea' }
+$releases = switch ($channel) {
+  'gitea'  { 'https://git.joaoverona.com/joaaoverona/runfile/releases' }
+  'github' { 'https://github.com/JoaaoVerona/runfile/releases' }
+  default  { throw "runfile: unknown channel: $channel (gitea or github)" }
+}
+# $server, not $host: $Host is an automatic variable, and assigning to it fails.
+$server = ([Uri]$releases).Host
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   'AMD64' { 'x86_64' }
@@ -19,17 +29,26 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
 $target = "$arch-pc-windows-msvc"
 $archive = "runfile-cli-$target.zip"
 
-$url = if ($version -eq 'latest') {
-  "https://github.com/$repo/releases/latest/download/$archive"
-} else {
-  "https://github.com/$repo/releases/download/$version/$archive"
+# Both hosts answer /releases/latest with a redirect to the newest release's tag
+# page, so where it leads names the version, and the archive is then downloaded
+# by name: /releases/download/<tag>/<asset> is the one shape the two share.
+# Their own `latest` download aliases are not -- Gitea's is
+# /releases/download/latest/<asset>, GitHub's /releases/latest/download/<asset>.
+if ($version -eq 'latest') {
+  $page = Invoke-WebRequest -Uri "$releases/latest" -UseBasicParsing
+  # Where the redirect led: Windows PowerShell 5.1 and PowerShell 7 keep it in
+  # different places.
+  $final = if ($page.BaseResponse.ResponseUri) { $page.BaseResponse.ResponseUri } else { $page.BaseResponse.RequestMessage.RequestUri }
+  if ("$final" -match '/releases/tag/([^/]+)$') { $version = $Matches[1] } else { throw "runfile: found no release on $server" }
 }
+
+$url = "$releases/download/$version/$archive"
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
 try {
-  Write-Host "Downloading $archive..."
+  Write-Host "Downloading $archive ($version) from $server..."
   Invoke-WebRequest -Uri $url -OutFile (Join-Path $tmp $archive) -UseBasicParsing
   Expand-Archive -Path (Join-Path $tmp $archive) -DestinationPath $tmp
 
@@ -52,7 +71,7 @@ try {
   $old = "$dest.old"
   if (Test-Path $old) { Remove-Item -Path $old -Force -ErrorAction SilentlyContinue }
 
-  Write-Host "Installed run.exe to $dest"
+  Write-Host "Installed run.exe $version to $dest"
 
   $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
   if (-not ($userPath -split ';' -contains $installDir)) {

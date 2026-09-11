@@ -380,6 +380,16 @@ pub enum Constant {
 }
 
 impl Statement {
+	/// From the start of the statement's first line to the end of its last:
+	/// a block reaches its `end`, a spilled list its `]`, a `$` run its last
+	/// line. `line` is the first.
+	///
+	/// The whole extent rather than the opening line, because where a block
+	/// *ends* is otherwise nowhere in the tree -- and an editor completing a
+	/// name has to know whether the cursor is still inside the `for` that binds
+	/// it. The one exception is an `else if`: it is an `If` of its own inside
+	/// the chain's `else`, closed by the chain's one `end`, so only the `if`
+	/// that opened the chain reaches it.
 	pub fn span(&self) -> Span {
 		match self {
 			Statement::Let { span, .. }
@@ -395,6 +405,24 @@ impl Statement {
 			| Statement::Match { span, .. }
 			| Statement::Run { span, .. }
 			| Statement::Exec { span, .. } => *span,
+		}
+	}
+
+	pub(crate) fn span_mut(&mut self) -> &mut Span {
+		match self {
+			Statement::Let { span, .. }
+			| Statement::Assign { span, .. }
+			| Statement::Call { span, .. }
+			| Statement::Do { span, .. }
+			| Statement::If { span, .. }
+			| Statement::Retry { span, .. }
+			| Statement::For { span, .. }
+			| Statement::Loop { span, .. }
+			| Statement::Break { span }
+			| Statement::Continue { span }
+			| Statement::Match { span, .. }
+			| Statement::Run { span, .. }
+			| Statement::Exec { span, .. } => span,
 		}
 	}
 }

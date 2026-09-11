@@ -2591,6 +2591,9 @@ fn each_subcommand_explains_itself() {
 		(vec![":completions", "--help"], "run :completions output"),
 		(vec![":generate"], "run :generate zed"),
 		(vec![":generate", "--help"], "run :generate jetbrains"),
+		// Answered before anything is downloaded: `--help` used to be taken
+		// for a version and sent to the release server.
+		(vec![":update", "--help"], "run :update [version]"),
 	] {
 		let o = p.run(&args);
 		assert!(o.status.success(), "{args:?}: {}", err(&o));

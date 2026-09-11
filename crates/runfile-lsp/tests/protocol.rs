@@ -423,6 +423,104 @@ fn completion_carries_a_signature_and_documentation() {
 	assert!(!sub["documentation"]["value"].as_str().unwrap().is_empty());
 }
 
+fn completion(id: i64, uri: &str, line: usize, character: usize) -> Value {
+	json!({
+		"jsonrpc": "2.0", "id": id, "method": "textDocument/completion",
+		"params": {"textDocument": {"uri": uri}, "position": {"line": line, "character": character}},
+	})
+}
+
+/// The items of the reply to `id`, by label.
+fn offered(out: &[Value], id: i64) -> std::collections::HashMap<String, Value> {
+	reply_to(out, id)["result"]["items"]
+		.as_array()
+		.expect("items")
+		.iter()
+		.map(|i| (i["label"].as_str().unwrap().to_string(), i.clone()))
+		.collect()
+}
+
+/// A project whose root `_shared.run` binds `osvImage`.
+fn project_with_shared() -> (tempfile::TempDir, std::path::PathBuf) {
+	let d = tempfile::TempDir::new().unwrap();
+	let dir = d.path().join("runfiles");
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(
+		dir.join("_shared.run"),
+		"let osvImage = \"ghcr.io/google/osv-scanner\"\n",
+	)
+	.unwrap();
+	(d, dir)
+}
+
+#[test]
+fn completion_offers_keywords_and_every_name_in_scope() {
+	let (_d, dir) = project_with_shared();
+	let doc = dir.join("audit.run");
+	let src = "let region = \"eu\"\nfor host in [\"a\"]\n\t\nend\n";
+	std::fs::write(&doc, src).unwrap();
+	let uri = path_to_uri(&doc);
+
+	let out = converse(&[did_open(&uri, src), completion(4, &uri, 2, 1)]);
+	let items = offered(&out, 4);
+	for (label, kind) in [("for", 14), ("break", 14), ("end", 14), ("print", 3)] {
+		assert_eq!(items.get(label).map(|i| &i["kind"]), Some(&json!(kind)), "{label}");
+	}
+	for name in ["region", "host", "osvImage"] {
+		let item = items.get(name).unwrap_or_else(|| panic!("{name} is offered"));
+		assert_eq!(item["kind"], 6, "{name}");
+	}
+	assert_eq!(items["osvImage"]["detail"], "binding from _shared.run");
+	// At the start of a line a keyword is the likelier thing to be typed.
+	let sort = |l: &str| items[l]["sortText"].as_str().unwrap().to_string();
+	assert!(sort("for") < sort("region") && sort("region") < sort("print"));
+}
+
+#[test]
+fn completion_reads_an_open_shared_file_as_the_editor_has_it() {
+	// Unsaved: the file on disk binds only `osvImage`.
+	let (_d, dir) = project_with_shared();
+	let shared = path_to_uri(&dir.join("_shared.run"));
+	let doc = dir.join("audit.run");
+	std::fs::write(&doc, "print()\n").unwrap();
+	let uri = path_to_uri(&doc);
+
+	let out = converse(&[
+		did_open(&shared, "let osvImage = \"x\"\nlet unsaved = \"y\"\n"),
+		did_open(&uri, "print()\n"),
+		completion(4, &uri, 0, 6),
+	]);
+	let items = offered(&out, 4);
+	assert!(items.contains_key("unsaved"), "{:?}", items.keys());
+}
+
+#[test]
+fn a_nested_shared_file_completes_the_names_of_the_one_above_it() {
+	// Not a target, so the catalog has no chain for it -- but it layers over
+	// the directory above just as a target beside it does.
+	let (_d, dir) = project_with_shared();
+	let api = dir.join("api");
+	std::fs::create_dir_all(&api).unwrap();
+	std::fs::write(api.join("deploy.run"), "$ true\n").unwrap();
+	let nested = api.join("_shared.run");
+	std::fs::write(&nested, "let image = \"\"\n").unwrap();
+	let uri = path_to_uri(&nested);
+
+	let out = converse(&[did_open(&uri, "let image = \n"), completion(4, &uri, 0, 12)]);
+	let items = offered(&out, 4);
+	assert!(items.contains_key("osvImage"), "{:?}", items.keys());
+}
+
+#[test]
+fn completion_knows_the_names_in_a_file_that_is_broken_elsewhere() {
+	// What an editor sends: the document as it is, mid-edit, with a mistake on
+	// a line that is not the one being typed.
+	let uri = "file:///x/runfiles/a.run";
+	let broken = "let region = \"eu\"\nlet = 3\nprint()\n";
+	let out = converse(&[did_open(uri, broken), completion(4, uri, 2, 6)]);
+	assert!(offered(&out, 4).contains_key("region"));
+}
+
 fn formatting(uri: &str) -> Value {
 	json!({
 		"jsonrpc": "2.0", "id": 9, "method": "textDocument/formatting",
