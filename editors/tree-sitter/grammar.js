@@ -113,7 +113,10 @@ module.exports = grammar({
 
 		// ---- shell
 
-		shell_line: ($) => seq("$", optional($.shell_text), $._newline),
+		// `detach` marks the command it prefixes. A `detach $` line is one
+		// command: the `$` lines below it are separate statements, which is the
+		// runner's rule too.
+		shell_line: ($) => seq(optional(field("detach", "detach")), "$", optional($.shell_text), $._newline),
 
 		shell_text: ($) => repeat1(choice($.shell_content, alias($._lone_brace, $.shell_content), $.interpolation, $.line_continuation)),
 
@@ -121,14 +124,29 @@ module.exports = grammar({
 		_lone_brace: () => token.immediate("{"),
 		line_continuation: () => token.immediate(/\\\r?\n/),
 
+		// Two spellings of one block. The keyword token differs because the
+		// scanner recognises a bare `exec` at column 0; behind `detach` it is
+		// no longer the first word, so it takes the same token a capture
+		// `exec` does, which reads the line's indent off the preceding newline.
 		exec_block: ($) =>
-			seq(
-				alias($._exec_keyword, "exec"),
-				field("command", $.command),
-				$._eol,
-				optional(field("body", $.exec_body)),
-				"end",
-				$._eol,
+			choice(
+				seq(
+					alias($._exec_keyword, "exec"),
+					field("command", $.command),
+					$._eol,
+					optional(field("body", $.exec_body)),
+					"end",
+					$._eol,
+				),
+				seq(
+					field("detach", "detach"),
+					alias($._capture_exec_keyword, "exec"),
+					field("command", $.command),
+					$._eol,
+					optional(field("body", $.exec_body)),
+					"end",
+					$._eol,
+				),
 			),
 
 		// An `exec` command is a line of **words**, which is how the runner

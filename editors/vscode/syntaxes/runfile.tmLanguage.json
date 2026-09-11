@@ -1,550 +1,559 @@
 {
-	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-	"name": "Runfile",
-	"scopeName": "source.run",
-	"patterns": [
-		{
-			"include": "#comment"
-		},
-		{
-			"include": "#property"
-		},
-		{
-			"include": "#structured-block"
-		},
-		{
-			"include": "#exec-block-shell"
-		},
-		{
-			"include": "#exec-block"
-		},
-		{
-			"include": "#retry-header"
-		},
-		{
-			"include": "#shell-condition"
-		},
-		{
-			"include": "#shell-capture"
-		},
-		{
-			"include": "#capture-call"
-		},
-		{
-			"include": "#shell-line"
-		},
-		{
-			"include": "#keyword"
-		},
-		{
-			"include": "#expression"
-		}
-	],
-	"repository": {
-		"comment": {
-			"comment": "A comment runs to the end of the line, and may follow code. The `#` has to begin a word, which is the shell's own rule -- so `a#b` and a URL fragment are one word here exactly as they are inside a `$` line, where this rule is applied by the shell grammar rather than by us.",
-			"match": "(?:^|(?<=[ \\t]))#.*$",
-			"name": "comment.line.number-sign.run"
-		},
-		"property": {
-			"comment": "A leading dot marks configuration: `.shell = \"bash\"`.",
-			"begin": "^\\s*(\\.)([A-Za-z][A-Za-z0-9-]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
-			"beginCaptures": {
-				"1": {
-					"name": "punctuation.definition.keyword.run"
-				},
-				"2": {
-					"name": "entity.other.attribute-name.run"
-				}
-			},
-			"end": "$",
-			"patterns": [
-				{
-					"match": "=",
-					"name": "keyword.operator.assignment.run"
-				},
-				{
-					"include": "#comment"
-				},
-				{
-					"include": "#expression"
-				}
-			]
-		},
-		"shell-line": {
-			"comment": "`$ ` hands the rest of the line to a shell. Including source.shell is what colours it the way the same command is coloured in a .sh file -- contentName alone only tells VS Code which language's comments and brackets to use, not how to tokenize. Interpolation comes first, so `{{ … }}` stays ours.",
-			"begin": "^\\s*(\\$)(?=\\s|$)",
-			"beginCaptures": {
-				"1": {
-					"name": "keyword.control.shell.run"
-				}
-			},
-			"end": "(?<![\\\\\\n])$",
-			"contentName": "meta.embedded.line.shell",
-			"patterns": [
-				{
-					"include": "#interpolation"
-				},
-				{
-					"include": "#first-shell-statement"
-				},
-				{
-					"include": "source.shell"
-				}
-			]
-		},
-		"keyword": {
-			"patterns": [
-				{
-					"$comment": "The names a `let` binds -- several of them when it unpacks a list, so the whole comma-separated run is one capture rather than only the first name being coloured.",
-					"match": "^\\s*(let)\\s+([A-Za-z_][A-Za-z0-9_-]*(?:[ \\t]*,[ \\t]*[A-Za-z_][A-Za-z0-9_-]*)*)",
-					"captures": {
-						"1": {
-							"name": "keyword.other.let.run"
-						},
-						"2": {
-							"name": "variable.other.definition.run"
-						}
-					}
-				},
-				{
-					"match": "^\\s*(run)\\s+([^\\s]+)",
-					"captures": {
-						"1": {
-							"name": "keyword.control.run.run"
-						},
-						"2": {
-							"name": "entity.name.function.target.run"
-						}
-					}
-				},
-				{
-					"$comment": "`code_of(run build)`: the same dispatch the statement spells, scored. Anchored on the call, because a `run` mid-line is otherwise a word like any other -- and listed under `#keyword`, which the root includes before `#expression`, so it wins the tie against `#function` at the same position.",
-					"match": "\\b(code_of)(\\()(run)\\s+([^\\s)]+)",
-					"captures": {
-						"1": {
-							"name": "support.function.run"
-						},
-						"2": {
-							"name": "punctuation.section.arguments.begin.run"
-						},
-						"3": {
-							"name": "keyword.control.run.run"
-						},
-						"4": {
-							"name": "entity.name.function.target.run"
-						}
-					}
-				},
-				{
-					"match": "\\b(do|if|else|end|for|in|while|until|loop|break|continue|match|case|default)\\b",
-					"name": "keyword.control.run"
-				}
-			]
-		},
-		"expression": {
-			"patterns": [
-				{
-					"include": "#interpolation"
-				},
-				{
-					"include": "#string"
-				},
-				{
-					"include": "#raw-string"
-				},
-				{
-					"include": "#number"
-				},
-				{
-					"include": "#constant"
-				},
-				{
-					"include": "#source"
-				},
-				{
-					"include": "#function"
-				},
-				{
-					"include": "#operator"
-				}
-			]
-		},
-		"interpolation": {
-			"comment": "`{{ … }}` is language inside anything else, including strings.",
-			"begin": "\\{\\{",
-			"end": "\\}\\}",
-			"beginCaptures": {
-				"0": {
-					"name": "punctuation.section.embedded.begin.run"
-				}
-			},
-			"endCaptures": {
-				"0": {
-					"name": "punctuation.section.embedded.end.run"
-				}
-			},
-			"name": "meta.embedded.expression.run",
-			"patterns": [
-				{
-					"include": "#string"
-				},
-				{
-					"include": "#raw-string"
-				},
-				{
-					"include": "#number"
-				},
-				{
-					"include": "#constant"
-				},
-				{
-					"include": "#source"
-				},
-				{
-					"include": "#function"
-				},
-				{
-					"include": "#operator"
-				},
-				{
-					"include": "#identifier"
-				}
-			]
-		},
-		"string": {
-			"begin": "\"",
-			"end": "\"",
-			"name": "string.quoted.double.run",
-			"patterns": [
-				{
-					"match": "\\\\.",
-					"name": "constant.character.escape.run"
-				},
-				{
-					"include": "#interpolation"
-				}
-			]
-		},
-		"raw-string": {
-			"comment": "`r\"…\"` keeps backslashes, which is what regex patterns want.",
-			"begin": "r\"",
-			"end": "\"",
-			"name": "string.quoted.other.raw.run",
-			"patterns": [
-				{
-					"include": "#interpolation"
-				}
-			]
-		},
-		"number": {
-			"match": "\\b-?[0-9]+(\\.[0-9]+)?\\b",
-			"name": "constant.numeric.run"
-		},
-		"constant": {
-			"match": "\\b(true|false)\\b",
-			"name": "constant.language.boolean.run"
-		},
-		"source": {
-			"comment": "The five roots a value can come from.",
-			"match": "\\b(ARG|ENV|FLAG|RUN)(\\.)([A-Za-z_][A-Za-z0-9_-]*)|\\b(ARGS)\\b",
-			"captures": {
-				"1": {
-					"name": "support.constant.source.run"
-				},
-				"2": {
-					"name": "punctuation.accessor.run"
-				},
-				"3": {
-					"name": "variable.other.member.run"
-				},
-				"4": {
-					"name": "support.constant.source.run"
-				}
-			}
-		},
-		"function": {
-			"match": "\\b([a-z_][a-z0-9_]*)\\s*(?=\\()",
-			"name": "support.function.run"
-		},
-		"operator": {
-			"match": "==|!=|<=|>=|&&|\\|\\||[+\\-*/<>!?=]",
-			"name": "keyword.operator.run"
-		},
-		"identifier": {
-			"match": "\\b[A-Za-z_][A-Za-z0-9_-]*\\b",
-			"name": "variable.other.run"
-		},
-		"exec-block-shell": {
-			"comment": "`exec sh` … `end` — the body is shell, so it is coloured as shell.",
-			"begin": "^(\\s*)(?:(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*)?(exec)\\b(?=\\s*(?:sh|bash|dash|ash|ksh|zsh|brush)\\b)",
-			"beginCaptures": {
-				"2": {
-					"name": "keyword.other.let.run"
-				},
-				"3": {
-					"name": "variable.other.definition.run"
-				},
-				"4": {
-					"name": "variable.other.run"
-				},
-				"5": {
-					"name": "keyword.operator.run"
-				},
-				"6": {
-					"name": "keyword.control.exec.run"
-				}
-			},
-			"end": "^\\1(end)\\b",
-			"endCaptures": {
-				"1": {
-					"name": "keyword.control.exec.run"
-				}
-			},
-			"contentName": "meta.embedded.block.shell",
-			"patterns": [
-				{
-					"include": "#exec-command"
-				},
-				{
-					"include": "#interpolation"
-				},
-				{
-					"include": "#first-shell-statement"
-				},
-				{
-					"include": "source.shell"
-				}
-			]
-		},
-		"exec-block": {
-			"comment": "`exec <command>` … `end` — the body is that command's input, so only interpolation is ours there. The command itself is a command line like the one after `$ `, and is coloured as one.",
-			"begin": "^(\\s*)(?:(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*)?(exec)\\b(?!\\s*(?:sh|bash|dash|ash|ksh|zsh|brush)\\b)",
-			"beginCaptures": {
-				"2": {
-					"name": "keyword.other.let.run"
-				},
-				"3": {
-					"name": "variable.other.definition.run"
-				},
-				"4": {
-					"name": "variable.other.run"
-				},
-				"5": {
-					"name": "keyword.operator.run"
-				},
-				"6": {
-					"name": "keyword.control.exec.run"
-				}
-			},
-			"end": "^\\1(end)\\b",
-			"endCaptures": {
-				"1": {
-					"name": "keyword.control.exec.run"
-				}
-			},
-			"contentName": "meta.embedded.block.exec",
-			"patterns": [
-				{
-					"include": "#exec-command"
-				},
-				{
-					"include": "#interpolation"
-				}
-			]
-		},
-		"first-shell-statement": {
-			"$comment": "`source.shell` starts a statement only after `^`, `;`, `|`, `&`, `!`, `(`, `{` or a backtick, and the text after `$ ` is none of those -- so the first command on the line was left bare while every later one was fine. `typical_statements` is what that rule delegates to once its anchor has passed: the same set of statement kinds, assignments and function definitions included. `\\G` pins this to the start of the embedded region, so everything past the first statement is still handled by the shell grammar's own rules -- tokenized identically, meta scopes and all.",
-			"begin": "\\G(?=[ \\t]*[^ \\t])",
-			"end": "(?=;|\\||&|$)",
-			"patterns": [
-				{
-					"include": "source.shell#typical_statements"
-				}
-			]
-		},
-		"capture-shell-statement": {
-			"$comment": "`first-shell-statement`, bounded by the `)` that closes the call as well. The helper carries no scope of its own, so nothing shows while it is open -- but while it *is* open the enclosing `capture-call`'s `end` is not in the scanner at all, and the helper's own end (`;`, `|`, `&`, end of line) is none of the things a `)` is. So `if code_of($ true) == 0` ran past the paren: the `)` closed the shell grammar's command statement without closing anything of ours, and the shell grammar, which starts a fresh statement right after a `)`, read `== 0` as a command -- `==` came out an unquoted string and `0` a shell numeric. A `)` inside the command is refused by the parser, so stopping at the first one is the rule the runner already enforces.",
-			"begin": "\\G(?=[ \\t]*[^ \\t])",
-			"end": "(?=;|\\||&|\\)|$)",
-			"patterns": [
-				{
-					"include": "source.shell#typical_statements"
-				}
-			]
-		},
-		"shell-condition": {
-			"$comment": "`if $ cmd`, `match $ cmd`, and the two loops that ask the same question: the condition is a shell run, so it is coloured as one. Without this the text after `$` was read as a runfile expression -- a quoted argument came out a runfile string and a redirection came out an operator. `else if` is one of the shapes, so the `else` is captured rather than left for a keyword rule that never sees it: this rule matches first and consumes the word.",
-			"begin": "^\\s*(?:(else)[ \\t]+)?(if|match|while|until)[ \\t]+(\\$)(?=[ \\t]|$)",
-			"beginCaptures": {
-				"1": {
-					"name": "keyword.control.run"
-				},
-				"2": {
-					"name": "keyword.control.run"
-				},
-				"3": {
-					"name": "keyword.control.shell.run"
-				}
-			},
-			"end": "(?<![\\\\\\n])$",
-			"contentName": "meta.embedded.line.shell",
-			"patterns": [
-				{
-					"include": "#interpolation"
-				},
-				{
-					"include": "#first-shell-statement"
-				},
-				{
-					"include": "source.shell"
-				}
-			]
-		},
-		"capture-call": {
-			"$comment": "A call whose last argument is a `$` run holds shell text -- `lines($ git ls-files)` as much as `code_of($ cmd)`, which is that same shape wearing a name people know. Matched by shape rather than by name: hardcoding `code_of` left every other call reading its command as a runfile *expression*, so `--cached` came out two operators. It ends at the `)`, which is the same rule the parser and the tree-sitter grammar enforce -- **or at the end of the line**, which is the safety net that matters: the embedded shell grammar happily runs a rule to the end of a line, so `code_of($ xcode-select --install)` had its `)` swallowed by the option rule and the region never closed. Everything below it was then coloured as shell. Every other embedded region here is bound the same way, because each one is a single line by construction.",
-			"begin": "\\b([a-z_][a-z0-9_]*)(\\()[ \\t]*(\\$)(?=[ \\t]|\\))",
-			"beginCaptures": {
-				"1": {
-					"name": "support.function.run"
-				},
-				"2": {
-					"name": "punctuation.section.arguments.begin.run"
-				},
-				"3": {
-					"name": "keyword.control.shell.run"
-				}
-			},
-			"end": "\\)|(?<![\\\\])$",
-			"endCaptures": {
-				"0": {
-					"name": "punctuation.section.arguments.end.run"
-				}
-			},
-			"contentName": "meta.embedded.line.shell",
-			"patterns": [
-				{
-					"include": "#interpolation"
-				},
-				{
-					"include": "#capture-shell-statement"
-				},
-				{
-					"include": "source.shell"
-				}
-			]
-		},
-		"retry-header": {
-			"$comment": "`retry n every s`. The keywords are captured without consuming the line, so the two expressions after them are still highlighted as expressions.",
-			"begin": "^\\s*(retry)\\b",
-			"beginCaptures": {
-				"1": {
-					"name": "keyword.control.run"
-				}
-			},
-			"end": "$",
-			"patterns": [
-				{
-					"match": "\\b(every)\\b",
-					"name": "keyword.control.run"
-				},
-				{
-					"include": "#comment"
-				},
-				{
-					"include": "#expression"
-				}
-			]
-		},
-		"structured-block": {
-			"$comment": "`json … end`: the body is JSON, so it is coloured as JSON. Closes on an `end` at the opener's own indentation, the same `\\1` backreference the exec rules use. A second format is one more word in the alternation and one more embedded scope.",
-			"begin": "^(\\s*)(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*(json)(?:[ \\t]+(#.*))?[ \\t]*$",
-			"beginCaptures": {
-				"2": {
-					"name": "keyword.other.let.run"
-				},
-				"3": {
-					"name": "variable.other.definition.run"
-				},
-				"4": {
-					"name": "variable.other.run"
-				},
-				"5": {
-					"name": "keyword.operator.run"
-				},
-				"6": {
-					"name": "keyword.control.structured.run"
-				},
-				"7": {
-					"name": "comment.line.number-sign.run"
-				}
-			},
-			"end": "^\\1(end)\\b",
-			"endCaptures": {
-				"1": {
-					"name": "keyword.control.structured.run"
-				}
-			},
-			"contentName": "meta.embedded.block.json",
-			"patterns": [
-				{
-					"include": "#interpolation"
-				},
-				{
-					"include": "source.json"
-				}
-			]
-		},
-		"exec-command": {
-			"$comment": "The command on an `exec` header line. `\\G` pins it to the position just after `exec`, so it applies to the header and never to the body below it, which is that command's input rather than more command line.",
-			"begin": "\\G(?=[ \\t]*[^ \\t])",
-			"end": "$",
-			"contentName": "meta.embedded.line.shell",
-			"patterns": [
-				{
-					"include": "#interpolation"
-				},
-				{
-					"include": "#first-shell-statement"
-				},
-				{
-					"include": "source.shell"
-				}
-			]
-		},
-		"shell-capture": {
-			"$comment": "`let x = $ cmd` and `x = $ cmd`: a capture in value position. Without this the shell text was read as a runfile expression -- `--name-only` came out two operators and `\"*.rs\"` a runfile string. The same shape `shell-condition` has, one line form over.",
-			"begin": "^(\\s*)(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*(\\$)(?=[ \\t]|$)",
-			"beginCaptures": {
-				"2": {
-					"name": "keyword.other.let.run"
-				},
-				"3": {
-					"name": "variable.other.definition.run"
-				},
-				"4": {
-					"name": "variable.other.run"
-				},
-				"5": {
-					"name": "keyword.operator.run"
-				},
-				"6": {
-					"name": "keyword.control.shell.run"
-				}
-			},
-			"end": "(?<![\\\\\\n])$",
-			"contentName": "meta.embedded.line.shell",
-			"patterns": [
-				{
-					"include": "#interpolation"
-				},
-				{
-					"include": "#first-shell-statement"
-				},
-				{
-					"include": "source.shell"
-				}
-			]
-		}
-	}
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Runfile",
+  "scopeName": "source.run",
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#property"
+    },
+    {
+      "include": "#structured-block"
+    },
+    {
+      "include": "#exec-block-shell"
+    },
+    {
+      "include": "#exec-block"
+    },
+    {
+      "include": "#retry-header"
+    },
+    {
+      "include": "#shell-condition"
+    },
+    {
+      "include": "#shell-capture"
+    },
+    {
+      "include": "#capture-call"
+    },
+    {
+      "include": "#shell-line"
+    },
+    {
+      "include": "#keyword"
+    },
+    {
+      "include": "#expression"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "comment": "A comment runs to the end of the line, and may follow code. The `#` has to begin a word, which is the shell's own rule -- so `a#b` and a URL fragment are one word here exactly as they are inside a `$` line, where this rule is applied by the shell grammar rather than by us.",
+      "match": "(?:^|(?<=[ \\t]))#.*$",
+      "name": "comment.line.number-sign.run"
+    },
+    "property": {
+      "comment": "A leading dot marks configuration: `.shell = \"bash\"`.",
+      "begin": "^\\s*(\\.)([A-Za-z][A-Za-z0-9-]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.keyword.run"
+        },
+        "2": {
+          "name": "entity.other.attribute-name.run"
+        }
+      },
+      "end": "$",
+      "patterns": [
+        {
+          "match": "=",
+          "name": "keyword.operator.assignment.run"
+        },
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#expression"
+        }
+      ]
+    },
+    "shell-line": {
+      "comment": "`$ ` hands the rest of the line to a shell. Including source.shell is what colours it the way the same command is coloured in a .sh file -- contentName alone only tells VS Code which language's comments and brackets to use, not how to tokenize. Interpolation comes first, so `{{ … }}` stays ours.",
+      "begin": "^\\s*(?:(detach)[ \\t]+)?(\\$)(?=\\s|$)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.detach.run"
+        },
+        "2": {
+          "name": "keyword.control.shell.run"
+        }
+      },
+      "end": "(?<![\\\\\\n])$",
+      "contentName": "meta.embedded.line.shell",
+      "patterns": [
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "#first-shell-statement"
+        },
+        {
+          "include": "source.shell"
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "$comment": "The names a `let` binds -- several of them when it unpacks a list, so the whole comma-separated run is one capture rather than only the first name being coloured.",
+          "match": "^\\s*(let)\\s+([A-Za-z_][A-Za-z0-9_-]*(?:[ \\t]*,[ \\t]*[A-Za-z_][A-Za-z0-9_-]*)*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.let.run"
+            },
+            "2": {
+              "name": "variable.other.definition.run"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(run)\\s+([^\\s]+)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.run.run"
+            },
+            "2": {
+              "name": "entity.name.function.target.run"
+            }
+          }
+        },
+        {
+          "$comment": "`code_of(run build)`: the same dispatch the statement spells, scored. Anchored on the call, because a `run` mid-line is otherwise a word like any other -- and listed under `#keyword`, which the root includes before `#expression`, so it wins the tie against `#function` at the same position.",
+          "match": "\\b(code_of)(\\()(run)\\s+([^\\s)]+)",
+          "captures": {
+            "1": {
+              "name": "support.function.run"
+            },
+            "2": {
+              "name": "punctuation.section.arguments.begin.run"
+            },
+            "3": {
+              "name": "keyword.control.run.run"
+            },
+            "4": {
+              "name": "entity.name.function.target.run"
+            }
+          }
+        },
+        {
+          "match": "\\b(do|if|else|end|for|in|while|until|loop|break|continue|match|case|default)\\b",
+          "name": "keyword.control.run"
+        }
+      ]
+    },
+    "expression": {
+      "patterns": [
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#raw-string"
+        },
+        {
+          "include": "#number"
+        },
+        {
+          "include": "#constant"
+        },
+        {
+          "include": "#source"
+        },
+        {
+          "include": "#function"
+        },
+        {
+          "include": "#operator"
+        }
+      ]
+    },
+    "interpolation": {
+      "comment": "`{{ … }}` is language inside anything else, including strings.",
+      "begin": "\\{\\{",
+      "end": "\\}\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.begin.run"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.end.run"
+        }
+      },
+      "name": "meta.embedded.expression.run",
+      "patterns": [
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#raw-string"
+        },
+        {
+          "include": "#number"
+        },
+        {
+          "include": "#constant"
+        },
+        {
+          "include": "#source"
+        },
+        {
+          "include": "#function"
+        },
+        {
+          "include": "#operator"
+        },
+        {
+          "include": "#identifier"
+        }
+      ]
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.run",
+      "patterns": [
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.run"
+        },
+        {
+          "include": "#interpolation"
+        }
+      ]
+    },
+    "raw-string": {
+      "comment": "`r\"…\"` keeps backslashes, which is what regex patterns want.",
+      "begin": "r\"",
+      "end": "\"",
+      "name": "string.quoted.other.raw.run",
+      "patterns": [
+        {
+          "include": "#interpolation"
+        }
+      ]
+    },
+    "number": {
+      "match": "\\b-?[0-9]+(\\.[0-9]+)?\\b",
+      "name": "constant.numeric.run"
+    },
+    "constant": {
+      "match": "\\b(true|false)\\b",
+      "name": "constant.language.boolean.run"
+    },
+    "source": {
+      "comment": "The five roots a value can come from.",
+      "match": "\\b(ARG|ENV|FLAG|RUN)(\\.)([A-Za-z_][A-Za-z0-9_-]*)|\\b(ARGS)\\b",
+      "captures": {
+        "1": {
+          "name": "support.constant.source.run"
+        },
+        "2": {
+          "name": "punctuation.accessor.run"
+        },
+        "3": {
+          "name": "variable.other.member.run"
+        },
+        "4": {
+          "name": "support.constant.source.run"
+        }
+      }
+    },
+    "function": {
+      "match": "\\b([a-z_][a-z0-9_]*)\\s*(?=\\()",
+      "name": "support.function.run"
+    },
+    "operator": {
+      "match": "==|!=|<=|>=|&&|\\|\\||[+\\-*/<>!?=]",
+      "name": "keyword.operator.run"
+    },
+    "identifier": {
+      "match": "\\b[A-Za-z_][A-Za-z0-9_-]*\\b",
+      "name": "variable.other.run"
+    },
+    "exec-block-shell": {
+      "comment": "`exec sh` … `end` — the body is shell, so it is coloured as shell.",
+      "begin": "^(\\s*)(?:(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*|(detach)[ \\t]+)?(exec)\\b(?=\\s*(?:sh|bash|dash|ash|ksh|zsh|brush)\\b)",
+      "beginCaptures": {
+        "2": {
+          "name": "keyword.other.let.run"
+        },
+        "3": {
+          "name": "variable.other.definition.run"
+        },
+        "4": {
+          "name": "variable.other.run"
+        },
+        "5": {
+          "name": "keyword.operator.run"
+        },
+        "6": {
+          "name": "keyword.control.detach.run"
+        },
+        "7": {
+          "name": "keyword.control.exec.run"
+        }
+      },
+      "end": "^\\1(end)\\b",
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.exec.run"
+        }
+      },
+      "contentName": "meta.embedded.block.shell",
+      "patterns": [
+        {
+          "include": "#exec-command"
+        },
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "#first-shell-statement"
+        },
+        {
+          "include": "source.shell"
+        }
+      ]
+    },
+    "exec-block": {
+      "comment": "`exec <command>` … `end` — the body is that command's input, so only interpolation is ours there. The command itself is a command line like the one after `$ `, and is coloured as one.",
+      "begin": "^(\\s*)(?:(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*|(detach)[ \\t]+)?(exec)\\b(?!\\s*(?:sh|bash|dash|ash|ksh|zsh|brush)\\b)",
+      "beginCaptures": {
+        "2": {
+          "name": "keyword.other.let.run"
+        },
+        "3": {
+          "name": "variable.other.definition.run"
+        },
+        "4": {
+          "name": "variable.other.run"
+        },
+        "5": {
+          "name": "keyword.operator.run"
+        },
+        "6": {
+          "name": "keyword.control.detach.run"
+        },
+        "7": {
+          "name": "keyword.control.exec.run"
+        }
+      },
+      "end": "^\\1(end)\\b",
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.exec.run"
+        }
+      },
+      "contentName": "meta.embedded.block.exec",
+      "patterns": [
+        {
+          "include": "#exec-command"
+        },
+        {
+          "include": "#interpolation"
+        }
+      ]
+    },
+    "first-shell-statement": {
+      "$comment": "`source.shell` starts a statement only after `^`, `;`, `|`, `&`, `!`, `(`, `{` or a backtick, and the text after `$ ` is none of those -- so the first command on the line was left bare while every later one was fine. `typical_statements` is what that rule delegates to once its anchor has passed: the same set of statement kinds, assignments and function definitions included. `\\G` pins this to the start of the embedded region, so everything past the first statement is still handled by the shell grammar's own rules -- tokenized identically, meta scopes and all.",
+      "begin": "\\G(?=[ \\t]*[^ \\t])",
+      "end": "(?=;|\\||&|$)",
+      "patterns": [
+        {
+          "include": "source.shell#typical_statements"
+        }
+      ]
+    },
+    "capture-shell-statement": {
+      "$comment": "`first-shell-statement`, bounded by the `)` that closes the call as well. The helper carries no scope of its own, so nothing shows while it is open -- but while it *is* open the enclosing `capture-call`'s `end` is not in the scanner at all, and the helper's own end (`;`, `|`, `&`, end of line) is none of the things a `)` is. So `if code_of($ true) == 0` ran past the paren: the `)` closed the shell grammar's command statement without closing anything of ours, and the shell grammar, which starts a fresh statement right after a `)`, read `== 0` as a command -- `==` came out an unquoted string and `0` a shell numeric. A `)` inside the command is refused by the parser, so stopping at the first one is the rule the runner already enforces.",
+      "begin": "\\G(?=[ \\t]*[^ \\t])",
+      "end": "(?=;|\\||&|\\)|$)",
+      "patterns": [
+        {
+          "include": "source.shell#typical_statements"
+        }
+      ]
+    },
+    "shell-condition": {
+      "$comment": "`if $ cmd`, `match $ cmd`, and the two loops that ask the same question: the condition is a shell run, so it is coloured as one. Without this the text after `$` was read as a runfile expression -- a quoted argument came out a runfile string and a redirection came out an operator. `else if` is one of the shapes, so the `else` is captured rather than left for a keyword rule that never sees it: this rule matches first and consumes the word.",
+      "begin": "^\\s*(?:(else)[ \\t]+)?(if|match|while|until)[ \\t]+(\\$)(?=[ \\t]|$)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.run"
+        },
+        "2": {
+          "name": "keyword.control.run"
+        },
+        "3": {
+          "name": "keyword.control.shell.run"
+        }
+      },
+      "end": "(?<![\\\\\\n])$",
+      "contentName": "meta.embedded.line.shell",
+      "patterns": [
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "#first-shell-statement"
+        },
+        {
+          "include": "source.shell"
+        }
+      ]
+    },
+    "capture-call": {
+      "$comment": "A call whose last argument is a `$` run holds shell text -- `lines($ git ls-files)` as much as `code_of($ cmd)`, which is that same shape wearing a name people know. Matched by shape rather than by name: hardcoding `code_of` left every other call reading its command as a runfile *expression*, so `--cached` came out two operators. It ends at the `)`, which is the same rule the parser and the tree-sitter grammar enforce -- **or at the end of the line**, which is the safety net that matters: the embedded shell grammar happily runs a rule to the end of a line, so `code_of($ xcode-select --install)` had its `)` swallowed by the option rule and the region never closed. Everything below it was then coloured as shell. Every other embedded region here is bound the same way, because each one is a single line by construction.",
+      "begin": "\\b([a-z_][a-z0-9_]*)(\\()[ \\t]*(\\$)(?=[ \\t]|\\))",
+      "beginCaptures": {
+        "1": {
+          "name": "support.function.run"
+        },
+        "2": {
+          "name": "punctuation.section.arguments.begin.run"
+        },
+        "3": {
+          "name": "keyword.control.shell.run"
+        }
+      },
+      "end": "\\)|(?<![\\\\])$",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.arguments.end.run"
+        }
+      },
+      "contentName": "meta.embedded.line.shell",
+      "patterns": [
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "#capture-shell-statement"
+        },
+        {
+          "include": "source.shell"
+        }
+      ]
+    },
+    "retry-header": {
+      "$comment": "`retry n every s`. The keywords are captured without consuming the line, so the two expressions after them are still highlighted as expressions.",
+      "begin": "^\\s*(retry)\\b",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.run"
+        }
+      },
+      "end": "$",
+      "patterns": [
+        {
+          "match": "\\b(every)\\b",
+          "name": "keyword.control.run"
+        },
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#expression"
+        }
+      ]
+    },
+    "structured-block": {
+      "$comment": "`json … end`: the body is JSON, so it is coloured as JSON. Closes on an `end` at the opener's own indentation, the same `\\1` backreference the exec rules use. A second format is one more word in the alternation and one more embedded scope.",
+      "begin": "^(\\s*)(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*(json)(?:[ \\t]+(#.*))?[ \\t]*$",
+      "beginCaptures": {
+        "2": {
+          "name": "keyword.other.let.run"
+        },
+        "3": {
+          "name": "variable.other.definition.run"
+        },
+        "4": {
+          "name": "variable.other.run"
+        },
+        "5": {
+          "name": "keyword.operator.run"
+        },
+        "6": {
+          "name": "keyword.control.structured.run"
+        },
+        "7": {
+          "name": "comment.line.number-sign.run"
+        }
+      },
+      "end": "^\\1(end)\\b",
+      "endCaptures": {
+        "1": {
+          "name": "keyword.control.structured.run"
+        }
+      },
+      "contentName": "meta.embedded.block.json",
+      "patterns": [
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "source.json"
+        }
+      ]
+    },
+    "exec-command": {
+      "$comment": "The command on an `exec` header line. `\\G` pins it to the position just after `exec`, so it applies to the header and never to the body below it, which is that command's input rather than more command line.",
+      "begin": "\\G(?=[ \\t]*[^ \\t])",
+      "end": "$",
+      "contentName": "meta.embedded.line.shell",
+      "patterns": [
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "#first-shell-statement"
+        },
+        {
+          "include": "source.shell"
+        }
+      ]
+    },
+    "shell-capture": {
+      "$comment": "`let x = $ cmd` and `x = $ cmd`: a capture in value position. Without this the shell text was read as a runfile expression -- `--name-only` came out two operators and `\"*.rs\"` a runfile string. The same shape `shell-condition` has, one line form over.",
+      "begin": "^(\\s*)(?:(let)\\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*))\\s*(=)\\s*(\\$)(?=[ \\t]|$)",
+      "beginCaptures": {
+        "2": {
+          "name": "keyword.other.let.run"
+        },
+        "3": {
+          "name": "variable.other.definition.run"
+        },
+        "4": {
+          "name": "variable.other.run"
+        },
+        "5": {
+          "name": "keyword.operator.run"
+        },
+        "6": {
+          "name": "keyword.control.shell.run"
+        }
+      },
+      "end": "(?<![\\\\\\n])$",
+      "contentName": "meta.embedded.line.shell",
+      "patterns": [
+        {
+          "include": "#interpolation"
+        },
+        {
+          "include": "#first-shell-statement"
+        },
+        {
+          "include": "source.shell"
+        }
+      ]
+    }
+  }
 }

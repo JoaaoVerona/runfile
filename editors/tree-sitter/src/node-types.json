@@ -586,6 +586,16 @@
             "named": true
           }
         ]
+      },
+      "detach": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "detach",
+            "named": false
+          }
+        ]
       }
     },
     "children": {
@@ -2100,7 +2110,18 @@
   {
     "type": "shell_line",
     "named": true,
-    "fields": {},
+    "fields": {
+      "detach": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "detach",
+            "named": false
+          }
+        ]
+      }
+    },
     "children": {
       "multiple": false,
       "required": false,
@@ -2810,6 +2831,10 @@
   },
   {
     "type": "default",
+    "named": false
+  },
+  {
+    "type": "detach",
     "named": false
   },
   {

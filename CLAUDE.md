@@ -50,6 +50,7 @@ Line-oriented. Every line is one of:
 | `json` … `end` | A block of structured text, as one value of that format. |
 | `let x = expr`, `x = expr` | Bind and rebind. `let a, _, c = xs` unpacks a list. |
 | `if` / `else if` / `else` / `end`, `for x in …`, `while c`, `until c`, `loop`, `break`, `continue`, `match` / `case` / `default`, `retry n [every s]`, `do` | Control flow. |
+| `detach $ <line>`, `detach exec <cmd>` … `end` | Start one command and do not wait for it. |
 | `run <target> [args]` | Dispatch another target, in-process. |
 | `expr` | Evaluated for effect, e.g. `write_file(…)`. |
 
@@ -542,7 +543,8 @@ second time as the global. This replaced `includes` entirely.
   move *into* `Leaf`, because a leaf is rendered where it is collected and spawned somewhere else: `.shell`
   resolved through `command_for`, `.logging` as `announce`, and `.ignore-errors` paired with its own branch --
   read off the batch, a block that asked to be forgiven either took its siblings with it or was not forgiven
-  at all. `.detach` is header-only and `extend(nested)` clears it, which is what the sequential walk does too.
+  at all. `detach` needed none of this: it rides on `Statement::Exec`, so a leaf carries it wherever the leaf
+  was collected.
 - **A fan-out's preamble runs through the process host, like every other statement.** `collect` reached the
   *pure* evaluator for an `if` condition, a `for` list and a bare call, so `if $ cmd`,
   `for f in lines($ git ls-files)` and `code_of($ cmd)` were an error inside a `.parallel` block -- *"capture
@@ -593,7 +595,7 @@ second time as the global. This replaced `includes` entirely.
   `exec <command>` keeps the body-as-stdin contract, since that is what `exec tee file` and `exec python3`
   are for. A detached shell gets `/dev/null`: a background process must not hold the terminal's input after
   the run that started it is over.
-- **`.detach`** starts the commands and does not wait. Its streams go to null: inherited, they would hold the
+- **`detach`** starts the command and does not wait. Its streams go to null: inherited, they would hold the
   runner's own stdout and stderr open after it exits, so whoever is reading them waits for the very command
   that was meant to outlive the run. **On Windows that is not enough** -- `Stdio::null()` says what a child
   *uses*, not what it *holds*, and `CreateProcessW` is called with `bInheritHandles: TRUE`, so every
@@ -912,9 +914,9 @@ Four axes, all of them `PROPERTIES` columns:
 
 | Axis | Yes | No |
 | --- | --- | --- |
-| Block-scoped (may sit inside `if` / `for` / `match`) | `shell`, `parallel`, `ignore-errors`, `logging`, `workdir`, `env`, `env-file`, `add-path` | `watch`, `detach`, `only-in-directories` |
-| Declaration-only (must be above the block's first statement) | `parallel`, `watch`, `detach`, `only-in-directories` | the rest |
-| Flag (bare means `= true`, takes a bool) | `parallel`, `ignore-errors`, `logging`, `detach` | the rest |
+| Block-scoped (may sit inside `if` / `for` / `match`) | `parallel`, `ignore-errors`, `workdir`, `env`, `env-file`, `add-path` | `shell`, `logging`, `watch`, `only-in-directories` |
+| Declaration-only (must be above the block's first statement) | `parallel`, `shell`, `logging`, `watch`, `only-in-directories` | the rest |
+| Flag (bare means `= true`, takes a bool) | `parallel`, `ignore-errors`, `logging` | the rest |
 | Machine-wide files only | `only-in-directories` | the rest |
 
 `env` is addressed by sub-key, `.env.NAME = "value"`, and exactly two segments: `.env` and `.env.A.B` are
@@ -949,15 +951,15 @@ The environment is the part that has to be put back. A trailing `.env`, `.env-fi
 -- `with_block_env` cannot, because it decides whether to save by comparing list *lengths* at block entry,
 before a trailing property has been applied.
 
-**Four properties describe the whole block and have to be written above its first statement**
-(`PropError::NotInDeclaration`): `parallel`, `watch`, `detach`, `only-in-directories`. Everything header-only
+**Five properties describe the whole block and have to be written above its first statement**
+(`PropError::NotInDeclaration`): `parallel`, `shell`, `logging`, `watch`, `only-in-directories`. Everything header-only
 is also this; `parallel` is the one that is not, because a fan-out collects every branch before any of them
 runs and half a block fanning out would be a second meaning for one word. Refused by `extend` at block entry
 rather than by `walk` where the line sits, so the message arrives whether or not the line would have been
 reached -- after a `break`, or in an `if` that went the other way.
 
 **A flag takes a bool, and a constant that can never be one is refused where it is written.**
-`.parallel`, `.ignore-errors`, `.logging` and `.detach` are the four. `matches!(v, Value::Bool(true))` used to
+`.parallel`, `.ignore-errors` and `.logging` are the three. `matches!(v, Value::Bool(true))` used to
 answer every other value with `false` and say nothing, so `.ignore-errors = "true"` was *off* -- in a language
 that refuses `"a" + 1` and `"1" == 1`. Now `Expr::constant_non_bool` answers whether the right-hand side is
 something the parser can read straight off the page and is not a bool -- a number, a list, or a string with no
@@ -972,6 +974,36 @@ resolved at run time by `as_bool`, which takes a bool, or `true`/`1`/`false`/`0`
 trimmed -- the words the places a flag is read from spell one with. Anything else is
 `PropError::FlagValue`, naming the value: silently off is the failure this replaced, and a run that stops is
 strictly better than a line that quietly did nothing.
+
+**`.shell` names one of the eight shells `is_shell` knows**, and `PropError::NotAShell` refuses the rest --
+statically for a constant, and at apply time for a value the run works out, against the same predicate
+(`exec::body_is_shell`, which splits the command so `busybox sh` and `/usr/bin/zsh` both pass). It looked like
+a way to choose any interpreter and was not: `is_shell` gates `-e` *and* the script-as-`-c` handover, and it
+is asked of the resolved **program**, with no memory of whether that program came from `.shell` or from
+`exec`. So `.shell = "pwsh"` and `exec pwsh` were already the same mechanism -- body on stdin, no `-e` -- and
+only the first of the two hid it: under `.shell = "pwsh"` a `$ ssh host` was broken exactly as it was before
+scripts moved to `-c`, and the line said nothing. The message is the fix, spelled with the value that was
+written: *"for another interpreter write `exec pwsh`"*.
+
+That is also why `.shell` is header-only now, and `.logging` with it. Block scope for `.shell` was redundant
+with `exec`, which says the same thing per block and names the program where a reader can see it; `.logging`
+is the runner narrating itself, and a trace with gaps is worse than none, since absence stops meaning
+anything. Both are declaration-only too -- header-only implies it, since a property describing the whole file
+cannot be applied part-way through one.
+
+**`.detach` is gone; `detach` marks the command.** `detach $ npm run dev` and `detach exec node … end` start
+one process and do not wait. As a property it described a *file*, and got both halves wrong at once: every
+top-level command in the file was detached, so setup-then-serve was unwritable, while `extend(nested)` cleared
+it, so the same command inside an `if` quietly waited -- 5ms, 2007ms and 5ms for three targets that all said
+`.detach = true`. A `_shared.run` setting it would have fire-and-forgotten every target in the directory.
+`Statement::Exec` carries `detach` instead, so the marker travels with the one process it is about and there
+is no question of where it applies. **It breaks the fold**: contiguous `$` lines are one process, so a
+`detach $` line is its own statement and the `$` lines below it are not part of it -- folding on would
+silently detach what came after, which is the failure being removed. Several lines as one detached process is
+what `detach exec sh` is for. It is claimed only in front of `$` and `exec`, so `detach = 5` is still a
+reassignment, and `detach run` is refused at parse time: a dispatch happens in this process. In the
+tree-sitter grammar it takes the *capture* `exec` token, since behind `detach` the keyword is no longer at
+column 0; in TextMate it joins the optional left-hand side the `exec` rules already carried for `let x = exec`.
 
 **`.confirm` and `.hide` are gone**, each replaced by something that could not disagree with itself.
 
@@ -1026,7 +1058,7 @@ settings file: global registrations, path aliases and custom shell paths were al
 
 ## Removed, and not coming back
 
-MCP server, `.alias` (a target is its file name), `:convert`, `:config` (all subcommands), the user settings
+MCP server, `.alias` (a target is its file name), `.detach` (now the `detach` marker), `:convert`, `:config` (all subcommands), the user settings
 file, `-p` / target globs, `capture()`
 (now `$` in value position), `shell_quote()` (interpolation self-quotes), `set_cwd()` (now `.workdir`),
 `define()` (now `let`), `nth()` / `count_parts()` (now `split()` and indexing), the arithmetic and comparison

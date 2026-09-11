@@ -696,7 +696,7 @@ mod tests {
 	fn a_flag_given_a_constant_that_is_not_a_bool_is_underlined() {
 		// The runner's own rule, asked of the runner: these two used to be
 		// described in two places, and the scope rule had already drifted once.
-		for src in [".parallel = 23\n$ true\n", ".detach = \"abc\"\n$ true\n"] {
+		for src in [".parallel = 23\n$ true\n", ".logging = \"abc\"\n$ true\n"] {
 			let m = messages(src);
 			assert_eq!(m.len(), 1, "{src}: {m:?}");
 			assert!(m[0].contains("is a flag and takes a bool"), "{}", m[0]);
@@ -766,7 +766,21 @@ mod tests {
 
 	#[test]
 	fn a_block_scoped_property_inside_a_block_is_fine() {
-		assert!(messages("if FLAG.x\n\t.shell = \"bash\"\n\t$ true\nend\n").is_empty());
+		assert!(messages("if FLAG.x\n\t.workdir = \"web\"\n\t$ true\nend\n").is_empty());
+	}
+
+	#[test]
+	fn shell_names_one_of_the_posix_shells_and_says_so_when_it_does_not() {
+		let m = messages(".shell = \"pwsh\"\n$ true\n");
+		assert_eq!(m.len(), 1, "{m:?}");
+		assert!(m[0].contains("write `exec pwsh`"), "the fix is the message: {}", m[0]);
+		assert!(
+			messages(".shell = \"busybox sh\"\n$ true\n").is_empty(),
+			"a shell with an argument"
+		);
+		assert!(messages(".shell = \"/usr/bin/bash\"\n$ true\n").is_empty(), "by path");
+		// Worked out during the run, so not the parser's business.
+		assert!(messages(".shell = ARG.sh\n$ true\n").is_empty());
 	}
 
 	#[test]
@@ -964,7 +978,7 @@ mod tests {
 		let h = hover(".watch = \"src/**\"", 3).expect("hovers");
 		assert!(h.contains(".watch"), "{h}");
 		assert!(h.contains("Header-only"), "{h}");
-		let h = hover(".shell = \"bash\"", 3).expect("hovers");
+		let h = hover(".workdir = \"web\"", 3).expect("hovers");
 		assert!(h.contains("Block-scoped"), "{h}");
 	}
 

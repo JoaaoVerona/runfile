@@ -28,8 +28,6 @@ pub struct Props {
 	pub add_paths: Vec<String>,
 	// header-only
 	pub watch: Vec<String>,
-	/// Start the commands and do not wait; see `Spawn::detach`.
-	pub detach: bool,
 	/// Whether this target came from the machine-wide directory. Not a
 	/// property: it is a fact about where the file was found, and the one
 	/// thing that makes `.only-in-directories` mean anything.
@@ -81,14 +79,6 @@ pub const PROPERTIES: &[KnownProperty] = &[
 		example: ".add-path = \"node_modules/.bin\"",
 	},
 	KnownProperty {
-		name: "detach",
-		block_scoped: false,
-		flag: true,
-		declaration_only: true,
-		doc: "Start the commands and do not wait. For something meant to outlive the run.",
-		example: ".detach = true\n\n$ cargo run --bin server",
-	},
-	KnownProperty {
 		name: "env",
 		block_scoped: true,
 		flag: false,
@@ -114,9 +104,9 @@ pub const PROPERTIES: &[KnownProperty] = &[
 	},
 	KnownProperty {
 		name: "logging",
-		block_scoped: true,
+		block_scoped: false,
 		flag: true,
-		declaration_only: false,
+		declaration_only: true,
 		doc: "Announce each command on stderr before it runs.",
 		example: ".logging = true\n\n# Each command announces itself on stderr as it runs.",
 	},
@@ -138,11 +128,11 @@ pub const PROPERTIES: &[KnownProperty] = &[
 	},
 	KnownProperty {
 		name: "shell",
-		block_scoped: true,
+		block_scoped: false,
 		flag: false,
-		declaration_only: false,
-		doc: "Which shell `$` lines use.",
-		example: ".shell = \"sh\"",
+		declaration_only: true,
+		doc: "Which POSIX shell `$` lines use: sh, bash, dash, ash, zsh, ksh, busybox or brush.",
+		example: ".shell = \"sh\"\n\n# For any other interpreter, name it on the line: `exec pwsh`.",
 	},
 	KnownProperty {
 		name: "watch",
@@ -202,6 +192,15 @@ pub enum PropError {
 		"line {line}: `.{name}` describes the whole block, so it has to be written above the block's first statement"
 	)]
 	NotInDeclaration { name: String, line: usize },
+	/// `.shell` names which of the eight POSIX shells `$` uses, and nothing
+	/// else. Any other program reached the same spawn by a path that reads
+	/// nothing like a shell -- no `-e`, and the script on stdin rather than
+	/// after `-c` -- so `$ ssh host` under one was broken exactly as it was
+	/// before scripts moved to `-c`, and nothing said so. `exec pwsh` has the
+	/// identical mechanics and names the program on the line, so a reader is
+	/// not misled about what `$` will do.
+	#[error("line {line}: `.shell` names a POSIX shell, not `{got}` -- for another interpreter write `exec {got}`")]
+	NotAShell { line: usize, got: String },
 	#[error(transparent)]
 	Eval(#[from] EvalError),
 }
@@ -269,6 +268,16 @@ pub fn check(p: &Property, nested: bool, trailing: bool) -> Result<&'static Know
 			kind: describe_constant(&c),
 		});
 	}
+	// The same shape for the one property whose *values* are a fixed set: a
+	// constant is answered here, and anything the run works out is answered by
+	// `apply`, against the same predicate.
+	if head == "shell"
+		&& let Some(e) = &p.value
+		&& let Some(runfile_lang::Constant::Str(s)) = e.constant_non_bool()
+		&& !crate::exec::body_is_shell(Some(&s))
+	{
+		return Err(PropError::NotAShell { line, got: s });
+	}
 	Ok(known)
 }
 
@@ -286,7 +295,6 @@ impl Props {
 		// state.
 		if nested {
 			out.watch.clear();
-			out.detach = false;
 		}
 		for p in block.trailing() {
 			check(p, nested, true)?;
@@ -324,12 +332,17 @@ impl Props {
 			}
 		};
 		match head {
-			"shell" => self.shell = Some(value(p, sc)?.to_string()),
+			"shell" => {
+				let v = value(p, sc)?.to_string();
+				if !crate::exec::body_is_shell(Some(&v)) {
+					return Err(PropError::NotAShell { line, got: v });
+				}
+				self.shell = Some(v);
+			}
 			"logging" => self.logging = flag(p, sc)?,
 			"parallel" => self.parallel = flag(p, sc)?,
 			"ignore-errors" => self.ignore_errors = flag(p, sc)?,
 			"workdir" => self.workdir = Some(value(p, sc)?.to_string()),
-			"detach" => self.detach = flag(p, sc)?,
 			"env" => {
 				if p.path.len() != 2 {
 					return Err(PropError::Unknown {

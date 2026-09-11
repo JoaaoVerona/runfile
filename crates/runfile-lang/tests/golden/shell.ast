@@ -36,6 +36,7 @@ Target {
                         ),
                     ],
                 ],
+                detach: false,
                 lines,
                 span: Span,
             },

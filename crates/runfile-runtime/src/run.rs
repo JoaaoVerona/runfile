@@ -450,7 +450,9 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			r.trace.extend(child);
 			Ok(())
 		}
-		Statement::Exec { command, body, .. } => {
+		Statement::Exec {
+			command, body, detach, ..
+		} => {
 			let (cmd, text) = render(command.as_deref(), body, r)?;
 			r.trace.push(text.clone());
 			let env = merged_env(r, props);
@@ -463,7 +465,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				capture: false,
 				dry_run: r.dry_run,
 				label: r.label.as_deref(),
-				detach: props.detach,
+				detach: *detach,
 				announce: props.logging && !r.dry_run,
 			})?;
 			Ok(())
@@ -892,7 +894,9 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 				// no shell -- the same reason the sequential walk does.
 				value_of(expr, props, r)?;
 			}
-			Statement::Exec { command, body, .. } => {
+			Statement::Exec {
+				command, body, detach, ..
+			} => {
 				let (cmd, text) = render(command.as_deref(), body, r)?;
 				out.push(Leaf::Exec {
 					// From the header as written, before `.shell` is folded in:
@@ -900,7 +904,7 @@ fn collect(block: &Block, props: &Props, r: &mut Runner<'_>, out: &mut Vec<Leaf>
 					// its own first word.
 					label: exec_label(cmd.as_deref(), &text),
 					command: command_for(cmd.as_deref(), props).map(str::to_string),
-					detach: props.detach,
+					detach: *detach,
 					announce: props.logging,
 					ignore_errors: props.ignore_errors,
 					body: text,

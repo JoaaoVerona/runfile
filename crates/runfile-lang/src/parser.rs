@@ -280,10 +280,27 @@ impl<'a> P<'a> {
 		let indent = line.indent;
 
 		if line.trimmed == "$" || line.trimmed.starts_with("$ ") {
-			return self.shell_run();
+			return self.shell_run(false);
 		}
 		if line.trimmed.starts_with("exec ") {
-			return self.exec_block();
+			return self.exec_block(false);
+		}
+		// `detach` marks the command it prefixes. Claimed only in front of the
+		// two forms that start a process, so it stays an ordinary name
+		// everywhere else -- `detach = 5` is still a reassignment.
+		if let Some(rest) = line.trimmed.strip_prefix("detach ").map(str::trim_start) {
+			if rest == "$" || rest.starts_with("$ ") {
+				return self.shell_run(true);
+			}
+			if rest.starts_with("exec ") {
+				return self.exec_block(true);
+			}
+			if rest.starts_with("run ") {
+				return err(
+					no,
+					"`detach` marks a command, and `run` dispatches in-process -- there is no process to detach",
+				);
+			}
 		}
 
 		let (text, offset, _) = self.logical();
@@ -556,7 +573,7 @@ impl<'a> P<'a> {
 
 	/// A run of `$` lines becomes one process. Blank lines and comments are
 	/// transparent -- reformatting a file must not change what shares a shell.
-	fn shell_run(&mut self) -> Result<Statement, ParseError> {
+	fn shell_run(&mut self, detach: bool) -> Result<Statement, ParseError> {
 		let first = &self.lines[self.i];
 		let (no, offset) = (first.no, first.offset);
 		let mut body = Vec::new();
@@ -565,8 +582,15 @@ impl<'a> P<'a> {
 		let mut j = self.i;
 		while j < self.lines.len() {
 			let l = &self.lines[j];
-			if l.trimmed == "$" || l.trimmed.starts_with("$ ") {
-				let mut text = l.trimmed.strip_prefix('$').unwrap().trim_start().to_string();
+			// The opening line carries the marker; everything after it is a
+			// plain `$` line, and a `detach $` line further down is a statement
+			// of its own rather than more of this one.
+			let trimmed = match detach && j == self.i {
+				true => l.trimmed.strip_prefix("detach").unwrap().trim_start(),
+				false => l.trimmed,
+			};
+			if trimmed == "$" || trimmed.starts_with("$ ") {
+				let mut text = trimmed.strip_prefix('$').unwrap().trim_start().to_string();
 				// A trailing backslash continues the shell line. The backslash and
 				// newline are kept so the shell sees the continuation it expects,
 				// and the author's formatting survives into --dry-run output.
@@ -579,6 +603,10 @@ impl<'a> P<'a> {
 				lines.push(l.no);
 				last = j;
 				j += 1;
+				// One command, so the run ends with its own line.
+				if detach {
+					break;
+				}
 			} else if l.trimmed.is_empty() || l.trimmed.starts_with('#') {
 				j += 1;
 			} else {
@@ -591,6 +619,7 @@ impl<'a> P<'a> {
 			command: None,
 			body,
 			lines,
+			detach,
 			span: Span::new(offset, end, no),
 		})
 	}
@@ -709,10 +738,14 @@ impl<'a> P<'a> {
 	/// indentation: a body containing its own `end` (ruby, lua) would otherwise
 	/// close the block early. The body is dedented by its own base indentation,
 	/// so `exec sudo tee file` writes a file without leading tabs.
-	fn exec_block(&mut self) -> Result<Statement, ParseError> {
+	fn exec_block(&mut self, detach: bool) -> Result<Statement, ParseError> {
 		let open = &self.lines[self.i];
 		let (no, offset, indent) = (open.no, open.offset, open.indent);
-		let cmd_text = lexer::code(open.trimmed.strip_prefix("exec ").unwrap().trim());
+		let head = match detach {
+			true => open.trimmed.strip_prefix("detach").unwrap().trim_start(),
+			false => open.trimmed,
+		};
+		let cmd_text = lexer::code(head.strip_prefix("exec ").unwrap().trim());
 		let command = to_parts(lexer::split_interp(cmd_text, offset, no)?, no)?;
 		self.i += 1;
 		let indent = indent.to_string();
@@ -721,6 +754,7 @@ impl<'a> P<'a> {
 			command: Some(command),
 			body,
 			lines,
+			detach,
 			span: Span::new(offset, end, no),
 		})
 	}

@@ -170,11 +170,10 @@ fn a_nested_block_inside_a_fan_out_applies_its_own_env_and_shell() {
 		&d,
 	)
 	.expect("the branch saw its own block's `.env`");
-	run_src(
-		".parallel\ndo\n\t.shell = \"sh\"\n\t$ test \"${0##*/}\" = sh\nend\n",
-		&d,
-	)
-	.expect("the branch ran under its own block's `.shell`");
+	// `.shell` is header-only, so the path this half is about is the header one
+	// reaching a leaf collected inside a nested block.
+	run_src(".parallel\n.shell = \"sh\"\ndo\n\t$ test \"${0##*/}\" = sh\nend\n", &d)
+		.expect("the branch was spawned with the file's `.shell`");
 }
 
 #[test]

@@ -1,0 +1,11 @@
+# `detach` marks one command, and ends the run of `$` lines it opens
+
+$ mkdir -p logs
+$ printf ready
+
+detach $ npm run dev
+$ echo started
+
+detach exec node
+	console.log("bye")
+end

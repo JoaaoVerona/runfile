@@ -187,6 +187,19 @@ pub enum Statement {
 	Exec {
 		command: Option<Vec<InterpPart>>,
 		body: Vec<Vec<InterpPart>>,
+		/// `detach $ npm start`: start it and do not wait.
+		///
+		/// A marker on the statement rather than a property, because detaching
+		/// is a fact about one process. As `.detach` it described a *file*, and
+		/// got both halves wrong at once: every top-level command in the file
+		/// was detached, so setup-then-serve was unwritable, while a block
+		/// cleared it, so the same command inside an `if` quietly waited.
+		///
+		/// A `detach $` run is its own statement: contiguous `$` lines fold
+		/// into one process, and folding on from here would silently detach
+		/// whatever was written below. Several lines as one detached process is
+		/// what `detach exec sh` is for.
+		detach: bool,
 		/// Source line of each `body` entry, 1-based.
 		///
 		/// Kept because the two are not derivable from each other: a `$` run

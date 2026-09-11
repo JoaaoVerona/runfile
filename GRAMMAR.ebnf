@@ -26,10 +26,14 @@ property    = WS , "." , ident , { "." , ident } , [ WS , "=" , WS , expr ] , eo
    `PROPERTIES` in runfile-runtime is the list. *)
 
 (* ---- shell ---- *)
-shell       = WS , "$" , " " , shell_text , NEWLINE ;               (* no comment: all of it is the shell's *)
+shell       = WS , [ "detach" , " " ] , "$" , " " , shell_text , NEWLINE ;  (* no comment: all of it is the shell's *)
+(* `detach` starts the command and does not wait. It marks one command: a `detach $` line is its own
+   statement, where contiguous plain `$` lines are folded into a single process. It is a marker only in
+   front of `$` and `exec`, so `detach = 5` is an ordinary reassignment, and `detach run` is refused --
+   a dispatch happens in this process and has none to detach. *)
 shell_text  = { ANY - NEWLINE | "\" , NEWLINE } ;          (* backslash continues *)
 
-exec_block  = WS , "exec" , " " , cmd_text , eol ,
+exec_block  = WS , [ "detach" , " " ] , "exec" , " " , cmd_text , eol ,
               { ANY - ( WS , "end" , eol ) } ,
               WS , "end" , eol ;
 (* The words of a command line, which is how the runner splits it -- so a `#`

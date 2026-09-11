@@ -369,6 +369,7 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `.name = value` | A property. |
 | `$ echo hi` | Hand this line to a shell. |
 | `exec python3` … `end` | Run a command with the block as its stdin. |
+| `detach $ npm run dev` | Start this one command and do not wait for it. Also `detach exec …`. |
 | `json` … `end` | A block of JSON, as one value. |
 | `let x = 1` | Bind a value. `x = 2` rebinds. `let a, b = pair` takes a list apart. |
 | `if` / `else if` / `else` / `end` | Branch. However many `else if`s, one `end`. |
@@ -633,16 +634,15 @@ Set at the top of the file, or inside a block where marked.
 
 | Property | Effect | In a block? | Flag? |
 | --- | --- | :-: | :-: |
-| `.shell` | Which shell `$` lines use. | ✅ | |
+| `.shell` | Which POSIX shell `$` lines use. | | |
 | `.env.NAME` | Set an environment variable. | ✅ | |
 | `.workdir` | Where commands run. | ✅ | |
 | `.parallel` | Run this block's commands at once. On a `for`, its iterations. | ✅ | ✅ |
 | `.ignore-errors` | Keep going when a command fails. | ✅ | ✅ |
-| `.logging` | Announce each command on stderr before it runs. Off unless set. | ✅ | ✅ |
+| `.logging` | Announce each command on stderr before it runs. Off unless set. | | ✅ |
 | `.env-file` | Load a `.env` file (encrypted values are decrypted in memory). Appends. | ✅ | |
 | `.add-path` | Prepend a directory to `PATH`. Appends. | ✅ | |
 | `.watch` | Re-run when matching files change. A `!` prefix excludes. | | |
-| `.detach` | Start the commands and do not wait. | | ✅ |
 | `.only-in-directories` | Machine-wide targets only: offer this one inside these directories. Appends. | | |
 
 A **flag** is written bare for `= true`, or given a bool. A constant that can never be one is refused where it
@@ -666,8 +666,25 @@ let out = concat("target-", ARG.profile ? "debug")
 $ ls
 ```
 
-Four of them describe the whole block rather than the commands under it — `.parallel`, `.watch`, `.detach`
-and `.only-in-directories` — and those have to be written above the block's first statement.
+Five of them describe the whole block rather than the commands under it — `.parallel`, `.shell`, `.logging`,
+`.watch` and `.only-in-directories` — and those have to be written above the block's first statement.
+
+`.shell` names one of the eight shells `$` knows how to drive: `sh`, `bash`, `dash`, `ash`, `zsh`, `ksh`,
+`busybox` or `brush`. Any other interpreter is named on the line instead, with `exec` — which is the same
+mechanism, and says so where it can be read:
+
+```sh
+# runfiles/list.run
+# List the current directory, whatever the platform
+
+if RUN.os == "windows"
+	exec pwsh
+		Get-ChildItem
+	end
+else
+	$ ls -la
+end
+```
 
 `.env-file` and `.add-path` **append**, so a block adds to what it inherited rather than replacing it, and a
 block's file can be named by something that block worked out:
@@ -934,7 +951,7 @@ Shell is still there. It is just marked.
 | Windows | x86-64, arm64 |
 
 `$` lines use bash where it exists, Git Bash on Windows, and `sh` otherwise — so one file works everywhere. Set
-`.shell` to pin something else.
+`.shell` to pin one of the other POSIX shells, or name any other interpreter with `exec`.
 
 ## License
 

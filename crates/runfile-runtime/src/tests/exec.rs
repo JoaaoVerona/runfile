@@ -196,9 +196,13 @@ fn a_property_written_below_a_binding_can_read_it() {
 	// statement whatever the order they were written in. A file reads top to
 	// bottom, so `.workdir = d` below `let d` now means what it says.
 	let d = Recorder::default();
-	// Without it this is `s is not defined`: the property resolved before the
-	// line above it ever ran.
-	run_src("let s = \"sh\"\n.shell = s\n$ true\n", &d).expect("the binding above it is in scope");
+	// Without it this is `greeting is not defined`: the property resolved
+	// before the line above it ever ran.
+	run_src(
+		"let greeting = \"hello\"\n.env.GREET = greeting\n$ test \"$GREET\" = hello\n",
+		&d,
+	)
+	.expect("the binding above it is in scope");
 }
 
 #[test]

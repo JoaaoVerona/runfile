@@ -35,6 +35,15 @@ pub const KEYWORDS: &[Keyword] = &[
 		example: "exec sudo tee /etc/systemd/journald.conf.d/app.conf\n\t[Journal]\n\tStorage=persistent\nend",
 	},
 	Keyword {
+		name: "detach",
+		syntax: "detach $ <line>   ·   detach <command> … end",
+		doc: "Start this one command and do not wait for it. Its streams go nowhere and its stdin is \
+		      `/dev/null`, so it can outlive the run that started it. A `detach $` line is its own \
+		      command: the `$` lines below it are not part of it. It marks a command, so `detach run` \
+		      is refused — a dispatch happens in this process.",
+		example: "$ mkdir -p logs\n\ndetach $ npm run dev\n\n$ echo started",
+	},
+	Keyword {
 		name: "run",
 		syntax: "run <target> [arguments]",
 		doc: "Run another target **in this process** — no second binary, no shell in between. Its \

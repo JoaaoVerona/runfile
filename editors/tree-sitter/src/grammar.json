@@ -183,6 +183,22 @@
       "type": "SEQ",
       "members": [
         {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "detach",
+              "content": {
+                "type": "STRING",
+                "value": "detach"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
           "type": "STRING",
           "value": "$"
         },
@@ -259,52 +275,115 @@
       }
     },
     "exec_block": {
-      "type": "SEQ",
+      "type": "CHOICE",
       "members": [
         {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_exec_keyword"
-          },
-          "named": false,
-          "value": "exec"
-        },
-        {
-          "type": "FIELD",
-          "name": "command",
-          "content": {
-            "type": "SYMBOL",
-            "name": "command"
-          }
-        },
-        {
-          "type": "SYMBOL",
-          "name": "_eol"
-        },
-        {
-          "type": "CHOICE",
+          "type": "SEQ",
           "members": [
             {
-              "type": "FIELD",
-              "name": "body",
+              "type": "ALIAS",
               "content": {
                 "type": "SYMBOL",
-                "name": "exec_body"
+                "name": "_exec_keyword"
+              },
+              "named": false,
+              "value": "exec"
+            },
+            {
+              "type": "FIELD",
+              "name": "command",
+              "content": {
+                "type": "SYMBOL",
+                "name": "command"
               }
             },
             {
-              "type": "BLANK"
+              "type": "SYMBOL",
+              "name": "_eol"
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "body",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "exec_body"
+                  }
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
+            },
+            {
+              "type": "STRING",
+              "value": "end"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "_eol"
             }
           ]
         },
         {
-          "type": "STRING",
-          "value": "end"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "_eol"
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "detach",
+              "content": {
+                "type": "STRING",
+                "value": "detach"
+              }
+            },
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_capture_exec_keyword"
+              },
+              "named": false,
+              "value": "exec"
+            },
+            {
+              "type": "FIELD",
+              "name": "command",
+              "content": {
+                "type": "SYMBOL",
+                "name": "command"
+              }
+            },
+            {
+              "type": "SYMBOL",
+              "name": "_eol"
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "body",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "exec_body"
+                  }
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
+            },
+            {
+              "type": "STRING",
+              "value": "end"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "_eol"
+            }
+          ]
         }
       ]
     },

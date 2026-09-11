@@ -36,3 +36,31 @@ let staged = $ git diff --name-only
     (shell_capture
       (shell_text
         (shell_content)))))
+
+================================================================================
+A detached shell line, and a detached exec block
+================================================================================
+$ mkdir -p logs
+detach $ npm run dev
+$ echo started
+
+detach exec node
+	console.log("bye")
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (shell_line
+    (shell_text
+      (shell_content)))
+  (shell_line
+    (shell_text
+      (shell_content)))
+  (shell_line
+    (shell_text
+      (shell_content)))
+  (exec_block
+    command: (command
+      (shell_content))
+    body: (exec_body
+      (exec_content))))

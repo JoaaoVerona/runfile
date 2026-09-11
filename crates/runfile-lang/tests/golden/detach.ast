@@ -1,0 +1,73 @@
+Target {
+    description: Some(
+        "`detach` marks one command, and ends the run of `$` lines it opens",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            Exec {
+                command: None,
+                body: [
+                    [
+                        Literal(
+                            "mkdir -p logs",
+                        ),
+                    ],
+                    [
+                        Literal(
+                            "printf ready",
+                        ),
+                    ],
+                ],
+                detach: false,
+                lines,
+                span: Span,
+            },
+            Exec {
+                command: None,
+                body: [
+                    [
+                        Literal(
+                            "npm run dev",
+                        ),
+                    ],
+                ],
+                detach: true,
+                lines,
+                span: Span,
+            },
+            Exec {
+                command: None,
+                body: [
+                    [
+                        Literal(
+                            "echo started",
+                        ),
+                    ],
+                ],
+                detach: false,
+                lines,
+                span: Span,
+            },
+            Exec {
+                command: Some(
+                    [
+                        Literal(
+                            "node",
+                        ),
+                    ],
+                ),
+                body: [
+                    [
+                        Literal(
+                            "console.log(\"bye\")",
+                        ),
+                    ],
+                ],
+                detach: true,
+                lines,
+                span: Span,
+            },
+        ],
+    },
+}

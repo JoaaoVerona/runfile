@@ -153,9 +153,12 @@ fn every_exported_property_name_is_actually_known() {
 		} else {
 			(*name).to_string()
 		};
-		// A flag will not take a string, which is the point of the column.
+		// A flag will not take a string, which is the point of the column; and
+		// `.shell` takes one of eight names rather than any string.
 		let rhs = if p.flag {
 			"true".to_string()
+		} else if p.name == "shell" {
+			"\"sh\"".to_string()
 		} else {
 			"\"x\"".to_string()
 		};
@@ -379,4 +382,42 @@ fn a_flag_that_resolves_to_neither_says_so_rather_than_reading_as_false() {
 		let e = flag_with("ENV.F", Some(v)).expect_err(v);
 		assert!(matches!(e, crate::props::PropError::FlagValue { .. }), "F={v}: {e}");
 	}
+}
+
+// ---- `.shell` names a shell
+
+/// `.shell = <rhs>` at the top of a file, applied.
+fn shell_with(rhs: &str) -> Result<crate::props::Props, crate::props::PropError> {
+	let ast = runfile_lang::parse(&format!(".shell = {rhs}\n$ true\n")).expect("parses");
+	let mut sc = runfile_lang::Scope::new();
+	sc.env.insert("SH".into(), "pwsh".into());
+	crate::props::Props::default().extend(&ast.body, &mut sc, false)
+}
+
+#[test]
+fn shell_names_one_of_the_posix_shells_and_nothing_else() {
+	// Any other program reached the same spawn by a path that reads nothing
+	// like a shell: no `-e`, and the script on stdin rather than after `-c`. So
+	// `$ ssh host` under `.shell = "pwsh"` was broken exactly as it was before
+	// scripts moved to `-c`, and the line said nothing about it. `exec pwsh`
+	// has the identical mechanics and names the program where it can be read.
+	for ok in ["\"sh\"", "\"bash\"", "\"busybox sh\"", "\"/usr/bin/zsh\""] {
+		shell_with(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+	}
+	for bad in ["\"pwsh\"", "\"python3\"", "\"fish\"", "\"\"", "23"] {
+		let e = shell_with(bad).expect_err(bad);
+		assert!(matches!(e, crate::props::PropError::NotAShell { .. }), "{bad}: {e}");
+	}
+	// The message is the fix, spelled with the value that was written.
+	let e = shell_with("\"pwsh\"").unwrap_err();
+	assert!(e.to_string().contains("write `exec pwsh`"), "{e}");
+}
+
+#[test]
+fn a_shell_worked_out_during_the_run_is_checked_when_it_resolves() {
+	// A constant is answered where it is written and a computed one when it
+	// arrives, against the same predicate -- so neither spelling can smuggle
+	// an interpreter into `$`.
+	let e = shell_with("ENV.SH").expect_err("ENV.SH is pwsh here");
+	assert!(matches!(e, crate::props::PropError::NotAShell { .. }), "{e}");
 }

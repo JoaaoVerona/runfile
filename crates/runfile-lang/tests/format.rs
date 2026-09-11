@@ -472,3 +472,17 @@ fn formatting_a_commented_file_settles() {
 	assert_eq!(format(&once).unwrap(), once, "{once}");
 	assert_eq!(once, src, "{once}");
 }
+
+#[test]
+fn a_detached_command_is_normalised_like_any_other() {
+	// The marker is the language's, so its own spacing is normalised. What
+	// follows it is not: the text after `$` is the shell's, and an `exec`
+	// command's internal spacing is left alone the same way it is without one.
+	assert_eq!(format("detach   $   echo   hi\n").unwrap(), "detach $ echo   hi\n");
+	assert_eq!(
+		format("detach    exec   node  --harmony\n\tx\nend\n").unwrap(),
+		"detach exec node  --harmony\n\tx\nend\n"
+	);
+	// And it is not a marker where it is not one.
+	assert_eq!(format("detach = 5\n").unwrap(), "detach = 5\n");
+}

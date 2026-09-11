@@ -192,7 +192,7 @@ function coloured(scopes: string[]): string {
  * for the same command. Anything less specific would pass while the first
  * command on the line was left bare, which is what happened twice.
  */
-async function sameAsShellFile(line: string, shell: string): Promise<void> {
+async function sameAsShellFile(line: string, shell: string, prefix = "$ "): Promise<void> {
 	const reg = await registry(shell)
 	const sh = await reg.loadGrammar("source.shell")
 	const run = await reg.loadGrammar("source.run")
@@ -203,12 +203,12 @@ async function sameAsShellFile(line: string, shell: string): Promise<void> {
 		.tokens.map((t) => ({ text: line.slice(t.startIndex, t.endIndex), scopes: coloured(t.scopes) }))
 		.filter((t) => t.text.trim())
 
-	const wrapped = `$ ${line}`
+	const wrapped = `${prefix}${line}`
 	const ours = run
 		.tokenizeLine(wrapped, vsctm.INITIAL)
-		.tokens.map((t) => ({ text: wrapped.slice(t.startIndex, t.endIndex), scopes: coloured(t.scopes) }))
-		// Drop the `$` marker itself, which is ours and has no counterpart.
-		.slice(1)
+		.tokens // Everything before the shell text is ours and has no counterpart.
+		.filter((t) => t.startIndex >= prefix.length)
+		.map((t) => ({ text: wrapped.slice(t.startIndex, t.endIndex), scopes: coloured(t.scopes) }))
 		.filter((t) => t.text.trim())
 
 	assert.deepEqual(ours, real, `\`${line}\` is not coloured the way a .sh file colours it`)
@@ -586,4 +586,31 @@ test("a hash the language does not own is not coloured as our comment", async ()
 			`${why}: ${(lines[i] ?? []).flatMap((t) => t.scopes).join(" ")}`
 		)
 	}
+})
+
+test("a detached shell line is coloured exactly as an ordinary one", async () => {
+	const shell = realShellGrammar()
+	if (!shell) {
+		return
+	}
+	// The marker is ours and the rest of the line is still the shell's, so
+	// nothing about the text after `$` may change because `detach` precedes it.
+	for (const line of ["npm run dev", "git commit -m 'x'", "node server.js --port 3000"]) {
+		await sameAsShellFile(line, shell, "detach $ ")
+	}
+})
+
+test("the detach marker is ours, on both forms", async () => {
+	const line = await scopesOf("detach $ npm run dev\n")
+	assert.ok(line[0]?.includes("keyword.control.detach.run"), `${line[0]?.join(" ")}`)
+	const block = await scopesOf("detach exec node\n\tconsole.log(1)\nend\n")
+	assert.ok(block[0]?.includes("keyword.control.detach.run"), `${block[0]?.join(" ")}`)
+	assert.ok(block[0]?.includes("keyword.control.exec.run"), "and `exec` is still the keyword")
+})
+
+test("a detached exec body is embedded the same way an ordinary one is", async () => {
+	const shell = await scopesOf("detach exec bash\n\tls -la\nend\n")
+	assert.ok(shell[1]?.includes("test.shell"), `${shell[1]?.join(" ")}`)
+	const python = await scopesOf("detach exec python3\n\timport sys\nend\n")
+	assert.ok(!python[1]?.includes("test.shell"), "another language is not shell")
 })

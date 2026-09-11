@@ -289,3 +289,63 @@ fn a_binding_may_name_several_positions() {
 	let e = crate::parse("let a, = [1, 2]\n").unwrap_err().to_string();
 	assert!(e.contains("binding has no name"), "{e}");
 }
+
+// ---- `detach`
+
+/// Every `Exec` statement in a target, as (detached, body lines).
+fn exec_shapes(src: &str) -> Vec<(bool, usize)> {
+	let t = crate::parse(src).expect("parses");
+	t.body
+		.statements
+		.iter()
+		.filter_map(|st| match st {
+			crate::Statement::Exec { detach, body, .. } => Some((*detach, body.len())),
+			_ => None,
+		})
+		.collect()
+}
+
+#[test]
+fn detach_marks_one_command_and_ends_the_run_it_opens() {
+	// Contiguous `$` lines are one process, so folding on from a `detach $`
+	// would silently detach whatever was written below it -- which is the
+	// failure the marker exists to remove.
+	assert_eq!(
+		exec_shapes("$ a\n$ b\ndetach $ c\n$ d\n$ e\n"),
+		vec![(false, 2), (true, 1), (false, 2)],
+		"the pair, the detached one alone, then the pair below it"
+	);
+	// A backslash continuation is still one shell line, not a fold.
+	assert_eq!(exec_shapes("detach $ a \\\n\tb\n$ c\n"), vec![(true, 1), (false, 1)]);
+}
+
+#[test]
+fn detach_marks_an_exec_block_too() {
+	assert_eq!(
+		exec_shapes("detach exec node\n\tconsole.log(1)\nend\n"),
+		vec![(true, 1)]
+	);
+	let t = crate::parse("detach exec node --harmony\n\tx\nend\n").expect("parses");
+	let crate::Statement::Exec { command: Some(c), .. } = &t.body.statements[0] else {
+		panic!("an exec block");
+	};
+	assert_eq!(
+		c,
+		&vec![crate::InterpPart::Literal("node --harmony".into())],
+		"the marker is not part of the command"
+	);
+}
+
+#[test]
+fn detach_is_refused_on_a_dispatch() {
+	// `run` happens in this process, so there is nothing to detach.
+	let e = crate::parse("detach run build\n").unwrap_err().to_string();
+	assert!(e.contains("dispatches in-process"), "{e}");
+}
+
+#[test]
+fn detach_is_only_a_marker_in_front_of_a_command() {
+	// Claimed narrowly, so it stays an ordinary name everywhere else.
+	crate::parse("let detach = 5\ndetach = 6\n").expect("an ordinary binding and reassignment");
+	crate::parse("let x = detach\n").expect("an ordinary read");
+}

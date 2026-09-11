@@ -151,13 +151,20 @@ fn render(src: &str) -> Result<String, ParseError> {
 			i += 1;
 			continue;
 		}
+		// `detach` prefixes the command it marks. Held aside so the two forms
+		// below are normalised the same way with it as without it, and claimed
+		// only in front of them -- `detach = 5` is an ordinary reassignment.
+		let (mark, trimmed) = match trimmed.strip_prefix("detach ").map(str::trim_start) {
+			Some(rest) if rest == "$" || rest.starts_with("$ ") || rest.starts_with("exec ") => ("detach ", rest),
+			_ => ("", trimmed),
+		};
 		// A `$` line, and the raw continuation lines that belong to it.
 		if trimmed == "$" || trimmed.starts_with("$ ") {
 			let body = trimmed.strip_prefix('$').unwrap().trim_start();
 			let shell = if body.is_empty() {
-				"$".to_string()
+				format!("{mark}$")
 			} else {
-				format!("$ {body}")
+				format!("{mark}$ {body}")
 			};
 			o.at_depth(&shell, Kind::Other);
 			let mut last = trimmed.to_string();
@@ -176,7 +183,7 @@ fn render(src: &str) -> Result<String, ParseError> {
 
 		if let Some(cmd) = trimmed.strip_prefix("exec ") {
 			let d = o.depth();
-			o.push(d, &noted(&format!("exec {}", cmd.trim()), note), Kind::Open);
+			o.push(d, &noted(&format!("{mark}exec {}", cmd.trim()), note), Kind::Open);
 			i = exec_body(&raw, i + 1, line, d, None, &mut o);
 			continue;
 		}

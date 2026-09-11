@@ -2323,9 +2323,9 @@ fn a_preview_announces_nothing_twice() {
 }
 
 #[test]
-fn a_detached_target_does_not_wait_for_what_it_starts() {
+fn a_detached_command_does_not_hold_up_the_run() {
 	// Fire and forget: the run returns while the command is still going.
-	let p = project(&[("runfiles/t.run", ".detach = true\n\n$ sleep 30; echo late > late.txt\n")]);
+	let p = project(&[("runfiles/t.run", "detach $ sleep 30; echo late > late.txt\n")]);
 	let started = std::time::Instant::now();
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -2334,6 +2334,46 @@ fn a_detached_target_does_not_wait_for_what_it_starts() {
 		!p.dir.path().join("late.txt").exists(),
 		"and the command is still running"
 	);
+}
+
+#[test]
+fn detach_marks_one_command_and_the_rest_of_the_file_is_waited_for() {
+	// The whole reason it moved off the header. `.detach` described the *file*,
+	// so setup-then-serve could not be written: the setup was detached too, and
+	// nothing below it could rely on it having happened.
+	let p = project(&[(
+		"runfiles/t.run",
+		"$ printf ready > setup.txt\n\ndetach $ sleep 30\n\n$ printf done > after.txt\n",
+	)]);
+	let started = std::time::Instant::now();
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(
+		started.elapsed().as_secs() < 10,
+		"the sleep was waited for: {:?}",
+		started.elapsed()
+	);
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("setup.txt")).unwrap(),
+		"ready",
+		"the line above it ran to completion"
+	);
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("after.txt")).unwrap(),
+		"done",
+		"and so did the line below it"
+	);
+}
+
+#[test]
+fn detach_reaches_a_command_inside_a_block() {
+	// `.detach` was cleared by `extend(nested)`, so the same command inside an
+	// `if` quietly waited. A marker on the statement has no such question.
+	let p = project(&[("runfiles/t.run", "if true\n\tdetach $ sleep 30\nend\n")]);
+	let started = std::time::Instant::now();
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(started.elapsed().as_secs() < 10, "it waited: {:?}", started.elapsed());
 }
 
 #[test]
