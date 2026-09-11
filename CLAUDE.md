@@ -1275,8 +1275,27 @@ What differs on Gitea's side is forced by the fleet (`gitea-easy-runners` docume
 
 ## Preparation targets
 
-A target named `setup` gates every other target in its directory, fingerprinted by its own text, so editing the
-setup re-triggers the requirement. State lives in `state.json` in the platform state directory — **except in
+A target named `setup` gates every other target in its directory, fingerprinted by its parsed tree, so editing the
+setup re-triggers the requirement and editing a comment in it does not.
+
+**`--dry-run` never records the gate.** `main` recorded it after any run that ended well -- a plain `Ok` or an
+`exit(code)` -- and `prepare::record` writes only for a setup target, so `run --dry-run setup` stored setup's
+fingerprint without running one of its commands, and every target after it walked through the gate. A preview
+changes nothing, and that includes what the gate believes. One `record` closure in `main` holds the check, so
+the two arms that end a run well cannot come to disagree about it; the watch loop records too, but watch mode is
+never entered under `--dry-run`.
+
+**A field added to the tree at a default that means "as before" goes in `UNASKED`**, in `runfile-lang`'s
+`lib.rs`, in the same change. The fingerprint hashes the tree's `Debug` rendering, so a new field moves the
+fingerprint of every file whether or not it uses the field -- and since a runner upgrade changes the rendering
+for every project at once, the gate then asks all of them to run `setup` again for a change none of them made.
+Adding `detach` to `Statement::Exec` did exactly that to 83 of the author's 88 projects. `UNASKED` lists fields
+as they render at their default, separator included, and the fingerprint drops them; a file that does use the
+field renders differently and still counts as changed. A test pins a real `setup.run` to the hash the runner
+recorded for it before `detach` existed, so a field added without an entry fails there rather than on every
+machine. The five projects set up with the one build that shipped the field had their stored hashes
+rewritten to the new rendering rather than being asked again: each one's stored value was exactly the old
+rendering of its current file, which is proof setup had run for it. State lives in `state.json` in the platform state directory — **except in
 CI, where there is none**. A runner is built from scratch and thrown away, so asking whether an earlier `setup`
 happened is asking about a machine that did not exist: `prepare::enforce` returns before reading the file and
 `prepare::record` returns before creating one. It used to be written on every CI run purely for a cleanup step

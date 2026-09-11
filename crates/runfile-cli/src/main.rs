@@ -285,6 +285,16 @@ fn real_main() -> Result<ExitCode, String> {
 	// However it ended. A target that fails half-way is exactly when a decoded
 	// credential must not be left in the temp directory.
 	host.cleanup_temps();
+	// A run that ended well tells the gate its setup is done -- unless nothing
+	// ran. `record` only writes for a setup target, and a preview of one ran
+	// none of its commands: recording it marked the directory prepared, and
+	// every target after it walked through the gate. `--dry-run` changes
+	// nothing, and that includes what the gate believes.
+	let record = || {
+		if !flags.dry_run {
+			prepare::record(&cat, target);
+		}
+	};
 	match outcome {
 		Ok(()) => {
 			if flags.dry_run {
@@ -298,14 +308,14 @@ fn real_main() -> Result<ExitCode, String> {
 					println!("{line}");
 				}
 			}
-			prepare::record(&cat, target);
+			record();
 			Ok(ExitCode::SUCCESS)
 		}
 		// `exit(code)` is not a failure: it is the status the target asked for,
 		// so it is returned rather than printed as an error.
 		Err(e) => match e.exit_code() {
 			Some(code) => {
-				prepare::record(&cat, target);
+				record();
 				Ok(ExitCode::from(code as u8))
 			}
 			None => Err(e.to_string()),

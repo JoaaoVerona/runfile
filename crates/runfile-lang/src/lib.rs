@@ -34,8 +34,12 @@ pub use parser::{ParseError, parse};
 ///
 /// Stripping is done on the `Debug` rendering rather than by walking every
 /// variant, so a new expression kind cannot silently escape the fingerprint.
-/// The cost of the coupling is one spurious re-run if that rendering ever
-/// changes, which is the same cost as any other miss.
+/// The cost of the coupling is a spurious re-run whenever that rendering
+/// changes -- and it is paid once in **every project on the machine**, since a
+/// runner upgrade changes the rendering for all of them at once. Adding
+/// `detach` to `Statement::Exec` did exactly that: every `setup.run` holding a
+/// command asked for `run setup` again, 83 of the author's 88, for a change none
+/// of them had made. `UNASKED` is what keeps a new field from doing it again.
 pub fn fingerprint(target: &Target) -> u64 {
 	let mut text = format!("{:?}", target.body);
 	// Every kind of position, or a comment that shifts the rest of the file
@@ -43,6 +47,9 @@ pub fn fingerprint(target: &Target) -> u64 {
 	// `Span`, and `Statement::Exec`'s per-body-line source numbers go with it.
 	strip_between(&mut text, "Span {", '}');
 	strip_between(&mut text, "lines: [", ']');
+	for field in UNASKED {
+		text = text.replace(field, "");
+	}
 	let mut h: u64 = 0xcbf2_9ce4_8422_2325;
 	for b in text.bytes() {
 		h ^= u64::from(b);
@@ -50,6 +57,18 @@ pub fn fingerprint(target: &Target) -> u64 {
 	}
 	h
 }
+
+/// Fields added to the tree after files were already being fingerprinted, as
+/// they render at the value a file gets **without asking for them** -- the
+/// field and its separator, so dropping the text leaves the rendering the field
+/// did not yet exist in. Such a field changes nothing about what an existing
+/// file does, so it must not change that file's fingerprint either; a file that
+/// *does* ask for it renders differently, and still counts as changed.
+///
+/// A field added to the tree with a default that means "as before" belongs
+/// here, in the same change. A test pins a real `setup.run` to the fingerprint
+/// the runner recorded for it before `detach` existed, so forgetting shows.
+const UNASKED: &[&str] = &["detach: false, "];
 
 /// Replace every `open …close` run with `open`, so positional detail drops out
 /// of the rendering without a walk over every variant.

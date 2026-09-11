@@ -1238,6 +1238,24 @@ fn dry_run_says_what_it_would_have_written() {
 }
 
 #[test]
+fn a_dry_run_of_setup_does_not_count_as_setup_having_run() {
+	// The gate was recorded after any run that ended well, a preview included,
+	// so `run --dry-run setup` marked the directory prepared without running a
+	// single command -- and every target after it walked through the gate. The
+	// second setup ends through `exit(0)`, the other way a run ends well.
+	for setup in ["$ printf ran > ran.txt\n", "$ printf ran > ran.txt\nexit(0)\n"] {
+		let p = project(&[("runfiles/setup.run", setup), ("runfiles/build.run", "$ true\n")]);
+		let dry = p.run(&["--dry-run", "setup"]);
+		assert!(dry.status.success(), "{setup:?}: {}", err(&dry));
+		assert!(!p.dir.path().join("ran.txt").exists(), "{setup:?}: nothing ran");
+
+		let o = p.run(&["build"]);
+		assert!(!o.status.success(), "{setup:?}: the gate still stands");
+		assert!(err(&o).contains("setup"), "{setup:?}: {}", err(&o));
+	}
+}
+
+#[test]
 fn dry_run_is_not_blocked_by_the_prepare_gate() {
 	// A preview changes nothing, and reading what a target would do is a
 	// reasonable thing to want before deciding to set the project up.

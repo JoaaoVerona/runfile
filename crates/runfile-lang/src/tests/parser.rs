@@ -126,10 +126,29 @@ fn changing_what_a_target_does_changes_its_fingerprint() {
 		"$ uninstall\n",
 		"$ install\n$ verify\n",
 		"let x = 1\n$ install\n",
+		// A field left out of the fingerprint at its default is still in it
+		// when a file asks for it: detaching the command is a different target.
+		"detach $ install\n",
 	] {
 		let b = crate::parse(other).unwrap();
 		assert_ne!(crate::fingerprint(&a), crate::fingerprint(&b), "{other:?}");
 	}
+}
+
+#[test]
+fn an_unchanged_setup_keeps_the_fingerprint_it_was_recorded_with() {
+	// A real `setup.run`, and the fingerprint the runner stored for it before
+	// `Statement::Exec` grew `detach`. The field changes nothing about a file
+	// that does not use it, yet rendered into the hash it moved every one --
+	// and a prepare gate that trips on a runner upgrade asks every project on
+	// the machine to set up again, for a change none of them made: 83 of the
+	// author's 88 did. A field added the same way without an `UNASKED` entry
+	// fails here, which is the point of pinning a hash from before it.
+	let src = "# One-time per clone: activate the git hooks and install the desktop UI dependencies\n\n\
+	           $ git config core.hooksPath .githooks\n\n\
+	           do\n\t.workdir = \"libretether-desktop\"\n\n\t$ pnpm install\nend\n";
+	let t = crate::parse(src).unwrap();
+	assert_eq!(format!("{:x}", crate::fingerprint(&t)), "fc3ba8a69c88a636");
 }
 
 #[test]
