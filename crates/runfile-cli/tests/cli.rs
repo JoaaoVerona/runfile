@@ -13,6 +13,8 @@ struct Project {
 }
 
 fn project(files: &[(&str, &str)]) -> Project {
+	#[cfg(windows)]
+	keep_our_std_handles();
 	let dir = TempDir::new().unwrap();
 	for (p, body) in files {
 		let full = dir.path().join(p);
@@ -23,6 +25,38 @@ fn project(files: &[(&str, &str)]) -> Project {
 		dir,
 		home: TempDir::new().unwrap(),
 	}
+}
+
+/// Keeps this test process's standard handles out of everything it spawns.
+///
+/// Under `cargo test` they are the CI step's own output pipe, and Windows
+/// duplicates every inheritable handle into every child: `run` held a copy it
+/// never used, and passed it on to whatever *it* spawned. The `detach` tests
+/// leave a `sleep 30` running by design, so the step's output stayed open half
+/// a minute past the last test -- act_runner waits ten seconds for that, then
+/// fails a step whose every test passed with "WaitDelay expired before I/O
+/// complete". `run`'s own `exec::KeepHandles` guards the three handles it was
+/// given, not copies it cannot know it has.
+///
+/// Cleared once and never restored: `Stdio::inherit()` duplicates its handle
+/// with the flag set regardless, so a child meant to share them still does.
+#[cfg(windows)]
+fn keep_our_std_handles() {
+	use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+	use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+	static ONCE: std::sync::Once = std::sync::Once::new();
+	ONCE.call_once(|| {
+		for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+			// SAFETY: `GetStdHandle` answers with a handle this process owns or
+			// with null, and clearing one flag on it changes nothing else.
+			unsafe {
+				let h = GetStdHandle(id);
+				if !h.is_null() {
+					SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+				}
+			}
+		}
+	});
 }
 
 impl Project {

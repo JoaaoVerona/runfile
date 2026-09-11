@@ -646,7 +646,12 @@ terminal's width, and how wide text is on it).
   detached spawn and restores it after. Safe for whatever else is spawning at the time, `.parallel` included,
   because `Stdio::inherit()` does not depend on that flag: the standard library duplicates the handle it passes
   with `bInheritHandle` set regardless. Unix needs none of it -- everything but the three descriptors a child
-  is handed is close-on-exec.
+  is handed is close-on-exec. **What it cannot guard is a copy `run` never knew it had**: a parent that spawns
+  `run` with pipes while its own standard handles are inheritable hands those over too, as extra handles, and
+  they flow on into the detached child. `cargo test` is such a parent -- the test binary's handles are the CI
+  step's output pipe -- so the `detach` tests' `sleep 30` held a Gitea step open past its last test, and
+  act_runner failed it after ten seconds with "WaitDelay expired before I/O complete". `cli.rs` clears the
+  flag on its own standard handles before it spawns anything (`keep_our_std_handles`).
 - **`.parallel` on a `for` body fans out the iterations**, not just each body's statements. Leaves are
   collected across every iteration first, so they form one batch. Without that the property read as
   "parallel" and behaved as "in turn".
@@ -1247,8 +1252,14 @@ What differs on Gitea's side is forced by the fleet (`gitea-easy-runners` docume
   setup action does not look, and cache a directory the tests never build into. Making it work would mean
   `_shared.run` honouring a caller's `CARGO_TARGET_DIR`, which changes local builds too.
 - **`macos-26` is an Intel Mac**, so `aarch64-apple-darwin` is cross-compiled there and nothing on Gitea runs
-  aarch64 code; GitHub's `macos-15` is Apple Silicon and covers it. `aarch64-unknown-linux-musl` is
-  cross-linked by zig on `ubuntu-24.04` (`rust-cross-linux`); `ubuntu-24.04-arm` is qemu emulating the compiler.
+  aarch64 code; GitHub's `macos-15` is Apple Silicon and covers it. `ubuntu-24.04-arm` is qemu emulating the
+  compiler, so `aarch64-unknown-linux-musl` builds on `ubuntu-24.04`, **linked by `rust-lld`**
+  (`CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER`): it ships with the toolchain and links against the musl
+  libc and crt objects the target's own rust-std carries, which is a whole cross toolchain with nothing to
+  install while nothing compiles C for the target. `shared-actions/rust-cross-linux` is what a C dependency
+  would need, and is not used: it also installs `qemu-user-static` to run tests, and that package is only
+  virtual on the Ubuntu 26.04 image the `ubuntu-24.04` label now lands on, so its `apt-get` failed the first
+  release before anything was built.
 - **Windows builds natively on `windows-2025`**, both targets, with the MSVC host named outright (read from
   `rust-toolchain.toml`, since rustup settles a machine's host ABI once and settles on GNU if Visual Studio
   arrived later). `rust-cross-windows` would free the fleet's one Windows runner, but `+crt-static` lives in

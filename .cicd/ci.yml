@@ -211,14 +211,27 @@ jobs:
       # release's version already, and would rightly have nothing to do.
       # Comparing the file is the assertion that matters: an update that
       # downloaded nothing and still exited 0 is the failure this is here for.
+      # Both legs run whatever the first one did, so a failure names every
+      # channel it is true of rather than hiding the second behind the first.
       - name: run :update replaces the binary it runs from
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          failed=""
           for channel in gitea github; do
+            echo "::group::$channel"
             dir="$RUNNER_TEMP/update-$channel"
             mkdir -p "$dir"
             cp "$(command -v run)" "$dir/run"
             before=$(sha256sum < "$dir/run")
-            "$dir/run" :update --force --channel="$channel"
-            test "$before" != "$(sha256sum < "$dir/run")"
+            if ! "$dir/run" :update --force --channel="$channel"; then
+              failed="$failed $channel"
+            elif [ "$before" = "$(sha256sum < "$dir/run")" ]; then
+              echo "$channel: :update succeeded and left the binary as it was"
+              failed="$failed $channel"
+            fi
+            echo "::endgroup::"
           done
+          if [ -n "$failed" ]; then
+            echo "::error::run :update failed for:$failed"
+            exit 1
+          fi

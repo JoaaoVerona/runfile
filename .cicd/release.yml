@@ -14,13 +14,22 @@
 #   target                        runner         how
 #   aarch64-apple-darwin          macos-26       cross-compiled: the Mac is Intel
 #   aarch64-pc-windows-msvc       windows-2025   cross-compiled with MSVC's ARM64 tools
-#   aarch64-unknown-linux-musl    ubuntu-24.04   cross-compiled, zig links (rust-cross-linux)
+#   aarch64-unknown-linux-musl    ubuntu-24.04   cross-compiled, rust-lld links
 #   x86_64-apple-darwin           macos-26       native
 #   x86_64-pc-windows-msvc        windows-2025   native
 #   x86_64-unknown-linux-musl     ubuntu-24.04   native, musl-tools
 #
 # Nothing goes to ubuntu-24.04-arm: that is qemu-user emulating the compiler on
-# an x86-64 machine, and the zig cross-link does the same job at native speed.
+# an x86-64 machine. The aarch64 Linux binary is linked by rust-lld, which ships
+# with the toolchain, against the musl libc and crt objects the target's own
+# rust-std carries -- a whole cross toolchain with nothing to install, because
+# nothing in this tree compiles C for the target (the one `cc` user in
+# Cargo.lock is iana-time-zone-haiku). A dependency that did would fail loudly
+# in its build script, asking for an aarch64 C compiler; that is the day to
+# reach for shared-actions' rust-cross-linux, which adds zig for exactly that.
+# It is not used meanwhile: it also installs qemu-user-static for running
+# tests, which a release does not do, and that package is only virtual on the
+# Ubuntu 26.04 image behind this label -- its apt-get fails before any build.
 # Windows builds natively rather than through rust-cross-windows' cargo-xwin,
 # which would keep it off the fleet's one Windows runner: `+crt-static` lives in
 # .cargo/config.toml, and cargo's own MSVC build is the path it is known to
@@ -92,12 +101,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools xz-utils
 
-      - name: Setup cross environment
-        if: matrix.platform.target == 'aarch64-unknown-linux-musl'
-        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-cross-linux@v1
-        with:
-          targets: aarch64-unknown-linux-musl
-
       # From source, never the released CLI: this job runs during the release
       # that publishes it, so `latest` is always the previous version. Before
       # CARGO_BUILD_TARGET is set, so the bootstrap is for the host that runs it.
@@ -106,10 +109,13 @@ jobs:
         with:
           from-source: true
 
+      # The linker applies to the aarch64 Linux target alone, so it is set for
+      # every leg and changes one. See the header for why rust-lld suffices.
       - name: Build release binary
         run: run ci:build
         env:
           CARGO_BUILD_TARGET: ${{ matrix.platform.target }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
 
       - name: Package archive
         if: ${{ !contains(matrix.platform.target, 'windows') }}
