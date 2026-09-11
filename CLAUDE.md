@@ -503,7 +503,9 @@ second time as the global. This replaced `includes` entirely.
   calls **it** rather than restating it.
 - **Shell resolution**: bash → Git Bash (four known Windows paths) → sh. `System32\bash.exe` is deliberately
   excluded: it is the WSL launcher, and a different filesystem.
-- `is_shell()` matches `sh|bash|dash|ash|zsh|ksh|busybox|brush` on the **first word only**, and inserts `-e`.
+- `is_shell()` matches `sh|bash|dash|ash|zsh|ksh|busybox|brush` on the **first word only**, and adds `-e`
+  **after** the rest of the words, in `program_and_args`. In front of them it went to the wrong thing:
+  `busybox -e sh` asked for an applet called `-e`, and bash refuses `--posix` once it has read a short option.
   `brush` is there because it is a bash-compatible shell someone may name in `.shell`; without it such a
   target would run fine and silently stop stopping on failure. It is *not* a default candidate — the default
   has to supply the POSIX toolbox as well as the language, which a shell alone does not: 9% of the corpus's
