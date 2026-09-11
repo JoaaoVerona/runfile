@@ -107,6 +107,29 @@ fn is_shell(program: &Path) -> bool {
 	)
 }
 
+/// The program to start, and every argument it takes ahead of the script.
+///
+/// A shell's `-e` goes *after* the words it was named with. In front of them it
+/// is an argument to the wrong thing: `busybox sh` names its applet first, so
+/// `busybox -e sh` asked for an applet called `-e` and ran nothing, and bash
+/// reads its long options only ahead of the short ones, so `bash -e --posix`
+/// was refused outright. A one-word shell -- almost every `.shell`, and the
+/// default always -- has nothing to go after and comes out as it always did.
+fn program_and_args(command: Option<&str>) -> Result<(PathBuf, Vec<String>), ExecError> {
+	let (program, mut args): (PathBuf, Vec<String>) = match command {
+		Some(cmd) => {
+			let parts = split_command(cmd);
+			let (head, rest) = parts.split_first().ok_or(ExecError::NoShell)?;
+			(PathBuf::from(head), rest.to_vec())
+		}
+		None => (crate::shell::default_shell().ok_or(ExecError::NoShell)?, Vec::new()),
+	};
+	if is_shell(&program) {
+		args.push("-e".into());
+	}
+	Ok((program, args))
+}
+
 /// Hand a shell its script as the argument after `-c`.
 ///
 /// Its own function because Windows needs one script quoted that the standard
@@ -239,18 +262,8 @@ pub fn spawn_code(s: Spawn<'_>) -> Result<i32, ExecError> {
 }
 
 pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
-	let (program, mut args): (PathBuf, Vec<String>) = match s.command {
-		Some(cmd) => {
-			let parts = split_command(cmd);
-			let (head, rest) = parts.split_first().ok_or(ExecError::NoShell)?;
-			(PathBuf::from(head), rest.to_vec())
-		}
-		None => (crate::shell::default_shell().ok_or(ExecError::NoShell)?, Vec::new()),
-	};
+	let (program, args) = program_and_args(s.command)?;
 	let shell = is_shell(&program);
-	if shell {
-		args.insert(0, "-e".into());
-	}
 	let label = s
 		.command
 		.map(str::to_string)
@@ -502,7 +515,7 @@ fn announce(program: &str, body: &str) {
 
 #[cfg(test)]
 mod tests {
-	use super::{is_shell, windows_quoted};
+	use super::{Spawn, is_shell, program_and_args, spawn_code, windows_quoted};
 	use std::path::Path;
 
 	#[test]
@@ -543,5 +556,54 @@ mod tests {
 		assert!(!is_shell(Path::new("docker")));
 		assert!(!is_shell(Path::new("python3")));
 		assert!(!is_shell(Path::new("brushfoo")));
+	}
+
+	#[test]
+	fn stop_on_failure_goes_after_the_words_the_shell_is_named_with() {
+		// The tests above say *whether* `-e` is added; this is where it lands,
+		// which is the other half of getting it right. In front of the words it
+		// went to the wrong thing: busybox took `-e` for the name of an applet,
+		// and bash refuses a long option once it has read a short one.
+		let argv = |cmd: &str| {
+			let (program, args) = program_and_args(Some(cmd)).expect("a program");
+			let mut argv = vec![program.display().to_string()];
+			argv.extend(args);
+			argv
+		};
+		assert_eq!(argv("bash"), ["bash", "-e"]);
+		assert_eq!(argv("busybox sh"), ["busybox", "sh", "-e"]);
+		assert_eq!(argv("bash --posix"), ["bash", "--posix", "-e"]);
+		// Not a shell, so nothing is added at either end.
+		assert_eq!(argv("docker run -i alpine sh"), ["docker", "run", "-i", "alpine", "sh"]);
+	}
+
+	#[test]
+	fn busybox_named_with_its_applet_runs_and_stops_on_failure() {
+		// The order above is only worth pinning if it is the one busybox reads,
+		// and `-e` only worth moving if it still means stop-on-failure where it
+		// went. Skipped where busybox is not installed, as shellcheck's are.
+		if which::which("busybox").is_err() {
+			eprintln!("skipped: busybox is not installed");
+			return;
+		}
+		let dir = std::env::temp_dir();
+		let status = |body: &str| {
+			spawn_code(Spawn {
+				command: Some("busybox sh"),
+				body,
+				cwd: &dir,
+				env: &[],
+				capture: false,
+				dry_run: false,
+				label: None,
+				detach: false,
+				announce: false,
+			})
+			.expect("busybox starts")
+		};
+		// `busybox -e sh` answered 127 here: there is no applet called `-e`.
+		assert_eq!(status("true"), 0, "busybox ran nothing");
+		// Without `-e` a script's status is its last command's, which is 0.
+		assert_eq!(status("false\ntrue"), 1, "busybox did not stop at `false`");
 	}
 }
