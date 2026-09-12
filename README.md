@@ -45,8 +45,23 @@ $ run :list
 
 ## Quick start
 
+Linux and macOS:
+
 ```bash
 curl -fsSL https://git.joaoverona.com/joaaoverona/runfile/releases/download/latest/install.sh | sh
+```
+
+Windows, in PowerShell:
+
+```powershell
+irm https://git.joaoverona.com/joaaoverona/runfile/releases/download/latest/install.ps1 | iex
+```
+
+Either one installs a single binary: `~/.local/bin/run`, or `run.exe` under `%LOCALAPPDATA%\runfile\bin`, which
+the PowerShell script adds to your PATH for you — open a new shell and `run` is there. `RUNFILE_VERSION` installs
+a release other than the latest, and `RUNFILE_INSTALL_DIR` chooses where it goes.
+
+```bash
 run :init             # creates runfiles/ with an example
 run :list             # every target, with descriptions
 run <target> --help   # what one target does, and what it reads
