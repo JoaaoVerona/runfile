@@ -5,7 +5,14 @@
 	"version": "1.5.0",
 	"icon": "media/icon.png",
 	"private": true,
-	"packageManager": "pnpm@11.13.1",
+	"packageManager": "pnpm@12.4.1",
+	"devEngines": {
+		"runtime": {
+			"name": "node",
+			"onFail": "download",
+			"version": "^24"
+		}
+	},
 	"publisher": "joaaoverona",
 	"license": "MIT",
 	"homepage": "https://github.com/JoaaoVerona/runfile#readme",

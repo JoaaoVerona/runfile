@@ -4,7 +4,7 @@
 	"private": true,
 	"description": "Runfile grammar for tree-sitter",
 	"license": "MIT",
-	"packageManager": "pnpm@11.13.1",
+	"packageManager": "pnpm@12.4.1",
 	"devDependencies": {
 		"tree-sitter-cli": "0.25.6"
 	},
