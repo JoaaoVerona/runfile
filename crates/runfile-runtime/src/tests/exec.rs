@@ -98,6 +98,7 @@ fn an_env_file_is_loaded_before_the_body_is_evaluated() {
 		dispatch: &d,
 		interrupted: None,
 		label: None,
+		colour: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};
@@ -117,6 +118,7 @@ fn confirm_cancels_when_there_is_nobody_to_ask() {
 		dispatch: &d,
 		interrupted: None,
 		label: None,
+		colour: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};
@@ -149,6 +151,7 @@ fn confirm_asks_the_question_it_was_given() {
 		dispatch: &d,
 		interrupted: None,
 		label: None,
+		colour: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};
@@ -180,6 +183,7 @@ fn declining_stops_the_run_and_nothing_catches_it() {
 			dispatch: &d,
 			interrupted: None,
 			label: None,
+			colour: None,
 			dry_run: false,
 			trace: Vec::new(),
 		};

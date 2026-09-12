@@ -62,7 +62,12 @@ impl Project {
 			// `BUILDKITE` in someone's shell would quietly turn off the tests
 			// that check both -- and they would pass.
 			.env_remove("RUNFILE_SKIP_PREPARE")
-			.env_remove("RUNFILE_PRIVATE_KEYS");
+			.env_remove("RUNFILE_PRIVATE_KEYS")
+			// A test's output is a pipe, so nothing is painted -- unless a
+			// developer has `FORCE_COLOR` set, which would put escape codes
+			// through every assertion about a branch's label. The one test that
+			// wants colour sets it back.
+			.env_remove("FORCE_COLOR");
 		for v in CI_VARS {
 			c.env_remove(v);
 		}
@@ -2206,7 +2211,10 @@ fn dry_run_says_which_shell_a_dollar_line_uses() {
 #[test]
 fn parallel_branches_prefix_every_line_they_print() {
 	// Several children write at once, so each line says which branch it came
-	// from. Sorted, because the interleaving is the point: order is not fixed.
+	// from, padded to the widest label in the set so the `|` column holds still
+	// -- `echo` carries two spaces it does not need so that `printf` lines up
+	// with it. Sorted, because the interleaving is the point: order is not
+	// fixed.
 	let p = project(&[(
 		"runfiles/t.run",
 		"parallel do\n\t$ printf 'a1\\na2\\n'\n\t$ echo b1\nend\n",
@@ -2216,7 +2224,7 @@ fn parallel_branches_prefix_every_line_they_print() {
 	let text = out(&o);
 	let mut lines: Vec<&str> = text.lines().collect();
 	lines.sort_unstable();
-	assert_eq!(lines, ["echo | b1", "printf | a1", "printf | a2"], "{text}");
+	assert_eq!(lines, ["echo   | b1", "printf | a1", "printf | a2"], "{text}");
 }
 
 #[test]
@@ -2229,6 +2237,140 @@ fn sibling_branches_are_told_apart_by_their_words() {
 	let mut lines: Vec<&str> = text.lines().collect();
 	lines.sort_unstable();
 	assert_eq!(lines, ["echo one | one", "echo two | two"], "{text}");
+}
+
+#[test]
+fn every_label_in_a_set_pads_to_the_widest_so_the_gutter_is_a_column() {
+	// Eyes follow a straight edge. The width is the set's own widest label
+	// rather than a guess, because it is known before any branch starts:
+	// `parallel for` has its list, and `parallel do` its statements.
+	let p = project(&[(
+		"runfiles/t.run",
+		"parallel for n in [\"a\", \"bbbb\", \"cc\"]\n\t$ echo {{ n }}\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(lines, ["a    | a", "bbbb | bbbb", "cc   | cc"], "{text}");
+}
+
+#[test]
+fn one_long_label_sticks_out_rather_than_widening_every_line() {
+	// Padding to a 30-column path would leave both short labels trailing
+	// twenty-odd spaces apiece, to line up with a line they are nowhere near.
+	// The cap holds the column where the rest of the set can reach it and lets
+	// the long one overrun its own lines only.
+	let long = "x".repeat(30);
+	let p = project(&[(
+		"runfiles/t.run",
+		&format!("parallel for n in [\"a\", \"bb\", \"{long}\"]\n\t$ echo {{{{ n }}}}\nend\n"),
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut cols: Vec<usize> = text.lines().map(|l| l.find(" | ").expect("a gutter")).collect();
+	cols.sort_unstable();
+	assert_eq!(cols, [24, 24, 30], "{text}");
+}
+
+#[test]
+fn a_nested_label_pads_both_of_its_halves() {
+	// The outer segment was padded when *it* was forked, so the `/` stands in a
+	// column too and the lines of two cousins line up with each other -- which
+	// is as far as padding can reach, since one branch's set is made before
+	// another's list is known.
+	let p = project(&[(
+		"runfiles/t.run",
+		"parallel for n in [\"api\", \"backend\"]\n\tparallel do\n\t\t$ echo x\n\t\t$ echo yy\n\tend\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(
+		lines,
+		[
+			"api    /echo x  | x",
+			"api    /echo yy | yy",
+			"backend/echo x  | x",
+			"backend/echo yy | yy",
+		],
+		"{text}"
+	);
+}
+
+#[test]
+fn each_branch_label_is_painted_its_own_colour() {
+	// What several labels in one terminal need is to be told apart at a glance,
+	// which is a colour rather than a word to read. `FORCE_COLOR` because a
+	// test's output is a pipe, where the whole point is that nothing is
+	// painted -- the tests either side of this one are that half.
+	let p = project(&[(
+		"runfiles/t.run",
+		"parallel do\n\t$ echo one\n\t$ echo two >&2\n\tprint(\"three\")\nend\n",
+	)]);
+	let o = p
+		.command(p.dir.path(), &["t"])
+		.env("FORCE_COLOR", "1")
+		.output()
+		.unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	let text = format!("{}{}", out(&o), err(&o));
+	// Cyan, yellow, magenta: the first three of the palette, in the order the
+	// branches were made. Both streams and a `print` alike -- the colour is the
+	// branch's, not the line's.
+	for want in [
+		"\x1b[36mecho one\x1b[0m | one",
+		"\x1b[33mecho two\x1b[0m | two",
+		// Padded outside the escape, so the colour wraps the name and the
+		// spaces that line the gutter up are plain.
+		"\x1b[35mprint\x1b[0m    | three",
+	] {
+		assert!(text.contains(want), "{want:?} missing from {text:?}");
+	}
+}
+
+#[test]
+fn a_nested_label_paints_each_half_a_different_colour() {
+	// `api/echo` in one colour would read as one name. The inner branches start
+	// past the colour of the branch they hang off, so the two halves differ.
+	let p = project(&[(
+		"runfiles/t.run",
+		"parallel for n in [\"api\"]\n\tparallel do\n\t\t$ echo x\n\t\t$ echo y\n\tend\nend\n",
+	)]);
+	let o = p
+		.command(p.dir.path(), &["t"])
+		.env("FORCE_COLOR", "1")
+		.output()
+		.unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	// `api` is cyan, so its own branches take yellow and magenta rather than
+	// repeating it.
+	for want in [
+		"\x1b[36mapi\x1b[0m/\x1b[33mecho x\x1b[0m | x",
+		"\x1b[36mapi\x1b[0m/\x1b[35mecho y\x1b[0m | y",
+	] {
+		assert!(text.contains(want), "{want:?} missing from {text:?}");
+	}
+}
+
+#[test]
+fn no_colour_beats_a_forced_one() {
+	// Both set can only mean one of them was set long ago and forgotten, and
+	// going quiet is the safer reading of the two.
+	let p = project(&[("runfiles/t.run", "parallel do\n\t$ echo one\n\t$ echo two\nend\n")]);
+	let o = p
+		.command(p.dir.path(), &["t"])
+		.env("FORCE_COLOR", "1")
+		.env("NO_COLOR", "1")
+		.output()
+		.unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(!out(&o).contains('\x1b'), "{:?}", out(&o));
 }
 
 #[test]
@@ -2259,7 +2401,7 @@ fn a_print_inside_a_branch_carries_its_label_too() {
 	let text = out(&o);
 	let mut lines: Vec<&str> = text.lines().collect();
 	lines.sort_unstable();
-	assert_eq!(lines, ["echo | x", "print | hello", "printf | no newline"], "{text}");
+	assert_eq!(lines, ["echo   | x", "print  | hello", "printf | no newline"], "{text}");
 }
 
 #[test]
@@ -2305,7 +2447,9 @@ fn a_parallel_branch_labels_its_stderr_too() {
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(err_from_commands(&o).trim(), "echo | oops", "{}", err(&o));
+	// Both streams pad to the same width, since the width is the branch set's
+	// and not the stream's. `trim` would eat the padding if it were trailing.
+	assert_eq!(err_from_commands(&o).trim(), "echo   | oops", "{}", err(&o));
 	assert_eq!(out(&o).trim(), "printf | fine");
 }
 

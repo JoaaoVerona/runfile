@@ -481,8 +481,18 @@ end
   `let` directly inside `parallel do` binds nothing anyone can read, and is one too.
 - Every branch **runs to completion before a failure is reported**, so a set of services is never left half
   started. `.ignore-errors` on the block forgives each branch.
-- Every line a branch prints carries its name: the target it runs, the iteration's value, or as many words of its
-  command as tell it from its siblings — `cargo test` and `cargo clippy`. A branch reads nothing from the
+- Every line a branch prints carries its name, **in a colour of its own**: the target it runs, the iteration's
+  value, or as many words of its command as tell it from its siblings — `cargo test` and `cargo clippy`.
+  Siblings take consecutive colours, so the output you are reading side by side is the output guaranteed to
+  look different, and the names are padded to the widest of them so the `|` stands in one column:
+
+  ```
+  web-admin | ready on :3001
+  web-app   | ready on :3000
+  web-blog  | ready on :3002
+  ```
+
+  `NO_COLOR` turns the colour off, `FORCE_COLOR` turns it on through a pipe. A branch reads nothing from the
   terminal, and `confirm()` refuses to ask inside one.
 - Branches run at once, so neither `break` nor `continue` can reach a loop outside the block, and `break` cannot
   stop a `parallel for`, whose iterations are already running; `continue` ends one of them.

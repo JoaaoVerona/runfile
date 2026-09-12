@@ -4,20 +4,15 @@
 //! terminal and for a pipe. Every subcommand's help is built the same way, so
 //! they cannot drift into different shapes.
 
-use std::io::IsTerminal;
+use runfile_runtime as runtime;
 
-/// Whether to emit escape codes.
+/// Whether to emit escape codes, which a help page writes to stdout.
 ///
-/// A pipe gets none, `NO_COLOR` is honoured whatever its value, and `TERM=dumb`
-/// means a terminal that would show them literally.
+/// The runner's own answer, rather than a second copy of it: a help page and a
+/// branch's label are painted for the same reader, and `NO_COLOR` had already
+/// reached one of them and not the other.
 pub fn colour() -> bool {
-	if std::env::var_os("NO_COLOR").is_some() {
-		return false;
-	}
-	if std::env::var("TERM").is_ok_and(|t| t == "dumb") {
-		return false;
-	}
-	std::io::stdout().is_terminal()
+	runtime::exec::paints(false)
 }
 
 const BOLD: &str = "\x1b[1m";

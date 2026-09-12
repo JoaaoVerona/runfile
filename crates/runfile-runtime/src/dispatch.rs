@@ -264,6 +264,7 @@ impl<'a> Host<'a> {
 
 			interrupted: self.interrupted,
 			label: label.map(str::to_string),
+			colour: None,
 			trace: Vec::new(),
 		};
 		crate::run::run_target_with(&ast, shared_props, &mut r)?;

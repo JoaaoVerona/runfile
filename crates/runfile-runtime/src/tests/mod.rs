@@ -60,6 +60,7 @@ pub fn run_src(src: &str, d: &dyn Dispatch) -> Result<Vec<String>, RunError> {
 		dispatch: d,
 		interrupted: None,
 		label: None,
+		colour: None,
 		dry_run: false,
 		trace: Vec::new(),
 	};

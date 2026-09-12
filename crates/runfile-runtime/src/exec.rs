@@ -424,11 +424,84 @@ pub fn tag() -> &'static str {
 
 /// The tag every announcement carries, bold cyan when a terminal is watching.
 fn tags() -> (&'static str, &'static str, &'static str) {
-	if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+	if paints(true) {
 		("\x1b[1m\x1b[36m[runfile]\x1b[0m", "\x1b[1m", "\x1b[0m")
 	} else {
 		("[runfile]", "", "")
 	}
+}
+
+/// Whether to paint what the runner writes to a stream -- `true` for stderr.
+///
+/// One answer for everything the runner colours, the `[runfile]` tag and a
+/// branch's label alike, so a person who asked for no colour is obeyed
+/// everywhere rather than in some of the places: `NO_COLOR` used to reach the
+/// help page and nothing the runner said while a target ran. It is honoured
+/// whatever its value, as its own specification says; `TERM=dumb` is a terminal
+/// that would print the codes rather than act on them; and a pipe gets none,
+/// since escape codes are for a person and a pipe is usually a program.
+///
+/// `FORCE_COLOR` is the other direction, for the two cases the tty test reads
+/// backwards: a pager or a CI log viewer that renders the codes from what is,
+/// to us, a pipe. `NO_COLOR` still wins, because the two together can only mean
+/// one of them was set long ago and forgotten, and going quiet is the safer
+/// reading.
+///
+/// The stream asked about is the stream written to: one run may have a terminal
+/// on one and a file on the other.
+pub fn paints(err: bool) -> bool {
+	if std::env::var_os("NO_COLOR").is_some() {
+		return false;
+	}
+	if std::env::var("TERM").is_ok_and(|t| t == "dumb") {
+		return false;
+	}
+	if std::env::var("FORCE_COLOR").is_ok_and(|v| v != "0") {
+		return true;
+	}
+	if err {
+		std::io::IsTerminal::is_terminal(&std::io::stderr())
+	} else {
+		std::io::IsTerminal::is_terminal(&std::io::stdout())
+	}
+}
+
+/// The colours a branch's label cycles through, in the order branches are made.
+///
+/// These six because they are the codes a terminal themes for itself, so they
+/// read on a light background and a dark one alike where a fixed RGB would read
+/// on one. Cycling, because what the colour is *for* is telling a branch from
+/// the one beside it; a seventh branch repeats the first, which is the most a
+/// fixed palette can promise and still be legible.
+const BRANCH_COLOURS: [&str; 6] = [
+	"\x1b[36m", // cyan
+	"\x1b[33m", // yellow
+	"\x1b[35m", // magenta
+	"\x1b[32m", // green
+	"\x1b[34m", // blue
+	"\x1b[31m", // red
+];
+
+/// A branch's label, in the colour its position gives it.
+///
+/// Painted where the branch is made rather than where a line is printed,
+/// because the colour is a fact about the branch: every line it prefixes
+/// carries the same gutter, whether it came from a command's stdout, its
+/// stderr, or a `print` inside the branch -- and one of those would otherwise
+/// have to learn the palette again. It is also what lets each half of a nested
+/// `outer/inner` label keep its own colour, so the label says which iteration
+/// *and* which branch of it.
+///
+/// An empty label stays empty: it belongs to a `parallel` block that is itself
+/// a branch, whose own branches are the ones that get named, and an escape code
+/// wrapped around nothing would make it a label again -- a bare `|` in front of
+/// every line.
+pub fn paint_branch(label: &str, colour: usize, paint: bool) -> String {
+	if !paint || label.is_empty() {
+		return label.to_string();
+	}
+	let c = BRANCH_COLOURS[colour % BRANCH_COLOURS.len()];
+	format!("{c}{label}\x1b[0m")
 }
 
 /// A script that announces each of its own commands as it reaches it.

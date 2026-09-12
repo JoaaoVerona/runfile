@@ -2,6 +2,7 @@
 
 use crate::exec::{self, ExecError, Spawn};
 use crate::props::{PropError, Props};
+use crate::term;
 use runfile_lang::Value;
 use runfile_lang::ast::*;
 use runfile_lang::eval::{EvalError, Scope, eval_boundary, interpolate_shell};
@@ -190,6 +191,11 @@ pub struct Runner<'a> {
 	pub interrupted: Option<&'a (dyn Fn() -> bool + Sync)>,
 	/// Prefix for this target's output; see `Dispatch::run`.
 	pub label: Option<String>,
+	/// Which colour of the palette this branch's label was painted in, so the
+	/// branches made *inside* it can start past it rather than repeating it.
+	/// `None` outside a branch, and in a dispatched target: a colour says which
+	/// of the branches made together this is, and a dispatch is not one of them.
+	pub colour: Option<usize>,
 	/// Collected so a caller can show what ran without re-deriving it.
 	pub dry_run: bool,
 	pub trace: Vec<String>,
@@ -861,11 +867,20 @@ impl<'a> Runner<'a> {
 	/// itself a branch gets: its own branches are what tell the output apart,
 	/// so `web` says everything `parallel:9/web` would. It is a branch all the
 	/// same, which is what keeps the terminal out of its reach.
-	fn fork(&self, label: &str) -> Runner<'a> {
+	fn fork(&self, label: &str, nth: usize, width: usize) -> Runner<'a> {
+		// Siblings take consecutive colours, so the branches whose output is
+		// interleaved are exactly the ones guaranteed to differ; a nested set
+		// starts past the colour of the branch it hangs off, so the two halves of
+		// an `outer/inner` label are never the same colour either. Keyed on
+		// stdout, which is the stream a pipeline reads -- `run dev > log` keeps
+		// the escapes out of the file, and the cost is a terminal's stderr going
+		// unpainted when stdout alone is redirected.
+		let colour = self.colour.map_or(nth, |c| c + 1 + nth);
+		let own = segment(label, colour, width);
 		let label = match self.label.as_deref() {
-			Some(outer) if !outer.is_empty() && !label.is_empty() => format!("{outer}/{label}"),
-			Some(outer) if label.is_empty() => outer.to_string(),
-			_ => label.to_string(),
+			Some(outer) if !outer.is_empty() && !own.is_empty() => format!("{outer}/{own}"),
+			Some(outer) if own.is_empty() => outer.to_string(),
+			_ => own,
 		};
 		let mut scope = self.scope.clone();
 		// Every branch shares one terminal, so nothing in one asks it anything:
@@ -880,10 +895,48 @@ impl<'a> Runner<'a> {
 			dispatch: self.dispatch,
 			interrupted: self.interrupted,
 			label: Some(label),
+			colour: Some(colour),
 			dry_run: self.dry_run,
 			trace: Vec::new(),
 		}
 	}
+}
+
+/// How wide a sibling set pads its labels, so the `|` gutters stand in a column
+/// rather than wandering with the length of each branch's name.
+///
+/// The widest label in the set, which is known before any branch starts:
+/// `parallel do` works its labels out from the statements and `parallel for`
+/// from the list, both up front, so nothing has to be guessed at and no set is
+/// padded wider than it needs. Capped, because one long name must not widen
+/// every other line -- a 40-column path out of a `glob` beside three 4-column
+/// ones would leave every one of them trailing thirty-odd spaces. Past the cap
+/// a label sticks out on its own lines instead, which is the trade the deleted
+/// `parallel_output` module made too.
+fn pad_width(labels: &[String]) -> usize {
+	const PAD_MAX: usize = 24;
+	labels.iter().map(|l| term::width_of(l)).max().unwrap_or(0).min(PAD_MAX)
+}
+
+/// A branch's own segment of the label: painted, then padded out to `width`.
+///
+/// Padded *after* painting, so the colour wraps the name and the spaces are
+/// plain -- and measured with `term::width_of` on the unpainted label, since an
+/// escape code occupies no column and a wide character occupies two. A label
+/// already at or past the width is left as it is.
+fn segment(label: &str, colour: usize, width: usize) -> String {
+	if label.is_empty() {
+		// A `parallel` block that is itself a branch adds no segment, and
+		// padding one into existence would give every line of it a column of
+		// blank gutter in front of the branch names that do say something.
+		return String::new();
+	}
+	let mut s = exec::paint_branch(label, colour, exec::paints(false));
+	let w = term::width_of(label);
+	if w < width {
+		s.push_str(&" ".repeat(width - w));
+	}
+	s
 }
 
 /// Run every branch at once and wait for the last of them.
@@ -986,11 +1039,13 @@ fn branches_of<'b, 'a>(
 	let mut props = Cow::Borrowed(inner);
 	let mut trailing = body.trailing().iter().peekable();
 	let mut out = Vec::with_capacity(body.statements.len());
-	for (st, label) in body.statements.iter().zip(branch_labels(&body.statements)) {
+	let labels = branch_labels(&body.statements);
+	let width = pad_width(&labels);
+	for (nth, (st, label)) in body.statements.iter().zip(labels).enumerate() {
 		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
 			apply_trailing(p, &mut props, r)?;
 		}
-		let fork = r.fork(&label);
+		let fork = r.fork(&label, nth, width);
 		out.push(((st, props.clone().into_owned()), fork));
 	}
 	// Below the last branch there is nothing left for it to affect, but it is
@@ -1024,8 +1079,10 @@ fn parallel_for(
 	let inner = props.extend(body, &mut r.scope, true)?;
 	with_block_env(props, &inner, r, |r| {
 		let mut forks = Vec::with_capacity(items.len());
-		for item in items {
-			let mut fork = r.fork(&item_label(&item));
+		let labels: Vec<String> = items.iter().map(item_label).collect();
+		let width = pad_width(&labels);
+		for (nth, (item, label)) in items.into_iter().zip(labels).enumerate() {
+			let mut fork = r.fork(&label, nth, width);
 			bind_item(names, item, line, &mut fork)?;
 			forks.push(fork);
 		}

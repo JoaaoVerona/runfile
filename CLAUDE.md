@@ -720,6 +720,50 @@ terminal's width, and how wide text is on it).
   The label is threaded through `Dispatch::run`, so a branch's dependencies carry the branch's name rather
   than their own. A sequential run inherits the terminal and adds no prefix: nothing to disambiguate, and a
   pipeline reading `run`'s output keeps working.
+- **Each branch's label is painted a colour of its own**, cycling cyan, yellow, magenta, green, blue, red in
+  the order the branches were made. A label is a name to read and a colour is not, which is what makes six
+  interleaved dev servers legible at a glance; it was the one thing the `.parallel` rewrite dropped, having
+  moved the prefix out of a module that painted it (`format_parallel_prefix`). **Siblings take consecutive
+  colours**, so the branches whose output actually interleaves are exactly the ones guaranteed to differ -- a
+  colour hashed from the label needs no plumbing at all and was rejected for this: three branches would have
+  collided 44% of the time, which is the whole point missed. A nested set starts **past** its parent's colour,
+  so neither half of an `outer/inner` label repeats the other. A seventh branch repeats the first, which is all
+  a fixed palette can promise; the six are the codes a terminal themes for itself, so they read on a light
+  background and a dark one alike.
+  `Runner.colour` is what carries it, set by `fork` from the branch's position among its siblings and read only
+  to offset the branches made inside it; a dispatched target starts the palette fresh, since a colour says
+  which of the branches made *together* this is and a dispatch is not one of them.
+  **`exec::paint_branch` is called where the branch is made, not where a line is printed**: the colour is a
+  fact about the branch, so the label already carries it by the time it reaches `relay`, `emit` and
+  `Dispatch::run` -- none of which had to learn a palette, and none of which can disagree about one. An empty
+  label stays empty, or a `parallel` block that is itself a branch would be wearing a bare `|`.
+- **A sibling set pads its labels to the widest of them, so the `|` stands in a column.** Eyes follow a
+  straight edge, and a gutter that moves with the length of each name is read one line at a time. The width is
+  exact rather than a guess because it is known before any branch starts: `branch_labels` works a `parallel
+  do`'s labels out from the statements and `parallel for`'s come from the list, both up front, which is what
+  `pad_width` is handed. Capped at 24 columns, the `LABEL_PAD_MAX_WIDTH` the deleted module settled on: one
+  40-column path out of a `glob` beside three short names would otherwise leave every one of them trailing
+  twenty-odd spaces to line up with a line they are nowhere near, so past the cap a label overruns its own
+  lines and leaves the column where the rest of the set can reach it.
+  Measured in display columns with `term::width_of`, not characters -- an escape code occupies none and an
+  emoji occupies two -- and applied **after** painting, so the colour wraps the name and the spaces that line
+  the gutter up are plain text. Because each segment is padded when its own branch is forked, the `/` of a
+  nested `outer/inner` label stands in a column too, and two cousins' lines line up with each other; that is
+  as far as it can reach, since one branch's set is made before another's list is known. An empty label is
+  never padded -- a nested `parallel` block adds no segment, and a column of blank gutter in front of the names
+  that do say something is worse than none.
+- **`exec::paints` is the one answer to whether the runner colours anything**, per stream, and `tags()` and
+  `help::colour()` both ask it. It honours `NO_COLOR` whatever its value, treats `TERM=dumb` as a terminal
+  that would print the codes rather than act on them, and gives a pipe none. There were two copies of this
+  rule and they had already drifted: `NO_COLOR` reached the help page and nothing the runner said while a
+  target ran, so `[runfile]` stayed bold cyan for someone who had asked for no colour at all. `FORCE_COLOR`
+  (anything but `0`) is the other direction, for a pager or a CI log viewer that renders what is, to us, a
+  pipe; `NO_COLOR` beats it, since both set can only mean one was set long ago and forgotten. It is also what
+  makes the painting testable at all -- a test's stdout is a pipe, so the shipped path is otherwise
+  unreachable, which is why `cli.rs` strips `FORCE_COLOR` like the CI variables and the one test that wants
+  colour sets it back. A branch's label is keyed on **stdout**, the stream a pipeline reads: `run dev > log`
+  keeps the escapes out of the file, and the cost is a terminal's stderr going unpainted when stdout alone is
+  redirected.
 - `.add-path` is this target's own. The ancestor chain the old model carried across a re-exec is gone with
   the re-exec: dispatch is in-process, and every target builds PATH from its own properties.
 - `env::build` receives the same deferred key pool the `decrypt` function uses. It was previously passed `None`,

@@ -400,3 +400,56 @@ fn a_nested_parallel_block_has_no_label_of_its_own() {
 		["", "true"]
 	);
 }
+
+// ---- colour
+//
+// The label says which branch a line came from; the colour is what makes that
+// readable at a glance rather than a word to read on every line.
+
+fn paint(label: &str, colour: usize) -> String {
+	crate::exec::paint_branch(label, colour, true)
+}
+
+#[test]
+fn siblings_take_consecutive_colours() {
+	// Cycling through the palette in the order the branches were made is what
+	// guarantees the thing colour is for: that a branch differs from the one
+	// beside it. These six because a terminal themes them itself, so they read
+	// on a light background and a dark one alike.
+	let painted: Vec<String> = (0..6).map(|i| paint("web", i)).collect();
+	assert_eq!(
+		painted,
+		[
+			"\x1b[36mweb\x1b[0m",
+			"\x1b[33mweb\x1b[0m",
+			"\x1b[35mweb\x1b[0m",
+			"\x1b[32mweb\x1b[0m",
+			"\x1b[34mweb\x1b[0m",
+			"\x1b[31mweb\x1b[0m",
+		]
+	);
+}
+
+#[test]
+fn a_seventh_branch_repeats_the_first() {
+	// All a fixed palette can promise. Six legible colours beat twelve a theme
+	// may render as three.
+	assert_eq!(paint("x", 6), paint("x", 0));
+	assert_eq!(paint("x", 13), paint("x", 1));
+}
+
+#[test]
+fn an_unpainted_label_is_the_bare_text() {
+	// A pipe is usually a program rather than a person, and `NO_COLOR` is a
+	// person saying the same thing.
+	assert_eq!(crate::exec::paint_branch("web", 2, false), "web");
+}
+
+#[test]
+fn an_empty_label_stays_empty() {
+	// It belongs to a `parallel` block that is itself a branch, whose own
+	// branches are the ones that get named. Painted, it would be a label
+	// again -- a bare `|` in front of every line.
+	assert_eq!(paint("", 0), "");
+	assert_eq!(crate::exec::paint_branch("", 0, false), "");
+}
