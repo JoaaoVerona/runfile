@@ -13,8 +13,6 @@ struct Project {
 }
 
 fn project(files: &[(&str, &str)]) -> Project {
-	#[cfg(windows)]
-	keep_our_std_handles();
 	let dir = TempDir::new().unwrap();
 	for (p, body) in files {
 		let full = dir.path().join(p);
@@ -25,38 +23,6 @@ fn project(files: &[(&str, &str)]) -> Project {
 		dir,
 		home: TempDir::new().unwrap(),
 	}
-}
-
-/// Keeps this test process's standard handles out of everything it spawns.
-///
-/// Under `cargo test` they are the CI step's own output pipe, and Windows
-/// duplicates every inheritable handle into every child: `run` held a copy it
-/// never used, and passed it on to whatever *it* spawned. The `detach` tests
-/// leave a `sleep 30` running by design, so the step's output stayed open half
-/// a minute past the last test -- act_runner waits ten seconds for that, then
-/// fails a step whose every test passed with "WaitDelay expired before I/O
-/// complete". `run`'s own `exec::KeepHandles` guards the three handles it was
-/// given, not copies it cannot know it has.
-///
-/// Cleared once and never restored: `Stdio::inherit()` duplicates its handle
-/// with the flag set regardless, so a child meant to share them still does.
-#[cfg(windows)]
-fn keep_our_std_handles() {
-	use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
-	use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
-	static ONCE: std::sync::Once = std::sync::Once::new();
-	ONCE.call_once(|| {
-		for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-			// SAFETY: `GetStdHandle` answers with a handle this process owns or
-			// with null, and clearing one flag on it changes nothing else.
-			unsafe {
-				let h = GetStdHandle(id);
-				if !h.is_null() {
-					SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
-				}
-			}
-		}
-	});
 }
 
 impl Project {
@@ -138,6 +104,34 @@ fn until(what: &str, mut f: impl FnMut() -> bool) {
 /// the watcher's own debounce, so a change it is already sitting on has had
 /// time to become a run.
 const QUIET: std::time::Duration = std::time::Duration::from_millis(900);
+
+/// A detached command that runs until [`release`] lets it go.
+///
+/// These used to say `sleep 30`, and on Windows that outlived the test binary
+/// by design -- which is the one platform where a child can be handed a copy of
+/// a handle nobody meant it to have. `CreateProcessW` is called with
+/// `bInheritHandles: TRUE`, and an inherited handle arrives inheritable, so
+/// every process between the CI step and the detached command passes its own
+/// standard handles down as *extra* handles beside the ones it sets in
+/// `STARTUPINFO`. Five processes deep (`run` -> shell -> cargo -> the test
+/// binary -> `run`), the step's output pipe had arrived several times over, at
+/// values no one of them could name: clearing `HANDLE_FLAG_INHERIT` on
+/// `GetStdHandle`'s answer anywhere in that chain -- which is what `run`'s own
+/// `exec::KeepHandles` does, correctly, for the one copy it was given -- leaves
+/// the rest. So `sleep 30` held the step's stdout for half a minute after every
+/// test had passed, and act_runner failed the step ten seconds in with
+/// "WaitDelay expired before I/O complete".
+///
+/// Waiting on a file the test writes proves the same thing without a wall clock
+/// and leaves nothing running: the run cannot have waited for a command that had
+/// not been released yet. The count bounds it at twenty seconds, so a test that
+/// fails before releasing does not leave one spinning either.
+const UNTIL_RELEASED: &str = "i=0; until [ -f go ] || [ $i -ge 200 ]; do i=$((i+1)); sleep 0.1; done";
+
+/// Let a [`UNTIL_RELEASED`] command in this project run on.
+fn release(p: &Project) {
+	std::fs::write(p.dir.path().join("go"), "").expect("write the gate file");
+}
 
 /// Runs so far: a counter target appends one byte per run.
 fn runs(counter: &Path) -> usize {
@@ -2446,7 +2440,8 @@ fn a_preview_announces_nothing_twice() {
 #[test]
 fn a_detached_command_does_not_hold_up_the_run() {
 	// Fire and forget: the run returns while the command is still going.
-	let p = project(&[("runfiles/t.run", "detach $ sleep 30; echo late > late.txt\n")]);
+	let t = format!("detach $ {UNTIL_RELEASED}; printf late > late.txt\n");
+	let p = project(&[("runfiles/t.run", &t)]);
 	let started = std::time::Instant::now();
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -2455,6 +2450,11 @@ fn a_detached_command_does_not_hold_up_the_run() {
 		!p.dir.path().join("late.txt").exists(),
 		"and the command is still running"
 	);
+
+	release(&p);
+	until("the detached command to finish", || {
+		p.dir.path().join("late.txt").exists()
+	});
 }
 
 #[test]
@@ -2462,16 +2462,16 @@ fn detach_marks_one_command_and_the_rest_of_the_file_is_waited_for() {
 	// The whole reason it moved off the header. `.detach` described the *file*,
 	// so setup-then-serve could not be written: the setup was detached too, and
 	// nothing below it could rely on it having happened.
-	let p = project(&[(
-		"runfiles/t.run",
-		"$ printf ready > setup.txt\n\ndetach $ sleep 30\n\n$ printf done > after.txt\n",
-	)]);
+	let t = format!(
+		"$ printf ready > setup.txt\n\ndetach $ {UNTIL_RELEASED}; printf late > late.txt\n\n$ printf done > after.txt\n"
+	);
+	let p = project(&[("runfiles/t.run", &t)]);
 	let started = std::time::Instant::now();
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
 	assert!(
 		started.elapsed().as_secs() < 10,
-		"the sleep was waited for: {:?}",
+		"the detached line was waited for: {:?}",
 		started.elapsed()
 	);
 	assert_eq!(
@@ -2484,17 +2484,32 @@ fn detach_marks_one_command_and_the_rest_of_the_file_is_waited_for() {
 		"done",
 		"and so did the line below it"
 	);
+
+	release(&p);
+	until("the detached command to finish", || {
+		p.dir.path().join("late.txt").exists()
+	});
 }
 
 #[test]
 fn detach_reaches_a_command_inside_a_block() {
 	// `.detach` was cleared by `extend(nested)`, so the same command inside an
 	// `if` quietly waited. A marker on the statement has no such question.
-	let p = project(&[("runfiles/t.run", "if true\n\tdetach $ sleep 30\nend\n")]);
+	let t = format!("if true\n\tdetach $ {UNTIL_RELEASED}; printf late > late.txt\nend\n");
+	let p = project(&[("runfiles/t.run", &t)]);
 	let started = std::time::Instant::now();
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
 	assert!(started.elapsed().as_secs() < 10, "it waited: {:?}", started.elapsed());
+	assert!(
+		!p.dir.path().join("late.txt").exists(),
+		"the command inside the block was detached, not waited for"
+	);
+
+	release(&p);
+	until("the detached command to finish", || {
+		p.dir.path().join("late.txt").exists()
+	});
 }
 
 #[test]

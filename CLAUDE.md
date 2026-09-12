@@ -690,12 +690,20 @@ terminal's width, and how wide text is on it).
   detached spawn and restores it after. Safe for whatever else is spawning at the time, parallel branches included,
   because `Stdio::inherit()` does not depend on that flag: the standard library duplicates the handle it passes
   with `bInheritHandle` set regardless. Unix needs none of it -- everything but the three descriptors a child
-  is handed is close-on-exec. **What it cannot guard is a copy `run` never knew it had**: a parent that spawns
-  `run` with pipes while its own standard handles are inheritable hands those over too, as extra handles, and
-  they flow on into the detached child. `cargo test` is such a parent -- the test binary's handles are the CI
-  step's output pipe -- so the `detach` tests' `sleep 30` held a Gitea step open past its last test, and
-  act_runner failed it after ten seconds with "WaitDelay expired before I/O complete". `cli.rs` clears the
-  flag on its own standard handles before it spawns anything (`keep_our_std_handles`).
+  is handed is close-on-exec. **What it cannot guard is a copy `run` never knew it had**, and no process in a
+  chain can guard one for the process below it. An inherited handle arrives *inheritable*, and
+  `CreateProcessW` is called with `bInheritHandles: TRUE`, so every process hands its own standard handles to
+  every child a second time -- beside the ones it names in `STARTUPINFO`, at values the child cannot ask
+  about. `Stdio::inherit()` duplicates afresh, so the copy a child receives as *its* standard handle is never
+  the same one: clearing `HANDLE_FLAG_INHERIT` on `GetStdHandle`'s answer -- which is what `KeepHandles` does,
+  correctly, for the copy `run` was given -- can only ever reach one of them. That is why the `detach` tests no
+  longer leave a `sleep 30` running: five processes deep (`run` -> shell -> cargo -> the test binary -> `run`)
+  the Gitea step's output pipe had arrived several times over, the detached command held it half a minute past
+  the last test, and act_runner failed the step ten seconds in with "WaitDelay expired before I/O complete". A
+  `cli.rs` guard over its own standard handles (`keep_our_std_handles`) was written for this and could not
+  work; a detached command that waits for a file the test writes proves the same thing and leaves nothing
+  behind (see *Testing Requirements*). The realistic one-level case is the one `KeepHandles` is for and does
+  cover: a step's shell spawns `run` directly, so the pipe `run` holds *is* its standard handle.
 - **Parallel output is labelled per line**, since several branches write at once: `label | line`, whole
   lines, stderr as well as stdout, and a `print` too (`functions::emit`, which reads `Scope.branch`). A
   `parallel for` iteration is labelled by its value, fitted to 40 columns -- the path out of a `glob` is
@@ -1518,6 +1526,14 @@ tests that assert the mechanism rather than the symptom.
    file on the unwatched write that happened to follow it, and failed on macOS CI.
 10. Cross-platform: normalize backslashes in path assertions. A test that can only hold on one platform should
    be `#[cfg]`-gated there rather than weakened.
+11. **No test leaves a process running, and none of them waits on a clock to prove one is.** The `detach`
+   tests said `sleep 30` and asserted that the run came back in under ten seconds -- a margin against a
+   number, and a command still running when `cargo test` exited. On Windows that failed the Gitea step
+   outright (see *runfile-runtime*, `detach`); everywhere it made the assertion a guess about how slow a
+   loaded runner may be. `cli.rs`'s `UNTIL_RELEASED` waits for a file `release` writes instead, so "the run
+   did not wait for it" is a fact rather than a measurement -- the command cannot have finished, because it
+   had not been let go -- and the test ends with nothing of its own still running. The loop is bounded at
+   twenty seconds so a test that fails before releasing does not leave one spinning.
 
 ## Documentation
 
