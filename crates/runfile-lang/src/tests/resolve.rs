@@ -98,6 +98,21 @@ fn the_calls_answered_before_the_table_are_functions_too() {
 	}
 }
 
+#[test]
+fn a_run_key_that_does_not_exist_is_found_whatever_the_chain() {
+	let f = only("print(RUN.oss)\n");
+	assert_eq!(f.kind, Kind::RunKey);
+	assert_eq!(f.to_string(), "line 1: unknown `RUN.oss`; did you mean `RUN.os`?");
+	// Which keys exist does not depend on what a shared file binds.
+	let f = resolve::functions(&tree("if FLAG.x\n\tprint(RUN.namespace)\nend\n"));
+	assert_eq!(f.len(), 1, "{f:#?}");
+	assert_eq!(
+		f[0].to_string(),
+		"line 2: unknown `RUN.namespace`; did you mean `RUN.namespaces`?"
+	);
+	clean("print(RUN.os, RUN.arch, RUN.cwd, RUN.file, RUN.parent, RUN.namespaces, RUN.user)\n");
+}
+
 // ---- names
 
 #[test]

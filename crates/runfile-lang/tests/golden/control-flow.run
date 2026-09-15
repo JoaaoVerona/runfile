@@ -25,9 +25,9 @@ do
 	$ pnpm install
 end
 
-if RUN.arch == "aarch64"
+if RUN.arch == "arm64"
 	$ echo arm
-else if RUN.arch == "x86_64"
+else if RUN.arch == "x86-64"
 	$ echo intel
 else
 	$ echo other

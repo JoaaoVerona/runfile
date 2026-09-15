@@ -121,8 +121,9 @@ pub enum Compound {
 	If(Vec<(List, List)>, Option<List>),
 	/// `while` or `until`: the condition, and the body.
 	Loop(List, List),
-	/// `for` or `select`: the words, and the body.
-	For(Vec<Word>, List),
+	/// `for` or `select`: the name it sets -- which a `for ((…))` has none of --
+	/// the words, and the body.
+	For(Option<Word>, Vec<Word>, List),
 	/// The subject, and each branch's patterns with its body.
 	Case(Word, Vec<(Vec<Word>, List)>),
 	/// `(( … ))`, with what is expanded inside.
@@ -160,13 +161,15 @@ pub enum Stop {
 
 pub type R<T> = Result<T, Stop>;
 
-/// Read a whole script.
-pub fn parse(chars: &[Ch]) -> R<List> {
+/// Read a whole script, in bash when `bash` says so, and otherwise in a shell
+/// this checker reads whose `[[ … ]]` may not be bash's.
+pub fn parse(chars: &[Ch], bash: bool) -> R<List> {
 	let mut p = P {
 		s: chars,
 		i: 0,
 		heredocs: Vec::new(),
 		depth: 0,
+		bash,
 	};
 	let list = p.list(End::Eof, None)?;
 	match p.heredocs.first() {
@@ -190,6 +193,8 @@ pub(crate) struct P<'a> {
 	pub i: usize,
 	pub heredocs: Vec<Pending>,
 	pub depth: usize,
+	/// Whether the shell is bash itself.
+	pub bash: bool,
 }
 
 /// What ends the list being read.
@@ -553,6 +558,7 @@ impl<'a> P<'a> {
 		self.take(k);
 		self.blank();
 		let mut words = Vec::new();
+		let mut name = None;
 		if self.at("((") {
 			self.i += 2;
 			if !self.arithmetic(&mut Vec::new())? {
@@ -569,7 +575,7 @@ impl<'a> P<'a> {
 			if self.peek().is_some_and(is_meta) {
 				return Err(Stop::Lost);
 			}
-			self.word(Mode::Normal)?;
+			name = Some(self.word(Mode::Normal)?);
 			self.linebreak()?;
 			if self.keyword() == Some("in") {
 				self.take("in");
@@ -595,10 +601,10 @@ impl<'a> P<'a> {
 		match self.keyword() {
 			Some("do") => {
 				self.take("do");
-				Ok(Compound::For(words, self.do_body(o)?))
+				Ok(Compound::For(name, words, self.do_body(o)?))
 			}
 			Some("{") => match self.group()? {
-				Compound::Group(body) => Ok(Compound::For(words, body)),
+				Compound::Group(body) => Ok(Compound::For(name, words, body)),
 				_ => Err(Stop::Lost),
 			},
 			_ if self.eof() => Err(self.unclosed(o)),
@@ -705,15 +711,18 @@ impl<'a> P<'a> {
 	}
 
 	fn test(&mut self) -> R<Compound> {
-		let o = Some(Opener { i: self.i, what: "[[" });
+		let open = self.i;
+		let o = Some(Opener { i: open, what: "[[" });
 		self.take("[[");
 		let mut words = Vec::new();
+		let mut lines = false;
 		loop {
 			self.blank();
 			if self.eof() {
 				return Err(self.unclosed(o));
 			}
 			if self.at("\n") {
+				lines = true;
 				self.newline()?;
 				continue;
 			}
@@ -721,7 +730,15 @@ impl<'a> P<'a> {
 				return Err(Stop::Lost);
 			}
 			if self.at("]]") && self.boundary(self.i + 2) {
+				let close = self.i;
 				self.i += 2;
+				// Bash skips a newline in some places inside `[[ … ]]` and refuses
+				// one in others; a test spread over lines is left to it. Another
+				// shell's `[[` is its own -- busybox reads one as `test` -- and is
+				// left to that shell.
+				if !lines && self.bash {
+					conditional(self.s, &words, open, close)?;
+				}
 				return Ok(Compound::Test(words));
 			}
 			words.push(self.word(Mode::Test)?);
@@ -953,4 +970,240 @@ impl<'a> P<'a> {
 			),
 		}
 	}
+}
+
+/// One of the tokens bash reads inside `[[ … ]]`, from a word's text as
+/// written: a quoted `"("` or `"-f"` is only a word to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tok {
+	Word,
+	Bang,
+	Open,
+	Close,
+	And,
+	Or,
+	/// `<` and `>`, which only compare.
+	Angle,
+	End,
+}
+
+/// The unary tests of `[[ … ]]`: bash's `test_unop`.
+const UNARY: &[&str] = &[
+	"-a", "-b", "-c", "-d", "-e", "-f", "-g", "-h", "-k", "-n", "-o", "-p", "-r", "-s", "-t", "-u", "-v", "-w", "-x",
+	"-z", "-G", "-L", "-N", "-O", "-R", "-S",
+];
+
+/// Its binary operators that are words: bash's `test_binop`, and `=~`.
+const BINARY: &[&str] = &[
+	"=", "==", "!=", "=~", "!~", "-nt", "-ot", "-ef", "-eq", "-ne", "-lt", "-le", "-gt", "-ge",
+];
+
+fn tok(text: Option<&str>) -> Tok {
+	match text {
+		Some("!") => Tok::Bang,
+		Some("(") => Tok::Open,
+		Some(")") => Tok::Close,
+		Some("&&") => Tok::And,
+		Some("||") => Tok::Or,
+		Some("<" | ">") => Tok::Angle,
+		_ => Tok::Word,
+	}
+}
+
+/// Whether bash splits this word inside `[[ … ]]` where the checker did not:
+/// at a `(`, `)`, `<`, `>`, `&` or `|` outside quotes, which `[[` reads as its
+/// own even with no blank around them. The pattern after `=~` has rules of its
+/// own, where a `(` and a `|` belong to it -- as long as its parentheses
+/// balance, since a blank inside them splits it here and not there.
+fn splits(w: &Word, pattern: bool) -> bool {
+	if matches!(w.plain().as_deref(), Some("(" | ")" | "<" | ">" | "&&" | "||")) {
+		return false;
+	}
+	let bare = w.parts.iter().filter_map(|p| match p {
+		Part::Char {
+			c,
+			quote: Quote::Bare,
+			escaped: false,
+			..
+		} => Some(*c),
+		_ => None,
+	});
+	if !pattern {
+		return bare.into_iter().any(|c| matches!(c, '(' | ')' | '<' | '>' | '&' | '|'));
+	}
+	let mut depth = 0i32;
+	for c in bare {
+		match c {
+			'(' => depth += 1,
+			')' if depth == 0 => return true,
+			')' => depth -= 1,
+			'<' | '>' | '&' => return true,
+			_ => {}
+		}
+	}
+	depth != 0
+}
+
+/// What is wrong, as the word it is about -- `None` for `]]` -- and why.
+type Refusal = (Option<usize>, String);
+
+/// Bash's grammar for what is inside `[[ … ]]` (`cond_term` in its parser),
+/// over the words read there.
+struct Cond<'t> {
+	toks: &'t [Tok],
+	texts: &'t [String],
+	at: usize,
+}
+
+impl Cond<'_> {
+	fn peek(&self) -> Tok {
+		self.toks.get(self.at).copied().unwrap_or(Tok::End)
+	}
+
+	fn or(&mut self) -> Result<(), Refusal> {
+		self.and()?;
+		if self.peek() == Tok::Or {
+			self.at += 1;
+			self.or()?;
+		}
+		Ok(())
+	}
+
+	fn and(&mut self) -> Result<(), Refusal> {
+		self.term()?;
+		if self.peek() == Tok::And {
+			self.at += 1;
+			self.and()?;
+		}
+		Ok(())
+	}
+
+	/// `!` and a term, `( … )`, a unary test and its word, a word, an operator
+	/// and a word -- or one word alone, which asks whether it is empty.
+	fn term(&mut self) -> Result<(), Refusal> {
+		let k = self.at;
+		match self.peek() {
+			Tok::End => Err(match k.checked_sub(1) {
+				None => (None, "`[[ ]]` has nothing in it to test, and bash refuses it".into()),
+				Some(before) => (
+					Some(before),
+					format!("`{}` has nothing after it to test", self.texts[before]),
+				),
+			}),
+			Tok::Open => {
+				self.at += 1;
+				self.or()?;
+				if self.peek() != Tok::Close {
+					return Err((Some(k), "this `(` is never closed by a `)` of its own".into()));
+				}
+				self.at += 1;
+				Ok(())
+			}
+			Tok::Bang => {
+				self.at += 1;
+				self.term()
+			}
+			Tok::Word if UNARY.contains(&self.texts[k].as_str()) => {
+				self.at += 1;
+				match self.peek() {
+					Tok::Word | Tok::Bang => {
+						self.at += 1;
+						Ok(())
+					}
+					_ => Err((
+						Some(k),
+						format!("`{}` tests the word after it, and there is none", self.texts[k]),
+					)),
+				}
+			}
+			Tok::Word => {
+				self.at += 1;
+				match self.peek() {
+					Tok::End | Tok::And | Tok::Or | Tok::Close => return Ok(()),
+					Tok::Angle => {}
+					Tok::Word if BINARY.contains(&self.texts[self.at].as_str()) => {}
+					_ => return Err(self.misplaced(self.at, "follows a word")),
+				}
+				let op = self.at;
+				self.at += 1;
+				match self.peek() {
+					Tok::Word | Tok::Bang => {
+						self.at += 1;
+						Ok(())
+					}
+					_ => Err((
+						Some(op),
+						format!(
+							"`{}` compares the word before it with a word after it, and there is none",
+							self.texts[op]
+						),
+					)),
+				}
+			}
+			Tok::Close | Tok::And | Tok::Or | Tok::Angle => {
+				Err((Some(k), format!("`{}` has nothing before it to test", self.texts[k])))
+			}
+		}
+	}
+
+	/// A word where `[[ … ]]` needs an operator, `&&`, `||` or `]]`.
+	fn misplaced(&self, k: usize, place: &str) -> Refusal {
+		let t = &self.texts[k];
+		let message = match t.as_str() {
+			"-a" | "-o" => format!(
+				"`{t}` joins tests inside `[ … ]`, but inside `[[ … ]]` it is not an operator -- write `{}`",
+				if t == "-a" { "&&" } else { "||" }
+			),
+			_ => format!(
+				"`{t}` {place}, where `[[ … ]]` needs an operator such as `==`, or `&&`, `||` or `]]` -- a blank in a value has to be quoted"
+			),
+		};
+		(Some(k), message)
+	}
+}
+
+/// Hold what is inside `[[ … ]]` to bash's grammar for it. `open` and `close`
+/// are where its `[[` and `]]` are.
+///
+/// A word this reading could get wrong is left to bash rather than guessed at:
+/// one holding an interpolation, which could become an operator once rendered,
+/// and one holding a character `[[` splits words at, which the checker kept
+/// inside it.
+fn conditional(chars: &[Ch], words: &[Word], open: usize, close: usize) -> R<()> {
+	for (k, w) in words.iter().enumerate() {
+		if w.parts.iter().any(|p| matches!(p, Part::Hole { .. })) {
+			return Ok(());
+		}
+		let pattern = k > 0 && matches!(words[k - 1].plain().as_deref(), Some("=~" | "!~"));
+		if splits(w, pattern) {
+			return Ok(());
+		}
+	}
+	let toks: Vec<Tok> = words.iter().map(|w| tok(w.plain().as_deref())).collect();
+	// A word's text as written, so `"-f"` is not taken for `-f`.
+	let texts: Vec<String> = words
+		.iter()
+		.map(|w| chars[w.start..w.end].iter().map(|c| c.c).collect())
+		.collect();
+	let mut c = Cond {
+		toks: &toks,
+		texts: &texts,
+		at: 0,
+	};
+	let refused = match c.or() {
+		Err(r) => r,
+		Ok(()) if c.peek() == Tok::End => return Ok(()),
+		Ok(()) => c.misplaced(c.at, "comes after a complete test"),
+	};
+	let (from, to) = match refused.0 {
+		Some(k) => (words[k].start, words[k].end),
+		None if words.is_empty() => (open, open + 2),
+		None => (close, close + 2),
+	};
+	Err(Stop::Refused {
+		rule: "unexpected",
+		from,
+		to,
+		message: refused.1,
+	})
 }

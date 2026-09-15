@@ -11,7 +11,8 @@ runfiles/ports.run:3:17: error: `'sport = :{{ ARG.port }}'` puts an interpolatio
 1 file checked: 1 error in 1 file
 ```
 
-`run :lint` never rewrites shell to fix a finding: the fix is a suggestion, and the shell is yours to edit.
+`run :lint` never rewrites shell to fix a finding: the fix is a suggestion, and the shell is yours to edit. The
+language around the shell has rules of its own, in [LANGUAGE-CHECK-RULES.md](LANGUAGE-CHECK-RULES.md).
 
 ## No false positives
 
@@ -23,7 +24,8 @@ mistakes.
 
 A script the checker cannot follow completely — `coproc`, a heredoc delimiter built from an interpolation, a few
 other rare constructs — is **left alone entirely** rather than read by a guess. Every syntax finding is one bash
-reports too, which the tests hold it to with `bash -n`.
+reports too, which the tests hold it to with `bash -n`; every other rule is held to what bash does when the
+script runs.
 
 There is no comment that silences a rule. A rule that needs silencing is a rule that is wrong, and the fix
 belongs in the rule.
@@ -43,6 +45,9 @@ words rather than handing to a shell.
 **An interpolation is read as what the runner makes of it**: one shell word, already quoted, whatever it holds
 — never as placeholder text the checker could mistake for a command. That is what lets a rule tell
 `{{ ARG.dest }}/backup` from `"{{ ARG.dest }}/backup"`, and point at the column you wrote.
+
+**A command the script defines as a function runs that function**, whatever it is called, so no rule about
+commands judges it: `test a=b` calling a `test()` of the script's own compares nothing.
 
 ## Syntax
 
@@ -85,6 +90,11 @@ A keyword or an operator where bash cannot take one.
 `case`; `;`, `&` or `|` with no command before it; a redirection with nothing to redirect to; and a block with
 no command in it, which bash refuses at the word that ends it.
 
+Inside `[[ … ]]` in bash — `$` lines, unless `.shell` names another shell, and a block for `bash` — what its
+grammar refuses: `-a` and `-o`, which join tests in `[ … ]` but are not operators here; two words with no operator
+between them; an operator or a test like `-f` with nothing after it; a `(` never closed; and `[[ ]]` with nothing
+in it.
+
 ```sh
 # flagged
 $ if [ -f .env ]; then fi
@@ -96,11 +106,20 @@ $ echo "done" >
 ```
 
 ```sh
-# not flagged
-$ if [ -f .env ]; then :; fi
+# flagged
+$ [[ -f .env -a -f .env.local ]] && echo "both"
 ```
 
-Left alone: a keyword that is only a word, as in `echo fi` or `for x in do done`.
+```sh
+# not flagged
+$ if [ -f .env ]; then :; fi
+$ [[ -f .env && -f .env.local ]] && echo "both"
+```
+
+Left alone: a keyword that is only a word, as in `echo fi` or `for x in do done`; a `[[ … ]]` spread over
+several lines, holding an interpolation, or with a `(`, `<`, `&` or `|` inside a word, which bash reads by rules
+this reading does not follow; and a `[[ … ]]` in another shell, which may read it by rules of its own — busybox
+reads it as `test`, where `-a` joins two tests.
 
 ### `unterminated-heredoc`
 
@@ -340,42 +359,6 @@ $ rm -rf build
 Covers `del`, `erase`, `rd`, `rmdir`, `copy`, `xcopy`, `move` and `ren`, and only with a `/X` switch, which is
 cmd.exe's and never a path anyone means.
 
-### `bracket-spacing`
-
-A `[` or `]` written against the word beside it.
-
-`[` is a command and `]` its last argument, so each needs a blank around it: `[ -f .env]` is `[` without its
-`]`, and `[-f` is a command named `[-f`. Both fail every time they run.
-
-```sh
-# flagged
-$ if [ -f .env]; then cp .env .env.backup; fi
-```
-
-```sh
-# not flagged
-$ if [ -f .env ]; then cp .env .env.backup; fi
-```
-
-### `test-redirect`
-
-`>` or `<` inside `[ … ]`, where it redirects.
-
-Inside `[ … ]`, `>` is not a comparison: `[ "$count" > 100 ]` writes a file named `100` and tests whether
-`$count` is empty.
-
-```sh
-# flagged
-$ [ "$(wc -l < todo.txt)" > 100 ] && echo "too many"
-```
-
-```sh
-# not flagged
-$ [ "$(wc -l < todo.txt)" -gt 100 ] && echo "too many"
-```
-
-Left alone: a redirection with a file descriptor (`2>/dev/null`) and one after the closing `]`.
-
 ### `outside-function`
 
 `local` or `return` outside a shell function.
@@ -392,11 +375,40 @@ $ local tag=$(git describe --tags)
 $ tag=$(git describe --tags)
 ```
 
+### `outside-loop`
+
+`break` or `continue` with no shell loop around it.
+
+A `$` line is a shell of its own, and the runfile's loops around it are not its loops. Bash says `break: only
+meaningful in a loop` and carries on with the next command, so the loop the line sits in is never left.
+
+```sh
+# flagged
+for map in glob("dist/*.map")
+	$ [ -s {{ map }} ] || break
+end
+```
+
+```sh
+# not flagged
+for map in glob("dist/*.map")
+	if $ [ -s {{ map }} ]
+		print("{{ map }} has content")
+	else
+		break
+	end
+end
+```
+
+Covers `break` and `continue`, with or without a count. Left alone: inside a function, which may be called from a
+loop.
+
 ### `spaced-assignment`
 
-`NAME = value`, which runs a command called `NAME`.
+`NAME = value`, which is not an assignment.
 
-An assignment has no blanks around its `=`. With them, the shell runs `VERSION` with `=` as its first argument.
+An assignment has no blanks around its `=`. With them, the shell runs `VERSION` with `=` as its first argument —
+and `export VERSION = 1.2` hands `export` a word that is only `=`, which is not a name, so it fails.
 
 ```sh
 # flagged
@@ -405,13 +417,49 @@ $ echo "$VERSION"
 ```
 
 ```sh
+# flagged
+$ export NODE_ENV = production
+$ npm run build
+```
+
+```sh
 # not flagged
 $ VERSION=$(git describe --tags)
 $ echo "$VERSION"
 ```
 
-Reported for a name in capitals, since no command is spelled that way, and never for a name defined as a function
-in the same script. `NAME= value` — an empty variable for one command — is left alone.
+After `export`, `declare`, `typeset`, `readonly` and `local`, reported for any name, since the command says an
+assignment is meant. Anywhere else, reported for a name in capitals, since no command is spelled that way, and never
+for a name defined as a function in the same script. `NAME= value` — an empty variable for one command — is left
+alone.
+
+### `dollar-assignment`
+
+A `$` in front of the name being set, which reads it instead.
+
+`$VERSION=1.2` expands `VERSION` before anything else happens, so it is not an assignment: bash runs a command named
+after what `VERSION` holds, followed by `=1.2`. And `for $f in …` hands the loop a name that is not one, which bash
+refuses.
+
+```sh
+# flagged
+$ $VERSION=$(git describe --tags)
+$ echo "$VERSION"
+```
+
+```sh
+# flagged
+$ for $f in *.log; do gzip "$f"; done
+```
+
+```sh
+# not flagged
+$ VERSION=$(git describe --tags)
+$ for f in *.log; do gzip "$f"; done
+```
+
+Left alone: `$NAME=value` as an argument, as in `export $NAME=1`, which can mean the variable whose name `NAME`
+holds.
 
 ### `sudo-builtin`
 
@@ -433,3 +481,197 @@ $ sudo ls /var/www
 
 Covers `cd`, `pushd`, `popd`, `export`, `unset`, `source`, `.`, `alias`, `set`, `shopt`, `ulimit`, `umask`,
 `exit`, `declare`, `typeset`, `readonly` and `local`.
+
+### `unterminated-exec`
+
+A `find -exec` that nothing ends.
+
+`-exec` runs the words after it as a command, up to a word that is only `;` — or a `+` right after `{}`. A bare `;`
+ends the shell's command instead, so `find` never sees one, refuses to run, and finds nothing.
+
+```sh
+# flagged
+$ find . -name "*.orig" -exec rm {} ;
+```
+
+```sh
+# not flagged
+$ find . -name "*.orig" -exec rm {} \;
+$ find . -name "*.rej" -exec rm {} +
+```
+
+Covers `-exec`, `-execdir`, `-ok` and `-okdir`, of which only the first two take `+`. Left alone: an `-exec`
+followed by an interpolation or an expansion, which could be the `;`, and an `-exec` that is the value of the word
+before it, as in `-name -exec`.
+
+### `truncated-input`
+
+A file a command reads, emptied by its own `>` before it starts.
+
+The shell opens a command's redirections before the command starts, and `>` empties its file as it opens it. So
+`jq '.version = "2.0.0"' package.json > package.json` hands `jq` an empty file, and leaves `package.json` empty.
+
+```sh
+# flagged
+$ jq '.version = "2.0.0"' package.json > package.json
+```
+
+```sh
+# flagged
+$ sort -u names.txt > names.txt
+```
+
+```sh
+# not flagged
+$ jq '.version = "2.0.0"' package.json > package.json.tmp
+$ mv package.json.tmp package.json
+$ sort -u names.txt -o names.txt
+```
+
+Covers `cat`, `sort`, `head`, `tail`, `grep`, `sed`, `awk`, `jq`, `cut`, `uniq`, `wc`, `tac`, `base64` and the
+checksum commands naming the file, and any of them — `tr` and `envsubst` too — reading it from `<`; and `>`, `>|`
+and `&>`, on any descriptor. Left alone: `>>`, which appends; an option this reading does not know, which could be
+the one that changes what is read; a file named through an interpolation or an expansion; and a pipeline, where the
+reading and the emptying race.
+
+## Tests
+
+### `bracket-spacing`
+
+A `[` or `]` written against the word beside it.
+
+`[` is a command and `]` its last argument, so each needs a blank around it: `[ -f .env]` is `[` without its
+`]`, and `[-f` is a command named `[-f`. Both fail every time they run.
+
+```sh
+# flagged
+$ if [ -f .env]; then cp .env .env.backup; fi
+```
+
+```sh
+# not flagged
+$ if [ -f .env ]; then cp .env .env.backup; fi
+```
+
+### `missing-bracket`
+
+A `[` whose last argument is not `]`.
+
+`[` is a command that fails unless its last argument is `]`. The usual cause is a `;` written before the `]`, which
+ends the command there.
+
+```sh
+# flagged
+$ if [ -f .env; then cp .env .env.backup; fi
+```
+
+```sh
+# not flagged
+$ if [ -f .env ]; then cp .env .env.backup; fi
+```
+
+Left alone: a last argument that expands, which could be `]`, and a `]` against the word before it, which
+`bracket-spacing` reports.
+
+### `glued-comparison`
+
+`[ "$a"="$b" ]`, one word, which is always true.
+
+A test of one word asks only whether that word is empty. Written without blanks, `"$branch"="main"` is one word —
+`=` is an operator only as a word of its own — and it is never empty, so the test is always true.
+
+```sh
+# flagged
+$ if [ "$(git branch --show-current)"="main" ]; then echo "on main"; fi
+```
+
+```sh
+# flagged
+$ [[ $answer==yes ]] && rm -rf dist
+```
+
+```sh
+# not flagged
+$ if [ "$(git branch --show-current)" = "main" ]; then echo "on main"; fi
+$ [[ $answer == yes ]] && rm -rf dist
+```
+
+Covers `=`, `==` and `!=`, in `[ … ]`, `test` and `[[ … ]]`. Left alone: an `=` inside an expansion, as in
+`[[ ${x#*=} ]]`, and a word `[[` would split.
+
+### `vanishing-operand`
+
+`[ -n $x ]`, which is true when `$x` is empty.
+
+An unquoted expansion that is empty leaves no word behind, and `[ -n ]` asks only whether `-n` is empty. So
+`[ -n $x ]` is true whether or not `$x` is — the one question it was written to ask.
+
+```sh
+# flagged
+$ [ -n $(git status --porcelain) ] && echo "uncommitted changes"
+```
+
+```sh
+# not flagged
+$ [ -n "$(git status --porcelain)" ] && echo "uncommitted changes"
+$ [ -n {{ ARG.tag }} ] && echo "tagged"
+```
+
+Covers `$NAME`, `${NAME}`, `$(…)` and backticks. Left alone: an interpolation, which is one quoted word even when
+it is empty; `-z`, which answers correctly either way; and `[[ … ]]`, which never drops a word.
+
+### `test-redirect`
+
+`>` or `<` inside `[ … ]`, where it redirects.
+
+Inside `[ … ]`, `>` is not a comparison: `[ "$count" > 100 ]` writes a file named `100` and tests whether
+`$count` is empty.
+
+```sh
+# flagged
+$ [ "$(wc -l < todo.txt)" > 100 ] && echo "too many"
+```
+
+```sh
+# not flagged
+$ [ "$(wc -l < todo.txt)" -gt 100 ] && echo "too many"
+```
+
+Left alone: a redirection with a file descriptor (`2>/dev/null`) and one after the closing `]`.
+
+### `test-regex`
+
+`=~` inside `[ … ]`, which only `[[ … ]]` has.
+
+`[` and `test` have no regex operator: given `=~`, they say `binary operator expected` and fail every time.
+
+```sh
+# flagged
+$ [ "$(uname -m)" =~ ^arm ] && echo "arm"
+```
+
+```sh
+# not flagged
+$ [[ "$(uname -m)" =~ ^arm ]] && echo "arm"
+```
+
+### `not-a-number`
+
+`-eq` or `-lt` inside `[ … ]` with an operand that is not a whole number.
+
+`-eq`, `-ne`, `-lt`, `-le`, `-gt` and `-ge` compare whole numbers, and `[` refuses anything else with `integer
+expression expected`. Text is compared with `=` and `!=`.
+
+```sh
+# flagged
+$ [ "$(git branch --show-current)" -eq main ] && echo "on main"
+```
+
+```sh
+# not flagged
+$ [ "$(git branch --show-current)" = main ] && echo "on main"
+$ [ "$(git rev-list --count HEAD)" -gt 100 ] && echo "a long history"
+```
+
+A whole number is what bash's `[` reads as one: blanks, a sign, and digits. Left alone: an operand that expands,
+which could be a number, and `[[ … ]]`, where both sides are arithmetic.

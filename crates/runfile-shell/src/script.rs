@@ -53,6 +53,10 @@ pub struct Script {
 	pub used: Use,
 	/// Whether the shell is handed positional parameters. A `$` run never is.
 	pub arguments: bool,
+	/// Whether the shell is bash itself, whose grammar for `[[ … ]]` a test is
+	/// held to. Another shell this checker reads may give `[[` rules of its
+	/// own: busybox's does.
+	pub bash: bool,
 }
 
 impl Script {
@@ -168,6 +172,26 @@ pub fn dollar(file: &Target, chain: Option<&[Target]>) -> Option<bool> {
 	}
 }
 
+/// Whether a command line's program is bash itself.
+pub fn is_bash(command: &str) -> bool {
+	command.split_whitespace().next().is_some_and(|first| {
+		let base = first.rsplit(['/', '\\']).next().unwrap_or(first);
+		base.strip_suffix(".exe").unwrap_or(base) == "bash"
+	})
+}
+
+/// Whether the `$` runs in `file` run in bash itself: no `.shell` above or in
+/// it names anything else.
+pub fn dollar_bash(file: &Target, chain: Option<&[Target]>) -> bool {
+	let mut bash = true;
+	for f in chain.unwrap_or_default().iter().chain(std::iter::once(file)) {
+		for p in f.body.properties.iter().filter(|p| p.path == ["shell"]) {
+			bash = literal(p).is_some_and(|cmd| is_bash(&cmd));
+		}
+	}
+	bash
+}
+
 fn literal(p: &Property) -> Option<String> {
 	match &p.value {
 		Some(Expr::Str(parts, _)) => text_of(parts),
@@ -187,27 +211,32 @@ fn text_of(parts: &[InterpPart]) -> Option<String> {
 }
 
 /// The script a `$` run or an `exec` block hands its shell, when it has one this
-/// checker reads. `dollar` is what [`dollar`] answered for the file.
-pub fn of_statement(st: &Statement, src: &Source, dollar: Option<bool>) -> Option<Script> {
+/// checker reads. `dollar` is what [`dollar`] answered for the file, and `bash`
+/// what [`dollar_bash`] did.
+pub fn of_statement(st: &Statement, src: &Source, dollar: Option<bool>, bash: bool) -> Option<Script> {
 	let Statement::Exec {
 		command, body, lines, ..
 	} = st
 	else {
 		return None;
 	};
-	let (arguments, starts) = match command {
+	let (arguments, starts, bash) = match command {
 		None => (
 			dollar?,
 			lines.iter().map(|&no| after_marker(src, no)).collect::<Option<_>>()?,
+			bash,
 		),
-		Some(parts) => (shell(&text_of(parts)?)?, dedented(src, lines)?),
+		Some(parts) => {
+			let cmd = text_of(parts)?;
+			(shell(&cmd)?, dedented(src, lines)?, is_bash(&cmd))
+		}
 	};
-	build(src, body, &starts, Use::Statement, arguments)
+	build(src, body, &starts, Use::Statement, arguments, bash)
 }
 
 /// The script a capture hands its shell: `let x = $ …`, `if $ …`, `lines($ …)`,
 /// `let x = exec sh … end`.
-pub fn of_capture(e: &Expr, src: &Source, dollar: Option<bool>) -> Option<Script> {
+pub fn of_capture(e: &Expr, src: &Source, dollar: Option<bool>, bash: bool) -> Option<Script> {
 	let Expr::Capture { command, body, span } = e else {
 		return None;
 	};
@@ -218,16 +247,17 @@ pub fn of_capture(e: &Expr, src: &Source, dollar: Option<bool>) -> Option<Script
 			// by others, and a command may itself start with a `$`: the text
 			// decides, since only one of the two places spells the command.
 			let at = span.start;
-			build(src, body, &[at], Use::Value, arguments).or_else(|| {
+			build(src, body, &[at], Use::Value, arguments, bash).or_else(|| {
 				let after = src.text.get(at..)?.strip_prefix('$')?;
 				let line = after.split('\n').next().unwrap_or_default();
-				build(src, body, &[at + 1 + blanks(line)], Use::Value, arguments)
+				build(src, body, &[at + 1 + blanks(line)], Use::Value, arguments, bash)
 			})
 		}
 		Some(parts) => {
-			let arguments = shell(&text_of(parts)?)?;
+			let cmd = text_of(parts)?;
+			let arguments = shell(&cmd)?;
 			let lines: Vec<usize> = (1..=body.len()).map(|i| span.line + i).collect();
-			build(src, body, &dedented(src, &lines)?, Use::Value, arguments)
+			build(src, body, &dedented(src, &lines)?, Use::Value, arguments, is_bash(&cmd))
 		}
 	}
 }
@@ -268,7 +298,14 @@ fn dedented(src: &Source, lines: &[usize]) -> Option<Vec<usize>> {
 		.collect()
 }
 
-fn build(src: &Source, body: &[Vec<InterpPart>], starts: &[usize], used: Use, arguments: bool) -> Option<Script> {
+fn build(
+	src: &Source,
+	body: &[Vec<InterpPart>],
+	starts: &[usize],
+	used: Use,
+	arguments: bool,
+	bash: bool,
+) -> Option<Script> {
 	if body.len() != starts.len() {
 		return None;
 	}
@@ -277,6 +314,7 @@ fn build(src: &Source, body: &[Vec<InterpPart>], starts: &[usize], used: Use, ar
 		holes: Vec::new(),
 		used,
 		arguments,
+		bash,
 	};
 	let mut end = 0;
 	for (k, (parts, &start)) in body.iter().zip(starts).enumerate() {

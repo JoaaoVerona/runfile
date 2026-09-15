@@ -77,6 +77,17 @@ impl EvalError {
 	}
 }
 
+/// Every key `RUN` has. The runner fills in each of them, except `user` when no
+/// variable names whoever is running it -- and nothing else, so a key not here
+/// is a mistake wherever it is written.
+pub const RUN_KEYS: &[&str] = &["arch", "cwd", "file", "namespaces", "os", "parent", "user"];
+
+/// Every value `RUN.os` can have.
+pub const OS_NAMES: &[&str] = &["linux", "mac", "windows"];
+
+/// Every value `RUN.arch` can have.
+pub const ARCH_NAMES: &[&str] = &["arm64", "riscv64", "unknown", "x86-64"];
+
 /// Everything an expression can read. Sources are fixed for a target; `vars`
 /// changes as `let` bindings and loop variables come and go.
 ///

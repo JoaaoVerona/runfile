@@ -445,6 +445,12 @@ per attempt is the slow way to the same list. A shared file is checked ahead of 
 is checked when it is loaded, as a parse error in one is. `run --stdin-args` asks `Host::check` before it
 prompts, so nobody answers questions about a file that is then refused.
 
+**A `RUN` key `RUN` does not have is a name that does not resolve too** (`Kind::RunKey`): `RUN.oss` failed only
+when reached, as `unknown RUN.oss`. Which keys exist never depends on the chain, so it is reported under
+`Chain::Unknown` as well. `runfile_lang::eval::RUN_KEYS` is the list; `populate_run_context` is held to it in both
+directions by a runtime test (`user` being the one key the environment may leave out), and the language server's
+documented `RUN_KEYS` by another.
+
 `functions::exists` is the one answer to whether a name is a function: `FUNCTIONS`, `code_of` (the runner's),
 and `try` (the evaluator's -- unlisted since `?` replaced it, but still answered for the files that call it, so
 refusing it would refuse files that run). The "did you mean" is `resolve::suggest`, in tiers, best first: the
@@ -476,6 +482,58 @@ an `#any-of?` list, so an unknown name keeps the plain identifier's colour inste
 works -- no capture is drawn as an error by every editor, so the error itself is `run :lsp`'s. Unresolved
 *names* cannot be marked by either grammar, needing scopes; they are the server's alone.
 `runfile-lang/tests/editor_grammars.rs` holds both lists to the runner's in both directions.
+
+### What fails every time is refused too
+
+**A line that fails whenever it is reached, or that can never do what it says, is refused before a target's first
+statement runs** -- by `runfile_lang::check`, which `Host::load` asks after the name check, the language server
+asks for every document, and `run :lint` asks through the server's function. `ARG.port + 1`, `if ENV.CI`,
+`sleep(ARG.seconds)`, `split("a,b")`, `xs[-1]`, a regex that does not compile, `if code_of($ make)`: each used to wait
+for a run to reach it. `RUN.os == "darwin"` failed nothing and was worse for it -- false everywhere, with nothing to
+say why. `LANGUAGE-CHECK-RULES.md` lists the rules (`arity`, `wrong-type`, `never-equal`, `unreachable-case`,
+`invalid-literal`, `capture-position`), gated like the shell's document. A finding has the shell checker's shape --
+`check::Finding` and `check::Rule` are runfile-lang's, and runfile-shell re-exports them -- so `HostError::Findings`
+reports both in one sorted list, and one function turns either into a diagnostic.
+
+**The rule is the shell checker's: report only what is wrong every time.** A value's type is what `types.rs` can be
+sure of: a literal's, a source's (`ARG` and `ENV` strings, `FLAG` a bool, `ARGS` a list of strings), an operator's,
+and a call's, from `SIGNATURES`. **A name holds the union of everything any line binds it to, anywhere** in the file
+and the `_shared.run` chain -- flow is ignored on purpose. A failure can leave a `let` undone under `.ignore-errors`,
+in a `retry` that gave up, or in a loop that went round again, so a flow-sensitive answer has to model every place a
+run carries on after one, and a place it missed is a report about a value the name can hold. The union has nothing to
+miss; what it gives up is `let n = ARG.n` then `n = number(n)`, the file that already remembered to convert. Under
+`Chain::Unknown` every name is anything. A report needs the type to be disjoint from what the place accepts -- `ENV.PORT
+? 3000` is never reported, being sometimes right -- and `Ty::NONE`, what `exit()` and `error()` answer, is never
+reported at all. What a value that always fails is then asked is not reported either: the run never gets that far.
+
+**`SIGNATURES` is held to the functions, both ways, by calling them**: `every_count_of_arguments_the_table_refuses_is_refused_by_the_function`
+calls every function with zero to five arguments, and `every_type_the_table_refuses_is_refused_by_the_function_and_what_it_answers_is_listed`
+with every combination of the four types, asserting a `TypeError::Expected` exactly where the table refuses and a
+return type the table lists. The second direction is what the rest rests on: a type worked out from a call that
+leaves out what the call can really answer makes a later check wrong. `contains` is the one function whose accepted
+type depends on another argument (a list is searched for anything, a string only for a string). Two functions accept
+more under `--dry-run` than for real -- `write_file` and `temp_file` do not read their contents there -- and the table
+follows the real run: a file that dry-runs clean and fails for real is still refused.
+
+- **`never-equal` follows literals only for `RUN.os` and `RUN.arch`.** `OS_NAMES` and `ARCH_NAMES` are the only
+  values they take -- `os_named` and `arch_named` in the runtime are held to them -- and a name is followed only
+  when every line binds it to one of those. A string literal is not followed through a name: `let mode = "dev"`
+  above `if mode == "prod"` is a setting edited by hand, and calling it a mistake would be the mistake. A fix names
+  the platform's own name for an alias (`darwin` → `mac`, `x86_64` → `x86-64`). This found `RUN.arch == "x86_64"`
+  in this repository's golden fixtures and `notes == "false"` (a bool) in a real release target.
+- **`unreachable-case` asks how a `match` writes its subject**: `to_string`, so a bool is `true` or `false`, a
+  number is `format_num`'s text, and `match $ …` an `i32` exit status; a string or a list can be written as anything.
+  A label written twice is unreachable whatever the subject.
+- **`invalid-literal` compiles what is written out with what the run uses**: `regex::Regex::new`, the `globset`
+  builder `glob` uses, `now_formatted`, and `functions::parse_format` -- split out of `render_format` so a `printf`
+  format is read one way before a run and during one. The count message is `format_count`'s, which is why a static
+  refusal still says `more substitutions`.
+- **`capture-position` is where `value_of` does not run.** The runner runs a capture as the whole value of a `let`,
+  a reassignment, a call statement or a `for` (and as the last argument of a call that is), and as the whole of an
+  `if`, `while`, `until` or `match`; everywhere else the pure evaluator meets it and fails with *"capture needs a
+  process host"*. That is a condition's call (`if contains("a", $ cmd)`, `if code_of($ cmd)`) and every
+  `_shared.run` `let`, which `fold_shared` evaluates with `eval_boundary`. A runtime test runs each and holds the
+  runner to the rule. `code_of` given anything but a capture or a dispatch is `wrong-type`.
 
 ### Three context-sensitive lexer rules
 
@@ -681,6 +739,10 @@ second time as the global. This replaced `includes` entirely.
 `dispatch.rs` (`Host`, target resolution, cycle detection), `shell.rs` (shell selection), `term.rs` (the
 terminal's width, and how wide text is on it).
 
+- **`Host::load` refuses a file for the language's findings and the shell's together** (`HostError::Findings`),
+  once its names resolve, in the order they are written. `os_named` and `arch_named` are what `RUN.os` and
+  `RUN.arch` say, and a test holds them to `runfile_lang::eval::OS_NAMES` and `ARCH_NAMES`, which the checker takes
+  to be every value there is.
 - **`PROPERTIES` carries the whole taxonomy, and is the only copy of it.** Three booleans per name --
   `block_scoped`, `declaration_only`, `flag` -- each tested against `extend`'s actual behaviour the way
   `FUNCTIONS` is, in both directions, so a mislabelled column fails rather than misinforming an editor. There
@@ -896,6 +958,21 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
   what a name held, branches join, a loop's body is walked twice so a pass sees what the one before bound, and a
   parallel branch binds on a copy. Only strings, names, `?`, lists and the calls that pass a value through
   (`concat`, `dirname`, …) carry anything; `ENV.X` and `ARG.x` hold nothing to report.
+- **Rules that read a command's own grammar take bash's answer, and give up where it is not certain.**
+  `conditional` holds `[[ … ]]` to bash's `cond_term` -- `-a` and `-o` are not operators there, two words need one
+  between them, `-f` and `==` need a word after them -- and leaves alone a test holding an interpolation, which could
+  render as an operator, a word `[[` splits at `(`, `<`, `&` or `|` where the checker did not, and a test over several
+  lines, where bash skips some newlines and refuses others. It runs only in bash (`Script.bash`: `$` lines no
+  `.shell` points elsewhere, or a block for `bash`), since busybox reads `[[` as `test`, where `-a` joins two tests.
+  **A command the script defines as a function is skipped by every command rule** (`defines`): `test()`, `sort()`
+  and `break()` are names bash lets a function have, and calling one runs the function. `truncated-input` reads options with a table per command
+  (`READERS`), getopt's way; an option missing from it gives the reading up, so a flag that takes a value on one
+  platform cannot turn that value into a file name. `exact` is a word's literal text, and refuses a `$'…'` escape,
+  which `Word::literal` reads wrong.
+- **What is not syntax is held to what bash does when it runs.** `bash_does_what_each_rule_says_it_does` runs a
+  script for each such rule and asserts the failure, or the wrong answer, its message describes -- and the corpus
+  sweep reports `REFUSED` for a file the checker refuses whose every script `bash -n` reads, beside the `MISSED` it
+  already reported the other way. The sweep prints the language's findings too.
 
 ### runfile-lsp
 
@@ -904,7 +981,8 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
 
 - Diagnostics come from the **real parser**, so an editor and the runner cannot disagree about validity -- and
   from the runner's own name check (`resolve`), handed the `_shared.run` chain as the editor has it, unsaved
-  edits and all, and from its shell checker (`runfile-shell`). See *Names resolve before anything runs*. `document::diagnostics` composes them for a file
+  edits and all, from what the runner refuses as failing every time (`runfile_lang::check`), and from its shell checker
+  (`runfile-shell`). See *Names resolve before anything runs* and *What fails every time is refused too*. `document::diagnostics` composes them for a file
   where it sits -- its catalog's target names, its chain, whether it is machine-wide -- and `run :lint` asks
   the same function, so the command line and the editor cannot say different things about one file. **Both
   hand it the catalog `discover_unscoped` builds**, and have to: an editor opens a scoped machine-wide file
@@ -1275,7 +1353,8 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   editor with nothing underlined. It was `:format`, which passed files that failed the moment they ran. The
   errors are `runfile_lsp::document::diagnostics`, the function the server publishes from, so the command line
   cannot find more or less than an editor does: syntax, properties (`props::check`), a `run` of a target that
-  is not there, unknown functions and unresolved names under the `_shared.run` chain, and the shell. Each file is formatted
+  is not there, unknown functions and unresolved names under the `_shared.run` chain, what fails every time it runs
+  (`runfile_lang::check`), and the shell. Each file is formatted
   first and checked as it then stands, so a position is one in the file on disk, printed as
   `path:line:column` from the working directory, which a terminal makes a link. `--check` writes nothing and
   fails on a file that needs formatting too; `--stdout` prints the files and moves the report to stderr.
@@ -1756,6 +1835,11 @@ docs wrong. Anything a reader could act on counts: a new function, property, key
 default; a renamed thing; a new capability worth an example. The `readme.rs` gate catches an example that
 stops *parsing*, and cannot catch one that still parses and is now merely untrue — which is the more common
 way documentation rots.
+
+**`SHELL-CHECK-RULES.md` and `LANGUAGE-CHECK-RULES.md` list every rule of the two checkers, and are gated the same
+way** (`tests/rules_doc.rs` in `runfile-shell` and in `runfile-lang`): the same rules in the same order, each opening
+with the summary its checker gives it, and every example flagged by that rule alone or by nothing -- and, for the
+language's, resolving every name it reads. A rule added without its section fails there.
 
 `GRAMMAR.ebnf` is the normative grammar. Update this file with any new design decision, crate, or behaviour
 change.

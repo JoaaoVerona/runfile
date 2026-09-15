@@ -752,7 +752,7 @@ fn uuid_v4() -> String {
 }
 
 /// The current UTC time in a named format, or `None` for a name that is not one.
-fn now_formatted(format: &str) -> Option<String> {
+pub(crate) fn now_formatted(format: &str) -> Option<String> {
 	let dur = std::time::SystemTime::now()
 		.duration_since(std::time::UNIX_EPOCH)
 		.ok()?;
@@ -1889,26 +1889,34 @@ fn write_stdout(text: &str) -> Result<Value, String> {
 		.map_err(|e| format!("could not write to stdout: {e}"))
 }
 
-/// `printf`'s substitutions: `%s`, `%d`, `%f`, `%.Nf` and `%%`.
+/// One piece of a `printf` format: text kept as it stands, or a value put in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Piece {
+	Text(String),
+	/// `s`, `d` or `f`, and the precision a `%.Nf` gives.
+	Sub(char, Option<usize>),
+}
+
+/// A `printf` format, read: `%s`, `%d`, `%f`, `%.Nf` and `%%`, or what is
+/// wrong with it.
 ///
-/// The count has to match: a `%s` with nothing to put in it, or a value with
-/// no `%` to go to, is a typo every time, and printing something odd rather
-/// than saying so is how a format string quietly rots.
-pub(crate) fn render_format(fmt: &str, args: &[Value], sp: Span) -> Result<String, EvalError> {
-	let bad = |m: String| EvalError::Other { msg: m, line: sp.line };
+/// Read apart from rendering, so a format written out in a runfile is checked
+/// before anything runs by the same reading the run uses -- two readings of one
+/// format would come to disagree about which ones work.
+pub(crate) fn parse_format(fmt: &str) -> Result<Vec<Piece>, String> {
 	let chars: Vec<char> = fmt.chars().collect();
-	let mut out = String::new();
-	let mut used = 0;
+	let mut out = Vec::new();
+	let mut text = String::new();
 	let mut i = 0;
 	while i < chars.len() {
 		if chars[i] != '%' {
-			out.push(chars[i]);
+			text.push(chars[i]);
 			i += 1;
 			continue;
 		}
 		i += 1;
 		if chars.get(i) == Some(&'%') {
-			out.push('%');
+			text.push('%');
 			i += 1;
 			continue;
 		}
@@ -1920,26 +1928,65 @@ pub(crate) fn render_format(fmt: &str, args: &[Value], sp: Span) -> Result<Strin
 				i += 1;
 			}
 			if i == from {
-				return Err(bad("`%.` must be followed by a number of digits".into()));
+				return Err("`%.` must be followed by a number of digits".into());
 			}
 			precision = chars[from..i].iter().collect::<String>().parse::<usize>().ok();
 		}
 		let Some(&verb) = chars.get(i) else {
-			return Err(bad("`%` at the end of the format, with nothing to substitute".into()));
+			return Err("`%` at the end of the format, with nothing to substitute".into());
 		};
 		i += 1;
 		if precision.is_some() && verb != 'f' {
-			return Err(bad(format!("a precision is only for `%f`, not `%{verb}`")));
+			return Err(format!("a precision is only for `%f`, not `%{verb}`"));
 		}
-		let Some(arg) = args.get(used) else {
-			return Err(bad(format!(
-				"the format has more substitutions than the {} value(s) given",
-				args.len()
-			)));
+		if !matches!(verb, 's' | 'd' | 'f') {
+			return Err(format!("`%{verb}` is not a substitution; use `%s`, `%d` or `%f`"));
+		}
+		out.push(Piece::Text(std::mem::take(&mut text)));
+		out.push(Piece::Sub(verb, precision));
+	}
+	out.push(Piece::Text(text));
+	Ok(out)
+}
+
+/// What is wrong with a format of `subs` substitutions handed `given` values,
+/// when anything is.
+pub(crate) fn format_count(subs: usize, given: usize) -> Option<String> {
+	match subs.cmp(&given) {
+		std::cmp::Ordering::Greater => Some(format!(
+			"the format has more substitutions than the {given} value(s) given"
+		)),
+		std::cmp::Ordering::Less => Some(format!("{given} value(s) given, but the format substitutes {subs}")),
+		std::cmp::Ordering::Equal => None,
+	}
+}
+
+/// `printf`'s substitutions: `%s`, `%d`, `%f`, `%.Nf` and `%%`.
+///
+/// The count has to match: a `%s` with nothing to put in it, or a value with
+/// no `%` to go to, is a typo every time, and printing something odd rather
+/// than saying so is how a format string quietly rots.
+pub(crate) fn render_format(fmt: &str, args: &[Value], sp: Span) -> Result<String, EvalError> {
+	let bad = |m: String| EvalError::Other { msg: m, line: sp.line };
+	let pieces = parse_format(fmt).map_err(bad)?;
+	let subs = pieces.iter().filter(|p| matches!(p, Piece::Sub(..))).count();
+	if let Some(m) = format_count(subs, args.len()) {
+		return Err(bad(m));
+	}
+	let mut out = String::new();
+	let mut values = args.iter();
+	for piece in pieces {
+		let (verb, precision) = match piece {
+			Piece::Text(t) => {
+				out.push_str(&t);
+				continue;
+			}
+			Piece::Sub(verb, precision) => (verb, precision),
 		};
-		used += 1;
+		let Some(arg) = values.next() else {
+			break;
+		};
 		match verb {
-			's' => out.push_str(&arg.to_string()),
 			'd' => {
 				let x = arg.as_num().map_err(|e| ty(sp, e))?;
 				if x.fract() != 0.0 {
@@ -1951,14 +1998,8 @@ pub(crate) fn render_format(fmt: &str, args: &[Value], sp: Span) -> Result<Strin
 				let x = arg.as_num().map_err(|e| ty(sp, e))?;
 				out.push_str(&format!("{x:.*}", precision.unwrap_or(6)));
 			}
-			_ => return Err(bad(format!("`%{verb}` is not a substitution; use `%s`, `%d` or `%f`"))),
+			_ => out.push_str(&arg.to_string()),
 		}
-	}
-	if used < args.len() {
-		return Err(bad(format!(
-			"{} value(s) given, but the format substitutes {used}",
-			args.len()
-		)));
 	}
 	Ok(out)
 }

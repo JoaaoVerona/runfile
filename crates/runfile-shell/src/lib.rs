@@ -21,14 +21,11 @@ mod words;
 #[cfg(test)]
 mod tests;
 
-use runfile_lang::{Span, Target};
+use runfile_lang::Target;
 
-/// A rule: the name a finding carries, and what it finds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rule {
-	pub id: &'static str,
-	pub summary: &'static str,
-}
+/// A finding and a rule are shaped the way the language's own checker shapes
+/// them, so the runner, an editor and `run :lint` report both in one form.
+pub use runfile_lang::check::{Finding, Rule};
 
 /// Every rule, in the order `SHELL-CHECK-RULES.md` lists them.
 pub const RULES: &[Rule] = &[
@@ -77,48 +74,62 @@ pub const RULES: &[Rule] = &[
 		summary: "cmd.exe's syntax, in a shell that is not cmd.exe.",
 	},
 	Rule {
+		id: "outside-function",
+		summary: "`local` or `return` outside a shell function.",
+	},
+	Rule {
+		id: "outside-loop",
+		summary: "`break` or `continue` with no shell loop around it.",
+	},
+	Rule {
+		id: "spaced-assignment",
+		summary: "`NAME = value`, which is not an assignment.",
+	},
+	Rule {
+		id: "dollar-assignment",
+		summary: "A `$` in front of the name being set, which reads it instead.",
+	},
+	Rule {
+		id: "sudo-builtin",
+		summary: "`sudo cd` and the like, which have no program to run.",
+	},
+	Rule {
+		id: "unterminated-exec",
+		summary: "A `find -exec` that nothing ends.",
+	},
+	Rule {
+		id: "truncated-input",
+		summary: "A file a command reads, emptied by its own `>` before it starts.",
+	},
+	Rule {
 		id: "bracket-spacing",
 		summary: "A `[` or `]` written against the word beside it.",
+	},
+	Rule {
+		id: "missing-bracket",
+		summary: "A `[` whose last argument is not `]`.",
+	},
+	Rule {
+		id: "glued-comparison",
+		summary: "`[ \"$a\"=\"$b\" ]`, one word, which is always true.",
+	},
+	Rule {
+		id: "vanishing-operand",
+		summary: "`[ -n $x ]`, which is true when `$x` is empty.",
 	},
 	Rule {
 		id: "test-redirect",
 		summary: "`>` or `<` inside `[ … ]`, where it redirects.",
 	},
 	Rule {
-		id: "outside-function",
-		summary: "`local` or `return` outside a shell function.",
+		id: "test-regex",
+		summary: "`=~` inside `[ … ]`, which only `[[ … ]]` has.",
 	},
 	Rule {
-		id: "spaced-assignment",
-		summary: "`NAME = value`, which runs a command called `NAME`.",
-	},
-	Rule {
-		id: "sudo-builtin",
-		summary: "`sudo cd` and the like, which have no program to run.",
+		id: "not-a-number",
+		summary: "`-eq` or `-lt` inside `[ … ]` with an operand that is not a whole number.",
 	},
 ];
-
-/// Something wrong with the shell in a runfile.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Finding {
-	/// The [`Rule`] it breaks.
-	pub rule: &'static str,
-	/// Exactly the text it is about.
-	pub span: Span,
-	pub message: String,
-	/// What to write instead, when there is one thing to write.
-	pub fix: Option<String>,
-}
-
-impl std::fmt::Display for Finding {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "line {}: {} [{}]", self.span.line, self.message, self.rule)?;
-		match &self.fix {
-			Some(fix) => write!(f, "; {fix}"),
-			None => Ok(()),
-		}
-	}
-}
 
 /// Everything wrong with the shell in `file`, whose text is `src`.
 ///

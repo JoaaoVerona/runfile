@@ -116,24 +116,27 @@ pub fn diagnose(src: &str, known_targets: &[String], machine_wide: bool, chain: 
 		message: strip_line_prefix(&u.to_string()),
 		severity: Severity::Error,
 	}));
-	// The shell in the file, checked as a run checks it -- which is also what
-	// knows whether a `_shared.run` above names the shell `$` lines use.
-	let above = match chain {
-		Chain::Target(files) | Chain::Shared(files) => Some(files),
-		Chain::Unknown => None,
+	// What fails every time it runs, and the shell in the file, checked as a
+	// run checks them -- which is also what knows whether a `_shared.run` above
+	// names the shell `$` lines use, and what it binds.
+	let (above, shared) = match chain {
+		Chain::Target(files) => (Some(files), false),
+		Chain::Shared(files) => (Some(files), true),
+		Chain::Unknown => (None, false),
 	};
 	out.extend(
-		runfile_shell::check(src, &ast, above)
+		runfile_lang::check::check(src, &ast, above, shared)
 			.iter()
-			.map(|f| shell_diagnostic(src, f)),
+			.chain(&runfile_shell::check(src, &ast, above))
+			.map(|f| finding_diagnostic(src, f)),
 	);
 	out.sort_by_key(|d| (d.range.start_line, d.range.start_col));
 	out
 }
 
-/// A shell finding, underlining exactly the text it is about, with what to write
-/// instead on a line of its own.
-fn shell_diagnostic(src: &str, f: &runfile_shell::Finding) -> Diagnostic {
+/// A finding -- the language's or the shell's -- underlining exactly the text it
+/// is about, with what to write instead on a line of its own.
+fn finding_diagnostic(src: &str, f: &runfile_lang::check::Finding) -> Diagnostic {
 	let text = Text::new(src);
 	let at = |byte: usize| {
 		let no = text.line_of(byte);
@@ -1653,6 +1656,42 @@ mod tests {
 		let d = diagnose("print(region)\nnope()\n", &[], false, Chain::Unknown);
 		assert_eq!(d.len(), 1, "{d:?}");
 		assert!(d[0].message.contains("unknown function `nope`"), "{}", d[0].message);
+	}
+
+	#[test]
+	fn a_value_that_fails_every_time_is_underlined_with_what_to_write_instead() {
+		let d = plain("print(ARG.port + 1)\n");
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert_eq!(d[0].range, range(0, 6, 14));
+		assert_eq!(
+			d[0].message,
+			"`+` needs numbers, and `ARG.port` is a string [wrong-type]\nfix: `number(ARG.port)` reads it as one"
+		);
+	}
+
+	#[test]
+	fn a_let_that_runs_a_command_is_underlined_in_a_shared_file_and_nowhere_else() {
+		let src = "let branch = $ git branch\n";
+		let d = diagnose(src, &[], false, Chain::Shared(&[]));
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert_eq!(d[0].range, range(0, 13, 25));
+		assert!(d[0].message.contains("[capture-position]"), "{}", d[0].message);
+		assert!(plain(src).is_empty());
+	}
+
+	#[test]
+	fn a_run_key_that_does_not_exist_is_underlined_whatever_the_chain() {
+		let d = diagnose("print(RUN.oss)\n", &[], false, Chain::Unknown);
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert_eq!(d[0].range, range(0, 6, 13));
+		assert_eq!(d[0].message, "unknown `RUN.oss`; did you mean `RUN.os`?");
+	}
+
+	#[test]
+	fn the_run_keys_documented_are_the_ones_the_runner_has() {
+		let mut documented: Vec<&str> = RUN_KEYS.iter().map(|(k, _, _)| *k).collect();
+		documented.sort_unstable();
+		assert_eq!(documented, runfile_lang::eval::RUN_KEYS);
 	}
 
 	#[test]

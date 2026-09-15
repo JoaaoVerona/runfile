@@ -61,6 +61,7 @@ pub(crate) fn check(src: &str, file: &Target, chain: Option<&[Target]>) -> Vec<F
 	let mut w = Walk {
 		src: &source,
 		dollar: script::dollar(file, chain),
+		bash: script::dollar_bash(file, chain),
 		out: Vec::new(),
 		seen: BTreeSet::new(),
 	};
@@ -215,6 +216,8 @@ fn variables(s: &str) -> Vec<String> {
 struct Walk<'a> {
 	src: &'a Source<'a>,
 	dollar: Option<bool>,
+	/// Whether the `$` runs are bash's.
+	bash: bool,
 	out: Vec<Finding>,
 	/// What has been reported, since a loop's body is walked twice.
 	seen: BTreeSet<(&'static str, usize, usize)>,
@@ -378,7 +381,7 @@ impl Walk<'_> {
 				for line in body {
 					self.parts(line, env);
 				}
-				if let Some(s) = script::of_statement(st, self.src, self.dollar) {
+				if let Some(s) = script::of_statement(st, self.src, self.dollar, self.bash) {
 					self.script(&s, env);
 				}
 			}
@@ -402,7 +405,7 @@ impl Walk<'_> {
 				for line in body {
 					self.parts(line, env);
 				}
-				if let Some(s) = script::of_capture(e, self.src, self.dollar) {
+				if let Some(s) = script::of_capture(e, self.src, self.dollar, self.bash) {
 					self.script(&s, env);
 				}
 			}
@@ -458,7 +461,7 @@ impl Walk<'_> {
 	}
 
 	fn script(&mut self, s: &Script, env: &Env) {
-		let list = match syntax::parse(&s.chars) {
+		let list = match syntax::parse(&s.chars, s.bash) {
 			Ok(list) => list,
 			Err(Stop::Lost) => return,
 			Err(Stop::Refused {

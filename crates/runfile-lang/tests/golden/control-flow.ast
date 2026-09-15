@@ -264,7 +264,7 @@ Target {
                     rhs: Str(
                         [
                             Literal(
-                                "aarch64",
+                                "arm64",
                             ),
                         ],
                         Span,
@@ -306,7 +306,7 @@ Target {
                                     rhs: Str(
                                         [
                                             Literal(
-                                                "x86_64",
+                                                "x86-64",
                                             ),
                                         ],
                                         Span,

@@ -36,7 +36,7 @@
 //! is taken every time, which is a typo hiding rather than a name being
 //! optional.
 
-use crate::ast::{Block, Expr, InterpPart, Property, Statement, Target};
+use crate::ast::{Block, Expr, InterpPart, Property, SourceKind, Statement, Target};
 use crate::span::Span;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -66,6 +66,10 @@ pub enum Kind {
 	/// name being updated goes unseen, while the name that was meant keeps its
 	/// old value.
 	Rebind,
+	/// `RUN.oss`: a key `RUN` does not have. The runner fills in a fixed set,
+	/// so which keys exist is never in doubt, the way which functions exist is
+	/// not.
+	RunKey,
 }
 
 impl std::fmt::Display for Unresolved {
@@ -79,6 +83,7 @@ impl std::fmt::Display for Unresolved {
 				f,
 				"`{name}` is not defined, so there is nothing to reassign -- bind it with `let {name} = …`"
 			)?,
+			Kind::RunKey => write!(f, "unknown `{name}`")?,
 		}
 		match &self.hint {
 			Some(h) => write!(f, "; {h}"),
@@ -428,7 +433,18 @@ impl Walk {
 
 	fn expr(&mut self, e: &Expr, sc: &Scope) {
 		match e {
-			Expr::Number(..) | Expr::Bool(..) | Expr::Source { .. } => {}
+			Expr::Number(..) | Expr::Bool(..) => {}
+			Expr::Source {
+				kind: SourceKind::Run,
+				key: Some(key),
+				span,
+			} if !crate::eval::RUN_KEYS.contains(&key.as_str()) => {
+				let name = format!("RUN.{key}");
+				let keys: Vec<String> = crate::eval::RUN_KEYS.iter().map(|k| format!("RUN.{k}")).collect();
+				let hint = suggest(&name, keys.iter().map(String::as_str));
+				self.report(Kind::RunKey, &name, *span, hint);
+			}
+			Expr::Source { .. } => {}
 			Expr::Ident(name, span) => {
 				if self.names && !sc.has(name) {
 					let hint = read_hint(name, sc);

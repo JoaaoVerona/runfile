@@ -690,9 +690,9 @@ it away. Most often it is a call with the parentheses left off, and the message 
 
 ### Names are checked before anything runs
 
-A call to a function the language does not have, or a read of a name nothing has bound, stops the run **before
-its first line** — wherever it sits, a branch that would not have been taken included — and every one in the
-file is reported at once, with what you probably meant:
+A call to a function the language does not have, a read of a name nothing has bound, or a `RUN` key that does not
+exist stops the run **before its first line** — wherever it sits, a branch that would not have been taken included —
+and every one in the file is reported at once, with what you probably meant:
 
 ```bash
 $ run backup
@@ -709,6 +709,24 @@ above it — otherwise a typo in the name being updated would quietly start a ne
 Your editor underlines the same names as you type them — it is the runner's own check, served by `run :lsp` —
 and `run :lint` reports them for every runfile in the project at once.
 
+### So is what fails every time
+
+Some lines fail whenever they run, whatever the run is given, and some never do what they say. Those stop the run
+before its first line too, with what to write instead:
+
+```bash
+$ run release
+[runfile] error: /home/you/app/runfiles/release.run: line 4: `+` needs numbers, and `ARG.build` is a string [wrong-type]; `number(ARG.build)` reads it as one
+[runfile] error: /home/you/app/runfiles/release.run: line 9: `RUN.os == "darwin"` is always false: `RUN.os` is only ever `linux`, `mac` or `windows` [never-equal]; write `"mac"`
+```
+
+Nothing is converted, and an argument or an environment variable is always a string — so `ARG.build + 1` fails every
+time, and so does `if ENV.CI`, since an `if` needs `true` or `false`. A call given one argument too many, a regex that
+does not compile, `xs[-1]`, `case "ok"` under `match $ make`, `if code_of($ make)`: each is reported wherever it sits.
+What a value can be is worked out only as far as the file is sure of it — `ENV.PORT ? 3000` is a string or a number, so
+nothing is said about `+` on it. [LANGUAGE-CHECK-RULES.md](LANGUAGE-CHECK-RULES.md) lists every rule, what it leaves
+alone, and why.
+
 ### The shell is checked too
 
 The shell in a runfile is read before anything runs as well — every `$` line, every `exec` block for `sh` or
@@ -721,8 +739,9 @@ $ run emulate
 ```
 
 A quote left open, a `fi` with no `if`, an interpolation wrapped in quotes of its own, a `*` the shell never
-expands, `cd` as the last command of its shell, `$1` in a shell that is given no arguments: each rule reports
-only what is wrong every time, and never a line that could be right — no style, no guesses. Your editor
+expands, `cd` as the last command of its shell, `$1` in a shell that is given no arguments, `[ -f .env; then`,
+`sort names.txt > names.txt`, a `find -exec` with nothing to end it: each rule reports only what is wrong every
+time, and never a line that could be right — no style, no guesses. Your editor
 underlines the same findings and `run :lint` reports them; [SHELL-CHECK-RULES.md](SHELL-CHECK-RULES.md) lists
 every rule, what it leaves alone, and why.
 
@@ -960,7 +979,8 @@ Flags belong **before** the target name; everything after it is passed to the ta
 
 `run :lint` puts every runfile into the one shape there is, then reports everything the runner would refuse — a
 syntax error, an unknown or misplaced property, a call to a function that does not exist, a name nothing binds,
-a `run` of a target that is not there, shell the [shell checker](SHELL-CHECK-RULES.md) finds wrong — as
+a `run` of a target that is not there, a line that [fails every time it runs](LANGUAGE-CHECK-RULES.md), shell the
+[shell checker](SHELL-CHECK-RULES.md) finds wrong — as
 `file:line:column`, which is the list your editor underlines. **It
 exits 0 only when every file is formatted and none of that is wrong**, so a file that passes runs without a
 parse-time error and opens with nothing underlined. `--check` writes nothing and fails on a file that needs

@@ -8,6 +8,7 @@
 
 pub mod args;
 pub mod ast;
+pub mod check;
 pub mod eval;
 pub mod format;
 pub mod functions;
@@ -18,6 +19,7 @@ pub mod parser;
 pub mod resolve;
 pub mod span;
 pub mod structured;
+mod types;
 pub mod value;
 
 pub use args::Arg;

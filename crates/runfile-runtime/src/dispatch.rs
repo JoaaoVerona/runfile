@@ -36,14 +36,16 @@ pub enum HostError {
 		path: String,
 		problems: Vec<runfile_lang::Unresolved>,
 	},
-	/// A file's shell does what its author cannot have meant: something bash
+	/// A file does what its author cannot have meant, every time it runs: a
+	/// value of a type the place it reaches refuses, a call given too many
+	/// arguments, a comparison that is always false -- or shell that bash
 	/// refuses to read, or quoting that breaks on the first value with a space
 	/// in it. Refused before any of the target runs, every finding at once, the
 	/// way a name nothing defines is.
-	#[error("{}", shell_findings(path, findings))]
-	Shell {
+	#[error("{}", findings_of(path, findings))]
+	Findings {
 		path: String,
-		findings: Vec<runfile_shell::Finding>,
+		findings: Vec<runfile_lang::check::Finding>,
 	},
 }
 
@@ -60,7 +62,7 @@ fn unresolved(path: &str, problems: &[runfile_lang::Unresolved]) -> String {
 }
 
 /// One finding to a line, as [`unresolved`] reports a name.
-fn shell_findings(path: &str, findings: &[runfile_shell::Finding]) -> String {
+fn findings_of(path: &str, findings: &[runfile_lang::check::Finding]) -> String {
 	let next = format!("\n{} error: ", crate::exec::tag());
 	findings
 		.iter()
@@ -284,10 +286,10 @@ impl<'a> Host<'a> {
 			.unzip();
 		for (i, (path, file)) in chain.iter().zip(&shared).enumerate() {
 			refuse_unresolved(path, runfile_lang::resolve::of_shared(file, &shared[..i]))?;
-			refuse_shell(path, runfile_shell::check(&texts[i], file, Some(&shared[..i])))?;
+			refuse_findings(path, findings(&texts[i], file, &shared[..i], true))?;
 		}
 		refuse_unresolved(&target.path, runfile_lang::resolve::of_chain(&ast, &shared))?;
-		refuse_shell(&target.path, runfile_shell::check(&src, &ast, Some(&shared)))?;
+		refuse_findings(&target.path, findings(&src, &ast, &shared, false))?;
 		Ok((ast, shared))
 	}
 
@@ -374,12 +376,26 @@ fn refuse_unresolved(path: &Path, problems: Vec<runfile_lang::Unresolved>) -> Re
 	})))
 }
 
-/// Refuse a file for what is wrong with its shell, when anything is.
-fn refuse_shell(path: &Path, findings: Vec<runfile_shell::Finding>) -> Result<(), RunError> {
+/// Everything the language's checker and the shell checker find in one file,
+/// in the order it is written.
+fn findings(
+	src: &str,
+	file: &runfile_lang::Target,
+	chain: &[runfile_lang::Target],
+	shared: bool,
+) -> Vec<runfile_lang::check::Finding> {
+	let mut all = runfile_lang::check::check(src, file, Some(chain), shared);
+	all.extend(runfile_shell::check(src, file, Some(chain)));
+	all.sort_by_key(|f| (f.span.start, f.span.end));
+	all
+}
+
+/// Refuse a file for what is wrong with it every time it runs, when anything is.
+fn refuse_findings(path: &Path, findings: Vec<runfile_lang::check::Finding>) -> Result<(), RunError> {
 	if findings.is_empty() {
 		return Ok(());
 	}
-	Err(RunError::Host(Box::new(HostError::Shell {
+	Err(RunError::Host(Box::new(HostError::Findings {
 		path: path.display().to_string(),
 		findings,
 	})))
@@ -404,7 +420,7 @@ fn parse_file(p: &Path) -> Result<(runfile_lang::Target, String), RunError> {
 
 /// `RUN.*`: the one place runtime context lives. `RUN.namespaces` is
 /// list-valued, which is what `for ns in RUN.namespaces` iterates.
-fn populate_run_context(sc: &mut Scope, t: &runfile_discovery::Target, cat: &Catalog) {
+pub(crate) fn populate_run_context(sc: &mut Scope, t: &runfile_discovery::Target, cat: &Catalog) {
 	sc.run.insert("os".into(), Value::Str(os_name().into()));
 	sc.run.insert("arch".into(), Value::Str(arch_name().into()));
 	sc.run.insert("file".into(), Value::Str(t.path.display().to_string()));
@@ -478,7 +494,14 @@ fn parse_args(
 }
 
 fn os_name() -> &'static str {
-	match std::env::consts::OS {
+	os_named(std::env::consts::OS)
+}
+
+/// What `RUN.os` says on an OS Rust names `os`: one of
+/// [`runfile_lang::eval::OS_NAMES`], which is what lets a check call a
+/// comparison with anything else a mistake.
+pub(crate) fn os_named(os: &str) -> &'static str {
+	match os {
 		"macos" => "mac",
 		"windows" => "windows",
 		_ => "linux",
@@ -486,7 +509,13 @@ fn os_name() -> &'static str {
 }
 
 fn arch_name() -> &'static str {
-	match std::env::consts::ARCH {
+	arch_named(std::env::consts::ARCH)
+}
+
+/// What `RUN.arch` says on a CPU Rust names `arch`: one of
+/// [`runfile_lang::eval::ARCH_NAMES`].
+pub(crate) fn arch_named(arch: &str) -> &'static str {
+	match arch {
 		"x86_64" => "x86-64",
 		"aarch64" => "arm64",
 		"riscv64" => "riscv64",

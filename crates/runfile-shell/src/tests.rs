@@ -297,6 +297,273 @@ fn sudo_of_a_builtin_is_found() {
 	clean("$ sudo ls /root\n");
 }
 
+#[test]
+fn a_declaration_with_blanks_around_its_equals_is_found() {
+	let f = one(
+		"$ export NODE_ENV = production\n$ npm run build\n",
+		"spaced-assignment",
+		"NODE_ENV =",
+	);
+	assert_eq!(fix(&f), "write `NODE_ENV=production`");
+	let f = one("$ readonly TAG =v1\n$ echo \"$TAG\"\n", "spaced-assignment", "TAG =v1");
+	assert_eq!(fix(&f), "write `TAG=v1`");
+	one("$ f() { local x = 1; echo \"$x\"; }\n$ f\n", "spaced-assignment", "x =");
+	clean("$ export NODE_ENV=production\n$ npm run build\n");
+	clean("$ declare -A map\n$ map[a]=1\n$ echo \"${map[a]}\"\n");
+	clean("$ export $NAME=1\n$ echo ok\n");
+}
+
+// ---- outside-loop, dollar-assignment
+
+#[test]
+fn break_or_continue_with_no_shell_loop_around_it_is_found() {
+	let f = one("for x in [1]\n\t$ [ -f x ] || break\nend\n", "outside-loop", "break");
+	assert!(fix(&f).contains("without `$`"), "{}", fix(&f));
+	one("$ continue 2\n", "outside-loop", "continue");
+}
+
+#[test]
+fn break_inside_a_shell_loop_or_a_function_is_left_alone() {
+	clean("$ for f in *; do [ -f \"$f\" ] || continue; echo \"$f\"; done\n");
+	clean("$ while true; do break; done\n$ until false; do break; done\n");
+	clean("$ select x in a b; do break; done\n$ for ((i = 0; i < 3; i++)); do break; done\n");
+	clean("$ f() { break; }\n$ f\n");
+	clean("$ for f in *; do\n$ \tcase $f in *.md) continue ;; esac\n$ done\n");
+	clean("$ for f in *; do x=$(echo \"$f\"; break); done\n");
+}
+
+#[test]
+fn a_dollar_in_front_of_the_name_being_set_is_found() {
+	let f = one("$ $VERSION=1.2\n$ echo ok\n", "dollar-assignment", "$VERSION=1.2");
+	assert_eq!(fix(&f), "write `VERSION=1.2`");
+	one("$ ${VERSION}=1.2\n$ echo ok\n", "dollar-assignment", "${VERSION}=1.2");
+	let f = one("$ for $f in *.log; do gzip \"$f\"; done\n", "dollar-assignment", "$f");
+	assert_eq!(fix(&f), "write `f`");
+	clean("$ echo $VERSION=1.2\n");
+	clean("$ for f in *.log; do gzip \"$f\"; done\n");
+}
+
+// ---- unterminated-exec, truncated-input
+
+#[test]
+fn a_find_exec_nothing_ends_is_found() {
+	let f = one(
+		"$ find . -name \"*.orig\" -exec rm {} ;\n",
+		"unterminated-exec",
+		"-exec",
+	);
+	assert!(fix(&f).contains("\\;"), "{}", fix(&f));
+	one("$ find . -ok rm {} +\n", "unterminated-exec", "-ok");
+	one(
+		"$ find . -exec rm {} \\; -execdir echo {}\n",
+		"unterminated-exec",
+		"-execdir",
+	);
+	one("$ find . -exec echo {}+ ';'x\n", "unterminated-exec", "-exec");
+}
+
+#[test]
+fn a_find_exec_that_ends_or_may_end_is_left_alone() {
+	clean("$ find . -name \"*.orig\" -exec rm {} \\;\n$ find . -exec rm {} +\n");
+	clean("$ find . -exec sh -c 'echo \"$0\"' {} ';'\n");
+	clean("$ find . -name -exec -print\n");
+	clean("$ find . -exec rm {} {{ ARG.end }}\n");
+	clean("$ find . -exec echo + \\;\n");
+	clean("$ find . -newer $ref -exec rm {} \\;\n");
+}
+
+#[test]
+fn a_file_emptied_by_the_command_that_reads_it_is_found() {
+	let f = one(
+		"$ jq '.version = \"2\"' package.json > package.json\n",
+		"truncated-input",
+		"> package.json",
+	);
+	assert!(fix(&f).contains("package.json.tmp"), "{}", fix(&f));
+	one("$ sort -u names.txt > names.txt\n", "truncated-input", "> names.txt");
+	let f = one(
+		"$ sed -e 's/a/b/' notes.txt > notes.txt\n",
+		"truncated-input",
+		"> notes.txt",
+	);
+	assert_eq!(fix(&f), "`sed -i` edits the file in place");
+	one(
+		"$ tr -d '\\r' < notes.txt > notes.txt\n",
+		"truncated-input",
+		"> notes.txt",
+	);
+	one("$ grep -v '^#' .env 2> .env\n", "truncated-input", "2> .env");
+	one(
+		"$ awk -F: '{ print $1 }' users.txt > users.txt\n",
+		"truncated-input",
+		"> users.txt",
+	);
+	one(
+		"$ jq --arg v 2 '.version = $v' package.json > package.json\n",
+		"truncated-input",
+		"> package.json",
+	);
+	one("$ head -n5 -q log.txt >| log.txt\n", "truncated-input", ">| log.txt");
+}
+
+#[test]
+fn a_file_that_may_not_be_the_one_read_is_left_alone() {
+	clean("$ jq '.version = \"2\"' package.json > package.json.tmp\n$ mv package.json.tmp package.json\n");
+	// An option's value, or the program, is not a file.
+	clean("$ head -n 5 > 5\n");
+	clean("$ grep -e x.y > x.y\n");
+	clean("$ jq --arg f a.json '$f' > a.json\n");
+	clean("$ awk '{ print }' count=1 > count=1\n");
+	// Nothing is read, or not from there.
+	clean("$ jq -n '{a: 1}' > a.json\n");
+	clean("$ sort names.txt >> names.txt\n");
+	clean("$ cat - > -\n");
+	clean("$ sort names.txt < names.txt > names.txt.sorted\n");
+	// What this reading cannot be sure of.
+	clean("$ sort {{ ARG.file }} > {{ ARG.file }}\n");
+	clean("$ sort --files0-from=list names.txt > names.txt\n");
+	clean("$ grep -r x . > x\n");
+	clean("$ cat names.txt | sort > names.txt\n");
+}
+
+// ---- the tests of `[`
+
+#[test]
+fn a_test_with_no_closing_bracket_is_found() {
+	let f = one(
+		"$ if [ -f .env; then cp .env .env.bak; fi\n",
+		"missing-bracket",
+		"[ -f .env",
+	);
+	assert_eq!(fix(&f), "write `.env ]`");
+	one(
+		"$ [ -d dist ] && [ -d build || echo none\n",
+		"missing-bracket",
+		"[ -d build",
+	);
+	one("$ [\n", "missing-bracket", "[");
+}
+
+#[test]
+fn a_test_that_ends_or_may_end_is_left_alone() {
+	clean("$ [ -f .env ] && cp .env .env.bak\n");
+	clean("$ [ -f .env \"]\" && echo yes\n");
+	// What expands could be the `]`.
+	clean("$ [ -f {{ ARG.file }}\n");
+	clean("$ [ -f \"$file\" && echo\n");
+}
+
+#[test]
+fn a_comparison_written_as_one_word_is_found() {
+	let f = one(
+		"$ [ \"$a\"=\"$b\" ] && echo same\n",
+		"glued-comparison",
+		"\"$a\"=\"$b\"",
+	);
+	assert_eq!(fix(&f), "write `\"$a\" = \"$b\"`");
+	let f = one("$ [[ $a!=$b ]] && echo differ\n", "glued-comparison", "$a!=$b");
+	assert_eq!(fix(&f), "write `$a != $b`");
+	let f = one(
+		"$ test {{ ARG.a }}=={{ ARG.b }} && echo same\n",
+		"glued-comparison",
+		"{{ ARG.a }}=={{ ARG.b }}",
+	);
+	assert_eq!(fix(&f), "write `{{ ARG.a }} == {{ ARG.b }}`");
+	let f = one("$ [ \"$a=$b\" ] && echo same\n", "glued-comparison", "\"$a=$b\"");
+	assert_eq!(f.fix, None, "blanks inside the quotes would not make three words");
+}
+
+#[test]
+fn a_comparison_with_blanks_or_an_equals_that_is_not_one_is_left_alone() {
+	clean("$ [ \"$a\" = \"$b\" ] && echo same\n");
+	clean("$ [[ $x == *=* ]] && echo has\n");
+	clean("$ [[ ${x#*=} ]] && echo set\n");
+	clean("$ [ = ] && echo odd\n");
+	clean("$ [ -n \"$a=$b\" ] && echo odd\n");
+}
+
+#[test]
+fn an_unquoted_expansion_tested_with_n_is_found() {
+	let f = one(
+		"$ [ -n $(git status --porcelain) ] && echo dirty\n",
+		"vanishing-operand",
+		"$(git status --porcelain)",
+	);
+	assert_eq!(fix(&f), "write `\"$(git status --porcelain)\"`");
+	one("$ test -n $TOKEN && echo set\n", "vanishing-operand", "$TOKEN");
+	one("$ [ -n ${TOKEN} ] && echo set\n", "vanishing-operand", "${TOKEN}");
+	one("$ [ -n `cat token` ] && echo set\n", "vanishing-operand", "`cat token`");
+}
+
+#[test]
+fn a_quoted_or_never_empty_operand_is_left_alone() {
+	clean("$ [ -n \"$TOKEN\" ] && echo set\n");
+	clean("$ [ -n {{ ARG.token }} ] && echo set\n");
+	clean("$ [ -z $TOKEN ] && echo unset\n");
+	clean("$ [ -n ${TOKEN:-x} ] && echo set\n");
+	clean("$ [[ -n $TOKEN ]] && echo set\n");
+}
+
+#[test]
+fn a_regex_or_a_word_where_a_test_wants_a_number_is_found() {
+	one("$ [ \"$v\" =~ ^v[0-9] ] && echo tag\n", "test-regex", "=~");
+	one("$ test \"$v\" =~ ^v && echo tag\n", "test-regex", "=~");
+	let f = one("$ [ \"$branch\" -eq main ] && echo main\n", "not-a-number", "main");
+	assert_eq!(fix(&f), "compare text with `=`");
+	one("$ [ \"\" -lt 3 ] && echo\n", "not-a-number", "\"\"");
+	one("$ [ 0x10 -gt 3 ] && echo\n", "not-a-number", "0x10");
+}
+
+#[test]
+fn a_regex_in_double_brackets_or_a_whole_number_is_left_alone() {
+	clean("$ [[ \"$v\" =~ ^v[0-9] ]] && echo tag\n");
+	clean("$ [ \"$count\" -eq 0 ] && echo none\n");
+	clean("$ [ \" 12 \" -eq 12 ] && [ -5 -lt +3 ] && [ 010 -eq 10 ] && echo\n");
+	clean("$ [ {{ ARG.n }} -gt 3 ] && echo\n");
+	clean("$ [[ $count -eq main ]] && echo\n");
+	clean("$ [ \"$a\" = -eq ] && echo\n");
+	clean("$ [ $'\\t5' -eq 5 ] && echo\n");
+}
+
+#[test]
+fn a_double_bracket_test_bash_refuses_is_found() {
+	let f = one("$ [[ -f a -a -f b ]] && echo both\n", "unexpected", "-a");
+	assert!(f.message.contains("write `&&`"), "{}", f.message);
+	one("$ [[ $x foo ]] && echo\n", "unexpected", "foo");
+	one("$ [[ -f ]] && echo\n", "unexpected", "-f");
+	one("$ [[ ]] && echo\n", "unexpected", "[[");
+	// An interpolation could become an operator once it is rendered.
+	clean("$ [[ -f {{ ARG.x }} -a -f b ]] && echo\n");
+}
+
+#[test]
+fn double_brackets_are_held_to_bash_s_grammar_only_where_bash_reads_them() {
+	one(
+		"exec bash\n\t[[ -f a -a -f b ]] && echo both\nend\n",
+		"unexpected",
+		"-a",
+	);
+	one(
+		".shell = \"/usr/bin/bash\"\n\n$ [[ -f a -a -f b ]] && echo both\n",
+		"unexpected",
+		"-a",
+	);
+	// busybox reads `[[` as `test`, where `-a` joins two tests.
+	clean(".shell = \"sh\"\n\n$ [[ -f a -a -f b ]] && echo both\n");
+	clean("exec busybox sh\n\t[[ -f a -a -f b ]] && echo both\nend\n");
+}
+
+#[test]
+fn a_command_the_script_defines_as_a_function_is_that_function() {
+	clean("$ test() { echo \"$@\"; }\n$ test a=b\n");
+	clean("$ sort() { cat \"$@\"; }\n$ sort names.txt > names.txt\n");
+	clean("$ find() { :; }\n$ find . -exec rm {}\n");
+	clean("$ break() { :; }\n$ break\n");
+	clean("$ copy() { cp \"$@\"; }\n$ copy /Y a b\n");
+	// A function of another name changes nothing.
+	one("$ tests() { :; }\n$ test a=b\n", "glued-comparison", "a=b");
+}
+
 // ---- syntax
 
 #[test]
@@ -410,7 +677,7 @@ fn scripts(src: &str) -> Vec<String> {
 fn script_list(src: &str) -> Vec<Script> {
 	fn block(b: &Block, source: &Source, out: &mut Vec<Script>) {
 		for st in &b.statements {
-			out.extend(script::of_statement(st, source, Some(false)));
+			out.extend(script::of_statement(st, source, Some(false), true));
 			match st {
 				Statement::Let { value, .. } | Statement::Assign { value, .. } => expr(value, source, out),
 				Statement::If {
@@ -443,7 +710,7 @@ fn script_list(src: &str) -> Vec<Script> {
 	}
 	fn expr(e: &Expr, source: &Source, out: &mut Vec<Script>) {
 		match e {
-			Expr::Capture { .. } => out.extend(script::of_capture(e, source, Some(false))),
+			Expr::Capture { .. } => out.extend(script::of_capture(e, source, Some(false), true)),
 			Expr::Call { args, .. } => args.iter().for_each(|a| expr(a, source, out)),
 			Expr::Chain { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
 				expr(lhs, source, out);
@@ -526,16 +793,121 @@ fn bash_agrees_with_every_syntax_finding() {
 		"$ a=(1 2\n$ 3)\n",
 		"$ if(true)then echo; fi\n",
 		"$ echo a && # c\n$ echo b\n",
+		"$ [[ -f a -a -f b ]] && echo\n",
+		"$ [[ a -o b ]] && echo\n",
+		"$ [[ a b ]]\n",
+		"$ [[ -f ]]\n",
+		"$ [[ a == ]]\n",
+		"$ [[ ( a ]]\n",
+		"$ [[ ( ) ]]\n",
+		"$ [[ ( a ) b ]]\n",
+		"$ [[ ]]\n",
+		"$ [[ ! ]]\n",
+		"$ [[ ! -n ]]\n",
+		"$ [[ a || b c ]]\n",
+		"$ [[ a == b && ]]\n",
+		"$ [[ && a ]]\n",
+		"$ [[ a < b > c ]]\n",
+		"$ [[ \"-f\" x ]]\n",
+		"$ [[ \\( a \\) ]]\n",
+		"$ [[ a = b = c ]]\n",
+		"$ [[ < ]]\n",
+		"$ [[ -f a && ( -f b || -f c ) ]] && echo\n",
+		"$ [[ -n ! ]] && [[ a == ! ]] && [[ -eq ]] && [[ == ]] && [[ -n == ]] && echo\n",
+		"$ [[ ! a == b ]] && [[ a < b ]] && [[ $x ]] && [[ ! ( a ) ]] && [[ a -nt b ]] && echo\n",
+		"$ [[ $x =~ ^(a|b)$ ]] && [[ $x =~ ^(a b)$ ]] && echo\n",
+		"$ [[ $x == @(a|b) ]] && [[ a<b ]] && [[ a&&b ]] && [[ (a) ]] && echo\n",
+		"$ [[ -f a\n$ ]] && echo\n",
 	] {
 		agrees(src);
+	}
+}
+
+/// What bash does with `script` under `-e`, in a directory of its own: its
+/// status, and everything it wrote. `None` where bash is not installed.
+fn bash_runs(script: &str) -> Option<(i32, String)> {
+	static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+	let dir = std::env::temp_dir().join(format!(
+		"runfile-shell-{}-{}",
+		std::process::id(),
+		NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+	));
+	std::fs::create_dir_all(&dir).ok()?;
+	let out = std::process::Command::new("bash")
+		.args(["-e", "-c", script])
+		.current_dir(&dir)
+		.stdin(std::process::Stdio::null())
+		.output();
+	let _ = std::fs::remove_dir_all(&dir);
+	let out = out.ok()?;
+	let text = format!(
+		"{}{}",
+		String::from_utf8_lossy(&out.stdout),
+		String::from_utf8_lossy(&out.stderr)
+	);
+	Some((out.status.code().unwrap_or(-1), text))
+}
+
+#[test]
+fn bash_does_what_each_rule_says_it_does() {
+	// A rule that is not about syntax is about what running the script does,
+	// so what running it does is asked of bash: each script is flagged by the
+	// rule named, and fails -- or answers wrongly -- the way its message says.
+	/// Whether bash's status and output show what the rule says.
+	type Holds = fn(i32, &str) -> bool;
+	let cases: &[(&str, &str, Holds)] = &[
+		("missing-bracket", "[ -f x", |code, out| {
+			code != 0 && out.contains("missing")
+		}),
+		(
+			"glued-comparison",
+			"a=1; b=2; [ \"$a\"=\"$b\" ] && echo always",
+			|_, out| out.contains("always"),
+		),
+		("vanishing-operand", "x=; [ -n $x ] && echo always", |_, out| {
+			out.contains("always")
+		}),
+		("test-regex", "[ a =~ a ]", |code, _| code != 0),
+		("not-a-number", "[ x -eq main ]", |code, out| {
+			code != 0 && out.contains("integer expression expected")
+		}),
+		("outside-loop", "break; echo carried on", |code, out| {
+			code == 0 && out.contains("carried on")
+		}),
+		("spaced-assignment", "export X = 1", |code, _| code != 0),
+		("dollar-assignment", "$FOO=bar", |code, _| code == 127),
+		("dollar-assignment", "for $f in a; do :; done", |code, _| code != 0),
+		("unterminated-exec", "find . -maxdepth 0 -exec echo {}", |code, _| {
+			code != 0
+		}),
+		(
+			"truncated-input",
+			"printf 'a\\nb\\n' > f; sort f > f; wc -c < f",
+			|_, out| out.trim() == "0",
+		),
+	];
+	for (rule, script, holds) in cases {
+		let src = format!("$ {script}\n");
+		let found = findings(&src);
+		assert!(
+			!found.is_empty() && found.iter().all(|f| f.rule == *rule),
+			"`{rule}` on {script}: {found:#?}"
+		);
+		let Some((code, out)) = bash_runs(script) else {
+			eprintln!("skipped: bash is not installed");
+			return;
+		};
+		assert!(holds(code, &out), "`{rule}`: bash ran {script} and gave {code}:\n{out}");
 	}
 }
 
 // ---- the corpus
 
 /// Every finding across a list of runfiles, for reading by hand: set
-/// `RUNFILE_CORPUS_LIST` to a file with one path per line. Each is also held
-/// to bash, which has to refuse every script the checker says it refuses.
+/// `RUNFILE_CORPUS_LIST` to a file with one path per line. The language's own
+/// findings are printed with the shell's. Each script is also held to bash,
+/// both ways: one the checker reads that bash refuses is `MISSED`, and a file
+/// the checker refuses whose every script bash reads is `REFUSED`.
 #[test]
 fn corpus() {
 	let Ok(list) = std::env::var("RUNFILE_CORPUS_LIST") else {
@@ -551,7 +923,7 @@ fn corpus() {
 		let Ok(file) = runfile_lang::parse(&src) else { continue };
 		files += 1;
 		for s in script_list(&src) {
-			match crate::syntax::parse(&s.chars) {
+			match crate::syntax::parse(&s.chars, s.bash) {
 				Err(crate::syntax::Stop::Lost) => {
 					lost += 1;
 					let text: String = s.chars.iter().map(|c| c.c).collect();
@@ -561,7 +933,9 @@ fn corpus() {
 			}
 		}
 		let chain = shared_above(std::path::Path::new(path));
-		for f in check(&src, &file, chain.as_deref()) {
+		let shared = path.ends_with("_shared.run");
+		let language = runfile_lang::check::check(&src, &file, chain.as_deref(), shared);
+		for f in check(&src, &file, chain.as_deref()).into_iter().chain(language) {
 			reports.push(format!(
 				"{path}:{}: [{}] {}{}",
 				f.span.line,
@@ -570,12 +944,20 @@ fn corpus() {
 				f.fix.map(|x| format!(" -- {x}")).unwrap_or_default()
 			));
 		}
-		if !findings(&src)
+		let refused = findings(&src)
 			.iter()
-			.any(|f| matches!(f.rule, "unclosed" | "unexpected" | "unterminated-heredoc"))
-		{
-			for s in scripts(&src) {
-				if let Some((false, why)) = bash(&s) {
+			.any(|f| matches!(f.rule, "unclosed" | "unexpected" | "unterminated-heredoc"));
+		let verdicts: Vec<Option<(bool, String)>> = scripts(&src).iter().map(|s| bash(s)).collect();
+		if refused {
+			let reads = |v: &Option<(bool, String)>| matches!(v, Some((true, w)) if !w.contains("here-document"));
+			if verdicts.iter().all(reads) {
+				reports.push(format!(
+					"{path}: REFUSED: the checker refuses a file bash reads every script of"
+				));
+			}
+		} else {
+			for (reads, why) in verdicts.into_iter().flatten() {
+				if !reads {
 					reports.push(format!(
 						"{path}: MISSED: bash refuses a script the checker reads: {why}"
 					));
