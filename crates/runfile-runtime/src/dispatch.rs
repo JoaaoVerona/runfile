@@ -26,6 +26,47 @@ pub enum HostError {
 	},
 	#[error("`{name}` is already running: {chain}")]
 	Cycle { name: String, chain: String },
+	/// A file names something nothing defines: a function the language does
+	/// not have, or a binding no line before the read can have made. Refused
+	/// before any of the target runs, and every one of them at once -- an
+	/// editor underlines them all in one go, and a run that reports one per
+	/// attempt is the slow way to learn the same list.
+	#[error("{}", unresolved(path, problems))]
+	Unresolved {
+		path: String,
+		problems: Vec<runfile_lang::Unresolved>,
+	},
+	/// A file's shell does what its author cannot have meant: something bash
+	/// refuses to read, or quoting that breaks on the first value with a space
+	/// in it. Refused before any of the target runs, every finding at once, the
+	/// way a name nothing defines is.
+	#[error("{}", shell_findings(path, findings))]
+	Shell {
+		path: String,
+		findings: Vec<runfile_shell::Finding>,
+	},
+}
+
+/// One problem to a line, each naming its file. The first line is the error the
+/// caller prints after its own prefix; every line after it carries that prefix
+/// too, since everything the runner says while a target runs does.
+fn unresolved(path: &str, problems: &[runfile_lang::Unresolved]) -> String {
+	let next = format!("\n{} error: ", crate::exec::tag());
+	problems
+		.iter()
+		.map(|u| format!("{path}: {u}"))
+		.collect::<Vec<_>>()
+		.join(&next)
+}
+
+/// One finding to a line, as [`unresolved`] reports a name.
+fn shell_findings(path: &str, findings: &[runfile_shell::Finding]) -> String {
+	let next = format!("\n{} error: ", crate::exec::tag());
+	findings
+		.iter()
+		.map(|f| format!("{path}: {f}"))
+		.collect::<Vec<_>>()
+		.join(&next)
 }
 
 pub struct Host<'a> {
@@ -157,19 +198,13 @@ impl<'a> Host<'a> {
 		args: &[String],
 		real: bool,
 	) -> Result<(runfile_lang::Target, Scope, Props), RunError> {
-		let (ast, _) = parse_file(&target.path)?;
+		let (ast, shared) = self.load(target)?;
 
 		// The whole `_shared.run` chain is walked for what it reads *before* the
 		// command line is classified: a name only a shared file reads is still a
 		// name this target takes a value for. It cannot simply be folded in where
 		// it used to be, because evaluating those files reads `ARG.x` out of the
 		// scope -- so the parse and the evaluation are two passes over one list.
-		let shared: Vec<runfile_lang::Target> = self
-			.catalog
-			.shared_chain(target)
-			.iter()
-			.map(|p| parse_file(p).map(|(a, _)| a))
-			.collect::<Result<_, _>>()?;
 		let reads = runfile_lang::inputs::of_chain(&ast, &shared);
 
 		let mut scope = Scope::new();
@@ -229,6 +264,43 @@ impl<'a> Host<'a> {
 		Ok((ast, scope, shared_props))
 	}
 
+	/// A target's tree, and the trees of the `_shared.run` files above it,
+	/// outermost first -- refused when any of them names something nothing
+	/// defines, or holds shell that `runfile_shell` finds wrong.
+	///
+	/// Checked before a scope exists, so nothing a broken file does happens
+	/// first: not a command above the line that is wrong, and not a shared
+	/// file's `let` evaluated on its behalf. A shared file is checked ahead of
+	/// the target, since whatever is wrong there is wrong for every target below
+	/// it.
+	fn load(&self, target: &runfile_discovery::Target) -> Result<Loaded, RunError> {
+		let (ast, src) = parse_file(&target.path)?;
+		let chain = self.catalog.shared_chain(target);
+		let (shared, texts): (Vec<runfile_lang::Target>, Vec<String>) = chain
+			.iter()
+			.map(|p| parse_file(p))
+			.collect::<Result<Vec<_>, _>>()?
+			.into_iter()
+			.unzip();
+		for (i, (path, file)) in chain.iter().zip(&shared).enumerate() {
+			refuse_unresolved(path, runfile_lang::resolve::of_shared(file, &shared[..i]))?;
+			refuse_shell(path, runfile_shell::check(&texts[i], file, Some(&shared[..i])))?;
+		}
+		refuse_unresolved(&target.path, runfile_lang::resolve::of_chain(&ast, &shared))?;
+		refuse_shell(&target.path, runfile_shell::check(&src, &ast, Some(&shared)))?;
+		Ok((ast, shared))
+	}
+
+	/// Whether a target would be let run at all: it parses, and so does its
+	/// chain, every name they use resolves, and their shell holds nothing the
+	/// shell checker finds.
+	///
+	/// `run --stdin-args` asks this before it asks anything, so nobody answers
+	/// questions about a file that is refused the moment they finish.
+	pub fn check(&self, target: &runfile_discovery::Target) -> Result<(), RunError> {
+		self.load(target).map(|_| ())
+	}
+
 	/// Resolve a target's declaration-region properties without running it.
 	///
 	/// Watch mode needs `.watch` before the first execution, and the patterns
@@ -286,6 +358,31 @@ impl Dispatch for HostDispatch<'_, '_> {
 	) -> Result<Vec<String>, RunError> {
 		self.host.run_with_chain(target, args, chain, label)
 	}
+}
+
+/// A target's tree and its chain's, as [`Host::load`] hands them back.
+type Loaded = (runfile_lang::Target, Vec<runfile_lang::Target>);
+
+/// Refuse a file for the names in it that resolve to nothing, when there are any.
+fn refuse_unresolved(path: &Path, problems: Vec<runfile_lang::Unresolved>) -> Result<(), RunError> {
+	if problems.is_empty() {
+		return Ok(());
+	}
+	Err(RunError::Host(Box::new(HostError::Unresolved {
+		path: path.display().to_string(),
+		problems,
+	})))
+}
+
+/// Refuse a file for what is wrong with its shell, when anything is.
+fn refuse_shell(path: &Path, findings: Vec<runfile_shell::Finding>) -> Result<(), RunError> {
+	if findings.is_empty() {
+		return Ok(());
+	}
+	Err(RunError::Host(Box::new(HostError::Shell {
+		path: path.display().to_string(),
+		findings,
+	})))
 }
 
 /// Parse a target file, keeping its text: the unread-input check is textual.

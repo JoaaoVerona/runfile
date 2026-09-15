@@ -187,7 +187,7 @@ pub const KEYWORDS: &[Keyword] = &[
 		doc: "A block of JSON as one value. An interpolation inside renders as **one JSON value** — a \
 		      string quoted and escaped, a whole number written whole, a list as an array — so \
 		      `\"{{ x }}\"` is as wrong here as it is on a `$` line. The document is checked when the \
-		      file is parsed, so a missing brace underlines as you type, and `run :format` lays it out.",
+		      file is parsed, so a missing brace underlines as you type, and `run :lint` lays it out.",
 		example: "let policy = json\n\t{\n\t\t\"Version\": \"2012-10-17\",\n\t\t\"Days\": {{ number(ARG.days) }},\n\t\t\"Resource\": {{ buckets }}\n\t}\nend\n\nrun _aws -- s3api put-bucket-policy --policy {{ policy }}",
 	},
 	Keyword {

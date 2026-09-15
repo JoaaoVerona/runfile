@@ -8,6 +8,7 @@ version.workspace = true
 runfile-discovery.workspace = true
 runfile-env.workspace = true
 runfile-lang.workspace = true
+runfile-shell.workspace = true
 thiserror.workspace = true
 which.workspace = true
 

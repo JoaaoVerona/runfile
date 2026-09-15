@@ -44,7 +44,12 @@ pub enum Token {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RawPart {
 	Literal(String),
-	Expr { text: String, span: Span },
+	/// The expression inside the braces, and where *it* is: past the `{{` and
+	/// the blanks after it, which is what its tokens are positioned from.
+	Expr {
+		text: String,
+		span: Span,
+	},
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +89,9 @@ pub fn skip_interp(s: &[u8], mut i: usize, line: usize) -> Result<usize, LexErro
 pub fn split_interp(text: &str, base: usize, line: usize) -> Result<Vec<RawPart>, LexError> {
 	let b = text.as_bytes();
 	let (mut parts, mut lit, mut i) = (Vec::new(), String::new(), 0usize);
+	// The line byte `i` is on, since a string in a list that spilled can hold a
+	// newline.
+	let mut line = line;
 	while i < b.len() {
 		if b[i] == b'\\' && b[i + 1..].starts_with(b"{{") {
 			lit.push_str("{{");
@@ -96,16 +104,24 @@ pub fn split_interp(text: &str, base: usize, line: usize) -> Result<Vec<RawPart>
 				parts.push(RawPart::Literal(std::mem::take(&mut lit)));
 			}
 			// trim the delimiters, then the single space the syntax requires
-			let inner = text[i + 2..end - 2].trim().to_string();
+			let between = &text[i + 2..end - 2];
+			let inner = between.trim();
+			let from = i + 2 + (between.len() - between.trim_start().len());
+			let at_line = line + text[i..from].matches('\n').count();
 			parts.push(RawPart::Expr {
-				text: inner,
-				span: Span::new(base + i, base + end, line),
+				text: inner.to_string(),
+				span: Span::new(base + from, base + from + inner.len(), at_line),
 			});
+			line += text[i..end].matches('\n').count();
 			i = end;
 			continue;
 		}
-		lit.push(text[i..].chars().next().unwrap());
-		i += text[i..].chars().next().unwrap().len_utf8();
+		let c = text[i..].chars().next().unwrap();
+		if c == '\n' {
+			line += 1;
+		}
+		lit.push(c);
+		i += c.len_utf8();
 	}
 	if !lit.is_empty() {
 		parts.push(RawPart::Literal(lit));
@@ -177,27 +193,35 @@ fn unescape(t: &str, line: usize) -> Result<String, LexError> {
 	Ok(out)
 }
 
-/// Tokenize one expression. `base` is the byte offset of `s` within the file.
+/// Tokenize one expression. `base` is the byte offset of `s` within the file,
+/// and `line` the line it starts on: a list that spilled keeps its newlines, so
+/// a token after one is on a later line, and says so.
 pub fn tokenize(s: &str, base: usize, line: usize) -> Result<Vec<Spanned>, LexError> {
 	let b = s.as_bytes();
 	let mut out = Vec::new();
 	let mut i = 0usize;
+	let mut line = line;
 	while i < b.len() {
 		let c = b[i];
 		if c.is_ascii_whitespace() {
+			if c == b'\n' {
+				line += 1;
+			}
 			i += 1;
 			continue;
 		}
 		let start = i;
 		if c == b'r' && b[i + 1..].starts_with(b"\"") {
 			let (parts, next) = scan_string(s, i, line, true)?;
-			out.push(sp(Token::Str(parts), base, start, next, line));
+			out.push(sp(Token::Str(shifted(parts, base)), base, start, next, line));
+			line += s[i..next].matches('\n').count();
 			i = next;
 			continue;
 		}
 		if c == b'"' {
 			let (parts, next) = scan_string(s, i, line, false)?;
-			out.push(sp(Token::Str(parts), base, start, next, line));
+			out.push(sp(Token::Str(shifted(parts, base)), base, start, next, line));
+			line += s[i..next].matches('\n').count();
 			i = next;
 			continue;
 		}
@@ -240,6 +264,22 @@ fn sp(token: Token, base: usize, start: usize, end: usize, line: usize) -> Spann
 		token,
 		span: Span::new(base + start, base + end, line),
 	}
+}
+
+/// A string's interpolations, moved from the expression the string was scanned
+/// out of to the file. [`scan_string`] positions them within the text it is
+/// given, which for an expression is not where the file puts that text.
+fn shifted(parts: Vec<RawPart>, by: usize) -> Vec<RawPart> {
+	parts
+		.into_iter()
+		.map(|p| match p {
+			RawPart::Expr { text, span } => RawPart::Expr {
+				text,
+				span: Span::new(span.start + by, span.end + by, span.line),
+			},
+			literal => literal,
+		})
+		.collect()
 }
 
 /// How a line moves the `[` depth, and how many of the brackets it closes were

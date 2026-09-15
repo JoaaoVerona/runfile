@@ -320,7 +320,7 @@ pub const ROOT: Cmd = Cmd {
 		// help -- so it is listed rather than hidden the way `:complete` is.
 		leaf(":lsp"),
 		Cmd {
-			name: ":format",
+			name: ":lint",
 			subs: &[],
 			flags: &[
 				Flag("--check", Arg::None),

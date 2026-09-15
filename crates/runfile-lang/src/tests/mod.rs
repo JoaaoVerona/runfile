@@ -9,3 +9,5 @@ mod inputs;
 mod io;
 mod lines;
 mod parser;
+mod resolve;
+mod spans;

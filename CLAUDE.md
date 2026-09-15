@@ -197,7 +197,7 @@ quoted-string placeholder (valid as a key *and* as a value, which a bare `null` 
 underlines in the editor and the values cannot change the shape; and again after rendering, since shipping a
 malformed document is the failure worth paying a parse for.
 
-**`:format` lays a block out**, unlike an `exec` body. An `exec` body is somebody else's language and only its
+**The formatter lays a block out** -- `run :lint`, and format-on-save -- unlike an `exec` body. An `exec` body is somebody else's language and only its
 base indent moves; a structured block is a format this runner knows, so it gets the same treatment as
 everything else in the file — one member to a line, nested a level in, tabs like the language around it, and
 an empty `{}` or `[]` left on its line. It is laid out **from tokens copied out of the source**, not by
@@ -414,6 +414,69 @@ parse. The formatter re-attaches the comment one space out and never touches its
 it is prose, and re-spacing an author's sentence is not what a formatter is for. Nothing in the tree records
 a comment, so the fingerprint check cannot catch a dropped one — only a test can.
 
+### Names resolve before anything runs
+
+**A call to a function the language does not have, and a read of a name no line before it can have bound, are
+refused before a target's first statement runs** -- by `runfile_lang::resolve`, which the runner
+(`Host::load`) and the language server (`analysis::diagnose`) both ask, and `run :lint` through the server's,
+so an editor underlines exactly what a run refuses. `exists("x")` used to parse, sit in a branch that runs once a month, and fail the month it did; a
+typo read under a `?` never failed at all, since the fallback was taken every time.
+
+**What is in scope follows the runner exactly**, because a check that disagrees with it either refuses a file
+that runs or passes one that fails -- and `runfile-runtime/src/tests/names.rs` holds the runner to each rule the
+check relies on. Bindings are flat: a `let` inside an `if` outlives its `end`, so a name bound on *any* path to
+a line counts. A loop's own names end with the loop. A pass of a loop, or an attempt of a `retry`, sees what the
+one before it bound, so a name bound anywhere in the body counts anywhere in it, a condition included. A
+parallel branch binds on a copy. A sequential `for` puts its names aside **before** its body's properties are
+worked out -- once, before the first item is bound -- so `.workdir = dir` at the top of `for dir in …` was
+always `dir is not defined` at run time, and is now said where it is written (a `parallel for` leaves an outer
+binding in place). A `_shared.run` binds with its top-level `let`s only: `of_shared` checks one the way
+`fold_shared` applies it, still checking what never runs, and letting nothing it binds out.
+
+So a name is unresolved **where no binding of it can have run before it on any path** -- exact in the direction
+that matters, since a file whose every read can be reached bound is never refused. A read under `?` is checked
+like any other: a name nothing binds is not a failure that comes and goes. A reassignment of a name nothing
+bound is refused too (`Kind::Rebind`), though the runner would bind it: `x = 2` *rebinds*, and a rebinding
+that binds is how a slip in the name being updated goes unseen while the name meant keeps its value.
+
+Every problem is reported at once: `HostError::Unresolved` prints one `[runfile] error:` line each, the prefix
+included on every line after the first, since an editor underlines them all together and a run reporting one
+per attempt is the slow way to the same list. A shared file is checked ahead of its target. A dispatched target
+is checked when it is loaded, as a parse error in one is. `run --stdin-args` asks `Host::check` before it
+prompts, so nobody answers questions about a file that is then refused.
+
+`functions::exists` is the one answer to whether a name is a function: `FUNCTIONS`, `code_of` (the runner's),
+and `try` (the evaluator's -- unlisted since `?` replaced it, but still answered for the files that call it, so
+refusing it would refuse files that run). The "did you mean" is `resolve::suggest`, in tiers, best first: the
+same word in another case; one letter out; one `_`-word of a longer name, which is how `file_exists` gets
+misremembered as `exists` and which no small edit count reaches; two letters out. Only the best tier with
+anything in it is offered, so `exit` is never suggested beside `file_exists`.
+
+**The check needed exact positions, and the tree did not have them.** A span was wrong in most places a name
+can sit: an indented line counted from column zero, a trimmed value from before the blanks it lost, an
+interpolation from its `{{`, a string's interpolation from the start of its expression rather than the file,
+and every name on a spilled list's later lines was placed on its first. `parser::offset_in` works an offset out
+from pointers rather than lengths, since a length cannot say how much a `trim` took off the front. `logical`
+joins a spilled list's lines with blanks of the same length and keeps the newline, and `tokenize` and
+`split_interp` count newlines, so a token is on its own line at its own offset. A continued `$` line is split a
+line at a time and its literals rejoined (`joined`), because a `\r\n` gives the joined text no single offset.
+`tests/spans.rs` asserts, for every name in every position and every `.run` file in the repository, that the
+source at its span spells it, on the line it says. Spans are stripped from fingerprints and golden trees, so
+none of this moved a prepare gate -- except `split_words`, which now slices a word out of its text: rebuilding
+one a byte at a time read `ñ` as `Ã±`.
+
+In the language server, a span becomes a range once the source at it spells the name; a `Rebind`'s names carry
+no positions, so its name is found as a whole word on its line. While a `_shared.run` above the document does
+not parse -- mid-edit, usually -- what the chain binds is not known, and `Chain::Unknown` checks calls only.
+
+**The editors mark an unknown call from a list**, since neither grammar can ask the runner. The TextMate
+`function` and `capture-call` rules colour a known name `support.function.run` and any other
+`invalid.illegal.unknown-function.run`, which every theme draws as an error. The tree-sitter call patterns carry
+an `#any-of?` list, so an unknown name keeps the plain identifier's colour instead of looking like a call that
+works -- no capture is drawn as an error by every editor, so the error itself is `run :lsp`'s. Unresolved
+*names* cannot be marked by either grammar, needing scopes; they are the server's alone.
+`runfile-lang/tests/editor_grammars.rs` holds both lists to the runner's in both directions.
+
 ### Three context-sensitive lexer rules
 
 Found by prototyping the grammar against the corpus; an EBNF cannot express them, and `GRAMMAR.ebnf` documents
@@ -442,6 +505,7 @@ crates/
   runfile-discovery/           # Finding runfiles/ directories and building the catalog
   runfile-runtime/             # Properties, env building, process spawning, the walker, dispatch
   runfile-lsp/                 # Language server (a library; served by `run :lsp`)
+  runfile-shell/               # The shell checker: `$` lines and shell `exec` bodies, read the way bash reads them
   runfile-cli/                 # The `run` binary
   runfile-env/                 # .env parsing and env-map building
   runfile-crypto/              # AES-256-GCM for encrypted env values
@@ -530,7 +594,7 @@ Walks **up** for the nearest `runfiles/`, then **down** for `*/runfiles/` (depth
 segments. The machine-wide directory is `$HOME/.runfiles/`, `$HOME/runfiles/` or `$HOME/Runfiles/` — a
 **fixed set of names with no setting to add to it**, so a person can show the folder or hide it without
 telling the runner. **None of them is read in CI**: `main::discovery_home` answers `None` there, which is the
-whole gate — one call rather than an `is_ci` in the catalog, `:list`, `:format`, `:generate` and `:complete`
+whole gate — one call rather than an `is_ci` in the catalog, `:list`, `:lint`, `:generate` and `:complete`
 each. A runner's home directory is nobody's (a hosted one holds whatever the image shipped, a self-hosted one
 belongs to the machine's owner), so a target no reader of the repository can see must not join the run or
 shadow a checked-in one of the same name. It is also why nothing *cleans* `$HOME/.runfiles` on a runner: a
@@ -590,7 +654,7 @@ second time as the global. This replaced `includes` entirely.
   come to disagree. For the same reason the scope is now applied to that directory **whichever walk found
   it**: the three names are what make a directory machine-wide, so a file in one gets to say where it belongs
   even while it is also the nearest `runfiles/`. Being reached as `Local` still decides everything else --
-  `:list` grouping, and what `:format` and `:generate` leave out without `--include-global`.
+  `:list` grouping, and what `:lint` and `:generate` leave out without `--include-global`.
 
 ### runfile-runtime
 
@@ -782,12 +846,48 @@ terminal's width, and how wide text is on it).
   `runfile-env` tests that pinned "the shell's PATH beats `.env.PATH`" were rewritten rather than kept: they
   held for `build_env`'s output and for no command that ever ran.
 
+### runfile-shell
+
+`script.rs` (the text a statement or a capture hands its shell, each character placed at its byte), `syntax.rs`
+and `words.rs` (reading it the way bash does), `rules.rs` (the rules that read commands), `walk.rs` (the walk
+over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the list of rules, gated.
+
+- **It reports only what is wrong every time**, because a finding refuses a run: `Host::load` asks it after the
+  name check, for every shared file and then the target, and `HostError::Shell` prints one `[runfile] error:`
+  line per finding. Where the same text can be right, a rule says nothing. A double-quoted interpolation is
+  judged only where no shell reads the word again -- a program, a redirection's file, an operand of `cd`, `cp`,
+  `[` and the like -- since `ssh host "cd {{ dir }}"` and `echo "export X={{ v }}" >> rc` are correct *because*
+  of the quoting the interpolation brings. There is no suppression comment: a rule that needs one is wrong.
+- **It replaced ShellCheck**, which saw each script with a placeholder where an interpolation was: it could not
+  tell the placeholder from a word nobody wrote, so its findings on those lines were noise and its columns there
+  wrong, and it had to be installed -- so a gate built on it passed on one machine and failed on another. Here an
+  interpolation is one opaque character (`script::HOLE`) standing for its whole `{{ … }}`, which is exactly what
+  the runner makes of it: one quoted word.
+- **A script it cannot follow is left alone** (`Stop::Lost`): `coproc`, a heredoc delimiter that expands, a `(`
+  after a word that is neither an extended glob nor an array. Giving up costs a check; guessing costs a false
+  report. Every script in the author's 1,194-file corpus is read without giving up.
+- **The reading follows bash where bash is surprising**, each case pinned by a test against `bash -n`:
+  `${x:-{a}` closes on the first `}` (no braces are counted), a `'` inside a double-quoted `${…}` still opens a
+  quote, `$((` is arithmetic only when its last two parentheses close together, and a heredoc's body starts at
+  the next newline token, never at one inside quotes.
+- **`$` lines are read only when the shell they run in is known**: bash by default, or whatever `.shell` names
+  across the chain (`script::dollar`). `zsh`, `ksh` and a computed `.shell` are not read, and neither is any `$`
+  line while a `_shared.run` above does not parse.
+- **Values are followed flow-sensitively, and no further than the text says** (`walk.rs`): a `let` replaces
+  what a name held, branches join, a loop's body is walked twice so a pass sees what the one before bound, and a
+  parallel branch binds on a copy. Only strings, names, `?`, lists and the calls that pass a value through
+  (`concat`, `dirname`, …) carry anything; `ENV.X` and `ARG.x` hold nothing to report.
+
 ### runfile-lsp
 
-`analysis.rs` (diagnostics and completion, pure), `rpc.rs` (framing), `server.rs` (dispatch), `shell.rs`
-(shellcheck delegation).
+`analysis.rs` (diagnostics and completion, pure), `document.rs` (a file's diagnostics where it sits), `rpc.rs`
+(framing), `server.rs` (dispatch).
 
-- Diagnostics come from the **real parser**, so an editor and the runner cannot disagree about validity.
+- Diagnostics come from the **real parser**, so an editor and the runner cannot disagree about validity -- and
+  from the runner's own name check (`resolve`), handed the `_shared.run` chain as the editor has it, unsaved
+  edits and all, and from its shell checker (`runfile-shell`). See *Names resolve before anything runs*. `document::diagnostics` composes them for a file
+  where it sits -- its catalog's target names, its chain, whether it is machine-wide -- and `run :lint` asks
+  the same function, so the command line and the editor cannot say different things about one file.
 - **Property diagnostics come from the runner's own `props::check`**, for the same reason. `check_properties`
   used to describe the rules a second time, and the two had already drifted: it knew the scope rule and not
   the flag one. It now calls `check` per property -- with the region the property sits in -- and renders
@@ -893,12 +993,11 @@ terminal's width, and how wide text is on it).
   document that does not parse is answered with `null` rather than an error — a file is unfinished for most of
   the time it is being written, and format-on-save must not put a dialog in the way of that. This is what
   makes format-on-save work in every editor, the CLI and the editor sharing one formatter.
-- **Shellcheck delegation**: `$` runs and `exec sh|bash|dash|ash|ksh` bodies are handed to shellcheck. An
-  interpolation renders as one quoted placeholder, because it resolves to exactly one shell word; leaving the
-  braces in would have shellcheck reporting on a command nobody wrote. Since a placeholder is a different width
-  from what it stands for, a line containing one is reported **whole** rather than with a confidently wrong
-  column. Shellcheck's four levels map onto LSP's four. Checking is skipped when the document does not parse,
-  and a missing shellcheck is silent.
+- **Shell diagnostics are `runfile-shell`'s**, asked from `analysis::diagnose` with the chain the names are
+  checked under, so they arrive with every other diagnostic and `run :lint` gets them too. Each is an error --
+  the runner refuses the file for it -- and carries its fix as a second line of the message (`fix: …`), which an
+  editor shows under the problem and `:lint` indents beneath it. ShellCheck used to be handed each script with a
+  placeholder for every interpolation; *runfile-shell* says why that was replaced.
 
 ### editors/vscode
 
@@ -992,6 +1091,10 @@ an extension host. Registering `DocumentFormattingEditProvider` is what makes `e
 `sortText`, without which every list is alphabetical, and maps its kinds through `completionKind` — a list of
 the kinds the server sends, so a new one has to be added there or it is drawn as plain text.
 
+**A call to a function the language does not have is `invalid.illegal.unknown-function.run`**, from a list of
+the runner's names in the `function` and `capture-call` rules; see *Names resolve before anything runs*. The
+extension needs nothing else for the rest: an unresolved name is a diagnostic like any other.
+
 ### editors/tree-sitter
 
 `grammar.js` mirrors `GRAMMAR.ebnf`. Newlines are tokens rather than extras, so every line form ends in one;
@@ -1049,11 +1152,14 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   check that the grammar accepts what the runner accepts.
 - pnpm 11 blocks tree-sitter-cli's install script, which downloads the binary; `pnpm-workspace.yaml`
   (`allowBuilds`) approves it. The old `pnpm` field in `package.json` is no longer read.
+- **A call is `@function.call` only when it names a function the runner has** -- an `#any-of?` list in
+  `highlights.scm`, so an unknown one keeps the identifier's colour. The grammar itself accepts any name, as
+  the rule about what a call *means* is the runner's; see *Names resolve before anything runs*.
 
 ### runfile-cli
 
 `main.rs` (flags and dispatch), `list.rs`, `prepare.rs`, `prompt.rs`, `watch.rs`, `completions.rs`, `init.rs`,
-`cmd_env/`, `cmd_format.rs`, `cmd_update.rs`, `ci_detect.rs`.
+`cmd_env/`, `cmd_lint.rs`, `cmd_update.rs`, `ci_detect.rs`.
 
 - **Runner flags are recognised only before the target name**; everything after it belongs to the target. So
   `run echoes --dry-run` passes `--dry-run` through as `FLAG.dry-run`.
@@ -1142,10 +1248,23 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   renders through it, so they cannot drift into different shapes, and a `--help` never needs a project to
   exist. The version is flags only (`-v`, `-V`, `--version`): nothing else about the binary itself is a
   command.
-- `:format` writes every runfile into the one shape there is, `_shared.run` included — it is not a target, so
-  nothing that walks the catalog by name would reach it. Global files are left out unless `--include-global`,
-  as with `:generate`. `--check` reports and exits 1; `--stdout` prints. Explicit paths override the catalog,
-  and a directory argument is walked.
+- **`:lint` puts every runfile into the one shape there is and reports everything the runner refuses, and exits
+  0 only when both hold** -- the promise that a file which passes runs with no parse-time error and opens in an
+  editor with nothing underlined. It was `:format`, which passed files that failed the moment they ran. The
+  errors are `runfile_lsp::document::diagnostics`, the function the server publishes from, so the command line
+  cannot find more or less than an editor does: syntax, properties (`props::check`), a `run` of a target that
+  is not there, unknown functions and unresolved names under the `_shared.run` chain, and the shell. Each file is formatted
+  first and checked as it then stands, so a position is one in the file on disk, printed as
+  `path:line:column` from the working directory, which a terminal makes a link. `--check` writes nothing and
+  fails on a file that needs formatting too; `--stdout` prints the files and moves the report to stderr.
+  **The shell checker is part of it**, since a shell finding refuses a run like any other error; a finding's
+  `fix:` line is indented under it, and `:lint` never applies one -- only layout is ever rewritten.
+  A flag it does not have is refused rather than ignored, since a mistyped `--check` that went unread would
+  write. `_shared.run` is included -- it is not a target, so nothing that walks the catalog by name would reach
+  it. Global files are left out unless `--include-global`, as with `:generate`; explicit paths override the
+  catalog, a directory argument is walked, and each named file's project is discovered where it sits, the way
+  an editor finds it. `run :format` is refused with `:lint` named -- not a typo, but a script written for an
+  older runner. `cli.rs`'s `this_repository_lints_clean` holds this repository to the promise.
 - `:generate zed|jetbrains|vscode` is a lean port of the old generators: an entry is recognised as ours by its
   shape (command `run`, label `run <target>`), so a rerun replaces exactly those and keeps a person's own; a
   file is rewritten with the indentation it already uses. The 661-line `.editorconfig` reader did not come
@@ -1424,8 +1543,9 @@ settings file: global registrations, path aliases and custom shell paths were al
 
 ## Removed, and not coming back
 
-MCP server, `.alias` (a target is its file name), `.detach` (now the `detach` marker), `.parallel` (now
-`parallel do` and `parallel for`), `:convert`, `:config` (all subcommands), the user settings
+MCP server, ShellCheck delegation (now `runfile-shell`), `.alias` (a target is its file name), `.detach` (now the `detach` marker), `.parallel` (now
+`parallel do` and `parallel for`), `:convert`, `:config` (all subcommands), `:format` (now `:lint`, which
+formats and also checks; the old name is refused with the new one), the user settings
 file, `-p` / target globs, `capture()`
 (now `$` in value position), `shell_quote()` (interpolation self-quotes), `set_cwd()` (now `.workdir`),
 `define()` (now `let`), `nth()` / `count_parts()` (now `split()` and indexing), the arithmetic and comparison
@@ -1483,7 +1603,7 @@ with its indices, so both can be indexed the same way. **`json_type`** answers `
 a `match` on it reads like any other. It is the question `json_get` cannot answer, having flattened a null to
 `""` and a container to text; a missing path fails exactly as `json_get`'s does, so `?` says the rest rather
 than a `"missing"` type being invented. **`json_format`** is `jq .`, reusing `Structured::pretty` so a
-document is laid out the way `run :format` lays out a `json` block — validated first, since tokenising is
+document is laid out the way `run :lint` lays out a `json` block — validated first, since tokenising is
 laxer than JSON and handing back a malformed document would be worse than refusing it. **`json_encode`** is
 the write direction, reusing `Structured::render`, which is also what **`json_set` now accepts a number, bool
 or list through**: building an array meant hand-writing JSON text with the escapes the `json` block exists to
@@ -1548,10 +1668,14 @@ tests that assert the mechanism rather than the symptom.
    local compiled for Windows, and `cargo check --target` needs no linker, so nothing had to. Targets `rustup`
    does not have are skipped and **named** -- a gate that passes is worth less when you cannot tell what it
    did not look at.
-6. Tests that need an external tool (shellcheck) skip cleanly when it is absent, so a contributor without it
-   does not see a broken build. One of them is a gate: `runfile-lsp/tests/repo_shell.rs` shellchecks every
-   `.run` file in this repository through the same extraction an editor uses, so the repo's own shell cannot
-   rot. It caught an unbalanced `if` in a golden fixture the first time it ran.
+6. **The shell checker is held to bash.** `runfile-shell`'s tests hand the script of every syntax finding to
+   `bash -n`, which has to refuse it too, and skip cleanly where bash is absent. Every example in
+   `SHELL-CHECK-RULES.md` is run through the checker (`tests/rules_doc.rs`), whose rule list must match `RULES`
+   in order. For the author's corpus, `tests::corpus` reads runfile paths from `RUNFILE_CORPUS_LIST`, prints every
+   finding and every script it gave up on, and reports any script bash refuses that the checker read. A rule
+   change is not done until that sweep has been read by hand, since a report on a line that works is the one
+   failure this checker promises not to have. This repository's own shell is gated by the runtime's "every
+   target here would be let run" test, which asks the checker too.
 7. **Every documented example is parsed.** `FUNCTIONS` and `KEYWORDS` carry an `example`, which is what hover
    and completion show and what a person copies out. `code_of` shipped one that could not parse at all
    (`if code_of($ …) != 0` — a capture's `)` has to be the last character of the line), and four others opened
@@ -1578,6 +1702,14 @@ tests that assert the mechanism rather than the symptom.
    did not wait for it" is a fact rather than a measurement -- the command cannot have finished, because it
    had not been let go -- and the test ends with nothing of its own still running. The loop is bounded at
    twenty seconds so a test that fails before releasing does not leave one spinning.
+12. **A position the tree reports is checked against the text.** `runfile-lang/src/tests/spans.rs` asserts that
+   every name, in every position one can sit in and in every `.run` file here, is spelled at its span on the
+   line it says -- nothing read spans closely until diagnostics underlined names, and most were wrong. The
+   name check has two repository gates beside it: every target here would be let run
+   (`runfile-runtime/src/tests/names.rs`), and every README example calls only functions that exist, with a
+   whole-file example naming only what it binds (`readme.rs`). A change to scoping belongs in the runtime tests
+   there that hold the runner to each rule the check assumes. For the author's corpus, feed a `find` list
+   rather than walking `~/Workspace` from a test: flatpak build directories there hold `var/run -> /run`.
 
 ## Documentation
 
@@ -1587,7 +1719,7 @@ that loops, `retry`, `parallel for`, a `json` block, secrets, a pre-commit hook,
 the one capability it shows. Rationale lives at the end, under *Why a language*.
 
 **Every ```sh block in it is a runfile, and is gated**: `runfile-lang/tests/readme.rs` parses each one and
-re-formats it, so an example cannot go stale against the language and cannot show a shape `run :format` would
+re-formats it, so an example cannot go stale against the language and cannot show a shape `run :lint` would
 immediately undo. Documentation that has drifted is worse than none — a reader copies it, it does not parse,
 and they conclude the tool is broken. Shell transcripts are ```bash and output is untagged, so neither is
 swept up by the gate.

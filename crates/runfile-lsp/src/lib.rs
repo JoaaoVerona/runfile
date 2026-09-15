@@ -4,9 +4,9 @@
 //! disagree about whether a file is valid.
 
 pub mod analysis;
+pub mod document;
 pub mod rpc;
 pub mod server;
-pub mod shell;
 
 /// Speak the protocol on stdin/stdout until the client says goodbye.
 ///

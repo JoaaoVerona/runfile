@@ -9,6 +9,7 @@ repository.workspace = true
 runfile-discovery.workspace = true
 runfile-lang.workspace = true
 runfile-runtime.workspace = true
+runfile-shell.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

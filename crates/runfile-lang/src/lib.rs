@@ -15,6 +15,7 @@ pub mod inputs;
 pub mod keywords;
 pub mod lexer;
 pub mod parser;
+pub mod resolve;
 pub mod span;
 pub mod structured;
 pub mod value;
@@ -83,6 +84,7 @@ fn strip_between(text: &mut String, open: &str, close: char) {
 }
 pub use inputs::Inputs;
 pub use keywords::{KEYWORDS, Keyword};
+pub use resolve::Unresolved;
 pub use span::Span;
 pub use structured::Structured;
 pub use value::{TypeError, Value};

@@ -6,6 +6,7 @@ mod exec;
 mod interrupt;
 mod keys;
 mod loops;
+mod names;
 mod parallel;
 mod term;
 mod walk;

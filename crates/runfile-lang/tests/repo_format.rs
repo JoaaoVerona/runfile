@@ -1,7 +1,7 @@
 //! The formatter, against this repository's own files.
 //!
 //! Two gates. The first is `cargo fmt --check` for `.run` files: every runfile
-//! this project ships is already in the shape `run :format` produces, so the
+//! this project ships is already in the shape `run :lint` produces, so the
 //! corpus cannot drift away from its own formatter. The second is wider and
 //! weaker -- it covers the test fixtures too, which are deliberately odd -- and
 //! asks only that formatting them changes nothing about what they mean and
@@ -62,7 +62,7 @@ fn every_runfile_in_this_repository_is_already_formatted() {
 	}
 	assert!(
 		unformatted.is_empty(),
-		"run `run :format`:\n{}",
+		"run `run :lint`:\n{}",
 		unformatted
 			.iter()
 			.map(|p| format!("  {}", p.display()))

@@ -82,6 +82,33 @@ fn after_keyword<'a>(rest: &'a str, word: &str) -> Option<&'a str> {
 	tail.starts_with(char::is_whitespace).then(|| tail.trim_start())
 }
 
+/// Where `part` starts in the source, given where `whole` does.
+///
+/// `part` is a slice of `whole` -- a `trim` of it, a `strip_prefix`, a range --
+/// which is what every piece of a line the parser reads is. Asked of the
+/// pointers rather than worked out from lengths, since a length cannot say how
+/// many blanks a `trim` took off the front: that miscount is how a name used to
+/// be placed a column or three before itself.
+fn offset_in(whole: &str, at: usize, part: &str) -> usize {
+	let (w, p) = (whole.as_ptr() as usize, part.as_ptr() as usize);
+	if p < w || p > w + whole.len() {
+		return at;
+	}
+	at + (p - w)
+}
+
+/// The text of a statement, gathered by [`P::logical`], and where it came from.
+struct Logical {
+	text: String,
+	/// Where `text` starts in the source: its first byte of code, past the
+	/// indentation. An offset into `text` plus this is an offset into the file.
+	at: usize,
+	/// Where its first line starts, indentation included, which is where the
+	/// statement's own span starts.
+	start: usize,
+	no: usize,
+}
+
 /// Whether this raw line is the `end` that closes a body opened at `indent`.
 ///
 /// The indentation has to match the *opener's* exactly, which is what lets a
@@ -302,20 +329,45 @@ impl<'a> P<'a> {
 	///
 	/// Each *physical* line loses its comment before it is joined, which is
 	/// what lets one sit beside an element of a spilled list, or on a line of
-	/// its own between two of them. Stripping is a suffix, so every offset this
-	/// returns still indexes the source; a joined line's do not anyway, since
-	/// the join is already a string of its own.
-	fn logical(&mut self) -> (String, usize, usize) {
-		let start = &self.lines[self.i];
-		let (no, offset) = (start.no, start.offset);
-		let mut buf = lexer::code(start.trimmed).to_string();
+	/// its own between two of them.
+	///
+	/// What sits between two lines' code -- the first one's comment, its line
+	/// ending, the next one's indentation -- is joined as blanks of the same
+	/// length, with the newline kept. So every byte of the text is at its own
+	/// offset from [`Logical::at`], and every token after a newline is on its
+	/// own line: a name on the third line of a list is reported on the third
+	/// line, and underlined where it is. Joined with one space, as this was,
+	/// both were placed by the first line.
+	fn logical(&mut self) -> Logical {
+		let lines = self.lines;
+		let first = &lines[self.i];
+		let code = lexer::code(first.trimmed);
+		let at = first.offset + first.indent.len();
+		let mut text = code.to_string();
+		// Just past the last byte of code joined so far, in the source.
+		let mut end = at + code.len();
 		self.i += 1;
-		while lexer::brackets(&buf, no).0 > 0 && self.i < self.lines.len() {
-			buf.push(' ');
-			buf.push_str(lexer::code(self.lines[self.i].trimmed));
+		while lexer::brackets(&text, first.no).0 > 0 && self.i < lines.len() {
+			let (prev, line) = (&lines[self.i - 1], &lines[self.i]);
+			let prev_end = prev.offset + prev.raw.len();
+			// A `\r\n` is two bytes and one line ending, so its `\r` is a blank.
+			text.extend(std::iter::repeat_n(
+				' ',
+				(prev_end - end) + (line.offset - prev_end - 1),
+			));
+			text.push('\n');
+			text.extend(std::iter::repeat_n(' ', line.indent.len()));
+			let code = lexer::code(line.trimmed);
+			text.push_str(code);
+			end = line.offset + line.indent.len() + code.len();
 			self.i += 1;
 		}
-		(buf, offset, no)
+		Logical {
+			text,
+			at,
+			start: first.offset,
+			no: first.no,
+		}
 	}
 
 	fn statement(&mut self) -> Result<Statement, ParseError> {
@@ -349,9 +401,11 @@ impl<'a> P<'a> {
 			}
 		}
 
-		let (text, offset, _) = self.logical();
+		let Logical { text, at, start, .. } = self.logical();
 		let head = text.split_whitespace().next().unwrap_or("");
-		let span = Span::new(offset, offset + text.len(), no);
+		let span = Span::new(start, start + text.len(), no);
+		// Where a piece of `text` is in the file.
+		let pos = |part: &str| offset_in(&text, at, part);
 
 		match head {
 			// Claimed only in front of a keyword, so it stays an ordinary name
@@ -371,7 +425,7 @@ impl<'a> P<'a> {
 				let rest = text[8..].trim_start();
 				match rest.split_whitespace().next() {
 					Some("do") => self.parallel_do(rest, no, span),
-					Some("for") => self.parallel_for(rest, offset + (text.len() - rest.len()), no, span),
+					Some("for") => self.parallel_for(rest, pos(rest), no, span),
 					Some(other) => err(
 						no,
 						format!(
@@ -391,8 +445,8 @@ impl<'a> P<'a> {
 				if let Some(own) = &mut self.branch {
 					own.extend(names.iter().filter(|n| *n != "_").cloned());
 				}
-				let base = offset + (text.len() - rest.len()) + eq + 1;
 				let raw_rhs = rest[eq + 1..].trim();
+				let base = pos(raw_rhs);
 				let value = match self.capture_rhs(raw_rhs, indent, base, no)? {
 					Some(e) => e,
 					None => parse_expr(raw_rhs, base, no)?,
@@ -415,7 +469,8 @@ impl<'a> P<'a> {
 				})
 			}
 			"if" => {
-				let cond = condition(text[2..].trim(), offset + 3, no)?;
+				let rest = text[2..].trim();
+				let cond = condition(rest, pos(rest), no)?;
 				let st = self.if_tail(cond, span)?;
 				self.expect_end(no)?;
 				Ok(st)
@@ -428,7 +483,7 @@ impl<'a> P<'a> {
 				if rest.is_empty() {
 					return err(no, format!("`{head}` needs a condition, as `{head} n < 10`"));
 				}
-				let cond = condition(rest, offset + head.len() + 1, no)?;
+				let cond = condition(rest, pos(rest), no)?;
 				let test = if head == "while" {
 					LoopTest::While(cond)
 				} else {
@@ -499,9 +554,9 @@ impl<'a> P<'a> {
 				if count.is_empty() {
 					return err(no, "`retry` needs a number of attempts, as `retry 30 every 1`");
 				}
-				let attempts = parse_expr(count, offset + 6, no)?;
+				let attempts = parse_expr(count, pos(count), no)?;
 				let delay = match wait {
-					Some(d) => Some(parse_expr(d, offset + 6, no)?),
+					Some(d) => Some(parse_expr(d, pos(d), no)?),
 					None => None,
 				};
 				let body = self.block(Some("retry"))?;
@@ -521,7 +576,7 @@ impl<'a> P<'a> {
 				})
 			}
 			"for" => {
-				let (names, iter) = for_header(&text[3..], offset + 3, no)?;
+				let (names, iter) = for_header(&text[3..], pos(&text[3..]), no)?;
 				let body = self.for_body(&names)?;
 				self.expect_end(no)?;
 				Ok(Statement::For {
@@ -534,9 +589,9 @@ impl<'a> P<'a> {
 			}
 			"match" => {
 				let rest = text[5..].trim();
-				let subject = match shell_capture(rest, offset + 6, no)? {
+				let subject = match shell_capture(rest, pos(rest), no)? {
 					Some(e) => e,
-					None => parse_expr(rest, offset + 6, no)?,
+					None => parse_expr(rest, pos(rest), no)?,
 				};
 				let (mut cases, mut default) = (Vec::new(), None);
 				loop {
@@ -568,26 +623,26 @@ impl<'a> P<'a> {
 				})
 			}
 			"run" => {
-				let words = split_words(text[3..].trim());
-				let (target, args) = dispatch_words(words, offset, no)?;
+				let rest = text[3..].trim();
+				let (target, args) = dispatch_words(split_words(rest), pos(rest), no)?;
 				Ok(Statement::Run { target, args, span })
 			}
 			_ => {
 				// `code_of($ cmd)` on its own: run it, ignore how it went.
-				if let Some(e) = shell_capture(&text, offset, no)? {
+				if let Some(e) = shell_capture(&text, at, no)? {
 					return Ok(Statement::Call { expr: e, span });
 				}
 				if let Some(eq) = assignment_split(&text) {
 					let names = binding_names(text[..eq].trim(), no)?;
 					self.check_reassign(&names, no)?;
 					let raw_rhs = text[eq + 1..].trim();
-					let value = match self.capture_rhs(raw_rhs, indent, offset + eq + 1, no)? {
+					let value = match self.capture_rhs(raw_rhs, indent, pos(raw_rhs), no)? {
 						Some(e) => e,
-						None => parse_expr(raw_rhs, offset + eq + 1, no)?,
+						None => parse_expr(raw_rhs, pos(raw_rhs), no)?,
 					};
 					return Ok(Statement::Assign { names, value, span });
 				}
-				let expr = parse_expr(&text, offset, no)?;
+				let expr = parse_expr(&text, at, no)?;
 				check_has_effect(&expr, no)?;
 				Ok(Statement::Call { expr, span })
 			}
@@ -606,7 +661,7 @@ impl<'a> P<'a> {
 	fn if_tail(&mut self, cond: Expr, span: Span) -> Result<Statement, ParseError> {
 		let then = self.block(Some("if"))?;
 		let otherwise = if self.peek_kw() == Some("else") {
-			let (text, offset, no) = self.logical();
+			let Logical { text, at, no, .. } = self.logical();
 			let rest = text[4..].trim();
 			if rest.is_empty() {
 				Some(self.block(Some("if"))?)
@@ -622,9 +677,8 @@ impl<'a> P<'a> {
 				if tail.is_empty() {
 					return err(no, "`else if` needs a condition");
 				}
-				let at = offset + (text.len() - rest.len());
-				let inner = Span::new(at, offset + text.len(), no);
-				let icond = condition(tail, at + 3, no)?;
+				let inner = Span::new(offset_in(&text, at, rest), at + text.len(), no);
+				let icond = condition(tail, offset_in(&text, at, tail), no)?;
 				Some(Block {
 					properties: Vec::new(),
 					statements: vec![self.if_tail(icond, inner)?],
@@ -796,16 +850,23 @@ impl<'a> P<'a> {
 				false => l.trimmed,
 			};
 			if trimmed == "$" || trimmed.starts_with("$ ") {
-				let mut text = trimmed.strip_prefix('$').unwrap().trim_start().to_string();
+				let first = trimmed.strip_prefix('$').unwrap().trim_start();
+				let mut parts = to_parts(lexer::split_interp(first, offset_in(l.raw, l.offset, first), l.no)?)?;
 				// A trailing backslash continues the shell line. The backslash and
 				// newline are kept so the shell sees the continuation it expects,
-				// and the author's formatting survives into --dry-run output.
-				while text.ends_with('\\') && j + 1 < self.lines.len() {
+				// and the author's formatting survives into --dry-run output. Each
+				// line is split on its own, so what one interpolates is placed on
+				// it: a `\r\n` is two bytes where the joined text has one, so the
+				// text as a whole has no single offset to count from.
+				let mut ends = first;
+				while ends.ends_with('\\') && j + 1 < self.lines.len() {
 					j += 1;
-					text.push('\n');
-					text.push_str(self.lines[j].raw);
+					let next = &self.lines[j];
+					parts.push(InterpPart::Literal("\n".into()));
+					parts.extend(to_parts(lexer::split_interp(next.raw, next.offset, next.no)?)?);
+					ends = next.raw;
 				}
-				body.push(to_parts(lexer::split_interp(&text, l.offset, l.no)?, l.no)?);
+				body.push(joined(parts));
 				lines.push(l.no);
 				last = j;
 				j += 1;
@@ -857,7 +918,7 @@ impl<'a> P<'a> {
 			.iter()
 			.map(|l| {
 				let text = if l.raw.len() >= base { &l.raw[base..] } else { "" };
-				to_parts(lexer::split_interp(text, l.offset + base, l.no)?, l.no)
+				to_parts(lexer::split_interp(text, l.offset + base, l.no)?)
 			})
 			.collect::<Result<_, _>>()?;
 		let lines = raw.iter().map(|l| l.no).collect();
@@ -880,7 +941,8 @@ impl<'a> P<'a> {
 			return Ok(Some(e));
 		}
 		if let Some(cmd) = rhs.strip_prefix("$ ") {
-			let parts = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
+			let cmd = cmd.trim();
+			let parts = to_parts(lexer::split_interp(cmd, offset_in(rhs, offset, cmd), no)?)?;
 			let span = Span::new(offset, offset + rhs.len(), no);
 			return Ok(Some(Expr::Capture {
 				command: None,
@@ -926,7 +988,8 @@ impl<'a> P<'a> {
 			}));
 		}
 		if let Some(cmd) = rhs.strip_prefix("exec ") {
-			let command = to_parts(lexer::split_interp(cmd.trim(), offset, no)?, no)?;
+			let cmd = cmd.trim();
+			let command = to_parts(lexer::split_interp(cmd, offset_in(rhs, offset, cmd), no)?)?;
 			// A capture is an expression: its value is what the command prints,
 			// so per-line positions have nothing to report against.
 			let (body, _, end) = self.exec_body(indent, no)?;
@@ -952,7 +1015,11 @@ impl<'a> P<'a> {
 			false => open.trimmed,
 		};
 		let cmd_text = lexer::code(head.strip_prefix("exec ").unwrap().trim());
-		let command = to_parts(lexer::split_interp(cmd_text, offset, no)?, no)?;
+		let command = to_parts(lexer::split_interp(
+			cmd_text,
+			offset_in(open.raw, offset, cmd_text),
+			no,
+		)?)?;
 		self.i += 1;
 		let indent = indent.to_string();
 		let (body, lines, end) = self.exec_body(&indent, no)?;
@@ -968,16 +1035,16 @@ impl<'a> P<'a> {
 
 /// The part of a `for` line after the keyword -- its names, and its list --
 /// which `for` and `parallel for` share. `base` is where `rest` starts.
-fn for_header(rest: &str, base: usize, no: usize) -> Result<(Vec<String>, Expr), ParseError> {
-	let lead = rest.len() - rest.trim_start().len();
-	let rest = rest.trim();
+fn for_header(header: &str, base: usize, no: usize) -> Result<(Vec<String>, Expr), ParseError> {
+	let rest = header.trim();
 	let Some(k) = rest.find(" in ") else {
 		return err(no, "`for` needs `in`");
 	};
 	let names = binding_names(rest[..k].trim(), no)?;
 	// `for f in lines($ git ls-files)` -- the same rule as a `let`, and the
 	// shape a loop over a command's output actually wants.
-	let iter = condition(rest[k + 4..].trim(), base + lead + k + 4, no)?;
+	let list = rest[k + 4..].trim();
+	let iter = condition(list, offset_in(header, base, list), no)?;
 	Ok((names, iter))
 }
 
@@ -1013,7 +1080,7 @@ fn check_has_effect(e: &Expr, no: usize) -> Result<(), ParseError> {
 		return Ok(());
 	}
 	if let Expr::Ident(name, _) = e
-		&& crate::functions::FUNCTIONS.iter().any(|f| f.name == name)
+		&& crate::functions::exists(name)
 	{
 		return err(no, format!("`{name}` is a function; call it as `{name}()`"));
 	}
@@ -1038,7 +1105,8 @@ fn check_has_effect(e: &Expr, no: usize) -> Result<(), ParseError> {
 /// `lines($ git ls-files)` reads the way it looks.
 fn shell_capture(text: &str, offset: usize, no: usize) -> Result<Option<Expr>, ParseError> {
 	if let Some(cmd) = text.strip_prefix("$ ") {
-		return Ok(Some(capture_of(cmd.trim(), offset, no)?));
+		let cmd = cmd.trim();
+		return Ok(Some(capture_of(cmd, offset_in(text, offset, cmd), no)?));
 	}
 	let Some(open) = text.find('(') else {
 		return Ok(None);
@@ -1090,7 +1158,7 @@ fn shell_capture(text: &str, offset: usize, no: usize) -> Result<Option<Expr>, P
 			return err(no, "`code_of(run …)` takes the dispatch on its own");
 		}
 		let at = offset + open + 1 + last.start;
-		let (target, args) = dispatch_words(split_words(tail), at, no)?;
+		let (target, args) = dispatch_words(split_words(tail), offset_in(text, offset, tail), no)?;
 		return Ok(Some(Expr::Call {
 			name: name.into(),
 			args: vec![Expr::Dispatch {
@@ -1128,9 +1196,11 @@ fn shell_capture(text: &str, offset: usize, no: usize) -> Result<Option<Expr>, P
 	}
 	let mut args = Vec::with_capacity(parts.len());
 	for r in &parts[..parts.len() - 1] {
-		args.push(parse_expr(inner[r.clone()].trim(), offset + open + 1 + r.start, no)?);
+		let arg = inner[r.clone()].trim();
+		args.push(parse_expr(arg, offset_in(text, offset, arg), no)?);
 	}
-	args.push(capture_of(cmd.trim(), offset + open + 1 + last.start, no)?);
+	let cmd = cmd.trim();
+	args.push(capture_of(cmd, offset_in(text, offset, cmd), no)?);
 	Ok(Some(Expr::Call {
 		name: name.into(),
 		args,
@@ -1152,17 +1222,19 @@ pub(crate) fn dispatch_arg(text: &str) -> Option<&str> {
 	Some(rest.trim())
 }
 
-/// A `run` target and its arguments, from the words after the keyword.
-fn dispatch_words(mut words: Vec<String>, offset: usize, no: usize) -> Result<Dispatched, ParseError> {
-	if words.is_empty() {
+/// A `run` target and its arguments, from the words after the keyword -- each
+/// with where it starts in the text they were split from, which starts at
+/// `offset`.
+fn dispatch_words(words: Vec<(usize, String)>, offset: usize, no: usize) -> Result<Dispatched, ParseError> {
+	let mut words = words.into_iter().map(|(at, word)| {
+		lexer::split_interp(&word, offset + at, no)
+			.map_err(ParseError::from)
+			.and_then(to_parts)
+	});
+	let Some(target) = words.next() else {
 		return err(no, "`run` needs a target");
-	}
-	let target = lexer::split_interp(&words.remove(0), offset, no)?;
-	let args = words
-		.iter()
-		.map(|w| lexer::split_interp(w, offset, no))
-		.collect::<Result<_, _>>()?;
-	Ok((to_parts(target, no)?, to_args(args, no)?))
+	};
+	Ok((target?, words.collect::<Result<_, _>>()?))
 }
 
 type Dispatched = (Vec<InterpPart>, Vec<Vec<InterpPart>>);
@@ -1241,7 +1313,7 @@ fn split_args(inner: &str) -> Option<Vec<std::ops::Range<usize>>> {
 fn capture_of(cmd: &str, offset: usize, no: usize) -> Result<Expr, ParseError> {
 	Ok(Expr::Capture {
 		command: None,
-		body: vec![to_parts(lexer::split_interp(cmd, offset, no)?, no)?],
+		body: vec![to_parts(lexer::split_interp(cmd, offset, no)?)?],
 		span: Span::new(offset, offset + cmd.len(), no),
 	})
 }
@@ -1268,30 +1340,44 @@ fn case_label(trimmed: &str, no: usize) -> Result<String, ParseError> {
 	}
 }
 
-/// Split on whitespace, keeping `{{ … }}` blocks and `"…"` intact.
-fn split_words(s: &str) -> Vec<String> {
+/// Split on whitespace, keeping `{{ … }}` blocks intact, with where each word
+/// starts.
+///
+/// A word is sliced out of the text rather than rebuilt a byte at a time, which
+/// read every byte as a character of its own: an `ñ` arrived as `Ã±`.
+fn split_words(s: &str) -> Vec<(usize, String)> {
 	let b = s.as_bytes();
-	let (mut out, mut cur, mut i) = (Vec::new(), String::new(), 0usize);
+	let (mut out, mut start, mut i) = (Vec::new(), None, 0usize);
 	while i < b.len() {
-		if b[i..].starts_with(b"{{")
-			&& let Ok(end) = lexer::skip_interp(b, i, 0)
-		{
-			cur.push_str(&s[i..end]);
-			i = end;
-			continue;
-		}
 		if b[i].is_ascii_whitespace() {
-			if !cur.is_empty() {
-				out.push(std::mem::take(&mut cur));
+			if let Some(from) = start.take() {
+				out.push((from, s[from..i].to_string()));
 			}
 			i += 1;
 			continue;
 		}
-		cur.push(b[i] as char);
-		i += 1;
+		start.get_or_insert(i);
+		match b[i..].starts_with(b"{{").then(|| lexer::skip_interp(b, i, 0)) {
+			Some(Ok(end)) => i = end,
+			_ => i += 1,
+		}
 	}
-	if !cur.is_empty() {
-		out.push(cur);
+	if let Some(from) = start {
+		out.push((from, s[from..].to_string()));
+	}
+	out
+}
+
+/// Adjacent literal runs as one, so a text read a line at a time comes out as
+/// the same parts it would have been read whole.
+fn joined(parts: Vec<InterpPart>) -> Vec<InterpPart> {
+	let mut out: Vec<InterpPart> = Vec::with_capacity(parts.len());
+	for p in parts {
+		if let (InterpPart::Literal(t), Some(InterpPart::Literal(prev))) = (&p, out.last_mut()) {
+			prev.push_str(t);
+			continue;
+		}
+		out.push(p);
 	}
 	out
 }
@@ -1309,17 +1395,13 @@ fn assignment_split(text: &str) -> Option<usize> {
 	is_name_list(text[..eq].trim()).then_some(eq)
 }
 
-fn to_parts(raw: Vec<RawPart>, line: usize) -> Result<Vec<InterpPart>, ParseError> {
+fn to_parts(raw: Vec<RawPart>) -> Result<Vec<InterpPart>, ParseError> {
 	raw.into_iter()
 		.map(|p| match p {
 			RawPart::Literal(t) => Ok(InterpPart::Literal(t)),
-			RawPart::Expr { text, span } => Ok(InterpPart::Expr(parse_expr(&text, span.start, line)?)),
+			RawPart::Expr { text, span } => Ok(InterpPart::Expr(parse_expr(&text, span.start, span.line)?)),
 		})
 		.collect()
-}
-
-fn to_args(raw: Vec<Vec<RawPart>>, line: usize) -> Result<Vec<Vec<InterpPart>>, ParseError> {
-	raw.into_iter().map(|w| to_parts(w, line)).collect()
 }
 
 // ---------------------------------------------------------------- expressions
@@ -1513,7 +1595,7 @@ impl<'a> E<'a> {
 			Token::Str(parts) => {
 				self.i += 1;
 				let span = self.span(from);
-				Ok(Expr::Str(to_parts(parts, self.line)?, span))
+				Ok(Expr::Str(to_parts(parts)?, span))
 			}
 			Token::Punct("[") => {
 				self.i += 1;

@@ -899,9 +899,9 @@ fn the_bash_script_completes_target_names() {
 fn the_bash_script_completes_subcommands_after_a_colon() {
 	let p = project(&[(MARK, &marker("o"))]);
 	let got = complete_bash(&p, "run :l");
-	// Both, in the tree's own order -- the point is that readline handed the
-	// script `:l` whole rather than splitting the colon off it.
-	assert_eq!(got, [":list", ":lsp"]);
+	// All three, in the tree's own order -- the point is that readline handed
+	// the script `:l` whole rather than splitting the colon off it.
+	assert_eq!(got, [":list", ":lsp", ":lint"]);
 }
 
 #[cfg(unix)]
@@ -1820,107 +1820,214 @@ fn exit_inside_a_branch_ends_the_run_there() {
 	assert!(out(&o).contains("went-on"), "{}", out(&o));
 }
 
+/// A file in a test project, as it now stands.
+fn read(p: &Project, path: &str) -> String {
+	std::fs::read_to_string(p.dir.path().join(path)).unwrap()
+}
+
 #[test]
-fn format_rewrites_every_runfile_in_the_project() {
+fn lint_formats_every_runfile_in_the_project() {
 	let p = project(&[
-		("runfiles/a.run", "if x==1\n$ echo a\nend\n"),
+		("runfiles/a.run", "if 1==1\n$ echo a\nend\n"),
 		("runfiles/sub/b.run", "let y=[1,2]\n"),
 	]);
-	let o = p.run(&[":format"]);
-	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(
-		std::fs::read_to_string(p.dir.path().join("runfiles/a.run")).unwrap(),
-		"if x == 1\n\t$ echo a\nend\n"
-	);
-	assert_eq!(
-		std::fs::read_to_string(p.dir.path().join("runfiles/sub/b.run")).unwrap(),
-		"let y = [1, 2]\n"
+	let o = p.run(&[":lint"]);
+	assert!(o.status.success(), "{}{}", out(&o), err(&o));
+	assert_eq!(read(&p, "runfiles/a.run"), "if 1 == 1\n\t$ echo a\nend\n");
+	assert_eq!(read(&p, "runfiles/sub/b.run"), "let y = [1, 2]\n");
+	assert!(
+		out(&o).contains("2 files checked: 2 formatted, no errors"),
+		"{}",
+		out(&o)
 	);
 }
 
 #[test]
-fn format_reaches_shared_run_which_is_not_a_target() {
+fn lint_reaches_shared_run_which_is_not_a_target() {
 	// Nothing that walks the catalog by name would find it, and it is the file
 	// most likely to sit unread and drift.
 	let p = project(&[
 		("runfiles/a.run", "$ true\n"),
 		("runfiles/_shared.run", ".shell   =  \"bash\"\n"),
 	]);
-	assert!(p.run(&[":format"]).status.success());
-	assert_eq!(
-		std::fs::read_to_string(p.dir.path().join("runfiles/_shared.run")).unwrap(),
-		".shell = \"bash\"\n"
-	);
+	assert!(p.run(&[":lint"]).status.success());
+	assert_eq!(read(&p, "runfiles/_shared.run"), ".shell = \"bash\"\n");
 }
 
 #[test]
-fn format_check_reports_and_fails_without_writing() {
+fn lint_check_says_what_needs_formatting_and_fails_without_writing() {
 	let p = project(&[("runfiles/a.run", "let y=1\n")]);
-	let o = p.run(&[":format", "--check"]);
+	let o = p.run(&[":lint", "--check"]);
 	assert!(!o.status.success(), "--check must fail when work is needed");
-	assert!(out(&o).contains("a.run"), "it has to say which file: {}", out(&o));
-	assert_eq!(
-		std::fs::read_to_string(p.dir.path().join("runfiles/a.run")).unwrap(),
-		"let y=1\n",
-		"--check must not write"
+	assert!(
+		out(&o).contains("a.run: needs formatting"),
+		"it has to say which file: {}",
+		out(&o)
 	);
+	assert_eq!(read(&p, "runfiles/a.run"), "let y=1\n", "--check must not write");
 }
 
 #[test]
-fn format_stdout_prints_without_writing() {
+fn lint_stdout_prints_the_files_and_moves_the_report_aside() {
 	let p = project(&[("runfiles/a.run", "let y=1\n")]);
-	let o = p.run(&[":format", "--stdout"]);
+	let o = p.run(&[":lint", "--stdout"]);
 	assert!(o.status.success(), "{}", err(&o));
-	assert!(out(&o).contains("let y = 1"), "{}", out(&o));
-	assert_eq!(
-		std::fs::read_to_string(p.dir.path().join("runfiles/a.run")).unwrap(),
-		"let y=1\n"
-	);
+	assert_eq!(out(&o), "let y = 1\n", "stdout holds the file and nothing else");
+	assert!(err(&o).contains("1 file checked: no errors"), "{}", err(&o));
+	assert_eq!(read(&p, "runfiles/a.run"), "let y=1\n");
 }
 
 #[test]
-fn format_takes_explicit_paths_including_directories() {
+fn lint_takes_explicit_paths_including_directories() {
 	let p = project(&[("runfiles/a.run", "$ true\n")]);
 	std::fs::create_dir_all(p.dir.path().join("elsewhere")).unwrap();
 	std::fs::write(p.dir.path().join("elsewhere/x.run"), "let y=1\n").unwrap();
-	let o = p.run(&[":format", "elsewhere"]);
-	assert!(o.status.success(), "{}", err(&o));
+	let o = p.run(&[":lint", "elsewhere"]);
+	assert!(o.status.success(), "{}{}", out(&o), err(&o));
 	assert_eq!(
-		std::fs::read_to_string(p.dir.path().join("elsewhere/x.run")).unwrap(),
+		read(&p, "elsewhere/x.run"),
 		"let y = 1\n",
 		"a directory argument is walked"
 	);
 }
 
 #[test]
-fn format_leaves_the_global_directory_alone_unless_asked() {
+fn lint_leaves_the_global_directory_alone_unless_asked() {
 	let p = project(&[("runfiles/a.run", "$ true\n")]);
 	let g = p.home.path().join(".runfiles");
 	std::fs::create_dir_all(&g).unwrap();
 	std::fs::write(g.join("mine.run"), "let y=1\n").unwrap();
 
-	assert!(p.run(&[":format"]).status.success());
+	assert!(p.run(&[":lint"]).status.success());
 	assert_eq!(
 		std::fs::read_to_string(g.join("mine.run")).unwrap(),
 		"let y=1\n",
 		"a task file is committed; the machine-wide directory is one person's"
 	);
 
-	assert!(p.run(&[":format", "--include-global"]).status.success());
+	assert!(p.run(&[":lint", "--include-global"]).status.success());
 	assert_eq!(std::fs::read_to_string(g.join("mine.run")).unwrap(), "let y = 1\n");
 }
 
 #[test]
-fn format_refuses_a_file_that_does_not_parse_and_leaves_it_whole() {
-	let p = project(&[("runfiles/a.run", "$ true\n")]);
-	std::fs::write(p.dir.path().join("runfiles/broken.run"), "if x\n$ echo a\n").unwrap();
-	let o = p.run(&[":format"]);
-	assert!(!o.status.success(), "a file it could not read must not pass silently");
+fn lint_reports_a_file_that_does_not_parse_and_carries_on_with_the_rest() {
+	let p = project(&[("runfiles/a.run", "let y=1\n")]);
+	std::fs::write(p.dir.path().join("runfiles/broken.run"), "if true\n$ echo a\n").unwrap();
+	let o = p.run(&[":lint"]);
+	assert!(!o.status.success(), "a file that does not parse must not pass");
+	assert!(
+		out(&o).contains("broken.run:1:1: error: block opened here is never closed by `end`"),
+		"{}",
+		out(&o)
+	);
 	assert_eq!(
-		std::fs::read_to_string(p.dir.path().join("runfiles/broken.run")).unwrap(),
-		"if x\n$ echo a\n",
+		read(&p, "runfiles/broken.run"),
+		"if true\n$ echo a\n",
 		"reindenting a file whose blocks do not close is guesswork"
 	);
+	assert_eq!(
+		read(&p, "runfiles/a.run"),
+		"let y = 1\n",
+		"the rest are still put into shape"
+	);
+}
+
+#[test]
+fn lint_reports_everything_the_runner_would_refuse_where_it_is_written() {
+	let p = project(&[
+		("runfiles/build.run", "$ true\n"),
+		(
+			"runfiles/t.run",
+			".wach = \"src/**\"\n\nprint(exists(\"x\"))\nprint(regoin)\nrun biuld\n",
+		),
+	]);
+	let o = p.run(&[":lint", "--check"]);
+	assert!(!o.status.success(), "{}", out(&o));
+	let report = out(&o);
+	for line in [
+		"t.run:1:1: error: unknown property `.wach`; did you mean `.watch`?",
+		"t.run:3:7: error: unknown function `exists`; did you mean `directory_exists` or `file_exists`?",
+		"t.run:4:7: error: `regoin` is not defined",
+		"t.run:5:1: error: no target named `biuld`",
+	] {
+		assert!(report.contains(line), "missing {line:?} in:\n{report}");
+	}
+	assert!(report.contains("4 errors in 1 file"), "{report}");
+}
+
+#[test]
+fn lint_reports_a_shell_finding_with_what_to_write_instead_under_it() {
+	let p = project(&[("runfiles/t.run", "$ sudo ss -ltnp 'sport = :{{ ARG.port }}'\n")]);
+	let o = p.run(&[":lint", "--check"]);
+	assert!(!o.status.success(), "{}", out(&o));
+	let report = out(&o);
+	let lines: Vec<&str> = report.lines().collect();
+	let at = lines
+		.iter()
+		.position(|l| l.contains("t.run:1:17: error: ") && l.ends_with("[quoted-interpolation]"))
+		.unwrap_or_else(|| panic!("no finding in:\n{report}"));
+	assert_eq!(lines[at + 1], "  fix: write `'sport = :'{{ ARG.port }}`", "{report}");
+	assert!(report.contains("1 error in 1 file"), "{report}");
+}
+
+#[test]
+fn lint_passes_a_project_with_nothing_wrong_and_says_so() {
+	// A name the shared file binds, and a target that is there.
+	let p = project(&[
+		("runfiles/_shared.run", "let region = \"eu\"\n"),
+		("runfiles/deploy.run", "print(region)\nrun build\n"),
+		("runfiles/build.run", "$ true\n"),
+	]);
+	let o = p.run(&[":lint", "--check"]);
+	assert!(o.status.success(), "{}", out(&o));
+	assert!(out(&o).contains("3 files checked: no errors"), "{}", out(&o));
+}
+
+#[test]
+fn lint_reports_positions_in_the_file_as_it_now_stands() {
+	// Formatted first and checked after, so a position points into what is on
+	// disk once it has run -- the indentation it added included.
+	let p = project(&[("runfiles/t.run", "if true\nprint(ghost)\nend\n")]);
+	let o = p.run(&[":lint"]);
+	assert!(!o.status.success(), "{}", out(&o));
+	assert_eq!(read(&p, "runfiles/t.run"), "if true\n\tprint(ghost)\nend\n");
+	assert!(
+		out(&o).contains("t.run:2:8: error: `ghost` is not defined"),
+		"{}",
+		out(&o)
+	);
+}
+
+#[test]
+fn lint_refuses_a_flag_it_does_not_have_rather_than_writing() {
+	let p = project(&[("runfiles/a.run", "let y=1\n")]);
+	let o = p.run(&[":lint", "--chek"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("unknown flag `--chek`"), "{}", err(&o));
+	assert_eq!(
+		read(&p, "runfiles/a.run"),
+		"let y=1\n",
+		"a mistyped `--check` must not write"
+	);
+}
+
+#[test]
+fn format_is_refused_with_the_name_it_goes_by_now() {
+	let p = project(&[("runfiles/a.run", "let y=1\n")]);
+	let o = p.run(&[":format", "--check"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("`:format` is now `:lint`"), "{}", err(&o));
+	assert_eq!(read(&p, "runfiles/a.run"), "let y=1\n");
+}
+
+#[test]
+fn this_repository_lints_clean() {
+	// Exit 0 is the promise: every runfile here is formatted, and nothing in one
+	// would be refused by the runner or underlined by an editor.
+	let p = project(&[]);
+	let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+	let o = p.run_in(&root, &[":lint", "--check"]);
+	assert!(o.status.success(), "{}{}", out(&o), err(&o));
 }
 
 #[test]
@@ -3584,4 +3691,78 @@ fn a_listing_into_a_pipe_keeps_every_description_whole() {
 		.unwrap();
 	assert!(out(&o).contains(long), "{}", out(&o));
 	assert!(!out(&o).contains('…'), "{}", out(&o));
+}
+
+// ------------------------------------------------------ names nothing defines
+
+#[test]
+fn a_target_naming_something_nothing_defines_is_refused_before_anything_runs() {
+	// Both in a branch that is never taken, under a command that would have
+	// run: the file that used to pass until the day the branch was taken.
+	let p = project(&[(
+		"runfiles/t.run",
+		"$ touch ran\nif false\n\tprint(exists(\"x\"), regoin)\nend\n",
+	)]);
+	for args in [&["t"][..], &["--dry-run", "t"]] {
+		let o = p.run(args);
+		let e = err(&o);
+		assert!(!o.status.success(), "{args:?}: {e}");
+		let refused: Vec<&str> = e.lines().filter(|l| l.starts_with("[runfile] error: ")).collect();
+		assert_eq!(refused.len(), 2, "{args:?}: one line each, each with the prefix: {e}");
+		assert!(
+			refused[0].ends_with(
+				"t.run: line 3: unknown function `exists`; did you mean `directory_exists` or `file_exists`?"
+			),
+			"{e}"
+		);
+		assert!(refused[1].ends_with("t.run: line 3: `regoin` is not defined"), "{e}");
+		assert!(!p.dir.path().join("ran").exists(), "{args:?}: nothing ran");
+	}
+}
+
+#[test]
+fn a_target_whose_shell_bash_would_refuse_is_refused_before_anything_runs() {
+	// `touch` would have run, and then bash would have stopped at the quote.
+	let p = project(&[("runfiles/t.run", "$ touch ran\n$ echo it's\n")]);
+	for args in [&["t"][..], &["--dry-run", "t"]] {
+		let o = p.run(args);
+		let e = err(&o);
+		assert!(!o.status.success(), "{args:?}: {e}");
+		let refused: Vec<&str> = e.lines().filter(|l| l.starts_with("[runfile] error: ")).collect();
+		assert_eq!(refused.len(), 1, "{args:?}: {e}");
+		assert!(refused[0].contains("t.run: line 2: this `'` is never closed"), "{e}");
+		assert!(refused[0].ends_with("[unclosed]"), "{e}");
+		assert!(!p.dir.path().join("ran").exists(), "{args:?}: nothing ran");
+	}
+}
+
+#[test]
+fn a_name_the_shared_file_binds_is_not_refused() {
+	let p = project(&[
+		("runfiles/_shared.run", "let greeting = \"hi\"\n"),
+		("runfiles/t.run", "print(greeting)\n"),
+	]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "hi");
+}
+
+#[test]
+fn a_dispatched_target_that_names_nothing_is_refused_before_any_of_it_runs() {
+	// Checked where it is loaded, as a file that does not parse is: the caller
+	// has already run what came before the call.
+	let p = project(&[
+		("runfiles/all.run", "$ touch before\nrun broken\n$ touch after\n"),
+		("runfiles/broken.run", "$ touch inner\nlet x = nope()\n"),
+	]);
+	let o = p.run(&["all"]);
+	assert!(!o.status.success(), "{}", err(&o));
+	assert!(
+		err(&o).contains("broken.run: line 2: unknown function `nope`"),
+		"{}",
+		err(&o)
+	);
+	assert!(p.dir.path().join("before").exists());
+	assert!(!p.dir.path().join("inner").exists(), "nothing of the broken target ran");
+	assert!(!p.dir.path().join("after").exists());
 }

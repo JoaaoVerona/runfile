@@ -217,7 +217,7 @@ pub enum Statement {
 		/// Kept because the two are not derivable from each other: a `$` run
 		/// skips blank and comment lines, and a backslash continuation folds
 		/// several source lines into one body entry. Tooling that reports on the
-		/// shell text -- shellcheck delegation -- needs to point back at the
+		/// shell text -- the shell checker -- needs to point back at the
 		/// line the author actually wrote.
 		lines: Vec<usize>,
 		span: Span,

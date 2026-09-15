@@ -77,6 +77,10 @@ do          = [ "parallel" ] , "do" ;                       (* opens a block, so
 end         = "end" ;
 run         = "run" , target_ref , { WS , arg_word } ;
 call        = postfix | capture_call ;                      (* bare call, e.g. decrypt(a,b) *)
+(* A call names a function the language has, and an `ident` read as a value names a binding some line before
+   it can have made -- by the runner's scoping rather than by shape, so neither is stated here. Both are
+   checked once a file has parsed and before any of it runs (`runfile-lang/src/resolve.rs`), and a
+   reassignment needs a `let` of its name above it. *)
 
 target_ref  = { ident_char | ":" | interp } ;
 arg_word    = { ANY - WS - NEWLINE | interp } ;

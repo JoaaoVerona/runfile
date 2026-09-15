@@ -283,80 +283,64 @@ fn a_uri_with_escapes_round_trips() {
 	assert_eq!(runfile_lsp::server::uri_to_path(&uri).unwrap(), p);
 }
 
-// ---- shellcheck delegation
+// ---- the shell checker
 //
-// Skipped where shellcheck is not installed: CI has it, a contributor's machine
-// might not, and a missing enhancement must not read as a broken build.
-
-fn have_shellcheck() -> bool {
-	std::process::Command::new("shellcheck")
-		.arg("--version")
-		.stdout(std::process::Stdio::null())
-		.stderr(std::process::Stdio::null())
-		.status()
-		.is_ok_and(|s| s.success())
-}
+// Its rules are tested in `runfile-shell`. These are about the server: that a
+// finding arrives as a diagnostic, on exactly the text it is about.
 
 #[test]
-fn a_real_shell_mistake_is_reported_on_its_own_line() {
-	if !have_shellcheck() {
-		eprintln!("skipped: shellcheck not installed");
-		return;
-	}
-	// SC2086: an unquoted expansion of something shellcheck cannot prove safe.
+fn a_shell_mistake_is_underlined_where_it_is_written() {
 	// Line 3 of the file is line 2 of the script, because the comment between
 	// them is transparent to the run -- the case a naive offset gets wrong.
-	let src = "$ echo start\n# a note\n$ echo $UNSET_VAR\n";
+	let src = "$ echo start\n# a note\n$ echo it's\n";
 	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
 	let d = diagnostics(&out[0]);
 	assert_eq!(d.len(), 1, "{d:?}");
 	assert_eq!(d[0]["range"]["start"]["line"], 2, "the line the author wrote");
-	assert!(d[0]["message"].as_str().unwrap().contains("SC2086"), "{d:?}");
+	assert_eq!(d[0]["range"]["start"]["character"], 9, "{d:?}");
+	assert_eq!(d[0]["range"]["end"]["character"], 10, "{d:?}");
+	assert_eq!(d[0]["severity"], 1, "{d:?}");
+	assert!(d[0]["message"].as_str().unwrap().contains("[unclosed]"), "{d:?}");
+}
+
+#[test]
+fn a_shell_finding_says_what_to_write_instead() {
+	let src = "$ sudo ss -ltnp 'sport = :{{ ARG.port }}'\n";
+	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
+	let d = diagnostics(&out[0]);
+	assert_eq!(d.len(), 1, "{d:?}");
+	let message = d[0]["message"].as_str().unwrap();
+	assert!(message.contains("[quoted-interpolation]"), "{message}");
+	assert!(
+		message.ends_with("\nfix: write `'sport = :'{{ ARG.port }}`"),
+		"{message}"
+	);
 }
 
 #[test]
 fn clean_shell_produces_nothing() {
-	if !have_shellcheck() {
-		return;
-	}
-	let out = converse(&[did_open("file:///x/runfiles/a.run", "$ x=1\n$ echo \"$x\"\n")]);
-	assert!(diagnostics(&out[0]).is_empty(), "{:?}", diagnostics(&out[0]));
-}
-
-#[test]
-fn an_interpolation_does_not_itself_trip_shellcheck() {
-	if !have_shellcheck() {
-		return;
-	}
-	// It resolves to exactly one shell word, so a correct rendering produces no
-	// quoting complaint. Leaving the braces in would produce several.
-	let out = converse(&[did_open("file:///x/runfiles/a.run", "$ cp {{ ARG.src }} /tmp/\n")]);
+	let src = "$ x=1\n$ echo \"$x\"\n$ cp {{ ARG.src }} /tmp/\n";
+	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
 	assert!(diagnostics(&out[0]).is_empty(), "{:?}", diagnostics(&out[0]));
 }
 
 #[test]
 fn a_non_shell_exec_body_is_left_alone() {
-	if !have_shellcheck() {
-		return;
-	}
 	// Python that would be nonsense as shell must not be reported as such.
-	let src = "exec python3\nx = [1, 2]\nprint(x)\nend\n";
+	let src = "exec python3\n\tx = ['it', \"'s\"]\n\tprint(x)\nend\n";
 	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
 	assert!(diagnostics(&out[0]).is_empty(), "{:?}", diagnostics(&out[0]));
 }
 
 #[test]
-fn a_syntax_error_suppresses_shell_diagnostics() {
-	if !have_shellcheck() {
-		return;
-	}
-	// The document does not parse, so the shell text the runner would assemble
-	// is not known; reporting on a guess would be noise on top of a real error.
-	let src = ".wach = \"y\"\n$ echo $UNSET_VAR\n";
+fn a_file_that_does_not_parse_has_its_shell_left_unread() {
+	// The shell text the runner would assemble is not known, and a report on a
+	// guess would be noise on top of the real error.
+	let src = "if FLAG.x\n$ echo it's\n";
 	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
 	let d = diagnostics(&out[0]);
 	assert_eq!(d.len(), 1, "{d:?}");
-	assert!(d[0]["message"].as_str().unwrap().contains("watch"), "{d:?}");
+	assert!(!d[0]["message"].as_str().unwrap().contains("[unclosed]"), "{d:?}");
 }
 
 // ---- hover
@@ -544,7 +528,7 @@ fn formatting_returns_one_edit_covering_the_whole_document() {
 	assert_eq!(edits[0]["range"]["start"]["line"], 0);
 	assert_eq!(
 		edits[0]["newText"], "let x = 1\n\nif x\n\t$ a\nend\n",
-		"the same shape `run :format` produces"
+		"the same shape `run :lint` produces"
 	);
 }
 
@@ -587,4 +571,59 @@ fn a_sibling_called_by_its_bare_name_is_not_reported_missing() {
 	std::fs::write(&caller, "run nope\n").unwrap();
 	let out = converse(&[did_open(&path_to_uri(&caller), "run nope\n")]);
 	assert_eq!(diagnostics(&out[0]).len(), 1, "{:?}", diagnostics(&out[0]));
+}
+
+/// Where a diagnostic starts and ends, as (line, first character, last one).
+fn span_of(d: &Value) -> (u64, u64, u64) {
+	let at = |k: &str| d["range"][k]["character"].as_u64().unwrap();
+	(d["range"]["start"]["line"].as_u64().unwrap(), at("start"), at("end"))
+}
+
+#[test]
+fn a_name_nothing_defines_is_underlined_and_one_a_shared_file_binds_is_not() {
+	// The shared binding is the case worth having: it appears nowhere in the
+	// file that reads it, so only the chain can say it is fine.
+	let d = tempfile::TempDir::new().unwrap();
+	let dir = d.path().join("runfiles");
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(dir.join("_shared.run"), "let region = \"eu\"\n").unwrap();
+	let doc = dir.join("deploy.run");
+	let text = "print(region)\nprint(regoin)\nexists(\"x\")\n";
+	std::fs::write(&doc, text).unwrap();
+
+	let out = converse(&[did_open(&path_to_uri(&doc), text)]);
+	let d = diagnostics(&out[0]);
+	assert_eq!(d.len(), 2, "{d:?}");
+	assert_eq!(span_of(&d[0]), (1, 6, 12), "{d:?}");
+	assert!(
+		d[0]["message"].as_str().unwrap().contains("did you mean `region`?"),
+		"{d:?}"
+	);
+	assert_eq!(span_of(&d[1]), (2, 0, 6), "{d:?}");
+	assert!(d.iter().all(|x| x["severity"] == 1), "errors, not hints: {d:?}");
+}
+
+#[test]
+fn a_shared_file_mid_edit_leaves_the_names_below_it_alone() {
+	// Half-written, the shared file binds nothing anybody can read -- which is
+	// not the same as binding nothing, so a target's names are not guessed at
+	// while it is being fixed. What is certain is still said.
+	let d = tempfile::TempDir::new().unwrap();
+	let dir = d.path().join("runfiles");
+	std::fs::create_dir_all(&dir).unwrap();
+	let shared = dir.join("_shared.run");
+	std::fs::write(&shared, "let region = \"eu\"\n").unwrap();
+	let doc = dir.join("deploy.run");
+	std::fs::write(&doc, "print(region)\n").unwrap();
+
+	let out = converse(&[
+		did_open(&path_to_uri(&shared), "let region = \n"),
+		did_open(&path_to_uri(&doc), "print(region)\nnope()\n"),
+	]);
+	let d = diagnostics(&out[1]);
+	assert_eq!(d.len(), 1, "{d:?}");
+	assert!(
+		d[0]["message"].as_str().unwrap().contains("unknown function `nope`"),
+		"{d:?}"
+	);
 }

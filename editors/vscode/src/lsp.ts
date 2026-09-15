@@ -258,7 +258,7 @@ export class LanguageClient implements vscode.Disposable {
 
 	/**
 	 * The edits that put a document into the one shape there is -- the same
-	 * `run :format` produces, since both call the same formatter.
+	 * `run :lint` produces, since both call the same formatter.
 	 *
 	 * An empty list when nothing needs changing, so saving a clean file marks
 	 * nothing dirty; nothing at all when the document does not parse, because

@@ -1337,6 +1337,7 @@ dependencies = [
  "runfile-discovery",
  "runfile-lang",
  "runfile-runtime",
+ "runfile-shell",
  "serde_json",
  "tempfile",
 ]
@@ -1349,10 +1350,18 @@ dependencies = [
  "runfile-discovery",
  "runfile-env",
  "runfile-lang",
+ "runfile-shell",
  "tempfile",
  "thiserror",
  "which",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "runfile-shell"
+version = "1.5.0"
+dependencies = [
+ "runfile-lang",
 ]
 
 [[package]]

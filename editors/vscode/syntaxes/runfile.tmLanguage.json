@@ -276,8 +276,16 @@
       }
     },
     "function": {
-      "match": "\\b([a-z_][a-z0-9_]*)\\s*(?=\\()",
-      "name": "support.function.run"
+      "$comment": "A call names a function the language has, or it is `invalid.illegal`, which every theme draws as an error -- so `exists(…)` looks wrong while it is being typed, and `run :lsp` says why. The list is the runner's own `FUNCTIONS`, with `code_of` and `try`; a test in `runfile-lang` holds the two together. Alternation backtracks, so `trim` does not stop `trim_start` from being found.",
+      "match": "\\b(?:(abs|append|base64_decode|base64_encode|basename|capitalize|ceil|code_of|concat|concat_lists|confirm|contains|decrypt|directory_exists|dirname|ends_with|error|escape|exit|extname|file_exists|first|flatten|floor|glob|index_of|is_executable|is_number|join|join_path|json_encode|json_format|json_get|json_keys|json_query|json_set|json_type|last|length|lines|max|md5|min|now|number|one_of|power|prepend|print|printf|range|read_file|regex_capture|regex_capture_all|regex_matches|regex_remove|regex_replace|remove_all|remove_prefix|remove_suffix|repeat|replace_all|reverse|round|sha256|sleep|slice|sort|split|starts_with|stem|substring|temp_dir|temp_file|to_lower|to_upper|trim|trim_end|trim_start|try|unique|url_decode|url_encode|uuid|without|write_file|zip)|([a-z_][a-z0-9_]*))\\s*(?=\\()",
+      "captures": {
+        "1": {
+          "name": "support.function.run"
+        },
+        "2": {
+          "name": "invalid.illegal.unknown-function.run"
+        }
+      }
     },
     "operator": {
       "match": "==|!=|<=|>=|&&|\\|\\||[+\\-*/<>!?=]",
@@ -421,15 +429,18 @@
     },
     "capture-call": {
       "$comment": "A call whose last argument is a `$` run holds shell text -- `lines($ git ls-files)` as much as `code_of($ cmd)`, which is that same shape wearing a name people know. Matched by shape rather than by name: hardcoding `code_of` left every other call reading its command as a runfile *expression*, so `--cached` came out two operators. It ends at the `)`, which is the same rule the parser and the tree-sitter grammar enforce -- **or at the end of the line**, which is the safety net that matters: the embedded shell grammar happily runs a rule to the end of a line, so `code_of($ xcode-select --install)` had its `)` swallowed by the option rule and the region never closed. Everything below it was then coloured as shell. Every other embedded region here is bound the same way, because each one is a single line by construction.",
-      "begin": "\\b([a-z_][a-z0-9_]*)(\\()[ \\t]*(\\$)(?=[ \\t]|\\))",
+      "begin": "\\b(?:(abs|append|base64_decode|base64_encode|basename|capitalize|ceil|code_of|concat|concat_lists|confirm|contains|decrypt|directory_exists|dirname|ends_with|error|escape|exit|extname|file_exists|first|flatten|floor|glob|index_of|is_executable|is_number|join|join_path|json_encode|json_format|json_get|json_keys|json_query|json_set|json_type|last|length|lines|max|md5|min|now|number|one_of|power|prepend|print|printf|range|read_file|regex_capture|regex_capture_all|regex_matches|regex_remove|regex_replace|remove_all|remove_prefix|remove_suffix|repeat|replace_all|reverse|round|sha256|sleep|slice|sort|split|starts_with|stem|substring|temp_dir|temp_file|to_lower|to_upper|trim|trim_end|trim_start|try|unique|url_decode|url_encode|uuid|without|write_file|zip)|([a-z_][a-z0-9_]*))(\\()[ \\t]*(\\$)(?=[ \\t]|\\))",
       "beginCaptures": {
         "1": {
           "name": "support.function.run"
         },
         "2": {
-          "name": "punctuation.section.arguments.begin.run"
+          "name": "invalid.illegal.unknown-function.run"
         },
         "3": {
+          "name": "punctuation.section.arguments.begin.run"
+        },
+        "4": {
           "name": "keyword.control.shell.run"
         }
       },

@@ -7,8 +7,8 @@
 
 mod ci_detect;
 mod cmd_env;
-mod cmd_format;
 mod cmd_generate;
+mod cmd_lint;
 mod cmd_update;
 mod completions;
 mod help;
@@ -36,7 +36,7 @@ const SECTIONS: &[Section] = &[
 			Row("run <target> [args...]", "run a target"),
 			Row("run :list", "list every target"),
 			Row("run :init", "create runfiles/ with an example target"),
-			Row("run :format", "format every runfile in this project"),
+			Row("run :lint", "format every runfile and check it for errors"),
 			Row("run :env <command>", "manage .env files"),
 			Row("run :completions <command>", "shell tab-completion"),
 			Row(
@@ -171,20 +171,31 @@ fn real_main() -> Result<ExitCode, String> {
 			}
 			return Ok(ExitCode::SUCCESS);
 		}
-		":format" => {
+		":lint" => {
 			if help::wants_help(&args) {
-				print!("{}", cmd_format::usage());
+				print!("{}", cmd_lint::usage());
 				return Ok(ExitCode::SUCCESS);
+			}
+			if let Some(bad) = args
+				.iter()
+				.find(|a| a.starts_with('-') && !cmd_lint::FLAGS.contains(&a.as_str()))
+			{
+				return Err(format!("unknown flag `{bad}` for `:lint`\n{}", cmd_lint::usage()));
 			}
 			let flag = |n: &str| args.iter().any(|a| a == n);
 			let paths: Vec<String> = args.iter().filter(|a| !a.starts_with('-')).cloned().collect();
-			let files = if paths.is_empty() {
-				cmd_format::project_files(&catalog(&flags)?, flag("--include-global"))
-			} else {
-				cmd_format::from_paths(&paths)?
-			};
-			return cmd_format::format_files(&files, flag("--check"), flag("--stdout"));
+			if !paths.is_empty() {
+				let files = cmd_lint::from_paths(&paths)?;
+				return Ok(cmd_lint::lint(&files, None, flag("--check"), flag("--stdout")));
+			}
+			let cat = catalog(&flags)?;
+			let files = cmd_lint::project_files(&cat, flag("--include-global"));
+			return Ok(cmd_lint::lint(&files, Some(&cat), flag("--check"), flag("--stdout")));
 		}
+		// Became `:lint`. Said apart from an unknown command, since it is not a
+		// typo: it is a script or a habit written for an older runner, and the
+		// person reading this needs the new name rather than the list of commands.
+		":format" => return Err(cmd_lint::FORMAT_IS_LINT.to_string()),
 		":completions" => return completions::dispatch(&args),
 		// Hidden: the shells' one question, "what may follow what". Kept out of
 		// the help and out of the tree, since nobody types it. It must never fail
@@ -246,6 +257,9 @@ fn real_main() -> Result<ExitCode, String> {
 	host.assume_yes = flags.assume_yes || ci_detect::is_ci();
 	host.confirm = Some(prompt::confirm);
 	if flags.stdin_args {
+		// A file that names something nothing defines is refused before anyone
+		// is asked about it: the answers would only be thrown away.
+		host.check(target).map_err(|e| e.to_string())?;
 		// Asked before anything runs, from the list the tree gives. The lazy
 		// prompt stays as a backstop for a value the walk cannot see -- there
 		// should be none, and a missing one must still be askable rather than
@@ -339,7 +353,7 @@ fn catalog(flags: &Flags) -> Result<Catalog, String> {
 /// owner rather than to this job. Either way a target that no reader of the
 /// repository can see must not join the run, and must not shadow one that is
 /// checked in. Passing no home is the whole gate -- there is no second place
-/// that decides, so the catalog, `:list`, `:format`, `:generate` and
+/// that decides, so the catalog, `:list`, `:lint`, `:generate` and
 /// `:complete` are covered by this one call rather than by an `is_ci` each.
 ///
 /// It is also why nothing has to *clean* `$HOME/.runfiles` on a runner any

@@ -615,6 +615,52 @@ test("a detached exec body is embedded the same way an ordinary one is", async (
 	assert.ok(!python[1]?.includes("test.shell"), "another language is not shell")
 })
 
+test("a call is coloured as a function only when the language has one by that name", async () => {
+	// `exists(…)` used to come out exactly as `file_exists(…)` does, so nothing
+	// looked wrong until a run reached it. The list is the runner's, held to it
+	// by a test in `runfile-lang`; `run :lsp` is what says why.
+	const lines = await tokensOf(
+		[
+			'let a = file_exists("x")',
+			'let b = exists("x")',
+			"$ echo {{ exists(1) }} {{ to_upper(ARG.x) }}",
+			'let c = trim_start("x") + trimx("x")',
+			"let d = lines($ ls)",
+			"let e = rest($ ls)",
+			"let exists = 1"
+		].join("\n") + "\n"
+	)
+	const scope = (line: number, text: string) =>
+		(lines[line] ?? []).find((t) => t.text === text)?.scopes ?? []
+	const known = "support.function.run"
+	const unknown = "invalid.illegal.unknown-function.run"
+	for (const [line, text] of [
+		[0, "file_exists"],
+		[2, "to_upper"],
+		// Alternation backtracks, so a name that `trim` is the start of is found.
+		[3, "trim_start"],
+		[4, "lines"]
+	] as const) {
+		assert.ok(scope(line, text).includes(known), `${text}: ${scope(line, text).join(" ")}`)
+		assert.ok(!scope(line, text).includes(unknown), `${text}: ${scope(line, text).join(" ")}`)
+	}
+	for (const [line, text] of [
+		[1, "exists"],
+		[2, "exists"],
+		[3, "trimx"],
+		[5, "rest"]
+	] as const) {
+		assert.ok(scope(line, text).includes(unknown), `${text}: ${scope(line, text).join(" ")}`)
+	}
+	// Not a call: a binding may take any name.
+	assert.ok(!(lines[6] ?? []).some((t) => t.scopes.includes(unknown)), "a binding is not a call")
+	// And a capture call whose name is unknown is still a capture call.
+	assert.ok(
+		(lines[5] ?? []).some((t) => t.scopes.includes("keyword.control.shell.run")),
+		"the `$` inside `rest(…)` is still the marker"
+	)
+})
+
 test("parallel is a keyword in front of do and for, and a name anywhere else", async () => {
 	const [pdo] = await scopesOf("parallel do\n")
 	assert.ok(pdo?.includes("keyword.control.parallel.run"), `${pdo?.join(" ")}`)

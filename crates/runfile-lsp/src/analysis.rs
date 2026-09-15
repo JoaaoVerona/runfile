@@ -61,6 +61,20 @@ fn split_line_prefix(msg: &str) -> (usize, String) {
 	}
 }
 
+/// What sits above a document: the `_shared.run` files whose `let`s reach it,
+/// as far as the server could read them.
+#[derive(Debug, Clone, Copy)]
+pub enum Chain<'a> {
+	/// A target, under these shared files, outermost first.
+	Target(&'a [runfile_lang::Target]),
+	/// A `_shared.run` itself, under the ones above it.
+	Shared(&'a [runfile_lang::Target]),
+	/// One of them does not parse, so what they bind is not known -- and a
+	/// name the document reads may be one of those. Only calls are checked:
+	/// which functions exist is never in doubt.
+	Unknown,
+}
+
 /// Diagnostics for one document.
 ///
 /// `known_targets` is what `run <name>` may refer to; pass an empty slice when
@@ -68,8 +82,9 @@ fn split_line_prefix(msg: &str) -> (usize, String) {
 /// `machine_wide` says whether this document sits in the machine-wide
 /// directory, which is the one place `.only-in-directories` means anything.
 /// Without it an editor would accept a property the runner refuses -- the drift
-/// that makes a language server worse than none.
-pub fn diagnose(src: &str, known_targets: &[String], machine_wide: bool) -> Vec<Diagnostic> {
+/// that makes a language server worse than none. `chain` is what binds the
+/// names the document does not bind itself.
+pub fn diagnose(src: &str, known_targets: &[String], machine_wide: bool, chain: Chain<'_>) -> Vec<Diagnostic> {
 	let ast = match runfile_lang::parse(src) {
 		Ok(a) => a,
 		Err(e) => {
@@ -89,8 +104,99 @@ pub fn diagnose(src: &str, known_targets: &[String], machine_wide: bool) -> Vec<
 	if !known_targets.is_empty() {
 		check_target_calls(&ast.body, known_targets, &mut out, src);
 	}
+	// The runner's own check, asked the way the runner asks it: a name
+	// underlined here is a name a run refuses, and one left alone is not.
+	let unresolved = match chain {
+		Chain::Target(shared) => runfile_lang::resolve::of_chain(&ast, shared),
+		Chain::Shared(above) => runfile_lang::resolve::of_shared(&ast, above),
+		Chain::Unknown => runfile_lang::resolve::functions(&ast),
+	};
+	out.extend(unresolved.iter().map(|u| Diagnostic {
+		range: name_range(src, u),
+		message: strip_line_prefix(&u.to_string()),
+		severity: Severity::Error,
+	}));
+	// The shell in the file, checked as a run checks it -- which is also what
+	// knows whether a `_shared.run` above names the shell `$` lines use.
+	let above = match chain {
+		Chain::Target(files) | Chain::Shared(files) => Some(files),
+		Chain::Unknown => None,
+	};
+	out.extend(
+		runfile_shell::check(src, &ast, above)
+			.iter()
+			.map(|f| shell_diagnostic(src, f)),
+	);
 	out.sort_by_key(|d| (d.range.start_line, d.range.start_col));
 	out
+}
+
+/// A shell finding, underlining exactly the text it is about, with what to write
+/// instead on a line of its own.
+fn shell_diagnostic(src: &str, f: &runfile_shell::Finding) -> Diagnostic {
+	let text = Text::new(src);
+	let at = |byte: usize| {
+		let no = text.line_of(byte);
+		let from = byte - text.starts[no - 1];
+		let col = text.line(no).get(..from).map_or(0, |l| l.chars().count());
+		(no - 1, col)
+	};
+	let (start_line, start_col) = at(f.span.start);
+	let (end_line, end_col) = at(f.span.end);
+	let mut message = format!("{} [{}]", f.message, f.rule);
+	if let Some(fix) = &f.fix {
+		message.push_str("\nfix: ");
+		message.push_str(fix);
+	}
+	Diagnostic {
+		range: Range {
+			start_line,
+			start_col,
+			end_line,
+			end_col,
+		},
+		message,
+		severity: Severity::Error,
+	}
+}
+
+/// Where to underline a name that does not resolve: the name, and nothing
+/// around it.
+///
+/// A call or a read is placed exactly by the tree, which the text at that
+/// offset spelling the name confirms. A reassignment's names carry no position
+/// of their own, so its name is looked for as a whole word on its line. A name
+/// found in neither place -- a tree that disagrees with its text -- underlines
+/// the line rather than somewhere wrong.
+fn name_range(src: &str, u: &runfile_lang::Unresolved) -> Range {
+	let text = Text::new(src);
+	let start = if src.get(u.span.start..u.span.start + u.name.len()) == Some(u.name.as_str()) {
+		Some(u.span.start)
+	} else {
+		let from = text.starts.get(u.span.line.wrapping_sub(1)).copied();
+		from.and_then(|from| word_in(text.line(u.span.line), &u.name).map(|i| from + i))
+	};
+	let Some(start) = start else {
+		return whole_line(src, u.span.line);
+	};
+	let no = text.line_of(start);
+	let line = text.line(no);
+	let from = start - text.starts[no - 1];
+	let col = |byte: usize| line.get(..byte).map_or(0, |l| l.chars().count());
+	Range {
+		start_line: no - 1,
+		start_col: col(from),
+		end_line: no - 1,
+		end_col: col(from + u.name.len()),
+	}
+}
+
+/// Where `word` first appears in `line` as a whole word.
+fn word_in(line: &str, word: &str) -> Option<usize> {
+	let part = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+	line.match_indices(word).map(|(i, _)| i).find(|&i| {
+		!line[..i].chars().next_back().is_some_and(part) && !line[i + word.len()..].chars().next().is_some_and(part)
+	})
 }
 
 fn check_properties(
@@ -1280,7 +1386,12 @@ mod tests {
 	use super::*;
 
 	fn messages(src: &str) -> Vec<String> {
-		diagnose(src, &[], false).into_iter().map(|d| d.message).collect()
+		plain(src).into_iter().map(|d| d.message).collect()
+	}
+
+	/// Diagnostics for a target with nothing above it.
+	fn plain(src: &str) -> Vec<Diagnostic> {
+		diagnose(src, &[], false, Chain::Target(&[]))
 	}
 
 	#[test]
@@ -1350,15 +1461,18 @@ mod tests {
 		// An editor that accepts what the runner refuses is worse than none:
 		// the file underlines clean and then fails when somebody runs it.
 		let src = ".only-in-directories = \"sub\"\n$ true\n";
-		let d = diagnose(src, &[], false);
+		let d = plain(src);
 		assert_eq!(d.len(), 1, "{d:?}");
 		assert!(d[0].message.contains("machine-wide"), "{}", d[0].message);
-		assert!(diagnose(src, &[], true).is_empty(), "the one place it means something");
+		assert!(
+			diagnose(src, &[], true, Chain::Target(&[])).is_empty(),
+			"the one place it means something"
+		);
 	}
 
 	#[test]
 	fn a_syntax_error_is_reported_on_its_own_line() {
-		let d = diagnose("$ echo ok\nlet = 3\n", &[], false);
+		let d = plain("$ echo ok\nlet = 3\n");
 		assert_eq!(d.len(), 1, "{d:?}");
 		assert_eq!(d[0].range.start_line, 1, "zero-based line 1 is the second line");
 	}
@@ -1405,33 +1519,110 @@ mod tests {
 
 	#[test]
 	fn a_call_to_a_missing_target_is_reported() {
-		let d = diagnose("run build\n", &["deploy".to_string()], false);
+		let d = diagnose("run build\n", &["deploy".to_string()], false, Chain::Target(&[]));
 		assert_eq!(d.len(), 1);
 		assert!(d[0].message.contains("no target named `build`"), "{:?}", d[0]);
 	}
 
 	#[test]
 	fn a_call_to_a_known_target_is_fine() {
-		assert!(diagnose("run build\n", &["build".to_string()], false).is_empty());
+		assert!(diagnose("run build\n", &["build".to_string()], false, Chain::Target(&[])).is_empty());
 	}
 
 	#[test]
 	fn an_interpolated_target_name_is_not_guessed_at() {
 		// It is only known at run time, so flagging it would be a false alarm.
-		assert!(diagnose("run {{ ENV.NS }}:build\n", &["deploy".to_string()], false).is_empty());
+		assert!(
+			diagnose(
+				"run {{ ENV.NS }}:build\n",
+				&["deploy".to_string()],
+				false,
+				Chain::Target(&[])
+			)
+			.is_empty()
+		);
 	}
 
 	#[test]
 	fn target_calls_are_checked_inside_blocks_too() {
 		let src = "for x in [\"a\"]\n\trun nope\nend\n";
-		let d = diagnose(src, &["yes".to_string()], false);
+		let d = diagnose(src, &["yes".to_string()], false, Chain::Target(&[]));
 		assert_eq!(d.len(), 1, "{d:?}");
 		assert_eq!(d[0].range.start_line, 1);
 	}
 
 	#[test]
 	fn without_a_catalog_target_calls_are_left_alone() {
-		assert!(diagnose("run anything\n", &[], false).is_empty());
+		assert!(plain("run anything\n").is_empty());
+	}
+
+	// ---- names that do not resolve
+
+	fn range(start_line: usize, start_col: usize, end_col: usize) -> Range {
+		Range {
+			start_line,
+			start_col,
+			end_line: start_line,
+			end_col,
+		}
+	}
+
+	#[test]
+	fn a_call_to_a_function_that_does_not_exist_is_underlined_at_its_name() {
+		let d = plain("if true\n\tlet found = exists(\"/etc/hosts\")\nend\n");
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert_eq!(d[0].range, range(1, 13, 19));
+		assert_eq!(d[0].severity, Severity::Error);
+		assert_eq!(
+			d[0].message,
+			"unknown function `exists`; did you mean `directory_exists` or `file_exists`?"
+		);
+	}
+
+	#[test]
+	fn a_name_nothing_binds_is_underlined_and_one_the_shared_chain_binds_is_not() {
+		let shared = [runfile_lang::parse("let region = \"eu\"\n").unwrap()];
+		let d = diagnose("print(region, regoin)\n", &[], false, Chain::Target(&shared));
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert_eq!(d[0].range, range(0, 14, 20));
+		assert_eq!(d[0].message, "`regoin` is not defined; did you mean `region`?");
+		// Without the chain, the name it binds is not bound either.
+		assert_eq!(plain("print(region, regoin)\n").len(), 2);
+	}
+
+	#[test]
+	fn a_reassignment_of_nothing_is_underlined_at_the_name_on_its_line() {
+		let d = plain("let total = 0\n\ttotl = total + 1\n");
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert_eq!(d[0].range, range(1, 1, 5));
+		assert!(d[0].message.contains("did you mean `total`?"), "{}", d[0].message);
+	}
+
+	#[test]
+	fn a_name_on_a_later_line_of_a_list_is_underlined_on_that_line() {
+		let d = plain("let xs = [\n\t\"a\", # first\n\tghost,\n]\n");
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert_eq!(d[0].range, range(2, 1, 6));
+		// Past a character that is two bytes and one column.
+		let d = plain("print(\"é\", ghost)\n");
+		assert_eq!(d[0].range, range(0, 11, 16));
+	}
+
+	#[test]
+	fn with_the_chain_unreadable_only_calls_are_underlined() {
+		let d = diagnose("print(region)\nnope()\n", &[], false, Chain::Unknown);
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert!(d[0].message.contains("unknown function `nope`"), "{}", d[0].message);
+	}
+
+	#[test]
+	fn a_shared_file_is_checked_the_way_the_runner_folds_it() {
+		// Its `if` never runs, so nothing inside binds anything for the lines below.
+		let src = "if FLAG.x\n\tlet a = 1\nend\nlet b = a ? \"x\"\n";
+		let d = diagnose(src, &[], false, Chain::Shared(&[]));
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert_eq!(d[0].range, range(3, 8, 9));
+		assert!(plain(src).is_empty(), "in a target, it would have run");
 	}
 
 	/// Completion at the end of a one-line document.

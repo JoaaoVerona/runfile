@@ -206,7 +206,7 @@ end
 run _aws -- s3api put-bucket-policy --bucket {{ bucket }} --policy {{ policy }}
 ```
 
-`run :format` lays the block out, and a missing brace is underlined in your editor as you type — not reported
+`run :lint` lays the block out, and a missing brace is underlined in your editor as you type — not reported
 by the far end an hour later.
 
 ### Reading JSON without jq
@@ -387,7 +387,7 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `exec python3` … `end` | Run a command with the block as its stdin. |
 | `detach $ npm run dev` | Start this one command and do not wait for it. Also `detach exec …`. |
 | `json` … `end` | A block of JSON, as one value. |
-| `let x = 1` | Bind a value. `x = 2` rebinds. `let a, b = pair` takes a list apart. |
+| `let x = 1` | Bind a value. `x = 2` rebinds. `let a, b = pair` takes a list apart. A name is bound before it is read. |
 | `if` / `else if` / `else` / `end` | Branch. However many `else if`s, one `end`. |
 | `for x in list` / `end` | Loop over a list. `for k, v in pairs` unpacks each item. |
 | `parallel do` / `parallel for x in list` … `end` | Run each statement inside, or each iteration, at once. |
@@ -688,6 +688,44 @@ skipped by `-y`, in CI, and under `--dry-run`, where there is nothing to approve
 A line that is only a value — `exit`, `abc`, `35` — is a parse error, since it computes something and throws
 it away. Most often it is a call with the parentheses left off, and the message says so.
 
+### Names are checked before anything runs
+
+A call to a function the language does not have, or a read of a name nothing has bound, stops the run **before
+its first line** — wherever it sits, a branch that would not have been taken included — and every one in the
+file is reported at once, with what you probably meant:
+
+```bash
+$ run backup
+[runfile] error: /home/you/shop/runfiles/backup.run: line 12: unknown function `exists`; did you mean `directory_exists` or `file_exists`?
+[runfile] error: /home/you/shop/runfiles/backup.run: line 15: `regoin` is not defined; did you mean `region`?
+```
+
+A name counts once any path to the line can have bound it: a `let` inside an `if` still binds for what follows
+its `end`, and a pass of a loop sees what an earlier pass bound. What does not reach past its block is a loop's
+own name and anything a `parallel` branch binds; a `_shared.run` binds with its top-level `let`s. A read behind
+a `?` is checked too, since a name nothing binds takes the fallback every time. And `x = 2` needs a `let x`
+above it — otherwise a typo in the name being updated would quietly start a new one.
+
+Your editor underlines the same names as you type them — it is the runner's own check, served by `run :lsp` —
+and `run :lint` reports them for every runfile in the project at once.
+
+### The shell is checked too
+
+The shell in a runfile is read before anything runs as well — every `$` line, every `exec` block for `sh` or
+`bash`, every capture — the way bash will read it, with each `{{ … }}` as the one quoted word it becomes. What
+bash would refuse, and what is wrong every time it runs, stops the run with what to write instead:
+
+```bash
+$ run emulate
+[runfile] error: /home/you/app/runfiles/emulate.run: line 4: `$HOME` in `"$HOME/Android/Sdk"` is kept as written, since a string is not shell -- and on line 9 this value is used as a path, which then starts with `$HOME` itself [unexpanded-string]; write `{{ ENV.HOME }}` in its place
+```
+
+A quote left open, a `fi` with no `if`, an interpolation wrapped in quotes of its own, a `*` the shell never
+expands, `cd` as the last command of its shell, `$1` in a shell that is given no arguments: each rule reports
+only what is wrong every time, and never a line that could be right — no style, no guesses. Your editor
+underlines the same findings and `run :lint` reports them; [SHELL-CHECK-RULES.md](SHELL-CHECK-RULES.md) lists
+every rule, what it leaves alone, and why.
+
 ## Properties
 
 Set at the top of the file, or inside a block where marked.
@@ -899,7 +937,7 @@ whose state is still worth keeping, so a `setup` run under it is still recorded.
 | `run <target> [args…]` | Run a target |
 | `run :list` | List every target (`--names`, `--json` for tooling) |
 | `run :init` | Create `runfiles/` with an example |
-| `run :format [path…]` | Format runfiles in place (`--check`, `--stdout`) |
+| `run :lint [path…]` | Format runfiles in place and report anything the runner would refuse (`--check` writes nothing, `--stdout`) |
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
 | `run :completions <command> <shell>` | `install`, `uninstall` or `output` a completion script for `bash`, `zsh`, `fish` or `powershell` |
 | `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
@@ -916,11 +954,28 @@ whose state is still worth keeping, so a `setup` run under it is still recorded.
 
 Flags belong **before** the target name; everything after it is passed to the target.
 
-`run :format` has no settings: one shape, everywhere. It reindents with tabs, spaces expressions, places blank
+`run :lint` puts every runfile into the one shape there is, then reports everything the runner would refuse — a
+syntax error, an unknown or misplaced property, a call to a function that does not exist, a name nothing binds,
+a `run` of a target that is not there, shell the [shell checker](SHELL-CHECK-RULES.md) finds wrong — as
+`file:line:column`, which is the list your editor underlines. **It
+exits 0 only when every file is formatted and none of that is wrong**, so a file that passes runs without a
+parse-time error and opens with nothing underlined. `--check` writes nothing and fails on a file that needs
+formatting too, which is what a CI step wants.
+
+```bash
+$ run :lint --check
+runfiles/deploy.run: needs formatting
+runfiles/deploy.run:12:9: error: unknown function `exists`; did you mean `directory_exists` or `file_exists`?
+14 files checked: 1 needs formatting, 1 error in 1 file
+```
+
+A shell finding says what to write instead on the line under it. `run :lint` reports it and leaves the shell as
+you wrote it: only the layout of a file is ever rewritten.
+
+Formatting has no settings: one shape, everywhere. It reindents with tabs, spaces expressions, places blank
 lines, lays out `json` blocks, and leaves the three things that are not the language's to touch — strings, the
-text after `$ `, and `exec` bodies — exactly as written. It refuses a file that does not parse, and checks that
-its own output still means the same thing before writing it. `--check` reports what would change and exits 1,
-which is what a CI step wants.
+text after `$ `, and `exec` bodies — exactly as written. A file that does not parse is left alone, and the
+formatter checks that its output still means the same thing before writing it.
 
 ## Encrypted environment variables
 
@@ -950,6 +1005,10 @@ actually decrypts, so a locked keyring never gets in the way of an unrelated tar
 go-to-definition and documentation on hover — from the same parser `run` itself uses, so your editor never
 disagrees with what will actually happen. There is nothing extra to install.
 
+Diagnostics include every call to a function that does not exist and every name nothing has bound, underlined
+where it is written, with the name you probably meant. It is the check that stops a run before it starts, so it
+knows what the `_shared.run` above the file binds.
+
 Hover anything: a function shows its signature, what it does and a worked example; a property adds whether it
 may sit inside a block; `$`, `exec`, `run`, `retry`, `match` and the rest explain the line form itself.
 
@@ -962,12 +1021,14 @@ Ctrl+click a `run <target>` to open that target's file, or a variable to jump to
 into the `_shared.run` above it, which is the one definition you cannot find by reading the file in front of
 you.
 
-It also hands `$` lines and shell `exec` bodies to [shellcheck](https://www.shellcheck.net) when it is
-installed, mapping findings back to the lines you wrote.
+The shell in `$` lines and shell `exec` bodies is checked by the runner's own [shell checker](SHELL-CHECK-RULES.md),
+which reads each `{{ … }}` as the word it becomes — so nothing is reported against text nobody wrote, and there
+is nothing to install.
 
 **VS Code** — install the `.vsix` from the [latest release](https://git.joaoverona.com/joaaoverona/runfile/releases).
-You get a Run button on every target, a task provider, a sidebar tree, and shell lines coloured exactly as the
-same command in a `.sh` file. Set `"editor.formatOnSave": true` and saving formats.
+You get a Run button on every target, a task provider, a sidebar tree, shell lines coloured exactly as the
+same command in a `.sh` file, and a call to a function that does not exist coloured as an error as soon as you
+type its `(`. Set `"editor.formatOnSave": true` and saving formats.
 
 **JetBrains IDEs** read the same grammar: *Settings → Editor → TextMate Bundles*, add the `editors/vscode`
 directory from a checkout.

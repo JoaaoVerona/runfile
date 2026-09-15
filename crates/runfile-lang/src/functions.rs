@@ -301,7 +301,7 @@ pub fn call_with(name: &str, v: Vec<Value>, sc: &mut Scope, sp: Span) -> Result<
 			Value::Str(json_type_name(json_seek("json_type", &doc, path, sp)?).to_string())
 		}
 		"json_format" => {
-			// `jq .`, and the layout `run :format` gives a `json` block: one
+			// `jq .`, and the layout `run :lint` gives a `json` block: one
 			// member to a line, nested a level in, tabs unless told otherwise.
 			if n != 1 && n != 2 {
 				return Err(arity(name, "1 or 2 arguments", n, sp));
@@ -1015,6 +1015,24 @@ fn resolve(base: &Path, p: &str) -> PathBuf {
 	} else {
 		base.join(path)
 	}
+}
+
+/// Whether a call to `name` reaches a function: one of [`FUNCTIONS`], or one of
+/// the two calls answered before that table is consulted.
+///
+/// `code_of` is the runner's, since it runs what it holds and scores it, and is
+/// documented as the keyword it reads as. `try` is the evaluator's, since it
+/// catches a failure in its argument before that argument is evaluated -- and
+/// is unlisted because `?` replaced it, but still answers for the files that
+/// call it, so a check that refused it would refuse a file that runs.
+pub fn exists(name: &str) -> bool {
+	matches!(name, "code_of" | "try") || FUNCTIONS.iter().any(|f| f.name == name)
+}
+
+/// Every name worth suggesting for a call that reaches nothing: the listed
+/// functions, and `code_of`.
+pub fn names() -> impl Iterator<Item = &'static str> {
+	FUNCTIONS.iter().map(|f| f.name).chain(["code_of"])
 }
 
 /// Every function name the language knows.

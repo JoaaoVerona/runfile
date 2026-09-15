@@ -15,8 +15,9 @@ sections. Pin the ones you reach for and they move to the top.
 **Syntax highlighting**, with `$` lines and `exec` bodies highlighted as the shell they are.
 
 **Diagnostics as you type**, from the language server inside `run` itself (`run :lsp`) — the same parser the
-runner uses, so the editor never disagrees with what will actually happen. Shell lines are handed to
-[shellcheck](https://www.shellcheck.net) when it is available.
+runner uses, so the editor never disagrees with what will actually happen. Shell lines are checked by the
+runner's own [shell checker](https://github.com/JoaaoVerona/runfile/blob/github/SHELL-CHECK-RULES.md), which
+reads each `{{ … }}` as the word it becomes, so there is nothing else to install.
 
 ## How targets are found
 

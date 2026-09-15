@@ -293,7 +293,7 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 			// between a one-word fix and a hunt. Checked here rather than at
 			// parse time so a binding may still be named after a function --
 			// a bound name is found above and never reaches this.
-			if crate::functions::FUNCTIONS.iter().any(|f| f.name == name) {
+			if crate::functions::exists(name) {
 				return EvalError::Other {
 					msg: format!("`{name}` is a function; call it as `{name}()`"),
 					line,

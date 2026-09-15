@@ -11,15 +11,6 @@ use serde_json::{Value, json};
 use crate::analysis::{self, Completions, Severity};
 use crate::rpc::{ReadError, read_message, write_message};
 
-/// What the `$` shorthand runs, which is what its body must be checked as.
-/// The runner prefers bash and falls back to sh; sh is the stricter of the two,
-/// so checking against it never lets a real problem through.
-const DEFAULT_SHELL: &str = "sh";
-
-/// Looked up on PATH. Absent shellcheck means no shell diagnostics, silently:
-/// it is an enhancement, not a requirement.
-const SHELLCHECK: &str = "shellcheck";
-
 #[derive(Default)]
 pub struct Server {
 	/// Open documents, by URI. The client owns the text once a file is open, so
@@ -138,14 +129,10 @@ impl Server {
 	fn diagnostics_for(&self, uri: &str) -> Value {
 		let src = self.docs.get(uri).map(String::as_str).unwrap_or_default();
 		let path = uri_to_path(uri);
-		let targets = path.as_deref().map(target_names).unwrap_or_default();
-		let machine_wide = path.as_deref().is_some_and(runfile_discovery::is_machine_wide);
-		let mut all = analysis::diagnose(src, &targets, machine_wide);
-		// Only when the file itself is sound: shellcheck on a document that does
-		// not parse would report against text the runner never assembles.
-		if all.is_empty() {
-			all.extend(crate::shell::diagnose(src, DEFAULT_SHELL, SHELLCHECK));
-		}
+		let cat = path.as_deref().and_then(|p| self.catalog(p));
+		// What `run :lint` says of the file on disk, said of the editor's copy --
+		// with every other open document read as the editor has it too.
+		let all = crate::document::diagnostics(src, path.as_deref(), cat.as_ref(), &|p| self.text_of(p));
 		let items: Vec<Value> = all
 			.into_iter()
 			.map(|d| {
@@ -222,27 +209,10 @@ impl Server {
 	}
 
 	/// Every `_shared.run` that applies to this document, outermost first.
-	///
-	/// A target's is the catalog's. A `_shared.run` is not a target, and
-	/// inherits from the ones in the directories above its own -- which is the
-	/// chain of any target at or below it, cut off at its own directory.
 	fn shared_chain(&self, here: &Path) -> Vec<PathBuf> {
-		let Some(cat) = self.catalog(here) else {
-			return Vec::new();
-		};
-		if let Some(t) = cat.targets.values().find(|t| same_file(&t.path, here)) {
-			return cat.shared_chain(t);
-		}
-		let Some(dir) = here.parent() else {
-			return Vec::new();
-		};
-		let Some(below) = cat.targets.values().find(|t| t.path.starts_with(dir)) else {
-			return Vec::new();
-		};
-		cat.shared_chain(below)
-			.into_iter()
-			.filter(|p| !same_file(p, here) && p.parent().is_some_and(|d| dir.starts_with(d)))
-			.collect()
+		self.catalog(here)
+			.map(|cat| crate::document::shared_chain(&cat, here))
+			.unwrap_or_default()
 	}
 
 	/// A file's text as the editor has it when it is open, unsaved edits and
@@ -314,11 +284,6 @@ impl Server {
 	}
 }
 
-/// Whether two paths name one file, however each was spelled.
-fn same_file(a: &Path, b: &Path) -> bool {
-	a == b || a.canonicalize().ok().is_some_and(|c| Some(c) == b.canonicalize().ok())
-}
-
 fn capabilities() -> Value {
 	json!({
 		"capabilities": {
@@ -329,7 +294,7 @@ fn capabilities() -> Value {
 			"hoverProvider": true,
 			"definitionProvider": true,
 			// Format-on-save works through this: an editor asks for edits
-			// before writing, and the answer is the same `run :format`
+			// before writing, and the answer is the same `run :lint`
 			// produces, so a file cannot come out of an editor in a shape the
 			// CLI would then change.
 			"documentFormattingProvider": true,
@@ -338,32 +303,13 @@ fn capabilities() -> Value {
 	})
 }
 
-/// Every target name this document may write, qualified and unqualified.
-///
-/// A file calls its siblings by their bare name: `run compile` inside
-/// `web/runfiles/` resolves `web:compile` first, and only then a root
-/// `compile`. Listing just the catalog's keys had the editor underline every
-/// one of those as "no target named …" while the runner ran them happily --
-/// the editor and the runner disagreeing about validity, which is the one
-/// thing this analysis exists to prevent.
+/// Every target name this document may write, for completion.
 fn target_names(doc: &Path) -> Vec<String> {
 	let Some(dir) = doc.parent() else { return Vec::new() };
 	let Ok(c) = runfile_discovery::discover(dir, dirs_home().as_deref()) else {
 		return Vec::new();
 	};
-	let mut names: Vec<String> = c.targets.keys().cloned().collect();
-	if let Some(me) = c.targets.values().find(|t| same_file(&t.path, doc))
-		&& let Some((prefix, _)) = me.name.rsplit_once(':')
-	{
-		let prefix = format!("{prefix}:");
-		let siblings: Vec<String> = c
-			.targets
-			.keys()
-			.filter_map(|k| k.strip_prefix(&prefix).map(str::to_string))
-			.collect();
-		names.extend(siblings);
-	}
-	names
+	crate::document::target_names(&c, doc)
 }
 
 fn dirs_home() -> Option<PathBuf> {
