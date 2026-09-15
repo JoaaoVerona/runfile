@@ -238,12 +238,27 @@ fn check_properties(
 				continue;
 			}
 		}
-		if head == runfile_discovery::SCOPE && !machine_wide {
-			out.push(Diagnostic {
-				range: whole_line(src, p.span.line),
-				message: format!("`.{head}` scopes the machine-wide directory; this target is part of the project"),
-				severity: Severity::Error,
-			});
+		if head == runfile_discovery::SCOPE {
+			let refused = if !machine_wide {
+				Some(format!(
+					"`.{head}` scopes the machine-wide directory; this target is part of the project"
+				))
+			} else if runfile_discovery::scope_entries(p).is_none() {
+				// Discovery refuses it before anything runs, but only on its way
+				// to a target -- and `run :lint` and an editor collect every file
+				// whatever its scope, so neither would say it unless it is said
+				// here.
+				Some(runfile_discovery::UNREADABLE_SCOPE.to_string())
+			} else {
+				None
+			};
+			if let Some(message) = refused {
+				out.push(Diagnostic {
+					range: whole_line(src, p.span.line),
+					message,
+					severity: Severity::Error,
+				});
+			}
 		}
 	}
 	for st in &block.statements {
@@ -1468,6 +1483,31 @@ mod tests {
 			diagnose(src, &[], true, Chain::Target(&[])).is_empty(),
 			"the one place it means something"
 		);
+	}
+
+	#[test]
+	fn a_scope_that_cannot_be_read_is_underlined_where_it_is_written() {
+		// Discovery refuses it before anything runs, but only on its way to a
+		// target, and nothing that checks files collects them by scope -- so this
+		// is the only place it is said about the file.
+		let machine_wide = |src: &str| diagnose(src, &[], true, Chain::Target(&[]));
+		for src in [
+			".only-in-directories = \"{{ ENV.WORK }}/acme\"\n$ true\n",
+			".only-in-directories = [\"work/acme\", ENV.WORK]\n$ true\n",
+		] {
+			let d = machine_wide(src);
+			assert_eq!(d.len(), 1, "{src:?}: {d:?}");
+			assert!(d[0].message.contains("literal string"), "{}", d[0].message);
+			assert_eq!(d[0].range.start_line, 0, "{d:?}");
+		}
+		assert!(
+			machine_wide(".only-in-directories = [\"work/acme\", \"~/work/zed\"]\n$ true\n").is_empty(),
+			"literals are what can be read"
+		);
+		// In a project file, the one thing worth saying is that it does not belong.
+		let d = plain(".only-in-directories = \"{{ ENV.WORK }}\"\n$ true\n");
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert!(d[0].message.contains("machine-wide"), "{}", d[0].message);
 	}
 
 	#[test]

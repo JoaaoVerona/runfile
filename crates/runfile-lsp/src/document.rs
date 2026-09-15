@@ -18,6 +18,11 @@ use std::path::{Path, PathBuf};
 /// it. `cat` is `None` when discovery failed, so what is above the file is not
 /// known: the names it reads are left alone, and what is certain is still
 /// checked. `read` is another file's text -- the editor's copy, where it has one.
+///
+/// Both callers discover `cat` with [`runfile_discovery::discover_unscoped`],
+/// and have to: a catalog of what is offered where a file sits leaves out a
+/// scoped file's own `_shared.run` and siblings, and two callers asking two ways
+/// would disagree about exactly those files.
 pub fn diagnostics(
 	src: &str,
 	path: Option<&Path>,

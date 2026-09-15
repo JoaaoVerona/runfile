@@ -590,3 +590,73 @@ fn the_machine_wide_directory_scopes_itself_when_it_is_also_the_local_one() {
 		"and it is offered where it says"
 	);
 }
+
+// ---- what a file is checked against
+
+#[test]
+fn an_unscoped_catalog_holds_every_machine_wide_file_whatever_it_names() {
+	// A scope says where a target is offered. `run :lint` and an editor check
+	// files instead, and check a scoped one from outside its scope as a rule:
+	// the directory holding it is not one it names.
+	let (home, _inside, outside) = scopable();
+	let g = home.path().join(".runfiles");
+	std::fs::write(g.join("deploy.run"), ".only-in-directories = \"work/acme\"\n$ true\n").unwrap();
+	std::fs::create_dir_all(g.join("acme")).unwrap();
+	std::fs::write(g.join("acme").join(SHARED), ".only-in-directories = \"work/acme\"\n").unwrap();
+	std::fs::write(g.join("acme/build.run"), "$ true\n").unwrap();
+
+	let offered = discover(&outside, Some(home.path())).unwrap();
+	assert!(offered.resolve("deploy").is_none() && offered.resolve("acme:build").is_none());
+	assert!(offered.shared.is_empty(), "{:?}", offered.shared);
+
+	let every = discover_unscoped(&outside, Some(home.path())).unwrap();
+	assert!(every.resolve("deploy").is_some(), "a target scoped elsewhere");
+	assert!(every.resolve("acme:build").is_some(), "a namespace scoped elsewhere");
+	assert_eq!(
+		every.shared.get(&g.join("acme").join(SHARED)),
+		Some(&Origin::Global),
+		"and the `_shared.run` scoping it"
+	);
+	assert!(every.resolve("build").is_some(), "beside the project's own");
+}
+
+#[test]
+fn an_unscoped_catalog_reads_no_scope_and_so_refuses_none() {
+	// One that cannot be read is the diagnostic of the file it is written in,
+	// where it can be fixed -- not a reason to check nothing else.
+	let (home, _inside, outside) = scopable();
+	std::fs::write(
+		home.path().join(".runfiles/deploy.run"),
+		".only-in-directories = \"{{ ENV.WORK }}/acme\"\n$ true\n",
+	)
+	.unwrap();
+	assert!(discover(&outside, Some(home.path())).is_err());
+	let every = discover_unscoped(&outside, Some(home.path())).unwrap();
+	assert!(every.resolve("deploy").is_some());
+}
+
+#[test]
+fn a_projects_shared_file_is_not_replaced_by_the_machine_wide_one() {
+	// Both roots' were filed under the empty namespace, and the machine-wide walk
+	// wrote that key whether or not it had a file: merely having a machine-wide
+	// directory hid a project's root `_shared.run` from `run :lint`.
+	let (home, inside, _outside) = scopable();
+	let mine = inside.join("runfiles").join(SHARED);
+	let global = home.path().join(".runfiles").join(SHARED);
+	std::fs::write(&mine, "let region = \"eu\"\n").unwrap();
+	std::fs::write(home.path().join(".runfiles/deploy.run"), "$ true\n").unwrap();
+
+	let c = discover(&inside, Some(home.path())).unwrap();
+	assert_eq!(c.shared.get(&mine), Some(&Origin::Local));
+	assert_eq!(
+		c.shared.len(),
+		1,
+		"a directory with no `_shared.run` records none: {:?}",
+		c.shared
+	);
+
+	std::fs::write(&global, "let who = \"me\"\n").unwrap();
+	let c = discover(&inside, Some(home.path())).unwrap();
+	assert_eq!(c.shared.get(&mine), Some(&Origin::Local));
+	assert_eq!(c.shared.get(&global), Some(&Origin::Global));
+}

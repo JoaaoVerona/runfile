@@ -188,8 +188,9 @@ fn real_main() -> Result<ExitCode, String> {
 				let files = cmd_lint::from_paths(&paths)?;
 				return Ok(cmd_lint::lint(&files, None, flag("--check"), flag("--stdout")));
 			}
-			let cat = catalog(&flags)?;
-			let files = cmd_lint::project_files(&cat, flag("--include-global"));
+			let from = start(&flags)?;
+			let cat = cmd_lint::catalog(&from).map_err(|e| e.to_string())?;
+			let files = cmd_lint::project_files(&cat, &from, flag("--include-global"));
 			return Ok(cmd_lint::lint(&files, Some(&cat), flag("--check"), flag("--stdout")));
 		}
 		// Became `:lint`. Said apart from an unknown command, since it is not a
@@ -221,11 +222,7 @@ fn real_main() -> Result<ExitCode, String> {
 			return Ok(ExitCode::SUCCESS);
 		}
 		":init" => {
-			let dir = match &flags.dir {
-				Some(d) => d.clone(),
-				None => std::env::current_dir().map_err(|e| e.to_string())?,
-			};
-			print!("{}", init::init(&dir)?);
+			print!("{}", init::init(&start(&flags)?)?);
 			return Ok(ExitCode::SUCCESS);
 		}
 		t if t.starts_with(':') => return Err(format!("unknown command `{t}`\n{}", usage())),
@@ -338,11 +335,15 @@ fn real_main() -> Result<ExitCode, String> {
 }
 
 fn catalog(flags: &Flags) -> Result<Catalog, String> {
-	let from = match &flags.dir {
-		Some(d) => d.clone(),
-		None => std::env::current_dir().map_err(|e| e.to_string())?,
-	};
-	discover(&from, discovery_home().as_deref()).map_err(|e| e.to_string())
+	discover(&start(flags)?, discovery_home().as_deref()).map_err(|e| e.to_string())
+}
+
+/// Where discovery starts: `--dir`, or the working directory.
+fn start(flags: &Flags) -> Result<PathBuf, String> {
+	match &flags.dir {
+		Some(d) => Ok(d.clone()),
+		None => std::env::current_dir().map_err(|e| e.to_string()),
+	}
 }
 
 /// The home directory discovery folds a machine-wide `runfiles/` in from --

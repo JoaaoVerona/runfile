@@ -61,9 +61,16 @@ pub fn is_hidden(name: &str) -> bool {
 #[derive(Debug, Default)]
 pub struct Catalog {
 	pub targets: BTreeMap<String, Target>,
-	/// Directories whose `_shared.run` applies, keyed by the namespace prefix
-	/// its targets carry.
-	pub shared: BTreeMap<String, PathBuf>,
+	/// Every `_shared.run` in a directory that was walked, and how its tree was
+	/// reached -- which says whether it is the project's or the machine-wide
+	/// directory's, the way a target's `origin` does.
+	///
+	/// Keyed by path. It was keyed by the namespace prefix its targets carry, and
+	/// a prefix is not unique across trees: both roots have the empty one, and the
+	/// machine-wide walk wrote it whether or not it had a file there, so any
+	/// `~/.runfiles` at all was enough for `run :lint` to skip a project's root
+	/// `_shared.run` -- the collision [`Catalog::shared_chain`] was already rid of.
+	pub shared: BTreeMap<PathBuf, Origin>,
 	/// The parent of the nearest `runfiles/`: where a project-level file such
 	/// as `.zed/tasks.json` belongs.
 	pub root: PathBuf,
@@ -80,15 +87,18 @@ pub enum DiscoverError {
 		 keep one of them and remove or empty the other"
 	)]
 	AmbiguousGlobal { a: PathBuf, b: PathBuf },
-	#[error(
-		"{path}: line {line}: `.{SCOPE}` has to be a literal string, or a list of them\n\
-		 it is read before any target is chosen, so there is nothing to interpolate from"
-	)]
+	#[error("{path}: line {line}: {UNREADABLE_SCOPE}")]
 	UnreadableScope { path: PathBuf, line: usize },
 }
 
 /// The property that scopes the machine-wide directory.
 pub const SCOPE: &str = "only-in-directories";
+
+/// Why a scope not written in literals is refused. Discovery says it, being
+/// unable to read one, and so do `run :lint` and an editor, on the line: neither
+/// collects files by scope, so neither would otherwise say it at all.
+pub const UNREADABLE_SCOPE: &str = "`.only-in-directories` has to be a literal string, or a list of them\n\
+	it is read before any target is chosen, so there is nothing to interpolate from";
 
 /// Where a scope is being judged from.
 ///
@@ -132,23 +142,28 @@ fn scope_of(path: &Path) -> Result<Vec<String>, DiscoverError> {
 		.iter()
 		.filter(|p| p.path.first().is_some_and(|h| h == SCOPE))
 	{
-		let unreadable = || DiscoverError::UnreadableScope {
+		out.extend(scope_entries(p).ok_or_else(|| DiscoverError::UnreadableScope {
 			path: path.to_path_buf(),
 			line: p.span.line,
-		};
-		// One entry or several: repeated lines already append, and a list says
-		// the same thing on one line the way every other list-valued property
-		// accepts one.
-		let items: Vec<&runfile_lang::Expr> = match &p.value {
-			Some(runfile_lang::Expr::List(items, _)) => items.iter().collect(),
-			Some(e) => vec![e],
-			None => return Err(unreadable()),
-		};
-		for e in items {
-			out.push(literal_string(e).ok_or_else(unreadable)?);
-		}
+		})?);
 	}
 	Ok(out)
+}
+
+/// The directories one `.only-in-directories` line names, or `None` when they
+/// are not written in a form that can be read before anything runs.
+///
+/// One entry or several: repeated lines already append, and a list says the
+/// same thing on one line the way every other list-valued property accepts one.
+/// It is the one account of what a scope may be -- discovery reads a scope with
+/// it, and an editor and `run :lint`, which collect every file whatever its
+/// scope, underline one it cannot read.
+pub fn scope_entries(p: &runfile_lang::Property) -> Option<Vec<String>> {
+	match &p.value {
+		Some(runfile_lang::Expr::List(items, _)) => items.iter().map(literal_string).collect(),
+		Some(e) => literal_string(e).map(|s| vec![s]),
+		None => None,
+	}
 }
 
 /// A string with nothing interpolated into it. The whole value has to be one
@@ -220,7 +235,33 @@ pub fn home_dir() -> Option<PathBuf> {
 }
 
 /// Walk up for the nearest `runfiles/`, then down for `*/runfiles/`.
+///
+/// What is collected from the machine-wide directory is what is offered where
+/// `from` stands: a target whose `.only-in-directories` does not cover it is
+/// left out, which is what running, listing and completing want.
 pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverError> {
+	discover_with(from, home, true)
+}
+
+/// [`discover`], with every machine-wide file in the catalog whatever
+/// directories it names.
+///
+/// A scope says where a target is *offered*, which is a question about running
+/// one, asked from where `run` stands. Checking a file is not running it, and a
+/// scoped file is checked from outside its scope as a rule -- the directory
+/// holding it is not one it names. So `run :lint` and the language server use
+/// this. Collected the other way, `run :lint` skipped every scoped file, and one
+/// checked anyway -- named on the command line, or open in an editor -- was
+/// checked without its `_shared.run` or its siblings, so a binding the one makes
+/// and a call to the other were reported as missing.
+///
+/// No scope is read, so none is refused: one that cannot be read is a
+/// diagnostic of the file it is written in, where it can be fixed.
+pub fn discover_unscoped(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverError> {
+	discover_with(from, home, false)
+}
+
+fn discover_with(from: &Path, home: Option<&Path>, scoped: bool) -> Result<Catalog, DiscoverError> {
 	let mut cat = Catalog::default();
 	let local = find_upward(from);
 	let global = match home {
@@ -230,7 +271,7 @@ pub fn discover(from: &Path, home: Option<&Path>) -> Result<Catalog, DiscoverErr
 	// Scoping belongs to the machine-wide directory wherever it is reached
 	// from, so this is worked out once and handed to whichever walk collects
 	// it.
-	let reach = home.map(|h| Reach { home: h, cwd: from });
+	let reach = home.filter(|_| scoped).map(|h| Reach { home: h, cwd: from });
 
 	if let Some(dir) = &local {
 		let anchor = dir.parent().unwrap_or(dir).to_path_buf();
@@ -374,17 +415,6 @@ fn collect(
 	walk_runs(dir, dir, anchor, prefix, origin, reach, cat)
 }
 
-/// The namespace a directory inside a `runfiles/` tree contributes to.
-fn dir_prefix(root: &Path, dir: &Path, prefix: &str) -> String {
-	let rel = dir.strip_prefix(root).unwrap_or(dir);
-	let mut parts: Vec<String> = Vec::new();
-	if !prefix.is_empty() {
-		parts.push(prefix.to_string());
-	}
-	parts.extend(rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()));
-	parts.join(":")
-}
-
 fn walk_runs(
 	root: &Path,
 	dir: &Path,
@@ -407,7 +437,10 @@ fn walk_runs(
 	// Every directory in the tree can carry settings, not just the top one:
 	// `runfiles/api/_shared.run` applies to `api:*`. Registering only the root
 	// meant a nested one was read by nothing at all.
-	cat.shared.insert(dir_prefix(root, dir, prefix), dir.join(SHARED));
+	let shared = dir.join(SHARED);
+	if shared.is_file() {
+		cat.shared.insert(shared, origin);
+	}
 
 	let Ok(rd) = std::fs::read_dir(dir) else { return Ok(()) };
 	let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();

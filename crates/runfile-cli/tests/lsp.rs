@@ -7,28 +7,34 @@
 //! now what ships -- there is no second binary to start.
 
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 
 use runfile_lsp::rpc::{read_message, write_message};
+use runfile_lsp::server::path_to_uri;
 
 /// Feed a conversation to the real binary and collect its replies.
 ///
 /// Everything is written and stdin closed before reading, so neither side can
-/// block on the other: the server reads until end of file.
-fn talk(messages: &[Value]) -> Vec<Value> {
+/// block on the other: the server reads until end of file. `home` is where the
+/// server looks for the machine-wide directory, when a test gives it one.
+fn talk(home: Option<&Path>, messages: &[Value]) -> Vec<Value> {
 	let mut input = Vec::new();
 	for m in messages {
 		write_message(&mut input, m).expect("frame");
 	}
-	let mut child = Command::new(env!("CARGO_BIN_EXE_run"))
+	let mut server = Command::new(env!("CARGO_BIN_EXE_run"));
+	server
 		.arg(":lsp")
 		.stdin(Stdio::piped())
 		.stdout(Stdio::piped())
-		.stderr(Stdio::null())
-		.spawn()
-		.expect("spawn run :lsp");
+		.stderr(Stdio::null());
+	if let Some(home) = home {
+		server.env("HOME", home).env("USERPROFILE", home);
+	}
+	let mut child = server.spawn().expect("spawn run :lsp");
 	child.stdin.take().expect("stdin").write_all(&input).expect("write");
 	let out = child.wait_with_output().expect("wait");
 	assert!(out.status.success(), "server exited with {}", out.status);
@@ -51,10 +57,13 @@ fn did_open(uri: &str, text: &str) -> Value {
 
 #[test]
 fn run_lsp_answers_initialize_and_reports_a_problem() {
-	let replies = talk(&[
-		json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
-		did_open("file:///x/runfiles/a.run", ".wach = \"y\"\n$ true\n"),
-	]);
+	let replies = talk(
+		None,
+		&[
+			json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+			did_open("file:///x/runfiles/a.run", ".wach = \"y\"\n$ true\n"),
+		],
+	);
 	assert_eq!(replies.len(), 2, "{replies:?}");
 	assert_eq!(replies[0]["id"], 1);
 	assert_eq!(replies[0]["result"]["serverInfo"]["name"], "runfile-lsp");
@@ -70,12 +79,43 @@ fn run_lsp_answers_initialize_and_reports_a_problem() {
 #[test]
 fn run_lsp_exits_zero_when_the_client_says_goodbye() {
 	// An editor closing down must not leave a failing process behind.
-	let replies = talk(&[
-		json!({"jsonrpc": "2.0", "id": 1, "method": "shutdown"}),
-		json!({"jsonrpc": "2.0", "method": "exit"}),
-	]);
+	let replies = talk(
+		None,
+		&[
+			json!({"jsonrpc": "2.0", "id": 1, "method": "shutdown"}),
+			json!({"jsonrpc": "2.0", "method": "exit"}),
+		],
+	);
 	assert_eq!(replies.len(), 1);
 	assert!(replies[0]["result"].is_null());
+}
+
+#[test]
+fn run_lsp_checks_a_scoped_machine_wide_file_with_everything_beside_it() {
+	// An editor opens a machine-wide file where it sits, and a scoped one never
+	// sits in a directory it names. Checked against what is offered there, a
+	// binding its `_shared.run` makes and a call to its sibling were underlined
+	// -- while `run :lint` checks with every file on disk, so the two disagreed
+	// about one file. `plain.run` is there so discovery finds something: with
+	// nothing at all, no names are checked, and this would pass for that reason.
+	let home = tempfile::tempdir().expect("tempdir");
+	let g = home.path().join(".runfiles");
+	std::fs::create_dir_all(g.join("acme")).expect("namespace");
+	std::fs::write(g.join("plain.run"), "$ true\n").expect("unscoped target");
+	std::fs::write(
+		g.join("acme/_shared.run"),
+		".only-in-directories = \"work/acme\"\n\nlet region = \"eu\"\n",
+	)
+	.expect("shared file");
+	std::fs::write(g.join("acme/build.run"), "$ true\n").expect("sibling");
+	let doc = g.join("acme/deploy.run");
+	let src = "print(region)\nrun build\n";
+	std::fs::write(&doc, src).expect("document");
+
+	let replies = talk(Some(home.path()), &[did_open(&path_to_uri(&doc), src)]);
+	assert_eq!(replies.len(), 1, "{replies:?}");
+	let diagnostics = replies[0]["params"]["diagnostics"].as_array().expect("diagnostics");
+	assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }
 
 #[test]

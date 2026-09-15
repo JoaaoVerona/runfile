@@ -905,6 +905,10 @@ excluded it. Relative entries are relative to your home. It is the one property 
 set: their targets are visible to anyone reading the repository, so hiding some by working directory would
 bring back the very invisibility this exists to fix.
 
+A scope decides where a target is offered, not what gets checked. `run :lint` inside the machine-wide directory
+checks every file in it, scoped or not — and so does `run :lint --include-global` from anywhere else, since a
+project's lint leaves the directory out otherwise.
+
 **Not in CI.** A runner's home directory is nobody's, so `run` reads none of the three there: what runs is
 what is checked in and reviewable. This is also why nothing has to be cleaned up after a job.
 

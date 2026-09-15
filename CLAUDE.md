@@ -610,9 +610,10 @@ second time as the global. This replaced `includes` entirely.
   one used to be registered at all, so a nested one was read by nothing. The walk stops at the **anchor**: a
   subproject does not inherit the root's, for the same reason its targets are namespaced. It is walked from
   the target's own **path**, never looked up by namespace — a namespace is not unique across trees, the
-  machine-wide one has none, and `Catalog.shared` records a key whether or not the file is there, so keying
+  machine-wide one has none, and `Catalog.shared` recorded a key whether or not the file was there, so keying
   by it meant that merely *having* a `~/.runfiles` silently disabled the root `_shared.run` of every project
-  on the machine. Its properties *and* its `let` bindings apply, which is what makes it the `globals` analog
+  on the machine -- and hid it from `:lint`, until that map was keyed by path too. Its properties *and* its
+  `let` bindings apply, which is what makes it the `globals` analog
   -- **folded in source order** (`run::fold_shared`), so a property below a `let` reads it. Shared files are
   never walked, so when properties became applied-where-written the fold had to learn it separately: it kept
   applying only the region above the first statement, and `let d = "x"` then `.env.DIR = d` dropped the
@@ -655,6 +656,24 @@ second time as the global. This replaced `includes` entirely.
   it**: the three names are what make a directory machine-wide, so a file in one gets to say where it belongs
   even while it is also the nearest `runfiles/`. Being reached as `Local` still decides everything else --
   `:list` grouping, and what `:lint` and `:generate` leave out without `--include-global`.
+- **A scope says where a target is offered, so only what runs asks it.** `discover` collects what is offered
+  where `from` stands; `discover_unscoped` collects every file, reading no scope and so refusing none, and is
+  what `run :lint` and the language server use. Checking a file is not running it, and a scoped file is
+  checked from outside its scope as a rule -- an editor opens it where it sits, which is not a directory it
+  names. Collected the scoped way, `:lint --include-global` skipped every scoped file unless run inside the
+  directories they named, and a file checked anyway -- by path, or in an editor -- was checked without its
+  `_shared.run` or its siblings, so `` `region` is not defined `` and `` no target named `build` `` were
+  reported about a file that ran clean where it belonged. The cost is exact and small: a *project* file's `run`
+  of a machine-wide target scoped somewhere else is no longer reported, which was a question about the working
+  directory rather than about the file. A scope that cannot be read is `UNREADABLE_SCOPE`, underlined on its
+  line by `analysis` through `scope_entries` -- the one account of what a scope may be -- since nothing that
+  checks files reaches discovery's refusal any more. `:generate`, `:list`, `:complete` and dispatch keep the
+  scoped catalog: each is about what can run here.
+- **`Catalog.shared` is keyed by path, with the `Origin` of the tree it was found in.** It was keyed by
+  namespace prefix, which is not unique across trees: both roots have the empty one, and the machine-wide walk
+  wrote it whether or not it had a file, so any `~/.runfiles` at all hid a project's root `_shared.run` from
+  `:lint` -- the collision `shared_chain` had been rid of, still alive in the one reader left. Only files that
+  exist are recorded, and `:lint` filters them by `Origin` exactly as it filters targets.
 
 ### runfile-runtime
 
@@ -887,7 +906,10 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
   from the runner's own name check (`resolve`), handed the `_shared.run` chain as the editor has it, unsaved
   edits and all, and from its shell checker (`runfile-shell`). See *Names resolve before anything runs*. `document::diagnostics` composes them for a file
   where it sits -- its catalog's target names, its chain, whether it is machine-wide -- and `run :lint` asks
-  the same function, so the command line and the editor cannot say different things about one file.
+  the same function, so the command line and the editor cannot say different things about one file. **Both
+  hand it the catalog `discover_unscoped` builds**, and have to: an editor opens a scoped machine-wide file
+  from outside its scope as a rule, and a catalog of what is offered there has neither its `_shared.run` nor
+  its siblings in it.
 - **Property diagnostics come from the runner's own `props::check`**, for the same reason. `check_properties`
   used to describe the rules a second time, and the two had already drifted: it knew the scope rule and not
   the flag one. It now calls `check` per property -- with the region the property sits in -- and renders
@@ -1261,9 +1283,13 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   `fix:` line is indented under it, and `:lint` never applies one -- only layout is ever rewritten.
   A flag it does not have is refused rather than ignored, since a mistyped `--check` that went unread would
   write. `_shared.run` is included -- it is not a target, so nothing that walks the catalog by name would reach
-  it. Global files are left out unless `--include-global`, as with `:generate`; explicit paths override the
-  catalog, a directory argument is walked, and each named file's project is discovered where it sits, the way
-  an editor finds it. `run :format` is refused with `:lint` named -- not a typo, but a script written for an
+  it. The machine-wide directory is left out unless `--include-global`, as with `:generate` -- or unless
+  `:lint` is standing inside it, where it *is* the project, and leaving it out said `0 files checked: no
+  errors` about a directory full of runfiles. Whichever brings it in, every file in it is linted, scoped or
+  not, and what leaves a file out is its `Origin`, a `_shared.run` the same as a target. Explicit paths
+  override the catalog, a directory argument is walked, and each named file's project is discovered where it
+  sits, the way an editor finds it -- all of it through `cmd_lint::catalog`, which is `discover_unscoped` (see
+  *runfile-discovery*). `run :format` is refused with `:lint` named -- not a typo, but a script written for an
   older runner. `cli.rs`'s `this_repository_lints_clean` holds this repository to the promise.
 - `:generate zed|jetbrains|vscode` is a lean port of the old generators: an entry is recognised as ours by its
   shape (command `run`, label `run <target>`), so a rerun replaces exactly those and keeps a person's own; a

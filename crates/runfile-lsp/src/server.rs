@@ -168,7 +168,7 @@ impl Server {
 			Completions::Items(items) => items,
 			Completions::Targets => here
 				.as_deref()
-				.map(target_names)
+				.and_then(|p| self.catalog(p).map(|cat| crate::document::target_names(&cat, p)))
 				.unwrap_or_default()
 				.into_iter()
 				.map(|n| analysis::Item {
@@ -262,9 +262,13 @@ impl Server {
 		}
 	}
 
+	/// The project a document sits in, as `run :lint` sees it: every file on
+	/// disk, whatever a machine-wide one names. A scoped file is opened from
+	/// outside its scope as a rule, and has a `_shared.run` and siblings all the
+	/// same -- see [`runfile_discovery::discover_unscoped`].
 	fn catalog(&self, here: &std::path::Path) -> Option<runfile_discovery::Catalog> {
 		let dir = here.parent()?;
-		runfile_discovery::discover(dir, dirs_home().as_deref()).ok()
+		runfile_discovery::discover_unscoped(dir, dirs_home().as_deref()).ok()
 	}
 
 	/// Where a `_shared.run` above this file binds `name`.
@@ -301,15 +305,6 @@ fn capabilities() -> Value {
 		},
 		"serverInfo": {"name": "runfile-lsp", "version": env!("CARGO_PKG_VERSION")},
 	})
-}
-
-/// Every target name this document may write, for completion.
-fn target_names(doc: &Path) -> Vec<String> {
-	let Some(dir) = doc.parent() else { return Vec::new() };
-	let Ok(c) = runfile_discovery::discover(dir, dirs_home().as_deref()) else {
-		return Vec::new();
-	};
-	crate::document::target_names(&c, doc)
 }
 
 fn dirs_home() -> Option<PathBuf> {

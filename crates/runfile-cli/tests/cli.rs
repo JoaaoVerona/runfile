@@ -1909,6 +1909,125 @@ fn lint_leaves_the_global_directory_alone_unless_asked() {
 	assert_eq!(std::fs::read_to_string(g.join("mine.run")).unwrap(), "let y = 1\n");
 }
 
+/// A machine-wide directory in `p`'s home whose files are scoped to a directory
+/// no test project is in, beside two that are not scoped at all.
+///
+/// Each catches a way of checking from what is *offered* where `run` stands:
+/// `acme/deploy.run` reads what its `_shared.run` binds and calls a sibling,
+/// `caller.run` calls a scoped target, and `scoped.run` needs formatting, so
+/// whether it was looked at shows.
+fn scoped_global(p: &Project) -> std::path::PathBuf {
+	let g = p.home.path().join(".runfiles");
+	for (path, body) in [
+		("plain.run", "$ true\n"),
+		("caller.run", "run scoped\n"),
+		(
+			"scoped.run",
+			".only-in-directories = \"work/acme\"\n\nlet y=1\nprint(y)\n",
+		),
+		(
+			"acme/_shared.run",
+			".only-in-directories = \"work/acme\"\n\nlet region = \"eu\"\n",
+		),
+		("acme/deploy.run", "print(region)\nrun build\n"),
+		("acme/build.run", "$ true\n"),
+	] {
+		let full = g.join(path);
+		std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+		std::fs::write(full, body).unwrap();
+	}
+	g
+}
+
+#[test]
+fn lint_checks_every_machine_wide_file_whatever_directories_it_names() {
+	// A scope says where a target is offered, and linting runs nothing. Standing
+	// outside `work/acme`, the scoped files were not linted at all.
+	let p = project(&[("runfiles/a.run", "$ true\n")]);
+	let g = scoped_global(&p);
+	let o = p.run(&[":lint", "--include-global"]);
+	assert!(o.status.success(), "{}{}", out(&o), err(&o));
+	assert!(
+		out(&o).contains("7 files checked: 1 formatted, no errors"),
+		"{}",
+		out(&o)
+	);
+	assert!(
+		std::fs::read_to_string(g.join("scoped.run"))
+			.unwrap()
+			.contains("let y = 1")
+	);
+}
+
+#[test]
+fn lint_inside_the_machine_wide_directory_lints_all_of_it_unasked() {
+	// Standing in it, it is the project being linted. This said `0 files
+	// checked: no errors`, and `--include-global` left the scoped files out.
+	let p = project(&[]);
+	let g = scoped_global(&p);
+	for here in [g.clone(), g.join("acme")] {
+		let o = p.run_in(&here, &[":lint", "--check"]);
+		assert!(
+			out(&o).contains("6 files checked: 1 needs formatting, no errors"),
+			"from {}: {}{}",
+			here.display(),
+			out(&o),
+			err(&o)
+		);
+	}
+}
+
+#[test]
+fn lint_checks_a_scoped_file_named_by_path_with_everything_beside_it() {
+	// Reached by path, a scoped file was checked against what is offered where
+	// it sits -- the machine-wide directory, which it does not name -- and so
+	// without its `_shared.run` or its siblings.
+	let p = project(&[("runfiles/a.run", "$ true\n")]);
+	let g = scoped_global(&p);
+	let o = p.run(&[":lint", "--check", g.join("acme").to_str().unwrap()]);
+	assert!(o.status.success(), "{}{}", out(&o), err(&o));
+	assert!(out(&o).contains("3 files checked: no errors"), "{}", out(&o));
+}
+
+#[test]
+fn lint_reaches_a_projects_shared_run_beside_a_machine_wide_directory() {
+	// Both roots' `_shared.run` were filed under one namespace key, which the
+	// machine-wide walk wrote whether or not it had a file: any `~/.runfiles`
+	// at all was enough for a project's own to go unlinted.
+	let p = project(&[
+		("runfiles/a.run", "$ true\n"),
+		("runfiles/_shared.run", ".shell   =  \"bash\"\n"),
+	]);
+	std::fs::create_dir_all(p.home.path().join(".runfiles")).unwrap();
+	std::fs::write(p.home.path().join(".runfiles/mine.run"), "$ true\n").unwrap();
+	let o = p.run(&[":lint"]);
+	assert!(o.status.success(), "{}{}", out(&o), err(&o));
+	assert_eq!(read(&p, "runfiles/_shared.run"), ".shell = \"bash\"\n");
+}
+
+#[test]
+fn lint_reports_a_scope_that_cannot_be_read_where_it_is_written() {
+	// Discovery refuses it before any target runs, but `:lint` does not collect
+	// by scope -- so unless it is a finding, a file that stops every `run` on the
+	// machine would pass.
+	let p = project(&[("runfiles/a.run", "$ true\n")]);
+	let g = p.home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(
+		g.join("deploy.run"),
+		".only-in-directories = \"{{ ENV.WORK }}/acme\"\n\n$ true\n",
+	)
+	.unwrap();
+	let o = p.run(&[":lint", "--check", "--include-global"]);
+	assert!(!o.status.success(), "{}", out(&o));
+	assert!(
+		out(&o).contains("deploy.run:1:1: error: `.only-in-directories` has to be a literal string, or a list of them"),
+		"{}{}",
+		out(&o),
+		err(&o)
+	);
+}
+
 #[test]
 fn lint_reports_a_file_that_does_not_parse_and_carries_on_with_the_rest() {
 	let p = project(&[("runfiles/a.run", "let y=1\n")]);

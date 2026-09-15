@@ -39,7 +39,10 @@ const SECTIONS: &[Section] = &[
 		&[
 			Row("--check", "write nothing, and fail on a file that needs formatting too"),
 			Row("--stdout", "print the formatted files instead of writing them back"),
-			Row("--include-global", "include the machine-wide directory"),
+			Row(
+				"--include-global",
+				"include the machine-wide directory (always included from inside it)",
+			),
 		],
 	),
 	Section(
@@ -66,26 +69,38 @@ pub(crate) fn usage() -> String {
 	crate::help::render(INTRO, SECTIONS)
 }
 
-/// Every `.run` file the catalog knows about, `_shared.run` included.
-pub fn project_files(cat: &Catalog, include_global: bool) -> Vec<PathBuf> {
-	// Through the gate, not `home_dir()` directly: in CI there is no
-	// machine-wide directory to leave out, because none was read in.
-	let global = crate::discovery_home().and_then(|h| runfile_discovery::global_dir(&h).ok().flatten());
-	let is_global = |p: &Path| global.as_ref().is_some_and(|g| p.starts_with(g));
+/// The project `:lint` checks from `from`: every file on disk, whatever
+/// directories a machine-wide one names.
+///
+/// A scope says where a target is offered, which is a question about running
+/// it, and nothing here runs. Asked the other way, the scoped files of the
+/// machine-wide directory were linted only from inside the directories they
+/// name -- and a scoped file reached anyway was checked without its own
+/// `_shared.run` or siblings. See [`runfile_discovery::discover_unscoped`].
+pub fn catalog(from: &Path) -> Result<Catalog, runfile_discovery::DiscoverError> {
+	runfile_discovery::discover_unscoped(from, crate::discovery_home().as_deref())
+}
 
+/// Every `.run` file the catalog knows about, `_shared.run` included.
+///
+/// The machine-wide directory is left out unless it is asked for, or unless
+/// `from` is inside it: there it is the project, and leaving it out said
+/// `0 files checked: no errors` about a directory full of runfiles.
+pub fn project_files(cat: &Catalog, from: &Path, include_global: bool) -> Vec<PathBuf> {
+	let global = include_global || runfile_discovery::is_machine_wide(from);
+	// Judged by how discovery reached each file, a target and a `_shared.run`
+	// alike. By path, `$HOME/runfiles` found as the nearest `runfiles/` had its
+	// targets linted and its `_shared.run` files left out. In CI there is nothing
+	// to leave out, since no machine-wide directory was read.
+	let wanted = |origin: Origin| global || origin != Origin::Global;
 	let mut out: Vec<PathBuf> = cat
 		.targets
 		.values()
-		.filter(|t| include_global || t.origin != Origin::Global)
+		.filter(|t| wanted(t.origin))
 		.map(|t| t.path.clone())
 		.collect();
-	// A `_shared.run` is registered for every directory whether or not one is
-	// there, and it is not a target, so nothing that walks by name reaches it.
-	for p in cat.shared.values().filter(|p| p.is_file()) {
-		if include_global || !is_global(p) {
-			out.push(p.clone());
-		}
-	}
+	// A `_shared.run` is not a target, so nothing that walks by name reaches it.
+	out.extend(cat.shared.iter().filter(|(_, o)| wanted(**o)).map(|(p, _)| p.clone()));
 	out.sort();
 	out.dedup();
 	out
@@ -140,7 +155,7 @@ pub fn lint(files: &[PathBuf], project: Option<&Catalog>, check: bool, to_stdout
 			Some(cat) => Some(cat),
 			None => found
 				.entry(directory_of(file))
-				.or_insert_with_key(|dir| runfile_discovery::discover(dir, crate::discovery_home().as_deref()).ok())
+				.or_insert_with_key(|dir| catalog(dir).ok())
 				.as_ref(),
 		};
 		let read = |p: &Path| std::fs::read_to_string(p).ok();
