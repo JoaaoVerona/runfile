@@ -118,4 +118,21 @@ mod tests {
 		assert_eq!(d.len(), 1, "{d:?}");
 		assert!(d[0].message.contains("unknown function `nope`"), "{}", d[0].message);
 	}
+
+	#[test]
+	fn a_file_whose_project_could_not_be_found_has_its_dollar_lines_left_alone() {
+		// A `_shared.run` above it could name another shell for them, and nothing
+		// says whether one does. An `exec bash` block names its own, so it is read.
+		let src = "$ echo it's\n\nexec bash\n\techo it's\nend\n";
+		let d = diagnostics(src, Some(Path::new("/nowhere/runfiles/a.run")), None, &nothing);
+		assert_eq!(d.len(), 1, "{d:?}");
+		assert!(d[0].message.contains("[unclosed]"), "{}", d[0].message);
+		assert_eq!(
+			d[0].range.start_line, 3,
+			"the `exec bash` body, not the `$` line: {d:?}"
+		);
+		// A document that is not a file has nothing above it to name a shell.
+		let d = diagnostics(src, None, None, &nothing);
+		assert_eq!(d.len(), 2, "{d:?}");
+	}
 }

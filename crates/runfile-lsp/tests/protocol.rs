@@ -288,13 +288,29 @@ fn a_uri_with_escapes_round_trips() {
 // Its rules are tested in `runfile-shell`. These are about the server: that a
 // finding arrives as a diagnostic, on exactly the text it is about.
 
+/// What the server says of `src`, opened as `runfiles/t.run` in a project on
+/// disk.
+///
+/// Not at a made-up path: the server finds no project there, so it cannot know
+/// whether a `_shared.run` above names another shell, and leaves `$` lines
+/// alone. A test at such a path passed only on a machine whose home directory
+/// held a machine-wide `runfiles`, which gave discovery something to find.
+fn shell_diagnostics(src: &str) -> Vec<Value> {
+	let d = tempfile::TempDir::new().unwrap();
+	let dir = d.path().join("runfiles");
+	std::fs::create_dir_all(&dir).unwrap();
+	let doc = dir.join("t.run");
+	std::fs::write(&doc, src).unwrap();
+	let out = converse(&[did_open(&path_to_uri(&doc), src)]);
+	diagnostics(&out[0]).clone()
+}
+
 #[test]
 fn a_shell_mistake_is_underlined_where_it_is_written() {
 	// Line 3 of the file is line 2 of the script, because the comment between
 	// them is transparent to the run -- the case a naive offset gets wrong.
 	let src = "$ echo start\n# a note\n$ echo it's\n";
-	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
-	let d = diagnostics(&out[0]);
+	let d = shell_diagnostics(src);
 	assert_eq!(d.len(), 1, "{d:?}");
 	assert_eq!(d[0]["range"]["start"]["line"], 2, "the line the author wrote");
 	assert_eq!(d[0]["range"]["start"]["character"], 9, "{d:?}");
@@ -306,8 +322,7 @@ fn a_shell_mistake_is_underlined_where_it_is_written() {
 #[test]
 fn a_shell_finding_says_what_to_write_instead() {
 	let src = "$ sudo ss -ltnp 'sport = :{{ ARG.port }}'\n";
-	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
-	let d = diagnostics(&out[0]);
+	let d = shell_diagnostics(src);
 	assert_eq!(d.len(), 1, "{d:?}");
 	let message = d[0]["message"].as_str().unwrap();
 	assert!(message.contains("[quoted-interpolation]"), "{message}");
@@ -320,16 +335,16 @@ fn a_shell_finding_says_what_to_write_instead() {
 #[test]
 fn clean_shell_produces_nothing() {
 	let src = "$ x=1\n$ echo \"$x\"\n$ cp {{ ARG.src }} /tmp/\n";
-	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
-	assert!(diagnostics(&out[0]).is_empty(), "{:?}", diagnostics(&out[0]));
+	let d = shell_diagnostics(src);
+	assert!(d.is_empty(), "{d:?}");
 }
 
 #[test]
 fn a_non_shell_exec_body_is_left_alone() {
 	// Python that would be nonsense as shell must not be reported as such.
 	let src = "exec python3\n\tx = ['it', \"'s\"]\n\tprint(x)\nend\n";
-	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
-	assert!(diagnostics(&out[0]).is_empty(), "{:?}", diagnostics(&out[0]));
+	let d = shell_diagnostics(src);
+	assert!(d.is_empty(), "{d:?}");
 }
 
 #[test]
@@ -337,8 +352,7 @@ fn a_file_that_does_not_parse_has_its_shell_left_unread() {
 	// The shell text the runner would assemble is not known, and a report on a
 	// guess would be noise on top of the real error.
 	let src = "if FLAG.x\n$ echo it's\n";
-	let out = converse(&[did_open("file:///x/runfiles/a.run", src)]);
-	let d = diagnostics(&out[0]);
+	let d = shell_diagnostics(src);
 	assert_eq!(d.len(), 1, "{d:?}");
 	assert!(!d[0]["message"].as_str().unwrap().contains("[unclosed]"), "{d:?}");
 }
