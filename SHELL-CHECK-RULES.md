@@ -660,7 +660,7 @@ $ [[ "$(uname -m)" =~ ^arm ]] && echo "arm"
 `-eq` or `-lt` inside `[ … ]` with an operand that is not a whole number.
 
 `-eq`, `-ne`, `-lt`, `-le`, `-gt` and `-ge` compare whole numbers, and `[` refuses anything else with `integer
-expression expected`. Text is compared with `=` and `!=`.
+expected` (`integer expression expected` before bash 5.3). Text is compared with `=` and `!=`.
 
 ```sh
 # flagged

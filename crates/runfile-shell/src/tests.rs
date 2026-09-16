@@ -868,8 +868,10 @@ fn bash_does_what_each_rule_says_it_does() {
 			out.contains("always")
 		}),
 		("test-regex", "[ a =~ a ]", |code, _| code != 0),
+		// 2 is `[` refusing its operands rather than answering false; the
+		// wording is bash's to change, and 5.3 shortened it to `integer expected`.
 		("not-a-number", "[ x -eq main ]", |code, out| {
-			code != 0 && out.contains("integer expression expected")
+			code == 2 && out.contains("integer")
 		}),
 		("outside-loop", "break; echo carried on", |code, out| {
 			code == 0 && out.contains("carried on")
