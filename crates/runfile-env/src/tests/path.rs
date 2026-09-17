@@ -19,6 +19,7 @@ fn a_target_path_assignment_replaces_the_search_path() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(get_path_value(&env), "/opt/only/this", "the assignment is the path");
@@ -38,6 +39,7 @@ fn shell_path_beats_runfile_envfile_path_override() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env);
@@ -63,6 +65,7 @@ fn runfile_env_kept_for_keys_not_in_shell() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("RUNFILE_TEST_UNIQUE_KEY_42").unwrap(), "runfile_kept");
@@ -83,6 +86,7 @@ fn add_to_path_prepends_to_shell_path_after_overlay() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env).replace('\\', "/");
@@ -120,6 +124,7 @@ fn add_path_prepends_onto_a_target_path_assignment() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env).replace('\\', "/");
@@ -130,9 +135,9 @@ fn add_path_prepends_onto_a_target_path_assignment() {
 }
 
 #[test]
-fn dep_runfile_env_beats_parent_runfile_env_when_shell_does_not_have_key() {
-	// For keys not in shell, the dep's env layer wins over parent's because it's
-	// applied later. Use a unique key shell can't possibly have.
+fn a_called_targets_assignment_beats_what_its_caller_exported() {
+	// What a caller exported is the shell a called target runs in, and a
+	// target's own `.env` beats its shell.
 	let dir = TempDir::new().unwrap();
 	let mut parent_resolved = HashMap::new();
 	parent_resolved.insert(
@@ -151,19 +156,20 @@ fn dep_runfile_env_beats_parent_runfile_env_when_shell_does_not_have_key() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: Some(&parent_resolved),
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(
 		env.get("RUNFILE_TEST_DEP_BEATS_PARENT_99").unwrap(),
 		"from_dep",
-		"dep's later layer should win over parent's value when shell doesn't define the key"
+		"the called target's own assignment wins"
 	);
 }
 
 #[test]
-fn a_dependency_path_assignment_wins_over_the_parent_and_the_shell() {
-	// The same order under a `base_env`: the parent's layer, then the shell,
-	// then this invocation's own assignment.
+fn a_called_targets_path_assignment_replaces_the_path_it_was_called_with() {
+	// The same for PATH. The base is the only shell a called target has, so the
+	// process's own PATH has no say at all.
 	let dir = TempDir::new().unwrap();
 	let mut parent_resolved = HashMap::new();
 	parent_resolved.insert("PATH".to_string(), "/parent/baked/path".to_string());
@@ -179,6 +185,7 @@ fn a_dependency_path_assignment_wins_over_the_parent_and_the_shell() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: Some(&parent_resolved),
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(get_path_value(&env), "/dep/tries/to/win");
@@ -198,6 +205,7 @@ fn no_add_to_path_leaves_path_untouched() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	let path = get_path_value(&env);

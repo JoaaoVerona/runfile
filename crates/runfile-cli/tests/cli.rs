@@ -3768,6 +3768,203 @@ fn what_a_shared_file_sets_reaches_its_own_lets_and_the_target_header() {
 	assert_eq!(out(&o).trim(), "logs-eu@eu");
 }
 
+// ------------------------------------------------- a `run` hands over its environment
+
+#[test]
+fn a_dispatched_target_starts_from_its_callers_environment() {
+	// `ENV.X` and a command's `$X` alike, from a `.env-file`, a header `.env`
+	// and a block's, and through `code_of(run …)`. None of it used to reach the
+	// target being run.
+	let p = project(&[
+		(".env", "RUNFILE_T_FROM_FILE=from-file\n"),
+		(
+			"runfiles/caller.run",
+			".env-file = \".env\"\n.env.RUNFILE_T_ASSIGNED = \"header\"\n\nrun _show\n\n\
+			 do\n\t.env.RUNFILE_T_ASSIGNED = \"block\"\n\n\trun _show\nend\n\n\
+			 let status = code_of(run _show)\n\nexit(status)\n",
+		),
+		(
+			"runfiles/_show.run",
+			"print(ENV.RUNFILE_T_FROM_FILE, ENV.RUNFILE_T_ASSIGNED)\n\n$ echo \"$RUNFILE_T_FROM_FILE $RUNFILE_T_ASSIGNED\"\n",
+		),
+	]);
+	let o = p.run(&["caller"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o).lines().collect::<Vec<_>>(),
+		[
+			"from-file header",
+			"from-file header",
+			"from-file block",
+			"from-file block",
+			"from-file header",
+			"from-file header",
+		]
+	);
+}
+
+#[test]
+fn what_a_caller_exported_beats_a_dispatched_targets_env_file_the_way_a_shell_does() {
+	// The dotenv rule, one level down. The shell a target was run from reaches
+	// the target it runs, and so does the caller's own assignment -- which beats
+	// that shell, as it does in the caller.
+	let p = project(&[
+		(".env.show", "RUNFILE_T_P=from-file\n"),
+		(
+			"runfiles/_show.run",
+			".env-file = \".env.show\"\n\nprint(ENV.RUNFILE_T_P)\n",
+		),
+		("runfiles/plain.run", "run _show\n"),
+		(
+			"runfiles/assigns.run",
+			".env.RUNFILE_T_P = \"from-caller\"\n\nrun _show\n",
+		),
+	]);
+	let shown = |target: &str, shell: Option<&str>| {
+		let mut c = p.command(p.dir.path(), &[target]);
+		match shell {
+			Some(v) => c.env("RUNFILE_T_P", v),
+			None => c.env_remove("RUNFILE_T_P"),
+		};
+		let o = c.output().unwrap();
+		assert!(o.status.success(), "{target}: {}", err(&o));
+		out(&o).trim().to_string()
+	};
+	assert_eq!(shown("plain", None), "from-file");
+	assert_eq!(shown("plain", Some("from-shell")), "from-shell");
+	assert_eq!(shown("assigns", Some("from-shell")), "from-caller");
+	assert_eq!(
+		shown("_show", Some("from-shell")),
+		"from-shell",
+		"and run on its own, as always"
+	);
+}
+
+#[test]
+fn a_ci_target_that_runs_test_leaves_test_its_own_env_file() {
+	// Why a caller's file values arrive as defaults. Arriving as exported, the
+	// `.env` both targets read would beat `.env.test`, and `ci` would test
+	// against the development database while `run test` on its own did not.
+	let p = project(&[
+		(".env", "RUNFILE_T_DB=dev\n"),
+		(".env.test", "RUNFILE_T_DB=test\n"),
+		("runfiles/_shared.run", ".env-file = \".env\"\n"),
+		(
+			"runfiles/test.run",
+			".env-file = \".env.test\"\n\nprint(ENV.RUNFILE_T_DB)\n",
+		),
+		("runfiles/ci.run", "run test\n"),
+	]);
+	for target in ["test", "ci"] {
+		let o = p
+			.command(p.dir.path(), &[target])
+			.env_remove("RUNFILE_T_DB")
+			.output()
+			.unwrap();
+		assert!(o.status.success(), "{target}: {}", err(&o));
+		assert_eq!(out(&o).trim(), "test", "{target}");
+	}
+}
+
+#[cfg(unix)]
+#[test]
+fn run_and_dollar_run_hand_over_the_same_environment_but_for_a_callers_file_values() {
+	// The in-process form means what the re-exec means, down to PATH, with the
+	// one difference that is the point of it: a re-exec can only be handed
+	// variables, so the caller's `.env-file` beats the called target's own file
+	// there -- and only there.
+	let p = project(&[
+		(".env", "RUNFILE_T_FILE=caller-file\nRUNFILE_T_BOTH_FILES=caller-file\n"),
+		(".env.show", "RUNFILE_T_BOTH_FILES=own-file\n"),
+		(
+			"runfiles/caller.run",
+			".env-file = \".env\"\n.env.RUNFILE_T_ASSIGNED = \"assigned\"\n.add-path = \"bin\"\n\nrun _show\n$ run _show\n",
+		),
+		(
+			"runfiles/_show.run",
+			".env-file = \".env.show\"\n\n\
+			 $ echo \"$RUNFILE_T_FILE|$RUNFILE_T_ASSIGNED|$(runfile-t-tool)|$RUNFILE_T_BOTH_FILES\"\n",
+		),
+		("bin/runfile-t-tool", "#!/bin/sh\nprintf tool\n"),
+	]);
+	{
+		use std::os::unix::fs::PermissionsExt;
+		let exe = p.dir.path().join("bin/runfile-t-tool");
+		std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+	}
+	// `$ run` has to find this build of the binary, not whichever is installed.
+	let path = format!("{}:{}", bin_dir().display(), std::env::var("PATH").unwrap_or_default());
+	let o = p
+		.command(p.dir.path(), &["caller"])
+		.env("PATH", path)
+		.env_remove("RUNFILE_T_FILE")
+		.env_remove("RUNFILE_T_BOTH_FILES")
+		.env_remove("RUNFILE_T_ASSIGNED")
+		.output()
+		.unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o).lines().collect::<Vec<_>>(),
+		[
+			"caller-file|assigned|tool|own-file",
+			"caller-file|assigned|tool|caller-file"
+		]
+	);
+}
+
+#[test]
+fn a_machine_wide_target_starts_from_the_project_targets_environment() {
+	let p = project(&[(
+		"runfiles/deploy.run",
+		".env.RUNFILE_T_FROM_PROJECT = \"project\"\n\nrun _notify\n",
+	)]);
+	let g = p.home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(
+		g.join("_notify.run"),
+		"print(ENV.RUNFILE_T_FROM_PROJECT ? \"nothing\")\n",
+	)
+	.unwrap();
+	let o = p.run(&["deploy"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "project");
+}
+
+#[test]
+fn nothing_a_dispatched_target_sets_reaches_the_target_that_ran_it() {
+	let p = project(&[
+		("runfiles/_sets.run", ".env.RUNFILE_T_BACK = \"leaked\"\n\n$ true\n"),
+		(
+			"runfiles/caller.run",
+			"run _sets\n\nprint(ENV.RUNFILE_T_BACK ? \"unset\")\n\n$ echo \"${RUNFILE_T_BACK:-unset}\"\n",
+		),
+	]);
+	let o = p
+		.command(p.dir.path(), &["caller"])
+		.env_remove("RUNFILE_T_BACK")
+		.output()
+		.unwrap();
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).lines().collect::<Vec<_>>(), ["unset", "unset"]);
+}
+
+#[test]
+fn each_parallel_branch_hands_its_own_environment_to_the_target_it_runs() {
+	let p = project(&[
+		(
+			"runfiles/all.run",
+			"parallel for name in [\"one\", \"two\"]\n\tdo\n\t\t.env.RUNFILE_T_NAME = name\n\n\t\trun _show\n\tend\nend\n",
+		),
+		("runfiles/_show.run", "print(ENV.RUNFILE_T_NAME)\n"),
+	]);
+	let o = p.run(&["all"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = out(&o);
+	let mut lines: Vec<&str> = text.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(lines, ["one | one", "two | two"], "{text}");
+}
+
 // ---------------------------------------------------------- `:list`, one line
 
 #[test]

@@ -197,7 +197,14 @@ fn every_exported_property_name_is_actually_known() {
 /// Dispatches nothing and fails the way it was told to.
 struct Fails(fn() -> RunError);
 impl crate::run::Dispatch for Fails {
-	fn run(&self, _t: &str, _a: &[String], _c: &[String], _l: Option<&str>) -> Result<Vec<String>, RunError> {
+	fn run(
+		&self,
+		_t: &str,
+		_a: &[String],
+		_e: crate::env::Inherited,
+		_c: &[String],
+		_l: Option<&str>,
+	) -> Result<Vec<String>, RunError> {
 		Err((self.0)())
 	}
 }

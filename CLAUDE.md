@@ -59,7 +59,8 @@ Line-oriented. Every line is one of:
 they collide with none of the shell lines in the 1,897-line corpus this was designed against; a keyword-first
 design would have collided with 69.
 
-`$ run x` re-execs the binary. `run x` dispatches in-process — that is the normal form.
+`$ run x` re-execs the binary. `run x` dispatches in-process — that is the normal form — and hands `x` the
+environment its own commands have at that line (see *runfile-runtime*).
 
 ### Types
 
@@ -588,7 +589,19 @@ quoting.
 
 - `Scope.private_keys` is a `Keys`: a **deferred, memoized** key pool. Loading is deferred because the pool
   comes from an OS credential store, and a locked keyring blocks on an interactive unlock prompt — an eager load
-  turned every `run <target>` into a hang. Memoized so a run that decrypts twice still prompts once.
+  turned every `run <target>` into a hang. Memoized so a run that decrypts twice still prompts once — **across
+  its targets, not only within one**. `Host::key_pool` makes one pool per run and hands a clone to every target
+  the run dispatches, `fork` shares it with every parallel branch, and the clones share one cache. It used to
+  be a `Keys::new` per target in `Host::prepare`, so two targets reading one encrypted `.env-file` through the
+  `_shared.run` above both unlocked the keyring twice in one run, and the test that said otherwise never saw
+  it: its pool could decrypt nothing, so the first target failed before it ran the second. The watch probe
+  takes the pool too, and the run after it has what the probe loaded. **`Host::run` drops the pool on the way
+  out, however the run ended**, so each watch iteration is a run of its own and asks again. That is the
+  decision, and it is `watch.rs`'s own promise that the next save is the retry: a pool kept for the session
+  would remember a keyring that was locked, or a key not yet added, until someone restarted it. The cost is
+  one credential-store read for each iteration that decrypts, which an unlocked keyring answers without a
+  prompt. `tests/keys.rs` holds both halves -- one load across targets, branches and the probe, and a second
+  run on the same host that finds a key the first could not.
 - `Scope.dry_run` exists so `write_file` and `decrypt` can refuse to write, and so `confirm` does not ask. A
   preview that edits the working tree is worse than no preview, and one that stops to ask permission for what
   it is not going to do is not a preview at all.
@@ -909,14 +922,39 @@ terminal's width, and how wide text is on it).
   colour sets it back. A branch's label is keyed on **stdout**, the stream a pipeline reads: `run dev > log`
   keeps the escapes out of the file, and the cost is a terminal's stderr going unpainted when stdout alone is
   redirected.
-- `.add-path` is this target's own. The ancestor chain the old model carried across a re-exec is gone with
-  the re-exec: dispatch is in-process, and every target builds PATH from its own properties.
+- **A `run` hands the target it runs its environment.** Whatever a command on that line would be given -- the
+  caller's `.env`, `.env-file` and `.add-path`, a block's and a trailing property's, its `_shared.run` chain's,
+  and what the caller was itself run with -- is where the called target starts, in place of the process's
+  environment. `Dispatch::run` carries it (`env::handed_over` works it out from the line's `props` and
+  `r.env`, for `run` and `code_of(run …)` alike), `Host::prepare` seeds `Scope.env` with it so a `_shared.run`
+  `let` or a header value reads it before anything has been built, and `Props.inherited` carries it into every
+  build after that -- like `machine_wide`, a fact about the target that survives every `extend`. Before this,
+  `Dispatch::run` carried no environment at all: every target started from the process's, so a helper like
+  `_aws` that expected its caller's credentials got none, while `$ run _aws` got them.
+- **It is handed over in two halves, and that is the design.** A value only a `.env-file` supplied is a
+  *default*, laid beneath the called target's own files (`EnvBuildParams::defaults`); everything else is
+  *exported* and stands where a shell's variables stand, above its files and below its `.env`
+  (`EnvBuildParams::base_env`, which replaces the process's environment outright, overlay included). Handed
+  over whole -- all `$ run x` can do, since a new process is given only variables -- a caller's `.env` would
+  beat the called target's own `.env.test`: `ci` running `test` would test against the development database.
+  A value is a file's when neither layer that beats a file put it there: not what the caller was itself run
+  with, and not the caller's `.env`. PATH is always exported, so a called target's own `.add-path` goes in
+  front of its caller's -- a subproject's `node_modules/.bin` ahead of the root's that called it. An
+  `.add-path` entry already on PATH is moved to the front rather than added again (`apply_add_to_path`), or a
+  `_shared.run` both levels read would stack a copy per level; a PATH none of the entries is on comes back
+  byte for byte. Nothing flows back: what a called target sets is gone when it returns. The caller's values
+  were decrypted before they were handed over, so a called target never asks the key pool for them again, and
+  `tests/keys.rs` counts that. `RUN.user` and `RUN.cwd` stay the process's. `runfile-runtime/src/tests/inherited.rs`
+  holds each of these rules, `runfile-env/src/tests/called.rs` the layering beneath them, and `cli.rs` the
+  whole of it against `$ run`, which must agree about everything but a caller's file values.
 - `env::build` receives the same deferred key pool the `decrypt` function uses. It was previously passed `None`,
   which meant an encrypted `.env-file` value could never be decrypted at all.
 - **Precedence is decided in one place, `runfile_env::build_env`: `.env-file` < the caller's shell < the
   target's `.env`.** A file is a default -- the dotenv convention, so a checked-in `.env` does not clobber what
   someone exported -- and the target's own assignment beats both, since it is the one way a target can force
-  a value; a default the caller may override is written `.env.PORT = ENV.PORT ? "3000"`. It used to be
+  a value; a default the caller may override is written `.env.PORT = ENV.PORT ? "3000"`. For a target another
+  target `run`s, "the caller's shell" is what that caller exported, and its file values sit below this
+  target's files: `defaults` < `.env-file` < `base_env` < `.env`. It used to be
   described twice, with opposite answers: `build_env` put the shell on top, while `merged_env` laid the
   block's `.env` back over the built environment at spawn. So `.env.PORT = "3000"` under `PORT=4000 run t`
   printed `4000` for `{{ ENV.PORT }}` and `3000` for `$PORT`. The overlay existed because a block that set
@@ -1428,7 +1466,8 @@ every header a second time, on every run that is not `--dry-run`, to learn wheth
 a rebuild reads and decrypts every `.env-file` -- so rebuilding after every property would have unlocked the
 keyring in the probe as well as in the run for any target with an encrypted file. A header that never reads
 `ENV` costs exactly what it did, and `tests/keys.rs` counts the loads to hold it there: none in the probe for
-such a header, one for a header that does read. What `extend` rebuilt it puts back before returning, because
+such a header, one for a header that does read -- and none more in the run after the probe, which shares its
+key pool. What `extend` rebuilt it puts back before returning, because
 the block's own environment is the walker's to build and to undo -- left in place, it is what
 `with_block_env` would save, and it would outlive the block. A nested block starts current, since the one
 around it was built; the top of a target starts stale whenever the chain folded into it touches the

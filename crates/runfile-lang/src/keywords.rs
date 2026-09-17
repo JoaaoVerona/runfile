@@ -46,10 +46,12 @@ pub const KEYWORDS: &[Keyword] = &[
 	Keyword {
 		name: "run",
 		syntax: "run <target> [arguments]",
-		doc: "Run another target **in this process** — no second binary, no shell in between. Its \
-		      arguments are values rather than shell text: one `{{ … }}` is one argument even with \
-		      spaces in it, and a list becomes one argument per item. A bare `--` forwards the rest \
-		      exactly as typed.",
+		doc: "Run another target **in this process** — no second binary, no shell in between. It \
+		      starts from the environment a command on this line would get — `.env`, `.env-file` and \
+		      `.add-path` included — and layers its own over it; a value only a `.env-file` supplied \
+		      stays a default its own `.env-file` replaces. Its arguments are values rather than shell \
+		      text: one `{{ … }}` is one argument even with spaces in it, and a list becomes one \
+		      argument per item. A bare `--` forwards the rest exactly as typed.",
 		example: "run build --env=production\nrun _aws -- s3api put-bucket-encryption --bucket {{ name }}",
 	},
 	Keyword {

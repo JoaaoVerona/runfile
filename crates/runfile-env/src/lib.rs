@@ -94,10 +94,10 @@ pub struct EnvBuildParams<'a> {
 	/// Env vars to set (applied after env files).
 	pub env: Option<&'a HashMap<String, String>>,
 	/// Directories to prepend to PATH. Entries should already be absolute —
-	/// the runtime resolves relative `.add-path` entries against the
-	/// source Runfile's directory in `merge.rs`, mirroring how globals are
-	/// baked. The `working_dir` fallback in `apply_add_to_path_chain` only
-	/// kicks in for any stray relative entry that bypassed baking.
+	/// the runtime resolves relative `.add-path` entries against the anchor in
+	/// `runfile_runtime::env::build`. The `working_dir` fallback in
+	/// `apply_add_to_path` only kicks in for a stray relative entry that did
+	/// not go through it.
 	pub add_to_path: Option<&'a [String]>,
 	/// Working directory the spawned command will run in (= the resolved
 	/// `.workdir`). Used as a fallback for any relative `.add-path`
@@ -119,13 +119,17 @@ pub struct EnvBuildParams<'a> {
 	/// credential store) should wrap them in [`LazyPrivateKeys`] so the
 	/// lookup is deferred until strictly needed.
 	pub available_private_keys: Option<&'a dyn PrivateKeyProvider>,
-	/// Optional override for the env-var base. When `Some`, this map replaces
-	/// the default `std::env::vars()` snapshot as the starting layer of the
-	/// merged env. Used to pass a parent target's already-resolved env into a
-	/// dependency invocation, so `@dep` sees the parent's env on top of which
-	/// it layers its own `.env-file` / `.env`. When `None` (the default), the process's
-	/// environment is used.
+	/// The environment this build is called with: the layer everything else is
+	/// built on, and the one laid back over the `.env-file` values, so what was
+	/// exported beats a file. `None` is the process's own environment, which is
+	/// what a target run from the command line is called with. A target another
+	/// target `run`s is called with its caller's -- less what `defaults` holds.
 	pub base_env: Option<&'a HashMap<String, String>>,
+	/// Values that only a calling target's `.env-file`s supplied. They stay
+	/// defaults, beneath this build's own files: a file is a default however far
+	/// its values travelled, so a called target's own `.env-file` still replaces
+	/// them. `None` when no target called this one.
+	pub defaults: Option<&'a HashMap<String, String>>,
 }
 
 /// Load environment variables from env files, applying substitution to file paths.
@@ -179,32 +183,32 @@ pub fn load_env_files(
 /// Build the complete environment variable map for a command execution.
 ///
 /// Merge order (lowest → highest priority for non-PATH vars):
-/// 1. `.env-file` — loaded left-to-right, later files override earlier
-/// 2. **Current shell env** — `std::env::vars()` re-overlaid, so the caller's
-///    exported value beats a file's. A file is a default, which is the dotenv
-///    convention: a checked-in `.env` must not clobber what someone exported.
-/// 3. `env` — the target's own `.env.NAME = value`, which beats both. It is an
-///    assignment written in the file, and the one place a target can *force* a
-///    value; a default the caller may override is spelled out instead, as
-///    `.env.PORT = ENV.PORT ? "3000"`. It used to sit below the shell here while
-///    the runtime overlaid it back on top for commands, so one target saw two
-///    answers: `$PORT` was the property's and `{{ ENV.PORT }}` the caller's.
-/// 4. `.add-path` chain — for PATH only, prepended in innermost-first order
-///    (`[this target's `.add-path`..., parent's..., grandparent's..., shell PATH]`)
-/// 5. Decryption — `encrypted:` values rewritten in place
+/// 1. `defaults` — what only a calling target's `.env-file`s supplied. Still a
+///    file's values, so they give way to everything below, this build's own
+///    files included.
+/// 2. `.env-file` — loaded left-to-right, later files override earlier
+/// 3. **The environment the build is called with** — `base_env`, or the
+///    process's own, re-overlaid so an exported value beats a file's. A file
+///    is a default, which is the dotenv convention: a checked-in `.env` must
+///    not clobber what someone exported. For a target another target `run`s,
+///    that is everything its caller's commands had but the file values in
+///    `defaults`: its caller's `.env` and `.add-path` beat its own files the
+///    way a shell's variables would.
+/// 4. `env` — the target's own `.env.NAME = value`, which beats all of it. It
+///    is an assignment written in the file, and the one place a target can
+///    *force* a value; a default the caller may override is spelled out
+///    instead, as `.env.PORT = ENV.PORT ? "3000"`. It used to sit below the
+///    shell here while the runtime overlaid it back on top for commands, so one
+///    target saw two answers: `$PORT` was the property's and `{{ ENV.PORT }}`
+///    the caller's.
+/// 5. `.add-path` — for PATH only, prepended onto whatever PATH turned out to
+///    be, this target's entries first. A called target's therefore go in front
+///    of its caller's, which arrived as part of PATH in step 3.
+/// 6. Decryption — `encrypted:` values rewritten in place
 ///
-/// For top-level invocations (`base_env: None`), step 1 starts from
-/// `std::env::vars()` so `{{ ENV.X }}` substitution sees the inherited shell
-/// values. The re-overlay in step 2 is what enforces shell-over-file on the
-/// final env.
-///
-/// For dependency invocations (`base_env: Some(parent's resolved env)`),
-/// step 1 starts from the parent's resolved env, so the dep inherits parent's
-/// Runfile-defined values (those that survived shell-wins in the parent build)
-/// and `{{ ENV.X }}` in the dep can reference them. Step 3 still re-overlays
-/// `std::env::vars()`, ensuring shell wins over both parent and dep
-/// contributions. Step 4 walks `parent_add_to_path_chain` plus this target's
-/// `.add-path` is re-prepended after step 3 wiped PATH.
+/// Step 1 and step 3 start the map together, so `{{ ENV.X }}` substitution
+/// while the files load sees both; the re-overlay in step 3 is what enforces
+/// exported-over-file on the final env.
 ///
 /// The `substitute` function is called on env values and file paths, allowing
 /// `{{ ARG.* }}`, `{{ FLAG.* }}`, and `{{ ENV.* }}` expansion.
@@ -213,10 +217,19 @@ pub fn build_env(
 	params: &EnvBuildParams<'_>,
 	substitute: &dyn Fn(&str, &HashMap<String, String>) -> Result<String, String>,
 ) -> Result<HashMap<String, String>, EnvError> {
-	let mut env_map: HashMap<String, String> = match params.base_env {
-		Some(base) => base.clone(),
-		None => env::vars().collect(),
+	let process: HashMap<String, String>;
+	let base = match params.base_env {
+		Some(base) => base,
+		None => {
+			process = env::vars().collect();
+			&process
+		}
 	};
+	// The defaults go in first, so the base is what stands wherever both name a
+	// key. A caller hands over the two halves of one environment, so they never
+	// do; this only says which would win.
+	let mut env_map: HashMap<String, String> = params.defaults.cloned().unwrap_or_default();
+	env_map.extend(base.iter().map(|(k, v)| (k.clone(), v.clone())));
 
 	// Layer `.env-file`s (substitution sees the env_map built so far). Relative
 	// `.env-file` paths resolve against `env_files_base_dir` — the
@@ -235,20 +248,20 @@ pub fn build_env(
 	// post-processing would error.
 	//
 	// `RUNFILE_ENCRYPTION_PUBLIC_KEY` is read from `env_map`, which already
-	// contains the system env (base_env), so a key set in the shell env
-	// works the same as one set in the env file. Any decrypted value can
-	// still be overwritten by `overlay_shell_env` below — the shell wins
-	// for keys it defines.
+	// contains the environment the build was called with and any defaults, so
+	// a key set in the shell, or in a calling target's env file, works the same
+	// as one set in this env file. Any decrypted value can still be overwritten
+	// by `overlay_base` below — what was exported wins for keys it defines.
 	if runfile_crypto::has_encrypted_values(&env_map) {
 		let key_hex = resolve_decryption_key(&env_map, params.available_private_keys)?;
 		runfile_crypto::decrypt_env_values(&mut env_map, &key_hex).map_err(|e| EnvError::Encryption(e.to_string()))?;
 	}
 
-	// Re-overlay the current shell env. Any key the shell defines now beats
-	// whatever a `.env-file` set, restoring the inherited value. PATH is
-	// case-aware (Windows uses "Path", Unix "PATH") so we don't end up with
+	// Re-overlay the environment the build was called with. Any key it defines
+	// now beats whatever a `.env-file` set, restoring the inherited value. PATH
+	// is case-aware (Windows uses "Path", Unix "PATH") so we don't end up with
 	// two case-different PATH keys.
-	overlay_shell_env(&mut env_map);
+	overlay_base(&mut env_map, base);
 
 	// Layer the target's own `env` last, so it beats the shell as well as the
 	// files: see step 3 above. Substitution sees the env_map built so far, and
@@ -277,26 +290,33 @@ pub fn build_env(
 	Ok(env_map)
 }
 
-/// Re-overlay `std::env::vars()` so the inherited shell env wins per key.
+/// Re-overlay the environment the build was called with, so it wins per key.
 /// Handles PATH's case-insensitive identity on Windows: if env_map already
-/// contains a case-insensitive PATH match, the system's PATH value is written
+/// contains a case-insensitive PATH match, the base's PATH value is written
 /// to that existing key rather than introducing a duplicate "Path"/"PATH"
 /// pair that would later confuse `Command::envs`.
-fn overlay_shell_env(env_map: &mut HashMap<String, String>) {
+fn overlay_base(env_map: &mut HashMap<String, String>, base: &HashMap<String, String>) {
 	let existing_path_key = env_map.keys().find(|k| k.eq_ignore_ascii_case("PATH")).cloned();
-	for (k, v) in env::vars() {
+	for (k, v) in base {
 		if k.eq_ignore_ascii_case("PATH") {
-			let target = existing_path_key.clone().unwrap_or(k);
-			env_map.insert(target, v);
+			let target = existing_path_key.clone().unwrap_or_else(|| k.clone());
+			env_map.insert(target, v.clone());
 		} else {
-			env_map.insert(k, v);
+			env_map.insert(k.clone(), v.clone());
 		}
 	}
 }
 
-/// Prepend `parent_chain + [this target's add_to_path]` to PATH so the
-/// innermost (this target's) entries end up at the very front. Relative paths
-/// resolve against `working_dir`. No-op when both inputs are empty.
+/// Prepend this target's `.add-path` entries to PATH, in the order written, so
+/// they are found ahead of whatever PATH already held. Relative paths resolve
+/// against `working_dir`. No-op when there are none.
+///
+/// An entry PATH already holds is moved to the front rather than added a
+/// second time. A target called by another is called with its caller's PATH,
+/// so a `_shared.run` both of them read would otherwise put the same directory
+/// on it again at every level. The move finds exactly what the copy would
+/// have: PATH is searched in order, so a later copy of a directory is never
+/// the one a lookup reaches.
 fn apply_add_to_path(env_map: &mut HashMap<String, String>, this_target: Option<&[String]>, working_dir: &Path) {
 	let this_layer: &[String] = this_target.unwrap_or(&[]);
 	if this_layer.is_empty() {
@@ -320,10 +340,19 @@ fn apply_add_to_path(env_map: &mut HashMap<String, String>, this_target: Option<
 		}
 	};
 
-	// This target's entries first, then whatever PATH already held.
-	let mut new_paths: Vec<String> = this_layer.iter().map(&resolve).collect();
+	// This target's entries first, then whatever PATH already held, less the
+	// entries it has just put in front. What is left is split and rejoined on
+	// the separator it was split on, so a PATH none of them was on comes back
+	// exactly as it was.
+	let added: Vec<String> = this_layer.iter().map(&resolve).collect();
+	let mut new_paths = added.clone();
 	if !current_path.is_empty() {
-		new_paths.push(current_path);
+		new_paths.extend(
+			current_path
+				.split(separator)
+				.filter(|held| !added.iter().any(|a| a == held))
+				.map(str::to_string),
+		);
 	}
 
 	env_map.insert(path_key, new_paths.join(separator));

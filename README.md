@@ -396,7 +396,7 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `match` / `case` / `default` / `end` | Dispatch on a value. A label is a quoted string: `case "linux"`. |
 | `retry n [every s]` … `end` | Run the block again while it fails, up to `n` times. |
 | `do` … `end` | A block with no condition, so a property can cover a few commands. |
-| `run other-target` | Run another target, in this process. |
+| `run other-target` | Run another target, in this process, starting from this one's environment. |
 | `print(…)` | Anything else is an expression, evaluated for its effect. |
 
 A `#` opens a comment where it begins a word — the shell's own rule, so it reads the same on both sides of the
@@ -856,6 +856,33 @@ runfiles/_aws.run       → run _aws     (a helper other targets call)
 runfiles/deploy.run     → run deploy
 ```
 
+**A target that `run`s another hands it its environment.** Whatever a command on that line would be given —
+the caller's `.env`, `.env-file` and `.add-path`, a block's as well as the header's, and what the caller was run
+with itself — is where the target it runs starts. That target layers its own settings over it the way it would
+over your shell: its own `.env` wins, and its own `.add-path` goes in front. So a helper needs no environment of
+its own:
+
+```sh
+# runfiles/_aws.run
+# The AWS CLI, with whatever credentials the calling target loaded
+
+$ docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY amazon/aws-cli {{ ARGS }}
+```
+
+```sh
+# runfiles/backups.run
+# List the production backups
+
+.env-file = ".env.production"
+
+run _aws s3 ls s3://example-backups
+```
+
+A value that only a `.env-file` supplied is still a default when it arrives, so the target's own `.env-file`
+replaces it: a `ci` target that loads `.env` and runs `test` does not push the development database over
+`test`'s own `.env.test`. `$ run test` is different. A new process can only be handed variables, so there the
+caller's `.env-file` values arrive as if you had exported them, and they beat `test`'s own file.
+
 `do … end` is a block with no condition — somewhere for a property to go when it should cover a few commands
 and not the whole target:
 
@@ -1021,7 +1048,9 @@ Keys live in the OS credential store — Keychain, Credential Manager, or Secret
 fallback. In CI, pass them as `RUNFILE_PRIVATE_KEYS` (newline-separated) and no credential store is involved.
 
 Decryption happens in memory; secrets never reach disk. The credential store is only touched when something
-actually decrypts, so a locked keyring never gets in the way of an unrelated target.
+actually decrypts, so a locked keyring never gets in the way of an unrelated target — and it is asked once in
+a run, however many of the targets that run calls decrypt. In watch mode each re-run asks again, so unlocking
+the keyring or adding a missing key takes effect on the next save.
 
 ## Editor support
 

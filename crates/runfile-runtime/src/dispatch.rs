@@ -81,7 +81,8 @@ pub struct Host<'a> {
 	/// terminal with its siblings and asks it nothing.
 	pub ask: Option<fn(&str, &str) -> Option<String>>,
 	/// Where `decrypt` gets its keys. Injected so the runtime never reaches
-	/// into a credential store itself.
+	/// into a credential store itself, and asked at most once in a run however
+	/// many of its targets decrypt -- see `key_pool`.
 	pub keys: fn() -> Vec<String>,
 	/// Asked by `confirm(…)`. Never from inside a parallel branch: every branch
 	/// shares one terminal, so `confirm()` refuses there rather than asking two
@@ -94,6 +95,8 @@ pub struct Host<'a> {
 	pub trace: Mutex<Vec<String>>,
 	/// What `temp_file` and `temp_dir` created during this run.
 	pub temps: runfile_lang::TempFiles,
+	/// The key pool of the run in progress, once something in it has needed one.
+	pool: Mutex<Option<runfile_lang::Keys>>,
 }
 
 impl<'a> Host<'a> {
@@ -108,7 +111,25 @@ impl<'a> Host<'a> {
 			interrupted: None,
 			trace: Mutex::new(Vec::new()),
 			temps: runfile_lang::TempFiles::default(),
+			pool: Mutex::new(None),
 		}
+	}
+
+	/// The key pool every target in the run in progress decrypts from.
+	///
+	/// One per run rather than one per target. `Keys` memoizes behind a cache its
+	/// clones share, so every clone handed out here -- to each target a `run`
+	/// dispatches, and through `fork` to every parallel branch -- asks the
+	/// credential store once between them. A `Keys::new` for each target asked
+	/// once per target: two targets reading one encrypted `.env-file`, through the
+	/// `_shared.run` above both, unlocked the keyring twice in one run. The watch
+	/// probe takes it too, so the run after the probe asks nothing more.
+	fn key_pool(&self) -> runfile_lang::Keys {
+		self.pool
+			.lock()
+			.expect("key pool lock")
+			.get_or_insert_with(|| runfile_lang::Keys::new(self.keys))
+			.clone()
 	}
 
 	/// Delete everything `temp_file` and `temp_dir` made, and forget it.
@@ -128,9 +149,16 @@ impl<'a> Host<'a> {
 
 	pub fn run(&self, name: &str, args: &[String]) -> Result<(), RunError> {
 		// Only the top-level call banks its trace; nested ones hand theirs back
-		// so the caller can splice them in where the call appeared.
-		let trace = self.run_with_chain(name, args, &[], None)?;
-		self.trace.lock().expect("trace lock").extend(trace);
+		// so the caller can splice them in where the call appeared. Nothing ran
+		// it, so it is run with the process's own environment.
+		let out = self.run_with_chain(name, args, None, &[], None);
+		// The run is over however it ended, and its key pool with it, so the next
+		// run on this host -- a watch iteration -- asks again. A pool that outlived
+		// its run would keep what it failed to load, from a keyring that was
+		// locked or before a key was added, until the session restarted: the next
+		// save is meant to be the retry.
+		*self.pool.lock().expect("key pool lock") = None;
+		self.trace.lock().expect("trace lock").extend(out?);
 		Ok(())
 	}
 
@@ -138,6 +166,7 @@ impl<'a> Host<'a> {
 		&self,
 		name: &str,
 		args: &[String],
+		env: Option<crate::env::Inherited>,
 		chain: &[String],
 		label: Option<&str>,
 	) -> Result<Vec<String>, RunError> {
@@ -181,11 +210,14 @@ impl<'a> Host<'a> {
 		}
 		let mut next = chain.to_vec();
 		next.push(name.to_string());
-		self.run_inner(target, args, next, label)
+		self.run_inner(target, args, env, next, label)
 	}
 
 	/// Everything both `run_inner` and `header_props` need: a scope with the
 	/// run context and arguments in place, plus `_shared.run` already folded in.
+	///
+	/// `env` is what another target ran this one with, and `None` for a target
+	/// run from the command line, which starts from the process's environment.
 	///
 	/// `real` separates an actual run from a probe. `header_props` probes: it
 	/// evaluates the declaration region only to read `.watch`, so it must
@@ -198,6 +230,7 @@ impl<'a> Host<'a> {
 		&self,
 		target: &runfile_discovery::Target,
 		args: &[String],
+		env: Option<crate::env::Inherited>,
 		real: bool,
 	) -> Result<(runfile_lang::Target, Scope, Props), RunError> {
 		let (ast, shared) = self.load(target)?;
@@ -211,6 +244,13 @@ impl<'a> Host<'a> {
 
 		let mut scope = Scope::new();
 		populate_run_context(&mut scope, target, self.catalog);
+		// A target another one ran reads what it was handed from its first line:
+		// `ENV.X` in a `_shared.run` above it is read before any of its own
+		// properties has built anything.
+		let inherited = env.map(std::sync::Arc::new);
+		if let Some(i) = &inherited {
+			scope.env = i.environment();
+		}
 		let unknown = parse_args(&mut scope, args, &reads).map_err(|e| RunError::MissingArgValue {
 			key: e.key,
 			next: e.next,
@@ -222,7 +262,7 @@ impl<'a> Host<'a> {
 		scope.base_dir = target.anchor.clone();
 		scope.dry_run = self.dry_run || !real;
 		scope.temps = self.temps.clone();
-		scope.private_keys = runfile_lang::Keys::new(self.keys);
+		scope.private_keys = self.key_pool();
 
 		// An input the target does not read is a mistake, and used to be a
 		// warning only because the check was textual guesswork. Walked from the
@@ -258,6 +298,9 @@ impl<'a> Host<'a> {
 			// function the language server asks, and one question with two
 			// answers is how an editor and the runner come to disagree.
 			machine_wide: runfile_discovery::is_machine_wide(&target.path),
+			// What every environment built for this target starts from, which is
+			// carried the same way and for the same reason.
+			inherited,
 			..Props::default()
 		};
 		for s in &shared {
@@ -308,7 +351,7 @@ impl<'a> Host<'a> {
 	/// Watch mode needs `.watch` before the first execution, and the patterns
 	/// interpolate, so reading them off the source text would not do.
 	pub fn header_props(&self, target: &runfile_discovery::Target, args: &[String]) -> Result<Props, RunError> {
-		let (ast, mut scope, shared) = self.prepare(target, args, false)?;
+		let (ast, mut scope, shared) = self.prepare(target, args, None, false)?;
 		Ok(shared.extend(&ast.body, &mut scope, false)?)
 	}
 
@@ -316,10 +359,11 @@ impl<'a> Host<'a> {
 		&self,
 		target: &runfile_discovery::Target,
 		args: &[String],
+		env: Option<crate::env::Inherited>,
 		chain: Vec<String>,
 		label: Option<&str>,
 	) -> Result<Vec<String>, RunError> {
-		let (ast, mut scope, shared_props) = self.prepare(target, args, true)?;
+		let (ast, mut scope, shared_props) = self.prepare(target, args, env, true)?;
 		// Dispatched from a parallel branch, it is part of that branch: what it
 		// prints carries the branch's label, and it asks the terminal nothing.
 		if let Some(l) = label {
@@ -355,10 +399,11 @@ impl Dispatch for HostDispatch<'_, '_> {
 		&self,
 		target: &str,
 		args: &[String],
+		env: crate::env::Inherited,
 		chain: &[String],
 		label: Option<&str>,
 	) -> Result<Vec<String>, RunError> {
-		self.host.run_with_chain(target, args, chain, label)
+		self.host.run_with_chain(target, args, Some(env), chain, label)
 	}
 }
 

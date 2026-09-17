@@ -167,7 +167,8 @@ impl std::fmt::Debug for TempFiles {
 /// Loading is deferred because the pool comes from an OS credential store: a
 /// locked keyring blocks on an unlock prompt, so a target that decrypts nothing
 /// must never ask for it. Memoized because a run that decrypts twice should
-/// still prompt at most once.
+/// still prompt at most once -- and clones share the cache, which is how a
+/// host gives every target in a run the same pool.
 #[derive(Clone)]
 pub struct Keys {
 	loader: fn() -> Vec<String>,

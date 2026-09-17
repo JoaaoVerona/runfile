@@ -4,6 +4,7 @@
 mod args;
 mod checks;
 mod exec;
+mod inherited;
 mod interrupt;
 mod keys;
 mod loops;
@@ -21,11 +22,22 @@ use runfile_lang::eval::Scope;
 #[derive(Default)]
 pub struct Recorder {
 	pub calls: std::sync::Mutex<Vec<String>>,
+	/// What each call was run with, beside its entry in `calls`.
+	pub envs: std::sync::Mutex<Vec<(String, crate::env::Inherited)>>,
 }
 
 impl Recorder {
 	pub fn calls(&self) -> Vec<String> {
 		self.calls.lock().expect("calls").clone()
+	}
+
+	/// What the one call to `target` was run with.
+	pub fn env_of(&self, target: &str) -> crate::env::Inherited {
+		let envs = self.envs.lock().expect("envs");
+		let mut found = envs.iter().filter(|(t, _)| t == target);
+		let (_, env) = found.next().unwrap_or_else(|| panic!("nothing ran `{target}`"));
+		assert!(found.next().is_none(), "`{target}` ran more than once");
+		env.clone()
 	}
 }
 
@@ -34,6 +46,7 @@ impl Dispatch for Recorder {
 		&self,
 		target: &str,
 		args: &[String],
+		env: crate::env::Inherited,
 		_chain: &[String],
 		_label: Option<&str>,
 	) -> Result<Vec<String>, RunError> {
@@ -42,6 +55,7 @@ impl Dispatch for Recorder {
 		} else {
 			format!("{target} {}", args.join(" "))
 		});
+		self.envs.lock().expect("envs").push((target.to_string(), env));
 		// A recorder runs nothing, so it has no trace to contribute.
 		Ok(Vec::new())
 	}

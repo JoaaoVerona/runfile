@@ -150,6 +150,12 @@ impl RunError {
 pub trait Dispatch: Sync {
 	/// Run `target`, returning its dry-run trace.
 	///
+	/// `env` is what the target is run with: the environment a command at the
+	/// calling line would be given, as `env::handed_over` splits it. Handed
+	/// over rather than left to the process, which is all a target had before,
+	/// so a caller's `.env`, `.env-file` and `.add-path` -- and a block's -- reach
+	/// the target it runs the way they reach its own commands.
+	///
 	/// `label` prefixes everything the target prints, when it runs inside a
 	/// parallel branch. It is inherited by whatever the target dispatches in
 	/// turn, so a whole subtree reads as one branch.
@@ -162,6 +168,7 @@ pub trait Dispatch: Sync {
 		&self,
 		target: &str,
 		args: &[String],
+		env: crate::env::Inherited,
 		chain: &[String],
 		label: Option<&str>,
 	) -> Result<Vec<String>, RunError>;
@@ -169,7 +176,14 @@ pub trait Dispatch: Sync {
 
 pub struct NoDispatch;
 impl Dispatch for NoDispatch {
-	fn run(&self, _t: &str, _a: &[String], _c: &[String], _l: Option<&str>) -> Result<Vec<String>, RunError> {
+	fn run(
+		&self,
+		_t: &str,
+		_a: &[String],
+		_e: crate::env::Inherited,
+		_c: &[String],
+		_l: Option<&str>,
+	) -> Result<Vec<String>, RunError> {
 		Err(RunError::NoResolver { line: 0 })
 	}
 }
@@ -446,8 +460,9 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 		Statement::Run { target, args, .. } => {
 			let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
 			let a = run_args(args, &mut r.scope)?;
+			let env = crate::env::handed_over(props, &r.env);
 			// Splice the dependency's trace in where the call appeared.
-			let child = r.dispatch.run(&t, &a, &r.chain, r.label.as_deref())?;
+			let child = r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref())?;
 			r.trace.extend(child);
 			Ok(())
 		}
@@ -691,7 +706,7 @@ fn command_for<'a>(cmd: Option<&'a str>, props: &'a Props) -> Option<&'a str> {
 /// the one form whose whole purpose is to keep going afterwards.
 fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunError> {
 	if let Expr::Dispatch { target, args, .. } = e {
-		return dispatch_code(target, args, r);
+		return dispatch_code(target, args, props, r);
 	}
 	let Expr::Capture { command, body, .. } = e else {
 		// The parser used to guarantee this, back when `code_of` was the only
@@ -730,10 +745,16 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 ///
 /// A refusal is not a status and is passed on, which is also what a re-exec
 /// does: Ctrl+C reaches the whole process group.
-fn dispatch_code(target: &[InterpPart], args: &[Vec<InterpPart>], r: &mut Runner<'_>) -> Result<i32, RunError> {
+fn dispatch_code(
+	target: &[InterpPart],
+	args: &[Vec<InterpPart>],
+	props: &Props,
+	r: &mut Runner<'_>,
+) -> Result<i32, RunError> {
 	let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
 	let a = run_args(args, &mut r.scope)?;
-	match r.dispatch.run(&t, &a, &r.chain, r.label.as_deref()) {
+	let env = crate::env::handed_over(props, &r.env);
+	match r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref()) {
 		Ok(child) => {
 			r.trace.extend(child);
 			Ok(0)

@@ -21,6 +21,7 @@ fn build_env_decrypts_via_public_key_matching() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: Some(&private_keys),
 		base_env: None,
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("DB_PASS").unwrap(), "secret_password");
@@ -45,6 +46,7 @@ fn build_env_encrypted_no_public_key_no_keys_errors() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: None,
 		base_env: None,
+		defaults: None,
 	};
 	let result = build_env(&params, &no_substitute);
 	assert!(result.is_err());
@@ -73,6 +75,7 @@ fn build_env_encrypted_no_matching_private_key_errors() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: Some(&wrong_keys),
 		base_env: None,
+		defaults: None,
 	};
 	let result = build_env(&params, &no_substitute);
 	assert!(result.is_err());
@@ -105,6 +108,7 @@ fn build_env_decrypts_env_file_with_public_key() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: Some(&private_keys),
 		base_env: None,
+		defaults: None,
 	};
 	let env = build_env(&params, &no_substitute).unwrap();
 	assert_eq!(env.get("FILE_SECRET").unwrap(), "from_file_secret");
@@ -138,6 +142,7 @@ fn encrypted_value_without_public_key_header_errors() {
 		env_files_base_dir: dir.path(),
 		available_private_keys: Some(&private_keys),
 		base_env: None,
+		defaults: None,
 	};
 	let result = build_env(&params, &no_substitute);
 
@@ -153,12 +158,13 @@ fn encrypted_value_without_public_key_header_errors() {
 // Priority order tests
 //
 // Final ordering for `build_env` (low → high):
-//   1. envFiles (later file wins per key)
-//   2. env (substituted; wins over envFiles within the Runfile layer)
-//   3. **current shell env always wins** — re-overlays Runfile-defined keys
-//   4. addToPath chain — for PATH only, prepended innermost-first
-//      (`[this target's addToPath..., parent's..., ..., shell PATH]`)
-//   5. decryption
+//   1. defaults (what only a calling target's env files supplied)
+//   2. envFiles (later file wins per key)
+//   3. the environment the build is called with — the shell, or a calling
+//      target's — re-overlaid, so it beats every file
+//   4. env (substituted; the target's own assignment beats all of the above)
+//   5. addToPath — for PATH only, prepended, this target's entries first
+//   6. decryption
 //
 // PATH (from std::env::vars()) is the only system var we can rely on being
 // present cross-platform without mutating the test process env.

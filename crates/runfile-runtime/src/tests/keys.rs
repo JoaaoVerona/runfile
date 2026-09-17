@@ -67,17 +67,195 @@ fn an_encrypted_env_value_does_ask_for_keys() {
 }
 
 #[test]
-fn keys_are_loaded_at_most_once_per_run() {
-	let files = &[
-		("runfiles/a.run", ".env-file = \".env\"\nrun b\n"),
-		("runfiles/b.run", ".env-file = \".env\"\n$ true\n"),
-		(".env", "RUNFILE_ENCRYPTION_PUBLIC_KEY=aa\nS=encrypted:Zm9vYmFy\n"),
-	];
-	let (loads, _) = loads_during(files, "a");
-	assert!(
-		loads <= 1,
-		"asked {loads} times; an unlock prompt must appear at most once"
+fn keys_are_loaded_once_per_run_however_many_targets_decrypt() {
+	// `a` decrypts the file, runs `b`, and `b` decrypts it again -- from the same
+	// pool. This used to be asserted with a pool that could decrypt nothing, so
+	// `a` failed before it ever ran `b`, and the second load it would have made
+	// went unseen: every target got a pool of its own.
+	let env = fixture_env();
+	let (loads, d) = fixture_loads_during(
+		&[
+			("runfiles/a.run", ".env-file = \".env\"\n\nrun b\n"),
+			(
+				"runfiles/b.run",
+				".env-file = \".env\"\n\n$ printf '%s' \"$RUNFILE_T_SECRET\" > b.txt\n",
+			),
+			(".env", &env),
+		],
+		"a",
 	);
+	assert_eq!(read(&d, "b.txt"), "the-secret", "`b` ran, and decrypted");
+	assert_eq!(loads, 1, "an unlock prompt must appear once in a run");
+}
+
+/// A key made for these tests and nothing else, with its public half and one
+/// value encrypted under it -- `the-secret`. This crate does not depend on
+/// `runfile-crypto`, so they are written out rather than made per run.
+const FIXTURE_KEY: &str = "82ef9a80942a3659106b044e364d70969dcde5a0a214b390e5d889197bac6305";
+const FIXTURE_PUBLIC: &str = "e4fcb22d81fff6ffc0beb94a2d57f0ce1baaa68f2db7dabaa02619614f93a150";
+const FIXTURE_SECRET: &str = "encrypted:ib2NmXKlKX0km3oAx+lxEg5QZiOtoeFpaN0jEo067ltvHzGaceE=";
+
+/// A `.env` holding one value encrypted under the fixture key, as
+/// `RUNFILE_T_SECRET`.
+fn fixture_env() -> String {
+	format!("RUNFILE_ENCRYPTION_PUBLIC_KEY={FIXTURE_PUBLIC}\nRUNFILE_T_SECRET={FIXTURE_SECRET}\n")
+}
+
+/// [`counting_loader`], with the fixture key in the pool.
+fn counting_fixture_loader() -> Vec<String> {
+	LOADS.fetch_add(1, Ordering::SeqCst);
+	vec![FIXTURE_KEY.to_string()]
+}
+
+/// A host for `cat` whose key pool holds the fixture key and counts its loads,
+/// with the counter at zero.
+fn fixture_host(cat: &runfile_discovery::Catalog) -> crate::dispatch::Host<'_> {
+	let mut h = crate::dispatch::Host::new(cat);
+	h.assume_yes = true;
+	h.keys = counting_fixture_loader;
+	LOADS.store(0, Ordering::SeqCst);
+	h
+}
+
+/// Loads during one run of `target` that the fixture key can decrypt, and the
+/// project it ran in, so a test can look at what the run left behind.
+fn fixture_loads_during(files: &[(&str, &str)], target: &str) -> (usize, tempfile::TempDir) {
+	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+	let d = project(files);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let h = fixture_host(&cat);
+	h.run(target, &[]).unwrap();
+	(LOADS.load(Ordering::SeqCst), d)
+}
+
+fn read(d: &tempfile::TempDir, name: &str) -> String {
+	std::fs::read_to_string(d.path().join(name)).unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+#[test]
+fn a_called_target_is_handed_its_callers_decrypted_values_without_asking_for_keys_again() {
+	// The caller decrypted the file before it ran anything, and hands the plain
+	// value over. Reading the file again in the called target would be a second
+	// unlock prompt for a value already in hand.
+	let env = fixture_env();
+	let (loads, d) = fixture_loads_during(
+		&[
+			("runfiles/caller.run", ".env-file = \".env\"\n\nrun _child\n"),
+			(
+				"runfiles/_child.run",
+				"$ printf '%s' \"$RUNFILE_T_SECRET\" > secret.txt\n",
+			),
+			(".env", &env),
+		],
+		"caller",
+	);
+	assert_eq!(loads, 1, "asked once, by the caller");
+	assert_eq!(read(&d, "secret.txt"), "the-secret");
+}
+
+#[test]
+fn a_shared_encrypted_env_file_asks_once_for_every_target_that_reads_it() {
+	// The usual shape of the case above: neither target names the file, the
+	// `_shared.run` above both of them does, so each loads and decrypts it.
+	let env = fixture_env();
+	let (loads, _d) = fixture_loads_during(
+		&[
+			("runfiles/_shared.run", ".env-file = \".env\"\n"),
+			("runfiles/caller.run", "run _child\n"),
+			("runfiles/_child.run", "$ true\n"),
+			(".env", &env),
+		],
+		"caller",
+	);
+	assert_eq!(loads, 1);
+}
+
+#[test]
+fn parallel_branches_that_run_decrypting_targets_ask_once_between_them() {
+	// Only the targets the branches run read the file, so all three reach for
+	// the pool at once: the first loads it, and the others wait for its answer.
+	let env = fixture_env();
+	let reads = ".env-file = \".env\"\n\n$ true\n";
+	let (loads, _d) = fixture_loads_during(
+		&[
+			(
+				"runfiles/all.run",
+				"parallel do\n\trun _one\n\trun _two\n\trun _three\nend\n",
+			),
+			("runfiles/_one.run", reads),
+			("runfiles/_two.run", reads),
+			("runfiles/_three.run", reads),
+			(".env", &env),
+		],
+		"all",
+	);
+	assert_eq!(loads, 1);
+}
+
+#[test]
+fn the_watch_probe_and_the_run_after_it_ask_for_keys_once() {
+	// The CLI reads a target's header before every run that is not `--dry-run`,
+	// to learn whether it declares `.watch`, and then runs it on the same host.
+	// A header value that reads what an encrypted file holds decrypts in the
+	// probe, and the run after it has what the probe loaded.
+	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+	let env = fixture_env();
+	let d = project(&[
+		(
+			"runfiles/e.run",
+			".env-file = \".env\"\n.env.RUNFILE_T_COPY = ENV.RUNFILE_T_SECRET\n\n$ printf '%s' \"$RUNFILE_T_COPY\" > copy.txt\n",
+		),
+		(".env", &env),
+	]);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let h = fixture_host(&cat);
+	h.header_props(cat.resolve("e").expect("the target"), &[]).unwrap();
+	assert_eq!(LOADS.load(Ordering::SeqCst), 1, "the probe decrypted");
+	h.run("e", &[]).unwrap();
+	assert_eq!(LOADS.load(Ordering::SeqCst), 1, "and the run asked nothing more");
+	assert_eq!(read(&d, "copy.txt"), "the-secret");
+}
+
+/// Whether [`sometimes_loader`] finds the fixture key.
+static KEY_ADDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// [`counting_fixture_loader`], for a key that is only there once
+/// [`KEY_ADDED`] says so -- a keyring still locked, or a key not yet added.
+fn sometimes_loader() -> Vec<String> {
+	LOADS.fetch_add(1, Ordering::SeqCst);
+	if KEY_ADDED.load(Ordering::SeqCst) {
+		vec![FIXTURE_KEY.to_string()]
+	} else {
+		Vec::new()
+	}
+}
+
+#[test]
+fn each_run_on_a_host_asks_again_so_the_next_run_finds_a_key_this_one_could_not() {
+	// Watch mode runs a target again on the same host after every save, and the
+	// next save is meant to be the retry. A pool that outlived its run would
+	// remember that there was no key until the session restarted -- and a pool
+	// dropped only when a run succeeded would remember it exactly when it
+	// failed, so the run that fails is the one asked about here.
+	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+	let env = fixture_env();
+	let d = project(&[
+		(
+			"runfiles/e.run",
+			".env-file = \".env\"\n\n$ printf '%s' \"$RUNFILE_T_SECRET\" > secret.txt\n",
+		),
+		(".env", &env),
+	]);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = fixture_host(&cat);
+	h.keys = sometimes_loader;
+	KEY_ADDED.store(false, Ordering::SeqCst);
+	assert!(h.run("e", &[]).is_err(), "no key to decrypt with yet");
+
+	KEY_ADDED.store(true, Ordering::SeqCst);
+	h.run("e", &[]).expect("the key is there now, and this run asks for it");
+	assert_eq!(LOADS.load(Ordering::SeqCst), 2, "one load for each run");
+	assert_eq!(read(&d, "secret.txt"), "the-secret");
 }
 
 /// Loads while the watch probe reads a target's header -- which the CLI does

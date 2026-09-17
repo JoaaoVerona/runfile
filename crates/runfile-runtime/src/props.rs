@@ -31,6 +31,12 @@ pub struct Props {
 	/// property: it is a fact about where the file was found, and the one
 	/// thing that makes `.only-in-directories` mean anything.
 	pub machine_wide: bool,
+	/// What another target ran this one with, when one did: the environment
+	/// every build from these properties starts from, in place of the
+	/// process's own. Not a property either -- a fact about how the target was
+	/// called -- and like `machine_wide` it survives every `extend`, which
+	/// clones, so a block deep in the called target still builds on it.
+	pub inherited: Option<std::sync::Arc<crate::env::Inherited>>,
 }
 
 /// Every property name, whether it may appear inside a block, and whether it
