@@ -726,11 +726,35 @@ fn script_list(src: &str) -> Vec<Script> {
 	out
 }
 
+/// The bash to referee with. `None` where there is none.
+///
+/// Found by path on Windows, never handed over as a bare `bash`: the standard
+/// library looks in `System32` before PATH there, and `System32\bash.exe` is
+/// WSL's launcher, not a bash. GitHub's Windows images ship it with no
+/// distribution installed, so every script was answered with "Windows
+/// Subsystem for Linux has no installed distributions" and taken for bash's
+/// verdict. The runner passes over the launcher for the same reason
+/// (`runfile-runtime/src/shell.rs`), so this does too, and finds Git for
+/// Windows' bash wherever PATH has it.
+fn bash_program() -> Option<std::path::PathBuf> {
+	if !cfg!(windows) {
+		return Some("bash".into());
+	}
+	let launcher = |p: &std::path::Path| {
+		p.parent()
+			.and_then(std::path::Path::file_name)
+			.is_some_and(|dir| dir.eq_ignore_ascii_case("system32"))
+	};
+	std::env::split_paths(&std::env::var_os("PATH")?)
+		.map(|dir| dir.join("bash.exe"))
+		.find(|p| p.is_file() && !launcher(p))
+}
+
 /// What `bash -n` says of a script: whether it reads it, and its warnings.
 /// `None` where bash is not installed.
 fn bash(script: &str) -> Option<(bool, String)> {
 	use std::io::Write;
-	let mut child = std::process::Command::new("bash")
+	let mut child = std::process::Command::new(bash_program()?)
 		.arg("-n")
 		.stdin(std::process::Stdio::piped())
 		.stdout(std::process::Stdio::null())
@@ -827,13 +851,14 @@ fn bash_agrees_with_every_syntax_finding() {
 /// status, and everything it wrote. `None` where bash is not installed.
 fn bash_runs(script: &str) -> Option<(i32, String)> {
 	static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+	let bash = bash_program()?;
 	let dir = std::env::temp_dir().join(format!(
 		"runfile-shell-{}-{}",
 		std::process::id(),
 		NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 	));
 	std::fs::create_dir_all(&dir).ok()?;
-	let out = std::process::Command::new("bash")
+	let out = std::process::Command::new(bash)
 		.args(["-e", "-c", script])
 		.current_dir(&dir)
 		.stdin(std::process::Stdio::null())

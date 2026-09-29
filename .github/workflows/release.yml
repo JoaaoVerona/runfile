@@ -113,9 +113,14 @@ jobs:
       # `.cargo/config.toml`'s per-target rustflags outright (env wins, no
       # merge) — which would silently drop `+crt-static` from the Windows
       # binaries and reintroduce the VCRUNTIME140.dll dependency.
+      #
+      # Uncached, as every release build on Gitea is (.cicd/release.yml says
+      # why). The action caches by default, and a release is rare enough that
+      # the cache is almost always cold anyway.
       - name: Install pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.16.1
         with:
+          cache: false
           rustflags: ""
           target: ${{ matrix.platform.target }}
 
@@ -258,17 +263,23 @@ jobs:
         working-directory: dist
         run: sha256sum * > sha256.sum
 
+      # A version with a `-` in it, `v1.3.0-rc.1`, is a prerelease on Gitea,
+      # whose `latest` leaves it out. GitHub's does too once it is marked;
+      # unmarked, it is what the setup action, the installers' github channel
+      # and `run :update --channel=github` would install next. Marked on the
+      # edit that publishes, so a release an earlier run created is marked too.
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
+          case "$TAG" in *-*) prerelease=true ;; *) prerelease=false ;; esac
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --draft --generate-notes
           fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease="$prerelease"
 
   # `…/actions/setup@v1` is what a consumer writes, so the major tag has to
   # follow the releases -- the same alias `shared-actions` keeps, which its own
@@ -377,6 +388,15 @@ jobs:
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
 
+      # npm 11 refuses a prerelease without `--tag`, since the default is
+      # `latest` -- what a bare `npm install` fetches. So one goes under `next`,
+      # out of `latest` the way both hosts' releases keep it.
       - name: Publish
-        run: npm publish --access public
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          case "$TAG" in
+            *-*) npm publish --access public --tag next ;;
+            *) npm publish --access public ;;
+          esac
         working-directory: ${{ env.PKG_DIR }}

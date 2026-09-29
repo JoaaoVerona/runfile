@@ -1622,7 +1622,10 @@ What each side publishes is decided by what it can do:
   `REQUIRE_SIGNIN_VIEW=false`, so visibility is what decides); while it is private the installer, the default
   `:update` and the Gitea leg of CI's `update` job all 404.
 - **A tag with a `-` is published as a prerelease on Gitea**, since Gitea's `latest` leaves prereleases out and
-  `latest` is what every update installs. `v*.*.*` matches `v1.3.0-rc.1`.
+  `latest` is what every update installs. `v*.*.*` matches `v1.3.0-rc.1`. **GitHub marks the same versions**,
+  for the same reason: its `latest` is what the setup action and the github channel install. npm takes one under
+  `next`, since npm 11 refuses to publish a prerelease without a `--tag`. `run release` only ever makes
+  `vX.Y.Z`, so a prerelease is a tag made by hand -- and both sides have to agree about one when it is.
 
 What differs on Gitea's side is forced by the fleet (`gitea-easy-runners` documents it):
 
@@ -1813,7 +1816,11 @@ tests that assert the mechanism rather than the symptom.
    does not have are skipped and **named** -- a gate that passes is worth less when you cannot tell what it
    did not look at.
 6. **The shell checker is held to bash.** `runfile-shell`'s tests hand the script of every syntax finding to
-   `bash -n`, which has to refuse it too, and skip cleanly where bash is absent. Every example in
+   `bash -n`, which has to refuse it too, and skip cleanly where bash is absent. That bash is found by path
+   (`bash_program`), never spawned as a bare `bash`: on Windows the standard library looks in `System32` before
+   PATH, and `System32\bash.exe` is WSL's launcher -- which GitHub's Windows images ship with no distribution, so
+   its "no installed distributions" was read as bash's verdict on every script. The fleet's Windows runner is
+   provisioned without WSL, which is why only the mirror's CI saw it. Every example in
    `SHELL-CHECK-RULES.md` is run through the checker (`tests/rules_doc.rs`), whose rule list must match `RULES`
    in order. For the author's corpus, `tests::corpus` reads runfile paths from `RUNFILE_CORPUS_LIST`, prints every
    finding and every script it gave up on, and reports any script bash refuses that the checker read. A rule
