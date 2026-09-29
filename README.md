@@ -678,9 +678,30 @@ end
 
 ### Stopping early
 
-`exit()` ends the run with a status; `error("…")` fails with a message; `confirm("…")` asks, and stops if the
-answer is no. Nothing catches any of them: not a `?` fallback, not `.ignore-errors`. A target may forgive a
-command that failed, but being told to stop is not that.
+`exit()` ends the target it is written in, with a status — 0 when none is given. Nothing inside that target
+catches it: not a `?` fallback, not `.ignore-errors`, not a `retry`. A target may forgive a command that failed,
+but being told to stop is not that. It is also how a helper finishes early:
+
+```sh
+# runfiles/_setup-build.run
+# Prepare the toolchain; Linux needs nothing
+
+if RUN.os == "linux"
+	print("no setup needed")
+	exit()
+end
+
+$ ./scripts/setup-toolchain.sh
+```
+
+To a target that ran it, the status is how it went — exactly what `$ run _setup-build` would make of it. After a
+0, the `run _setup-build` line is done and the next line runs. Anything else fails that `run` line, like a
+command that failed: `.ignore-errors` forgives it, `retry` has another go, `code_of` scores it, and if nothing
+handles it, the whole run ends with that status.
+
+`error("…")` fails with a message, the way a command fails, so a `?` falls back from it and `.ignore-errors`
+forgives it. `confirm("…")` asks, and stops the whole run if the answer is no. Nothing catches that, not even a
+target that ran this one.
 
 `confirm` is a function rather than a property, so the question can depend on what is about to happen — and is
 skipped by `-y`, in CI, and under `--dry-run`, where there is nothing to approve.
@@ -972,8 +993,9 @@ error: `setup` has never been run
     run setup
 ```
 
-It re-triggers when `setup.run` itself changes, so a new dependency is not silently missed. `--dry-run` is
-exempt, CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
+Only a setup that succeeded counts: one that failed, or ended with a non-zero `exit()`, leaves the gate shut. It
+re-triggers when `setup.run` itself changes, so a new dependency is not silently missed. `--dry-run` is exempt,
+CI is exempt, and `RUNFILE_SKIP_PREPARE=1` bypasses it.
 
 The record lives in `state.json` in the platform state directory. In CI there is none: a runner is built and
 thrown away, so there is no earlier session whose `setup` this one could be relying on — the gate is not

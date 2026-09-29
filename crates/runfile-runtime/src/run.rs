@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 pub enum RunError {
 	#[error(transparent)]
 	Eval(#[from] EvalError),
+	/// Never an evaluation error: see the `From` below.
 	#[error(transparent)]
-	Prop(#[from] PropError),
+	Prop(PropError),
 	#[error(transparent)]
 	Exec(#[from] ExecError),
 	#[error(transparent)]
@@ -58,8 +59,34 @@ pub enum RunError {
 	Break { line: usize },
 	#[error("line {line}: `continue` outside a loop")]
 	Continue { line: usize },
+	/// A target ended with `exit(code)` and a status that is not 0 -- what that
+	/// `exit()` becomes once it has left the target it was written in.
+	///
+	/// Inside that target it was an instruction nothing gets to shrug off. Past
+	/// it, it is how the target went, and to the line that ran it a failure like
+	/// any other: `.ignore-errors` forgives it and `retry` has another go, as
+	/// they would at a `$ run` of the same target. So it is not `is_stop`. It
+	/// keeps its status on the way up, which is what `code_of` scores and what
+	/// the run ends with when nothing handles it.
+	#[error("`{target}` exited with status {code}")]
+	Exited { target: String, code: i32 },
 	#[error(transparent)]
 	Host(Box<dyn std::error::Error + Send + Sync>),
+}
+
+/// A property's value is an expression like any other, so what evaluating one
+/// raised is an evaluation error like any other. Kept inside a `Prop`, an
+/// `exit()` or a declined `confirm()` written in a value was neither a stop nor
+/// a status: `.ignore-errors` forgave `.env.X = exit(3)` in a block where it
+/// would not have forgiven `exit(3)` on the line below it, and the same `exit()`
+/// in a header was reported as `error: exit 3`, status 1.
+impl From<PropError> for RunError {
+	fn from(e: PropError) -> Self {
+		match e {
+			PropError::Eval(e) => RunError::Eval(e),
+			e => RunError::Prop(e),
+		}
+	}
 }
 
 /// What to say about an input a target does not read.
@@ -99,23 +126,29 @@ fn missing_arg_value(key: &str, next: Option<&str>, target: &str) -> String {
 }
 
 impl RunError {
-	/// The status `exit(code)` asked for, if this is that rather than a
-	/// failure. `.ignore-errors` consults it: a target may shrug off a command
-	/// that failed, but not an instruction to stop.
+	/// The status a target asked for with `exit(code)`, if this is that rather
+	/// than a failure: an `exit()` still on its way out of the target that
+	/// called it, or the status that target handed back (`Exited`). The CLI
+	/// makes it the process's status and `code_of` makes it the score, rather
+	/// than printing either as an error.
 	pub fn exit_code(&self) -> Option<i32> {
 		match self {
-			RunError::Eval(EvalError::Exit { code, .. }) => Some(*code),
+			RunError::Eval(EvalError::Exit { code, .. }) | RunError::Exited { code, .. } => Some(*code),
 			_ => None,
 		}
 	}
 
 	/// Whether this is something the run has to carry out rather than a
 	/// command that went wrong. A target may shrug off a command that failed;
-	/// it does not get to shrug off `exit()`, someone answering no to
+	/// it does not get to shrug off its own `exit()`, someone answering no to
 	/// `confirm()`, or a `break` -- forgiving one of those would leave a
 	/// statement that plainly did nothing, which is the worst way for it to be
 	/// wrong. It is also what carries a `break` out through a `retry`, which
 	/// would otherwise read it as a failed attempt and run the body again.
+	///
+	/// A target that ended with `exit(3)` is not a stop to the one that ran it
+	/// (`Exited`): the caller did not say it, and to the line that ran the
+	/// target, that status is a failure like any other.
 	pub fn is_stop(&self) -> bool {
 		matches!(
 			self,
@@ -127,7 +160,7 @@ impl RunError {
 	}
 
 	/// Whether a *person* stopped the run, rather than a target reporting how
-	/// it went: Ctrl+C, or someone answering no to a `.confirm`.
+	/// it went: Ctrl+C, or someone answering no to a `confirm()`.
 	///
 	/// `code_of(run …)` scores every other outcome, `exit(3)` included -- that
 	/// number is what it was asked for. Someone who declined has not asked the
@@ -148,7 +181,7 @@ impl RunError {
 /// The call chain is passed rather than held: parallel branches have separate
 /// paths, so a shared stack would make one branch look like a cycle to another.
 pub trait Dispatch: Sync {
-	/// Run `target`, returning its dry-run trace.
+	/// Run `target`, adding its dry-run trace to `trace`.
 	///
 	/// `env` is what the target is run with: the environment a command at the
 	/// calling line would be given, as `env::handed_over` splits it. Handed
@@ -160,10 +193,14 @@ pub trait Dispatch: Sync {
 	/// parallel branch. It is inherited by whatever the target dispatches in
 	/// turn, so a whole subtree reads as one branch.
 	///
-	/// The trace comes back rather than being written to shared state so the
-	/// caller can splice it in where the call appeared. Writing it centrally
-	/// printed every dependency before the line that invoked it, because a
-	/// child finishes while its parent is still walking.
+	/// `trace` is the caller's own rather than a shared one, so what the target
+	/// ran lands where the call appeared. Writing it centrally printed every
+	/// dependency before the line that invoked it, because a child finishes
+	/// while its parent is still walking. It is added to however the target
+	/// ended: one that stopped part-way -- at an `exit()`, or at a failure the
+	/// caller then forgives or scores -- still ran what came before the stop,
+	/// and a preview that dropped those lines showed the caller carrying on
+	/// after a call that seemed to have done nothing.
 	fn run(
 		&self,
 		target: &str,
@@ -171,7 +208,8 @@ pub trait Dispatch: Sync {
 		env: crate::env::Inherited,
 		chain: &[String],
 		label: Option<&str>,
-	) -> Result<Vec<String>, RunError>;
+		trace: &mut Vec<String>,
+	) -> Result<(), RunError>;
 }
 
 pub struct NoDispatch;
@@ -183,7 +221,8 @@ impl Dispatch for NoDispatch {
 		_e: crate::env::Inherited,
 		_c: &[String],
 		_l: Option<&str>,
-	) -> Result<Vec<String>, RunError> {
+		_trace: &mut Vec<String>,
+	) -> Result<(), RunError> {
 		Err(RunError::NoResolver { line: 0 })
 	}
 }
@@ -461,10 +500,9 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
 			let a = run_args(args, &mut r.scope)?;
 			let env = crate::env::handed_over(props, &r.env);
-			// Splice the dependency's trace in where the call appeared.
-			let child = r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref())?;
-			r.trace.extend(child);
-			Ok(())
+			// The dependency's trace lands where the call appeared. A target
+			// that ended with `exit(3)` fails this line, as `$ run` would have.
+			r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref(), &mut r.trace)
 		}
 		Statement::Exec {
 			command, body, detach, ..
@@ -553,7 +591,9 @@ fn retry_attempts(
 				last = None;
 				break;
 			}
-			// `exit` is an instruction to stop, not a failure to retry.
+			// This target's own `exit` is an instruction to stop, not a failure
+			// to retry. A target it ran ending with one is a failure like any
+			// other (`Exited`), and gets another go.
 			Err(e) if e.is_stop() => return Err(e),
 			Err(e) => {
 				last = Some(e);
@@ -738,9 +778,10 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 ///
 /// The number is the one `$ run <target>` yields, because dispatching
 /// in-process is meant to stop re-execing the binary, not to mean something
-/// else: a target that calls `exit(3)` is scored 3, and every other failure is
-/// the 1 the CLI reports. The failure is printed the way that re-exec would
-/// have printed it, since this is where it stops -- a status is an answer, so
+/// else: a target that ends with `exit(3)` is scored 3 -- as is one that ran
+/// such a target and let its status through -- and every other failure is the
+/// 1 the CLI reports. The failure is printed the way that re-exec would have
+/// printed it, since this is where it stops -- a status is an answer, so
 /// nothing further up will say what went wrong.
 ///
 /// A refusal is not a status and is passed on, which is also what a re-exec
@@ -754,11 +795,8 @@ fn dispatch_code(
 	let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
 	let a = run_args(args, &mut r.scope)?;
 	let env = crate::env::handed_over(props, &r.env);
-	match r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref()) {
-		Ok(child) => {
-			r.trace.extend(child);
-			Ok(0)
-		}
+	match r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref(), &mut r.trace) {
+		Ok(()) => Ok(0),
 		Err(e) if e.is_refusal() => Err(e),
 		Err(e) => Ok(e.exit_code().unwrap_or_else(|| {
 			eprintln!("{} error: {e}", exec::tag());

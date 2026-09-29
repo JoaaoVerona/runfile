@@ -204,7 +204,8 @@ impl crate::run::Dispatch for Fails {
 		_e: crate::env::Inherited,
 		_c: &[String],
 		_l: Option<&str>,
-	) -> Result<Vec<String>, RunError> {
+		_trace: &mut Vec<String>,
+	) -> Result<(), RunError> {
 		Err((self.0)())
 	}
 }

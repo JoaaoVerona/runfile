@@ -273,7 +273,15 @@ fn real_main() -> Result<ExitCode, String> {
 	let watching = if flags.dry_run {
 		Vec::new()
 	} else {
-		host.header_props(target, &args).map_err(|e| e.to_string())?.watch
+		match host.header_props(target, &args) {
+			Ok(props) => props.watch,
+			// An `exit()` in the header, or in a `_shared.run` `let`, ends the
+			// target before anything it declares applies. The run meets it too,
+			// and ends the way it says; reported from here it was `error: exit
+			// 0`, status 1.
+			Err(e) if e.exit_code().is_some() => Vec::new(),
+			Err(e) => return Err(e.to_string()),
+		}
 	};
 	if !watching.is_empty() {
 		let anchor = target.anchor.clone();
@@ -296,39 +304,43 @@ fn real_main() -> Result<ExitCode, String> {
 	// However it ended. A target that fails half-way is exactly when a decoded
 	// credential must not be left in the temp directory.
 	host.cleanup_temps();
-	// A run that ended well tells the gate its setup is done -- unless nothing
-	// ran. `record` only writes for a setup target, and a preview of one ran
-	// none of its commands: recording it marked the directory prepared, and
-	// every target after it walked through the gate. `--dry-run` changes
-	// nothing, and that includes what the gate believes.
-	let record = || {
-		if !flags.dry_run {
-			prepare::record(&cat, target);
-		}
-	};
-	match outcome {
-		Ok(()) => {
-			if flags.dry_run {
-				// Which shell `$` resolved to, so "bash here, sh there" is
-				// visible rather than discovered.
-				match runfile_runtime::shell::default_shell() {
-					Some(p) => println!("# $ runs {}", p.display()),
-					None => println!("# $ has no shell available"),
-				}
-				for line in host.trace.lock().expect("trace").iter() {
-					println!("{line}");
-				}
+	if flags.dry_run {
+		// However it ended, too. A preview that stopped part-way -- at an
+		// `exit()`, or at a failure -- would still have run everything above
+		// the line it stopped at, and printing only a finished one showed
+		// nothing at all for a target that exits early. One that stopped before
+		// its first command has nothing to show but why.
+		let trace = host.trace.lock().expect("trace");
+		if outcome.is_ok() || !trace.is_empty() {
+			// Which shell `$` resolved to, so "bash here, sh there" is visible
+			// rather than discovered.
+			match runfile_runtime::shell::default_shell() {
+				Some(p) => println!("# $ runs {}", p.display()),
+				None => println!("# $ has no shell available"),
 			}
-			record();
+			for line in trace.iter() {
+				println!("{line}");
+			}
+		}
+	}
+	match outcome {
+		// A run that ended well tells the gate its setup is done -- unless
+		// nothing ran. `record` only writes for a setup target, and a preview of
+		// one ran none of its commands: recording it marked the directory
+		// prepared, and every target after it walked through the gate.
+		// `--dry-run` changes nothing, and that includes what the gate believes.
+		Ok(()) => {
+			if !flags.dry_run {
+				prepare::record(&cat, target);
+			}
 			Ok(ExitCode::SUCCESS)
 		}
-		// `exit(code)` is not a failure: it is the status the target asked for,
-		// so it is returned rather than printed as an error.
+		// `exit(code)` is not a failure to report: it is the status the target
+		// asked for, so it is returned rather than printed as an error. It is not
+		// a run that ended well either -- `exit(0)` ends one as `Ok` and never
+		// reaches here -- so a setup that says 1 leaves the gate shut.
 		Err(e) => match e.exit_code() {
-			Some(code) => {
-				record();
-				Ok(ExitCode::from(code as u8))
-			}
+			Some(code) => Ok(ExitCode::from(code as u8)),
 			None => Err(e.to_string()),
 		},
 	}

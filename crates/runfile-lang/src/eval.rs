@@ -56,11 +56,13 @@ pub enum EvalError {
 	/// a bare `try(x)` resolves to an empty string at the boundary.
 	#[error("line {line}: caught failure")]
 	Caught { line: usize },
-	/// `exit(code)`. Not a failure -- an instruction to stop with that status.
-	/// It travels as an error because that is the only path out of an
-	/// expression, and every catcher along the way lets it through: `try`, a
-	/// `?` chain and `.ignore-errors` all re-raise it, the way an interrupt is
-	/// not something a target gets to shrug off.
+	/// `exit(code)`. Not a failure -- an instruction to end the target it is
+	/// written in, with that status. It travels as an error because that is the
+	/// only path out of an expression, and every catcher inside the target lets
+	/// it through: `try`, a `?` chain and `.ignore-errors` all re-raise it, the
+	/// way an interrupt is not something a target gets to shrug off. Where the
+	/// target ends, the runtime turns it into how the target went: 0 hands back
+	/// to whatever ran it, anything else fails that line.
 	#[error("exit {code}")]
 	Exit { code: i32, line: usize },
 	/// `confirm(…)` was declined. Not a failure -- an answer, and the only

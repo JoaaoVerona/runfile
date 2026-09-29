@@ -54,8 +54,8 @@ pub fn call_with(name: &str, v: Vec<Value>, sc: &mut Scope, sp: Span) -> Result<
 	let num = |i: usize| v[i].as_num().map_err(|e| ty(sp, e));
 	let list = |i: usize| v[i].as_list().map_err(|e| ty(sp, e));
 
-	// `exit` ends the run rather than producing a value, so it leaves here as
-	// an error instead of falling through to the table below.
+	// `exit` ends the target rather than producing a value, so it leaves here
+	// as an error instead of falling through to the table below.
 	if name == "exit" {
 		let code = match n {
 			0 => 0,
@@ -1095,7 +1095,7 @@ pub const FUNCTIONS: &[Function] = &[
 	Function {
 		name: "confirm",
 		signature: "confirm(question)",
-		doc: "Ask before going on. Answering no stops the run, the way `exit()` does — nothing catches it. Skipped by `-y` and in CI, and never asked under `--dry-run`. Call it anywhere, including inside an `if`, so the question can depend on what is about to happen.",
+		doc: "Ask before going on. Answering no stops the whole run — nothing catches it, not even a target that ran this one. Skipped by `-y` and in CI, and never asked under `--dry-run`. Call it anywhere, including inside an `if`, so the question can depend on what is about to happen.",
 		example: "if env == \"production\"\n\tconfirm(\"Deploy to production?\")\nend\n\n$ terraform apply -auto-approve",
 	},
 	Function {
@@ -1167,7 +1167,7 @@ pub const FUNCTIONS: &[Function] = &[
 	Function {
 		name: "exit",
 		signature: "exit(code?)",
-		doc: "Stop the run with this exit status, or 0.",
+		doc: "End this target with this exit status, or 0. A target that ran this one carries on after 0, and fails at the `run` line for anything else, as it would at `$ run`.",
 		example: "if length(ARGS) == 0\n\tprint(\"nothing to do\")\n\texit()\nend",
 	},
 	Function {

@@ -198,8 +198,8 @@ pub const KEYWORDS: &[Keyword] = &[
 		doc: "The exit status of a command, or of another target, as a number. It never stops this \
 		      target and never captures output, so it is the way to ask how something went rather \
 		      than depend on it. This is the one call a `$` capture or a `run` may sit inside. A \
-		      dispatched target is scored the way the binary would exit: `exit(3)` is 3, any other \
-		      failure is 1.",
+		      dispatched target is scored the way the binary would exit: a target that ends with \
+		      `exit(3)` is 3, any other failure is 1.",
 		example: "let rust = code_of(run coverage:rust)\nlet web = code_of(run web:coverage)\n\nif rust != 0 || web != 0\n\texit(1)\nend",
 	},
 	Keyword {

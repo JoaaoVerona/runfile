@@ -148,18 +148,21 @@ impl<'a> Host<'a> {
 	}
 
 	pub fn run(&self, name: &str, args: &[String]) -> Result<(), RunError> {
-		// Only the top-level call banks its trace; nested ones hand theirs back
-		// so the caller can splice them in where the call appeared. Nothing ran
-		// it, so it is run with the process's own environment.
-		let out = self.run_with_chain(name, args, None, &[], None);
+		// Only the top-level call banks its trace; nested ones write into their
+		// caller's, where the call appeared. Nothing ran it, so it is run with
+		// the process's own environment.
+		let mut trace = Vec::new();
+		let out = self.run_with_chain(name, args, None, &[], None, &mut trace);
 		// The run is over however it ended, and its key pool with it, so the next
 		// run on this host -- a watch iteration -- asks again. A pool that outlived
 		// its run would keep what it failed to load, from a keyring that was
 		// locked or before a key was added, until the session restarted: the next
 		// save is meant to be the retry.
 		*self.pool.lock().expect("key pool lock") = None;
-		self.trace.lock().expect("trace lock").extend(out?);
-		Ok(())
+		// However it ended, too: a preview that stopped part-way still says what
+		// it would have run up to there.
+		self.trace.lock().expect("trace lock").extend(trace);
+		out
 	}
 
 	fn run_with_chain(
@@ -169,7 +172,8 @@ impl<'a> Host<'a> {
 		env: Option<crate::env::Inherited>,
 		chain: &[String],
 		label: Option<&str>,
-	) -> Result<Vec<String>, RunError> {
+		trace: &mut Vec<String>,
+	) -> Result<(), RunError> {
 		// A subproject is self-contained: `run compile` inside `web/runfiles/`
 		// means that directory's `compile`, whatever the root calls it. Without
 		// this a file would have to spell its own siblings' names differently
@@ -210,7 +214,7 @@ impl<'a> Host<'a> {
 		}
 		let mut next = chain.to_vec();
 		next.push(name.to_string());
-		self.run_inner(target, args, env, next, label)
+		ended(&target.name, self.run_inner(target, args, env, next, label, trace))
 	}
 
 	/// Everything both `run_inner` and `header_props` need: a scope with the
@@ -362,7 +366,8 @@ impl<'a> Host<'a> {
 		env: Option<crate::env::Inherited>,
 		chain: Vec<String>,
 		label: Option<&str>,
-	) -> Result<Vec<String>, RunError> {
+		trace: &mut Vec<String>,
+	) -> Result<(), RunError> {
 		let (ast, mut scope, shared_props) = self.prepare(target, args, env, true)?;
 		// Dispatched from a parallel branch, it is part of that branch: what it
 		// prints carries the branch's label, and it asks the terminal nothing.
@@ -385,8 +390,38 @@ impl<'a> Host<'a> {
 			colour: None,
 			trace: Vec::new(),
 		};
-		crate::run::run_target_with(&ast, shared_props, &mut r)?;
-		Ok(r.trace)
+		let out = crate::run::run_target_with(&ast, shared_props, &mut r);
+		trace.append(&mut r.trace);
+		out
+	}
+}
+
+/// What a target's own `exit()` is to everything outside it.
+///
+/// `exit()` ends the target it is written in -- a helper's early `exit()` used
+/// to end the whole run instead, so a caller's remaining lines were skipped and
+/// the run reported whatever status the helper named, 0 included: a skipped
+/// build that called itself a success. Its status is how the target went.
+/// Status 0 is a target that went well, so the line that ran it carries on;
+/// anything else fails that line, as `Exited`, which every caller up the chain
+/// may forgive, retry or score. That is what `$ run <target>` makes of the same
+/// `exit()`, and dispatching in-process is not meant to mean something else.
+///
+/// A status is a byte, as a process's is: `exit(-1)` is the 255 a shell would
+/// report, and `exit(256)` is 0. Only the target's own `exit()` is converted --
+/// an `Exited` from something it ran and let through is already the answer.
+/// It is asked of `run_inner` whole, `prepare` included, since a `let` in the
+/// `_shared.run` chain is evaluated on the target's behalf.
+fn ended(target: &str, out: Result<(), RunError>) -> Result<(), RunError> {
+	match out {
+		Err(RunError::Eval(runfile_lang::eval::EvalError::Exit { code, .. })) => match i32::from(code as u8) {
+			0 => Ok(()),
+			code => Err(RunError::Exited {
+				target: target.to_string(),
+				code,
+			}),
+		},
+		out => out,
 	}
 }
 
@@ -402,8 +437,9 @@ impl Dispatch for HostDispatch<'_, '_> {
 		env: crate::env::Inherited,
 		chain: &[String],
 		label: Option<&str>,
-	) -> Result<Vec<String>, RunError> {
-		self.host.run_with_chain(target, args, Some(env), chain, label)
+		trace: &mut Vec<String>,
+	) -> Result<(), RunError> {
+		self.host.run_with_chain(target, args, Some(env), chain, label, trace)
 	}
 }
 

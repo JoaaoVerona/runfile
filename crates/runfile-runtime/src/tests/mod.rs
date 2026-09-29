@@ -4,6 +4,7 @@
 mod args;
 mod checks;
 mod exec;
+mod exit;
 mod inherited;
 mod interrupt;
 mod keys;
@@ -49,7 +50,8 @@ impl Dispatch for Recorder {
 		env: crate::env::Inherited,
 		_chain: &[String],
 		_label: Option<&str>,
-	) -> Result<Vec<String>, RunError> {
+		_trace: &mut Vec<String>,
+	) -> Result<(), RunError> {
 		self.calls.lock().expect("calls").push(if args.is_empty() {
 			target.to_string()
 		} else {
@@ -57,7 +59,7 @@ impl Dispatch for Recorder {
 		});
 		self.envs.lock().expect("envs").push((target.to_string(), env));
 		// A recorder runs nothing, so it has no trace to contribute.
-		Ok(Vec::new())
+		Ok(())
 	}
 }
 

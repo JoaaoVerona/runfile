@@ -225,8 +225,9 @@ its quotes, and the AWS CLI was being handed a JSON *string* where an object was
 `retry n [every s]` … `[else …]` `end` runs its block again while it fails. Four wait loops in the corpus were
 shell `until … do sleep … done`, three of them re-implementing an attempt counter and an error message by
 hand. The block is run with **`ignore_errors` forced off** — a retry that could not see failure would run
-exactly once, which is the least useful way for it to be wrong — and an `exit()` inside is re-raised rather
-than retried. It may be a parallel branch or sit inside one: a branch is ordinary code walked in order, so its
+exactly once, which is the least useful way for it to be wrong — and the target's own `exit()` is re-raised
+rather than retried (a target the body *runs* that ends with one is a failure, and is retried as a `$ run` of it
+would be). It may be a parallel branch or sit inside one: a branch is ordinary code walked in order, so its
 attempts are its own. (`.parallel` had to refuse it, having no way to collect what a body would run before
 it had run.)
 
@@ -351,9 +352,10 @@ the `if` around it would want.
 target writes to the terminal like any other, so its status is the only value it has to give, and
 `lines(run x)` would have nothing to read. It is refused at *parse* time, so an editor says so while it is
 being written. The number is the one `$ run <target>` yields, because dispatching in-process is meant to stop
-re-execing the binary and not to mean something else: a target that calls `exit(3)` is scored 3, and every
-other failure is the 1 the CLI reports (a target is not its last command, so there is no other status it could
-honestly carry). The failure is printed where the re-exec's own `[runfile] error:` would have appeared —
+re-execing the binary and not to mean something else: a target that ends with `exit(3)` is scored 3 -- as is
+one that ran such a target and let the status through, since a status nothing handles keeps its number on the
+way up -- and every other failure is the 1 the CLI reports (a target is not its last command, so there is no
+other status it could honestly carry). The failure is printed where the re-exec's own `[runfile] error:` would have appeared —
 a status is an answer, so nothing further up will say what went wrong. A **refusal** is not a status and is
 passed on: `RunError::is_refusal` covers Ctrl+C and a declined `confirm()`, which are a person stopping the
 run rather than a target reporting how it went, and a re-exec propagates them too since Ctrl+C reaches the
@@ -614,10 +616,27 @@ quoting.
   drains after every iteration.
 - Binding names are validated in both `let` and reassignment; a block closer (`end`/`else`/`case`/`default`)
   with nothing open is a parse error rather than an expression statement.
-- **`exit()` ends the run with a status.** It leaves as `EvalError::Exit`, since an error is the only path
-  out of an expression, and *every* catcher re-raises it: `try`, a `?` chain and `.ignore-errors` all let it
-  through, the way an interrupt is not something a target gets to shrug off. `RunError::exit_code` is what the
-  CLI reads to set its own status instead of printing an error.
+- **`exit()` ends the target it is written in, with a status.** It leaves as `EvalError::Exit`, since an
+  error is the only path out of an expression, and *every* catcher inside the target re-raises it: `try`, a
+  `?` chain, `.ignore-errors` and `retry` all let it through, the way an interrupt is not something a target
+  gets to shrug off. **Where the target ends, it becomes how the target went** (`dispatch::ended`, asked of
+  `run_inner` whole, so a `_shared.run` `let` counts too): 0 is `Ok`, and the line that ran the target carries
+  on; anything else is `RunError::Exited`, a failure of that `run` line and *not* a stop -- a caller's
+  `.ignore-errors` forgives it, `retry` has another go and `code_of` scores it, exactly as at a `$ run` of the
+  same target. It used to be a stop all the way up, so a helper's early `exit()` ended the whole run and skipped
+  the rest of its caller -- and `exit(0)` reported that run as a success, a build that never happened called
+  done -- while `$ run` and `code_of(run …)` handed back: the in-process form, the normal one, was the one that
+  meant something else. A status nothing handles keeps its number on the way up, and the run ends with it; that
+  is the one number a re-exec cannot match, since its caller knows only that a `$` line failed, and reports 1.
+  A status is a byte, as a process's is: `exit(-1)` is 255 and `exit(256)` is 0. `RunError::exit_code` answers
+  for both forms, and is what the CLI reads to set its own status instead of printing an error. An `exit()` in a
+  property's value is the same `exit()`: `From<PropError> for RunError` unwraps an evaluation error rather than
+  keeping it as the property's own, which had made one neither a stop nor a status -- `.ignore-errors` forgave
+  `.env.X = exit(3)` in a block while refusing to forgive `exit(3)` on the line below it. Ctrl+C and a
+  declined `confirm()` are not statuses, and still stop everything (`is_refusal`). Of the 21 `exit()` calls in
+  the author's 1,224 runfiles, three were already this early-return idiom, and none sat where the change moves an
+  outcome: every caller that dispatched one in-process had nothing after the call, forgave nothing and retried
+  nothing.
 - **Every call is written with parentheses**, `exit()` included — there is no bare-word form.
 - **A statement that computes a value and discards it is a parse error.** `exit`, `abc`, `35`, `"hi"`,
   `ARG.x`, `x + 1` — a line that is only a value is always a mistake, most often a call with the parentheses
@@ -786,10 +805,15 @@ terminal's width, and how wide text is on it).
   has to supply the POSIX toolbox as well as the language, which a shell alone does not: 9% of the corpus's
   shell lines call one of 31 toolbox programs, and `sed`, `grep`, `awk`, `find`, `xargs` and `tar` are not
   coreutils at all. Git Bash ships both, which is why it is the Windows answer.
-- **`Dispatch::run` returns the child's trace** rather than writing to shared state. A child finishes while its
-  parent is still walking, so a shared buffer printed every dependency *before* the line that called it. The
-  caller splices the trace in where the call appeared, which is what makes `--dry-run` order match execution
-  order.
+- **`Dispatch::run` writes the child's trace into the caller's own** rather than into shared state. A child
+  finishes while its parent is still walking, so a shared buffer printed every dependency *before* the line that
+  called it; the caller's buffer puts the trace where the call appeared, which is what makes `--dry-run` order
+  match execution order. **It is written however the child ended**, and `Host::run` banks the top-level trace
+  the same way: a target that stopped part-way -- at an `exit()`, or at a failure a caller forgives or scores --
+  still ran everything above the stop. The trace used to come back only with `Ok`, so a preview dropped those
+  lines, showed a caller carrying on after a call that seemed to do nothing, and printed nothing at all for a
+  target that ended with `exit()`, 0 included. The CLI prints a preview however it ended, unless it stopped
+  before anything was traced, when there is nothing to show but why.
 - **A subproject calls its own siblings.** `run compile` inside `web/runfiles/` resolves `web:compile` first,
   falling through to a root `compile` when there is no sibling — so a file spells its neighbours the same way
   wherever `run` was invoked from.
@@ -803,7 +827,9 @@ terminal's width, and how wide text is on it).
 - `Host::header_props` **probes**: it evaluates the declaration region only to read `.watch`, so it neither
   refuses an unread input -- a probe rejecting the command line would report the failure before the run that
   owns it -- nor lets a writing function write. Without the second half, `.env.X = temp_file(...)` made two
-  files per run, one an orphan nothing referenced.
+  files per run, one an orphan nothing referenced. An `exit()` it meets, in a header value or a `_shared.run`
+  `let`, is the run's to carry out too: the CLI reads one as "no `.watch`" and runs, where it used to report it
+  as `error: exit 0`, status 1.
 - **Ctrl+C** is caught so the run can stop between statements, delete its temp files, and exit 130. The flag
   is process-global because a signal handler has nowhere else to write, but the runtime reads an injected
   predicate (`Host::interrupted`), so it reaches for no process state of its own and one test cannot
@@ -1549,9 +1575,10 @@ column 0; in TextMate it joins the optional left-hand side the `exec` rules alre
 **`.confirm` and `.hide` are gone**, each replaced by something that could not disagree with itself.
 
 `confirm(question)` is a function, so it can be called anywhere -- inside an `if`, after the value it asks
-about has been worked out. Declining raises `EvalError::Cancelled`, which travels exactly like `Exit`: every
-catcher re-raises it, because someone who said no has not asked to be second-guessed by a `?` fallback or by
-`.ignore-errors`. `RunError::is_stop()` is what those catchers now consult -- `exit_code()` still answers only
+about has been worked out. Declining raises `EvalError::Cancelled`, which travels like `Exit` inside a target
+-- every catcher re-raises it, because someone who said no has not asked to be second-guessed by a `?` fallback
+or by `.ignore-errors` -- and, unlike `Exit`, travels on past it: an `exit()` is a target reporting how it went,
+for its caller to act on, while a person who declined has decided for the whole run. `RunError::is_stop()` is what those catchers now consult -- `exit_code()` still answers only
 the status question, so a cancel keeps printing `cancelled` rather than exiting silently. The prompt reaches
 it as `Scope::confirm`, a plain `fn(&str) -> bool` like `Scope::ask`, which is why `prompt::confirmer()`
 became `prompt::confirm`: the closure captured nothing. It is skipped by `-y`, in CI, and under `--dry-run`,
@@ -1674,12 +1701,14 @@ What differs on Gitea's side is forced by the fleet (`gitea-easy-runners` docume
 A target named `setup` gates every other target in its directory, fingerprinted by its parsed tree, so editing the
 setup re-triggers the requirement and editing a comment in it does not.
 
-**`--dry-run` never records the gate.** `main` recorded it after any run that ended well -- a plain `Ok` or an
-`exit(code)` -- and `prepare::record` writes only for a setup target, so `run --dry-run setup` stored setup's
-fingerprint without running one of its commands, and every target after it walked through the gate. A preview
-changes nothing, and that includes what the gate believes. One `record` closure in `main` holds the check, so
-the two arms that end a run well cannot come to disagree about it; the watch loop records too, but watch mode is
-never entered under `--dry-run`.
+**`--dry-run` never records the gate, and neither does a setup that did not go well.** `main` recorded it after
+any run that ended well -- a plain `Ok`, or an `exit(code)` of *any* code -- and `prepare::record` writes only
+for a setup target, so `run --dry-run setup` stored setup's fingerprint without running one of its commands, and
+every target after it walked through the gate. A preview changes nothing, and that includes what the gate
+believes. A setup that says `exit(1)` did not go well either, and opened the gate all the same. Only `Ok`
+records now: `exit(0)` becomes one where its target ends (see `exit()` under *runfile-lang*), so the arm that
+returns an `exit()` status is left with statuses that are not 0, and records nothing. The watch loop records
+too, but watch mode is never entered under `--dry-run`.
 
 **A field added to the tree at a default that means "as before" goes in `UNASKED`**, in `runfile-lang`'s
 `lib.rs`, in the same change. The fingerprint hashes the tree's `Debug` rendering, so a new field moves the

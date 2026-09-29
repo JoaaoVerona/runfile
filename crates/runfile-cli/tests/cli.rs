@@ -1773,15 +1773,149 @@ fn ignore_errors_does_not_shrug_off_an_exit() {
 	assert!(!out(&o).contains("after"), "{}", out(&o));
 }
 
+/// Callers of a target that ends with `exit()`, with what each prints and exits
+/// with when it runs that target in-process. `{run}` is `run` or `$ run`.
+const CALLED_EXITS: [(&str, &str, i32, &[&str]); 4] = [
+	("hands-back", "{run} _done\nprint(\"after\")\n", 0, &["done", "after"]),
+	("stops", "{run} _fails\nprint(\"after\")\n", 7, &["fails"]),
+	(
+		"forgives",
+		".ignore-errors\n\n{run} _fails\nprint(\"after\")\n",
+		0,
+		&["fails", "after"],
+	),
+	(
+		"retries",
+		".ignore-errors\n\nretry 2\n\t{run} _fails\nend\n\nprint(\"after\")\n",
+		0,
+		&["fails", "fails", "after"],
+	),
+];
+
+/// Each of `CALLED_EXITS` twice: `in-*` dispatching in-process, and `re-*`
+/// re-execing the binary with `$ run`.
+fn called_exits() -> Project {
+	let mut files = vec![
+		(
+			"runfiles/_done.run".to_string(),
+			"$ echo done\nexit()\n$ echo unreached\n".to_string(),
+		),
+		("runfiles/_fails.run".to_string(), "$ echo fails\nexit(7)\n".to_string()),
+	];
+	for (name, body, ..) in CALLED_EXITS {
+		files.push((format!("runfiles/in-{name}.run"), body.replace("{run}", "run")));
+		files.push((format!("runfiles/re-{name}.run"), body.replace("{run}", "$ run")));
+	}
+	let files: Vec<(&str, &str)> = files.iter().map(|(p, b)| (p.as_str(), b.as_str())).collect();
+	project(&files)
+}
+
 #[test]
-fn an_exit_inside_a_called_target_ends_the_whole_run() {
+fn an_exit_ends_the_target_it_is_written_in() {
+	// It used to end the whole run from wherever it was written, so a helper's
+	// early `exit()` skipped the rest of its caller -- and with 0, reported a
+	// run that had skipped half its work as a success. Its status is how that
+	// target went: 0 hands back to the caller, and anything else fails the
+	// `run` line, which the caller may forgive or retry, and which ends the
+	// run with that status when nothing does.
+	let p = called_exits();
+	for (name, _, code, lines) in CALLED_EXITS {
+		let o = p.run(&[&format!("in-{name}")]);
+		assert_eq!(code_of(&o), code, "{name}: {}", err(&o));
+		assert_eq!(out(&o).lines().collect::<Vec<_>>(), lines, "{name}");
+		assert!(
+			!err(&o).contains("error:"),
+			"{name}: a status is not an error: {}",
+			err(&o)
+		);
+	}
+}
+
+#[test]
+fn an_exit_above_the_first_statement_ends_the_run_with_its_status() {
+	// Before the run, the header and the `_shared.run` chain are evaluated once
+	// to find `.watch`, and that probe used to report an `exit()` it met there
+	// as a failure of its own: `error: exit 0`, status 1.
 	let p = project(&[
-		("runfiles/parent.run", "run child\n$ echo after\n"),
-		("runfiles/child.run", "exit(7)\n"),
+		(
+			"runfiles/sub/_shared.run",
+			"let region = ENV.RUNFILE_T_REGION ? exit(3)\n",
+		),
+		("runfiles/sub/deploy.run", "print(\"unreached\")\n"),
+		("runfiles/header.run", ".env.X = exit(0)\n\nprint(\"unreached\")\n"),
 	]);
-	let o = p.run(&["parent"]);
-	assert_eq!(code_of(&o), 7, "{}", err(&o));
-	assert!(!out(&o).contains("after"), "{}", out(&o));
+	for (target, code) in [("sub:deploy", 3), ("header", 0)] {
+		let o = p.run(&[target]);
+		assert_eq!(code_of(&o), code, "{target}: {}", err(&o));
+		assert_eq!(out(&o), "", "{target}");
+		assert!(!err(&o).contains("error"), "{target}: {}", err(&o));
+	}
+}
+
+#[cfg(unix)]
+#[test]
+fn run_and_dollar_run_agree_about_an_exit_in_the_target_they_run() {
+	// Dispatching in-process is not meant to mean something else than
+	// re-execing. The one number the two cannot share is the status of a run
+	// that nothing handled the failure in: past a re-exec the caller knows only
+	// that its `$` line failed, and reports the 1 any failure is, while
+	// in-process the status is still in hand and the run ends with it.
+	let p = called_exits();
+	// `$ run` has to find this build of the binary, not whichever is installed.
+	let path = format!("{}:{}", bin_dir().display(), std::env::var("PATH").unwrap_or_default());
+	let go = |t: String| p.command(p.dir.path(), &[&t]).env("PATH", &path).output().unwrap();
+	for (name, ..) in CALLED_EXITS {
+		let (inp, re) = (go(format!("in-{name}")), go(format!("re-{name}")));
+		assert_eq!(out(&inp), out(&re), "{name}: {}\n{}", err(&inp), err(&re));
+		assert_eq!(inp.status.success(), re.status.success(), "{name}");
+	}
+	assert_eq!(code_of(&go("re-stops".into())), 1);
+}
+
+#[test]
+fn a_preview_shows_what_ran_before_an_exit_or_a_failure() {
+	// Only a preview that finished was printed, so one that stopped early --
+	// at any `exit()`, 0 included -- showed nothing of what came before.
+	let p = project(&[
+		("runfiles/early.run", "$ echo one\nexit()\n$ echo two\n"),
+		("runfiles/status.run", "$ echo one\nexit(3)\n$ echo two\n"),
+		("runfiles/fails.run", "$ echo one\nerror(\"boom\")\n$ echo two\n"),
+		("runfiles/calls.run", "run early\n$ echo after\n"),
+		("runfiles/first.run", "error(\"boom\")\n$ echo two\n"),
+	]);
+	let shown = |o: &Output| {
+		out(o)
+			.lines()
+			.filter(|l| !l.starts_with("# $ "))
+			.map(String::from)
+			.collect::<Vec<_>>()
+	};
+	for (target, code, want) in [
+		("early", 0, &["echo one"][..]),
+		("status", 3, &["echo one"]),
+		("fails", 1, &["echo one"]),
+		("calls", 0, &["echo one", "echo after"]),
+	] {
+		let o = p.run(&["--dry-run", target]);
+		assert_eq!(code_of(&o), code, "{target}: {}", err(&o));
+		assert_eq!(shown(&o), want, "{target}");
+	}
+	// Stopped before anything would have run: nothing to preview, only why.
+	let o = p.run(&["--dry-run", "first"]);
+	assert_eq!(out(&o), "");
+	assert!(err(&o).contains("boom"), "{}", err(&o));
+}
+
+#[test]
+fn a_setup_opens_the_gate_only_when_it_ends_with_0() {
+	// Any `exit(code)` used to count as a setup that ran, so one that said 1 --
+	// setup did not go well -- let every target through the gate.
+	for (setup, opens) in [("$ true\nexit(0)\n", true), ("$ true\nexit(1)\n", false)] {
+		let p = project(&[("runfiles/setup.run", setup), ("runfiles/build.run", "$ true\n")]);
+		assert_eq!(p.run(&["setup"]).status.success(), opens, "{setup:?}");
+		let o = p.run(&["build"]);
+		assert_eq!(o.status.success(), opens, "{setup:?}: {}", err(&o));
+	}
 }
 
 #[test]
