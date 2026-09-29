@@ -310,6 +310,58 @@ fn the_shell_property_decides_what_runs_a_line() {
 	);
 }
 
+#[cfg(windows)]
+#[test]
+fn a_named_bash_passes_over_wsl_s_launcher_as_the_default_shell_does() {
+	// `.shell = "bash"` and `exec bash` handed the bare word to the standard
+	// library, which started the first `bash.exe` on PATH -- on Windows with
+	// WSL, usually its launcher, while `$` lines beside them ran Git Bash.
+	// Stand-ins for both of its places go first on PATH here, and cannot start
+	// at all, so reaching either fails the run.
+	if crate::shell::locate(std::ffi::OsStr::new("bash"), None).is_err() {
+		eprintln!("skipped: no bash here but WSL's");
+		return;
+	}
+	let dir = tempfile::TempDir::new().unwrap();
+	let launchers: Vec<String> = ["System32", "WindowsApps"]
+		.iter()
+		.map(|name| {
+			let at = dir.path().join(name);
+			std::fs::create_dir(&at).unwrap();
+			std::fs::write(at.join("bash.exe"), "not a program").unwrap();
+			format!("\"{}\"", at.to_string_lossy().replace('\\', "/"))
+		})
+		.collect();
+	let first = format!(".add-path = [{}]\n", launchers.join(", "));
+	let d = Recorder::default();
+	run_src(&format!(".shell = \"bash\"\n{first}\n$ true\n"), &d).expect("`.shell` reached the launcher");
+	run_src(&format!("{first}\nexec bash\n\ttrue\nend\n"), &d).expect("`exec` reached the launcher");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_named_shell_is_looked_up_on_the_path_its_command_runs_with() {
+	// The runtime finds a named shell itself now, so WSL's launcher can be
+	// passed over, and it has to look where the standard library did: on the
+	// target's PATH, where `.add-path` put this one first. Looked up on the
+	// runner's PATH instead, the system's bash would run.
+	use std::os::unix::fs::PermissionsExt;
+	let dir = tempfile::TempDir::new().unwrap();
+	let bin = dir.path().join("bin");
+	std::fs::create_dir(&bin).unwrap();
+	let ran = dir.path().join("ran");
+	let bash = bin.join("bash");
+	std::fs::write(&bash, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+	std::fs::set_permissions(&bash, std::fs::Permissions::from_mode(0o755)).unwrap();
+	let d = Recorder::default();
+	run_src(
+		&format!(".shell = \"bash\"\n.add-path = \"{}\"\n\n$ true\n", bin.display()),
+		&d,
+	)
+	.unwrap();
+	assert!(ran.exists(), "the runner's bash ran, not the one on the target's PATH");
+}
+
 #[test]
 fn a_capture_condition_uses_the_same_shell_as_a_line() {
 	// `if $ cmd` is a `$` line asked a question; it must not quietly be a

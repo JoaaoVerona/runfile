@@ -5,6 +5,8 @@
 //! by the same mechanism -- the command is arbitrary, not a fixed interpreter
 //! list.
 
+use std::borrow::Cow;
+use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -129,6 +131,37 @@ fn program_and_args(command: Option<&str>) -> Result<(PathBuf, Vec<String>), Exe
 		args.push("-e".into());
 	}
 	Ok((program, args))
+}
+
+/// The file to start for `program`.
+///
+/// A shell named without a path -- `.shell = "bash"`, `exec sh` -- is found by
+/// `shell::locate`, as the default shell is. Handed to the standard library as
+/// a bare word it was simply the first on PATH: on Windows with WSL, usually
+/// its launcher, so `exec bash` ran in another environment while a `$` line
+/// beside it ran Git Bash; and with Git for Windows installed the default way,
+/// nothing at all, its bash not being on PATH. The PATH searched is the one the
+/// command runs with, matched the way its platform matches names, because that
+/// is the one the standard library searched -- so `.add-path` still decides
+/// which shell runs. Anything else, a path or a program that is not a shell, is
+/// handed over as written.
+fn executable<'a>(program: &'a Path, env: &[(String, String)]) -> std::io::Result<Cow<'a, Path>> {
+	let bare = program.file_name() == Some(program.as_os_str());
+	if !bare || !is_shell(program) {
+		return Ok(Cow::Borrowed(program));
+	}
+	let path = env
+		.iter()
+		.rev()
+		.find(|(k, _)| {
+			if cfg!(windows) {
+				k.eq_ignore_ascii_case("PATH")
+			} else {
+				k == "PATH"
+			}
+		})
+		.map(|(_, v)| OsStr::new(v));
+	crate::shell::locate(program.as_os_str(), path).map(Cow::Owned)
 }
 
 /// Hand a shell its script as the argument after `-c`.
@@ -275,6 +308,12 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		// rest of the target evaluable so dry-run reaches every statement.
 		return Ok(String::new());
 	}
+	// Found before anything is announced, so a shell that is not there is not
+	// named as if it had run.
+	let exe = executable(&program, s.env).map_err(|source| ExecError::Spawn {
+		cmd: label.clone(),
+		source,
+	})?;
 	// Announced from inside the script where that is safe, so each command is
 	// named as it runs rather than all of them before any of them do.
 	let script = if s.announce && shell { traced(s.body) } else { None };
@@ -284,7 +323,7 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		announce(&label, s.body);
 	}
 
-	let mut c = Command::new(&program);
+	let mut c = Command::new(&*exe);
 	c.args(&args).current_dir(s.cwd);
 	if shell {
 		// A shell gets its script as an argument, so **stdin stays the

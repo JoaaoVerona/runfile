@@ -733,9 +733,10 @@ fn script_list(src: &str) -> Vec<Script> {
 /// WSL's launcher, not a bash. GitHub's Windows images ship it with no
 /// distribution installed, so every script was answered with "Windows
 /// Subsystem for Linux has no installed distributions" and taken for bash's
-/// verdict. The runner passes over the launcher for the same reason
-/// (`runfile-runtime/src/shell.rs`), so this does too, and finds Git for
-/// Windows' bash wherever PATH has it.
+/// verdict. The runner passes over the launcher for the same reason, in both
+/// places WSL puts one -- `System32` and the Store's `WindowsApps` alias
+/// (`runfile-runtime/src/shell.rs`, `is_wsl_launcher`) -- so this does too,
+/// and finds Git for Windows' bash wherever PATH has it.
 fn bash_program() -> Option<std::path::PathBuf> {
 	if !cfg!(windows) {
 		return Some("bash".into());
@@ -743,7 +744,7 @@ fn bash_program() -> Option<std::path::PathBuf> {
 	let launcher = |p: &std::path::Path| {
 		p.parent()
 			.and_then(std::path::Path::file_name)
-			.is_some_and(|dir| dir.eq_ignore_ascii_case("system32"))
+			.is_some_and(|dir| dir.eq_ignore_ascii_case("system32") || dir.eq_ignore_ascii_case("windowsapps"))
 	};
 	std::env::split_paths(&std::env::var_os("PATH")?)
 		.map(|dir| dir.join("bash.exe"))

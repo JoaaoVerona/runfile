@@ -1154,8 +1154,9 @@ Shell is still there. It is just marked.
 | macOS | Intel, Apple Silicon |
 | Windows | x86-64, arm64 |
 
-`$` lines use bash where it exists, Git Bash on Windows, and `sh` otherwise — so one file works everywhere. Set
-`.shell` to pin one of the other POSIX shells, or name any other interpreter with `exec`.
+`$` lines use bash where it exists, Git Bash on Windows, and `sh` otherwise — so one file works everywhere. On
+Windows that is never WSL's `bash.exe`, and neither is `.shell = "bash"` or `exec bash`. Set `.shell` to pin one
+of the other POSIX shells, or name any other interpreter with `exec`.
 
 ## License
 

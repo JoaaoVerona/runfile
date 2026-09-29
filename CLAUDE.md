@@ -763,8 +763,21 @@ terminal's width, and how wide text is on it).
   same rules again in `check_properties`, which is how the scope rule had already drifted once. `props::check`
   is the one function that answers everything about a property line without running it, and `analysis.rs`
   calls **it** rather than restating it.
-- **Shell resolution**: bash → Git Bash (four known Windows paths) → sh. `System32\bash.exe` is deliberately
-  excluded: it is the WSL launcher, and a different filesystem.
+- **Shell resolution**: bash → Git Bash (four known Windows paths) → sh, each step through `shell::locate`, which
+  never answers with WSL's launcher -- a different filesystem, and on a machine with no distribution nothing at
+  all. WSL puts a `bash.exe` in two places, `System32` (the Windows feature's) and `WindowsApps` (the Store
+  package's App Execution Alias, on the user PATH by default), and one found in either is passed over for the
+  next on PATH. `is_wsl_launcher` judges by the directory the file is in: the substring test before it
+  (`\system32\`) knew only the first place, so `$` lines reached the Store's alias wherever it was the first bash
+  on PATH, missed a PATH entry spelled with `/`, and took a `system32` further up for the launcher.
+- **A shell the file names is located the same way.** `exec bash` and `.shell = "bash"` -- any shell `is_shell`
+  knows, written without a path -- go through `exec::executable` to `locate`. Handed to the standard library as a
+  bare word, a named `bash` was simply the first on PATH, which on a default Windows install is the launcher,
+  while a `$` line beside it ran Git Bash. It is looked up on the PATH the command runs with -- the standard
+  library's choice too, so `.add-path` still decides which shell runs -- while the default shell stays the
+  runner's, from the runner's PATH. A path is handed over as written. A shell found nowhere is refused -- *could
+  not start `bash`: not on PATH* -- rather than left to the standard library, whose search would reach the
+  launcher; and `$0` in `exec bash` is now the full path, as it always was for `$` lines.
 - `is_shell()` matches `sh|bash|dash|ash|zsh|ksh|busybox|brush` on the **first word only**, and adds `-e`
   **after** the rest of the words, in `program_and_args`. In front of them it went to the wrong thing:
   `busybox -e sh` asked for an applet called `-e`, and bash refuses `--posix` once it has read a short option.
@@ -1820,7 +1833,9 @@ tests that assert the mechanism rather than the symptom.
    (`bash_program`), never spawned as a bare `bash`: on Windows the standard library looks in `System32` before
    PATH, and `System32\bash.exe` is WSL's launcher -- which GitHub's Windows images ship with no distribution, so
    its "no installed distributions" was read as bash's verdict on every script. The fleet's Windows runner is
-   provisioned without WSL, which is why only the mirror's CI saw it. Every example in
+   provisioned without WSL, which is why only the mirror's CI saw it. The helper passes over both of the
+   launcher's places, as `shell::locate` does; it cannot call it, the runtime being above this crate. Every
+   example in
    `SHELL-CHECK-RULES.md` is run through the checker (`tests/rules_doc.rs`), whose rule list must match `RULES`
    in order. For the author's corpus, `tests::corpus` reads runfile paths from `RUNFILE_CORPUS_LIST`, prints every
    finding and every script it gave up on, and reports any script bash refuses that the checker read. A rule
