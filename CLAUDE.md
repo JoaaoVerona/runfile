@@ -1773,8 +1773,14 @@ one starting `../` -- both were `[]` without a word, while `read_file` and `file
 the literal directories ahead of it are where the walk begins and, as written, what every answer starts with,
 and the rest is matched beneath them. So a relative pattern still answers with relative paths and an absolute
 one with absolute paths, forward slashes in both; on Windows a `\` separates too, being what `join_path`
-writes there. Without `**` a pattern bounds how deep a match can be and the walk stops there, which is what
-keeps `/usr/share/themes/*/index.theme` to one level of one directory. A symlinked directory is followed
+writes there. The walk enters a directory only where a match can be beneath it (`GlobPlan::enters`): no
+deeper than a pattern without `**` reaches, and, up to the first `**`, only under a name the pattern's
+component at that level matches. So `org.gnome.Platform/*/*/active/files/lib/*/libadwaita-1.so.0` reads each
+runtime's `active` and not the commit it points at as well, and nothing under `files/share` -- entering every
+directory down to the depth took over a hundred milliseconds there, against Python's one. A `/` inside `{…}`
+or `[…]`, or a `\` escape, leaves the levels unknown, and then only the depth is bounded. What an entry is
+comes from the directory listing, with a `stat` only for a symlink, since a `lib` of a few thousand files
+otherwise paid one for each. A symlinked directory is followed
 unless it resolves to one the walk is already inside -- `find -L`'s rule, so a flatpak runtime's
 `active -> <commit>` is walked and `/usr/bin/X11 -> .` no longer answers every file again on each trip round
 it. `node_modules`, `.git` and `target` are still passed over where the walk comes across them, but not when

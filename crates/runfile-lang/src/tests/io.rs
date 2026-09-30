@@ -178,6 +178,39 @@ fn a_directory_the_walk_skips_is_reached_when_the_pattern_starts_in_it() {
 }
 
 #[test]
+fn a_directory_is_entered_only_when_its_name_can_lead_to_a_match() {
+	// The walk used to enter every directory down to the pattern's depth: a
+	// flatpak runtime's commit beside its `active` link, and all of
+	// `files/share`, to find one library under `files/lib` -- over a hundred
+	// milliseconds where Python's glob took one.
+	let plan = crate::functions::glob_plan("/rt/*/*/active/files/lib/*/libadwaita-1.so.0").unwrap();
+	assert!(plan.enters(0, "x86_64") && plan.enters(1, "50") && plan.enters(2, "active"));
+	assert!(
+		!plan.enters(2, "4f0c2e"),
+		"the commit `active` points at is not what the pattern names"
+	);
+	assert!(plan.enters(3, "files") && !plan.enters(4, "share"));
+	assert!(plan.enters(5, "x86_64-linux-gnu"));
+	assert!(!plan.enters(6, "anything"), "nothing is deeper than the pattern");
+}
+
+#[test]
+fn below_a_double_star_or_where_a_group_hides_the_levels_any_directory_is_entered() {
+	let plan = crate::functions::glob_plan("*/b/**/*.yml").unwrap();
+	assert!(plan.enters(1, "b") && !plan.enters(1, "c"));
+	assert!(
+		plan.enters(2, "anything") && plan.enters(9, "anything"),
+		"`**` reaches any depth, through any name"
+	);
+	let d = fixture();
+	assert_eq!(globbed(d.path(), "*/b/**/*.yml"), vec!["a/b/two.yml"]);
+
+	// `{a/b,c}` is not the levels `{a` and `b,c}`, so there are none to check.
+	let plan = crate::functions::glob_plan("{a/b,c}/*.yml").unwrap();
+	assert!(plan.enters(0, "anything") && plan.enters(1, "anything"));
+}
+
+#[test]
 fn an_alternative_with_a_separator_is_matched_at_every_depth_it_names() {
 	// Without `**` the walk goes no deeper than the pattern can match, and one
 	// alternative can reach further than the other.

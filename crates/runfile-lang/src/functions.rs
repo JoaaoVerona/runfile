@@ -1794,6 +1794,64 @@ pub(crate) struct GlobPlan {
 	/// How many components a match can have, when that is bounded: without a
 	/// `**` nothing can match deeper than the pattern has separators.
 	components: Option<usize>,
+	/// What a directory has to be called to be worth entering, one matcher for
+	/// each level beneath `prefix`, up to the first `**`. Below that any name
+	/// will do, and so it does at every level when [`levels`] cannot tell them
+	/// apart.
+	levels: Vec<globset::GlobMatcher>,
+}
+
+impl GlobPlan {
+	/// Whether a directory `depth` levels beneath the prefix, called `name`,
+	/// can hold a match. The two checks are what the walk is spared: a
+	/// flatpak runtime's `*/*/active/files` enters `active` and not the commit
+	/// it points at, and nothing under `files/share`.
+	pub(crate) fn enters(&self, depth: usize, name: &str) -> bool {
+		// A file in there would have `depth + 2` components.
+		if self.components.is_some_and(|most| depth + 2 > most) {
+			return false;
+		}
+		self.levels.get(depth).is_none_or(|level| level.is_match(name))
+	}
+}
+
+/// The components of a pattern that name directories, each as a matcher of its
+/// own, up to the first `**` and short of the last, which names files.
+///
+/// Splitting at every `/` would be wrong where one belongs to an alternative or
+/// a class -- `{a/b,c}` is not the levels `{a` and `b,c}` -- and after a `\`
+/// that escapes it, so a pattern holding either has no levels at all: the walk
+/// then enters every directory, which is slower and never wrong.
+fn levels(rest: &str) -> Vec<globset::GlobMatcher> {
+	if rest.contains('\\') {
+		return Vec::new();
+	}
+	let mut parts = Vec::new();
+	let (mut start, mut braces, mut class) = (0, 0usize, None::<usize>);
+	for (i, c) in rest.char_indices() {
+		match c {
+			'[' if class.is_none() => class = Some(i),
+			// A `]` straight after the `[` (or its `!` or `^`) is one the class
+			// matches, not the end of it.
+			']' if class.is_some_and(|open| !matches!(&rest[open + 1..i], "" | "!" | "^")) => class = None,
+			'{' if class.is_none() => braces += 1,
+			'}' if class.is_none() => braces = braces.saturating_sub(1),
+			'/' if class.is_some() || braces > 0 => return Vec::new(),
+			'/' => {
+				parts.push(&rest[start..i]);
+				start = i + 1;
+			}
+			_ => {}
+		}
+	}
+	let mut levels = Vec::new();
+	for part in parts.into_iter().take_while(|part| *part != "**") {
+		let Ok(glob) = globset::GlobBuilder::new(part).literal_separator(true).build() else {
+			return Vec::new();
+		};
+		levels.push(glob.compile_matcher());
+	}
+	levels
 }
 
 pub(crate) fn glob_plan(pattern: &str) -> Result<GlobPlan, globset::Error> {
@@ -1829,10 +1887,12 @@ pub(crate) fn glob_plan(pattern: &str) -> Result<GlobPlan, globset::Error> {
 	// An alternative inside `{a/b,c}` has no separator the pattern does not, so
 	// counting the pattern's bounds every alternative at once.
 	let components = (!rest.contains("**")).then(|| rest.split('/').count());
+	let levels = levels(&rest);
 	Ok(GlobPlan {
 		prefix,
 		matcher,
 		components,
+		levels,
 	})
 }
 
@@ -1852,12 +1912,12 @@ fn walk(root: &Path, dir: &Path, depth: usize, plan: &GlobPlan, above: &mut Vec<
 	for e in rd.flatten() {
 		let p = e.path();
 		let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-		if p.is_dir() {
-			if name == "node_modules" || name == ".git" || name == "target" {
-				continue;
-			}
-			// A file in there would have `depth + 2` components.
-			if plan.components.is_some_and(|most| depth + 2 > most) {
+		// The entry says what it is without a `stat`, which a directory of a few
+		// thousand files otherwise pays for each of them; only a symlink has to
+		// be followed to find out.
+		let Ok(kind) = e.file_type() else { continue };
+		if kind.is_dir() || (kind.is_symlink() && p.is_dir()) {
+			if name == "node_modules" || name == ".git" || name == "target" || !plan.enters(depth, &name) {
 				continue;
 			}
 			let Ok(real) = std::fs::canonicalize(&p) else { continue };
