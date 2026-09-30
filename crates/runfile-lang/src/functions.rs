@@ -1185,7 +1185,7 @@ pub const FUNCTIONS: &[Function] = &[
 	Function {
 		name: "glob",
 		signature: "glob(pattern)",
-		doc: "Matching paths as a list. `*` does not cross a directory separator.",
+		doc: "Matching paths as a list, relative to the runfiles parent unless the pattern is absolute. `*` does not cross a directory separator.",
 		example: "for compose in glob(\"**/docker-compose.yml\")\n\t$ docker compose -f {{ compose }} config -q\nend",
 	},
 	Function {
@@ -1577,16 +1577,11 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 	Some(match name {
 		"glob" if n == 1 => (|| {
 			let pat = s(0)?;
-			// `*` does not cross a directory boundary and `**` does, which is
-			// what people expect from a shell glob -- globset defaults the
-			// other way.
-			let g = globset::GlobBuilder::new(pat)
-				.literal_separator(true)
-				.build()
-				.map_err(|e| other(format!("bad glob `{pat}`: {e}")))?
-				.compile_matcher();
+			let plan = glob_plan(pat).map_err(|e| other(format!("bad glob `{pat}`: {e}")))?;
+			let root = sc.base_dir.join(&plan.prefix);
+			let mut above: Vec<PathBuf> = std::fs::canonicalize(&root).into_iter().collect();
 			let mut hits = Vec::new();
-			walk(&sc.base_dir, &sc.base_dir, &g, &mut hits);
+			walk(&root, &root, 0, &plan, &mut above, &mut hits);
 			hits.sort();
 			Ok(V::List(hits.into_iter().map(V::Str).collect()))
 		})(),
@@ -1778,7 +1773,81 @@ fn compile(pattern: &str, sp: Span) -> Result<regex::Regex, EvalError> {
 	})
 }
 
-fn walk(root: &Path, dir: &Path, g: &globset::GlobMatcher, out: &mut Vec<String>) {
+/// How `glob` reads a pattern -- and how `invalid-literal` checks one, so the two
+/// cannot disagree: the directories it starts with, which is where the walk
+/// begins, and the rest, which is matched beneath them.
+///
+/// The whole pattern used to be matched against paths relative to the runfiles
+/// parent, so an absolute pattern could match nothing, and neither could one
+/// starting `../`: both answered with an empty list and nothing to say why,
+/// while `read_file` and `file_exists` accepted the same paths.
+/// Starting from the literal directories is what reaches them, and it is also
+/// what keeps `/usr/share/themes/*/index.theme` from walking the filesystem.
+pub(crate) struct GlobPlan {
+	/// The leading directories as written, with the separator after them --
+	/// forward slashes, like everything `glob` answers -- or empty when the
+	/// pattern opens with a wildcard. Every match is beneath it, and every
+	/// path answered starts with it.
+	prefix: String,
+	/// The rest of the pattern, matched against paths relative to `prefix`.
+	matcher: globset::GlobMatcher,
+	/// How many components a match can have, when that is bounded: without a
+	/// `**` nothing can match deeper than the pattern has separators.
+	components: Option<usize>,
+}
+
+pub(crate) fn glob_plan(pattern: &str) -> Result<GlobPlan, globset::Error> {
+	// `\` separates on Windows, which is what `join_path` puts between parts
+	// there; on Unix it escapes what follows, so it ends the literal run. So do
+	// `]` and `}`, which are only literal when nothing opened them.
+	let separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+	let literal = |part: &str| !part.contains(['*', '?', '[', ']', '{', '}', '\\']);
+	let mut prefix_end = 0;
+	let mut start = 0;
+	for (i, c) in pattern.char_indices() {
+		if separator(c) {
+			if !literal(&pattern[start..i]) {
+				break;
+			}
+			prefix_end = i + c.len_utf8();
+			start = prefix_end;
+		}
+	}
+	// Matching is on forward-slash paths, so a pattern reads the same on every
+	// platform -- a Windows `\` included, which globset takes literally there.
+	let (mut prefix, mut rest) = (pattern[..prefix_end].to_string(), pattern[prefix_end..].to_string());
+	if cfg!(windows) {
+		prefix = prefix.replace('\\', "/");
+		rest = rest.replace('\\', "/");
+	}
+	// `*` does not cross a directory boundary and `**` does, which is what
+	// people expect from a shell glob -- globset defaults the other way.
+	let matcher = globset::GlobBuilder::new(&rest)
+		.literal_separator(true)
+		.build()?
+		.compile_matcher();
+	// An alternative inside `{a/b,c}` has no separator the pattern does not, so
+	// counting the pattern's bounds every alternative at once.
+	let components = (!rest.contains("**")).then(|| rest.split('/').count());
+	Ok(GlobPlan {
+		prefix,
+		matcher,
+		components,
+	})
+}
+
+/// Every file beneath `dir` that `plan` matches, as its prefix and its path
+/// beneath `root`.
+///
+/// A symlinked directory is followed -- a flatpak runtime's `active ->
+/// <commit>` is exactly the path a pattern names -- except back into one the
+/// walk is already inside. That answered every file in the loop again on each
+/// trip round it, until the system refused to resolve a path through so many
+/// links -- and Debian ships `/usr/bin/X11 -> .`, one absolute pattern away.
+/// `above` holds those directories resolved, so the same directory reached two
+/// ways is still walked both times, the way `find -L` does; a set of every
+/// directory seen would keep only whichever came first.
+fn walk(root: &Path, dir: &Path, depth: usize, plan: &GlobPlan, above: &mut Vec<PathBuf>, out: &mut Vec<String>) {
 	let Ok(rd) = std::fs::read_dir(dir) else { return };
 	for e in rd.flatten() {
 		let p = e.path();
@@ -1787,15 +1856,23 @@ fn walk(root: &Path, dir: &Path, g: &globset::GlobMatcher, out: &mut Vec<String>
 			if name == "node_modules" || name == ".git" || name == "target" {
 				continue;
 			}
-			walk(root, &p, g, out);
+			// A file in there would have `depth + 2` components.
+			if plan.components.is_some_and(|most| depth + 2 > most) {
+				continue;
+			}
+			let Ok(real) = std::fs::canonicalize(&p) else { continue };
+			if above.contains(&real) {
+				continue;
+			}
+			above.push(real);
+			walk(root, &p, depth + 1, plan, above, out);
+			above.pop();
 			continue;
 		}
 		if let Ok(rel) = p.strip_prefix(root) {
-			// Matching is on forward-slash relative paths, so a pattern reads
-			// the same on every platform.
 			let s = rel.to_string_lossy().replace('\\', "/");
-			if g.is_match(&s) {
-				out.push(s);
+			if plan.matcher.is_match(&s) {
+				out.push(format!("{}{s}", plan.prefix));
 			}
 		}
 	}

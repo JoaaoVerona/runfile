@@ -527,9 +527,9 @@ follows the real run: a file that dry-runs clean and fails for real is still ref
 - **`unreachable-case` asks how a `match` writes its subject**: `to_string`, so a bool is `true` or `false`, a
   number is `format_num`'s text, and `match $ …` an `i32` exit status; a string or a list can be written as anything.
   A label written twice is unreachable whatever the subject.
-- **`invalid-literal` compiles what is written out with what the run uses**: `regex::Regex::new`, the `globset`
-  builder `glob` uses, `now_formatted`, and `functions::parse_format` -- split out of `render_format` so a `printf`
-  format is read one way before a run and during one. The count message is `format_count`'s, which is why a static
+- **`invalid-literal` compiles what is written out with what the run uses**: `regex::Regex::new`, `glob_plan` (how
+  `glob` reads its pattern), `now_formatted`, and `functions::parse_format` -- split out of `render_format` so a
+  `printf` format is read one way before a run and during one. The count message is `format_count`'s, which is why a static
   refusal still says `more substitutions`.
 - **`capture-position` is where `value_of` does not run.** The runner runs a capture as the whole value of a `let`,
   a reassignment, a call statement or a `for` (and as the last argument of a call that is), and as the whole of an
@@ -1765,6 +1765,21 @@ comment or a string is not mistaken for one the target reads.
 user may execute (the mode bits on Unix, being a file on Windows, where the question has no equivalent).
 `file_exists` used to answer `exists()`, which is neither question — a `.git` is a directory in a normal
 clone and a *file* in a worktree, so a check for one wants `directory_exists(p) || file_exists(p)`.
+
+**`glob` walks from the directories its pattern starts with, and answers with them.** It matched the whole
+pattern against paths relative to the runfiles parent, so an absolute pattern matched nothing, and neither did
+one starting `../` -- both were `[]` without a word, while `read_file` and `file_exists` accepted the same paths.
+`glob_plan` splits a pattern before its first component holding a wildcard (`*?[]{}`, or a Unix `\` escape):
+the literal directories ahead of it are where the walk begins and, as written, what every answer starts with,
+and the rest is matched beneath them. So a relative pattern still answers with relative paths and an absolute
+one with absolute paths, forward slashes in both; on Windows a `\` separates too, being what `join_path`
+writes there. Without `**` a pattern bounds how deep a match can be and the walk stops there, which is what
+keeps `/usr/share/themes/*/index.theme` to one level of one directory. A symlinked directory is followed
+unless it resolves to one the walk is already inside -- `find -L`'s rule, so a flatpak runtime's
+`active -> <commit>` is walked and `/usr/bin/X11 -> .` no longer answers every file again on each trip round
+it. `node_modules`, `.git` and `target` are still passed over where the walk comes across them, but not when
+the pattern starts inside one. `invalid-literal` asks `glob_plan` as well, so a pattern refused before a run
+is one that would fail during it.
 
 `\e` is ESC, beside `\n`, `\t`, `\r`, `\"` and `\\`. Colour is what `printf` is for, and without it every
 coloured line had to stay a shell line — twelve of them in the corpus did.

@@ -133,6 +133,84 @@ fn a_single_star_does_not_cross_a_directory_boundary() {
 	);
 }
 
+/// What `glob(pattern)` answers from `dir`, in the order it answers.
+fn globbed(dir: &Path, pattern: &str) -> Vec<String> {
+	let Value::List(items) = in_dir(dir, &format!(r#"glob("{pattern}")"#)).unwrap() else {
+		panic!("glob answers with a list")
+	};
+	items.iter().map(|v| v.to_string()).collect()
+}
+
+#[test]
+fn an_absolute_pattern_answers_with_absolute_paths() {
+	// The whole pattern was matched against paths relative to the runfiles
+	// parent, which an absolute one never is, so it answered with nothing.
+	let d = fixture();
+	let elsewhere = tempfile::TempDir::new().unwrap();
+	let root = d.path().to_string_lossy().replace('\\', "/");
+	assert_eq!(
+		globbed(elsewhere.path(), &format!("{root}/a/*.yml")),
+		vec![format!("{root}/a/one.yml")]
+	);
+	assert_eq!(
+		globbed(elsewhere.path(), &format!("{root}/**/*.yml")),
+		vec![format!("{root}/a/b/two.yml"), format!("{root}/a/one.yml")],
+		"node_modules is still skipped beneath the directories a pattern starts with"
+	);
+}
+
+#[test]
+fn a_pattern_may_start_above_the_runfiles_parent() {
+	let d = fixture();
+	assert_eq!(globbed(&d.path().join("a/b"), "../*.yml"), vec!["../one.yml"]);
+}
+
+#[test]
+fn a_directory_the_walk_skips_is_reached_when_the_pattern_starts_in_it() {
+	// node_modules, .git and target are passed over where a walk comes across
+	// them, so `**` does not sweep them up -- but a pattern that starts inside
+	// one has asked for it, and was answered with nothing.
+	let d = fixture();
+	assert_eq!(
+		globbed(d.path(), "node_modules/pkg/*.yml"),
+		vec!["node_modules/pkg/three.yml"]
+	);
+}
+
+#[test]
+fn an_alternative_with_a_separator_is_matched_at_every_depth_it_names() {
+	// Without `**` the walk goes no deeper than the pattern can match, and one
+	// alternative can reach further than the other.
+	let d = fixture();
+	assert_eq!(globbed(d.path(), "{a/b,a}/*.yml"), vec!["a/b/two.yml", "a/one.yml"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_directory_is_followed_but_never_back_into_itself() {
+	// Following one back up the tree answered `a/up/a/one.yml`,
+	// `a/up/a/up/a/one.yml` and so on, until the system refused a path through
+	// that many links -- and Debian ships `/usr/bin/X11 -> .`, one absolute
+	// pattern away. A directory reached a second way is still walked, the way
+	// `find -L` walks it.
+	let d = fixture();
+	std::os::unix::fs::symlink(d.path(), d.path().join("a/up")).unwrap();
+	std::os::unix::fs::symlink(d.path().join("a/b"), d.path().join("link")).unwrap();
+	assert_eq!(
+		globbed(d.path(), "**/*.yml"),
+		vec!["a/b/two.yml", "a/one.yml", "link/two.yml"]
+	);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_backslash_separates_on_windows() {
+	// `join_path` puts one between parts there, and globset takes it for a
+	// literal character, which matches nothing.
+	let d = fixture();
+	assert_eq!(globbed(d.path(), r"a\\*.yml"), vec!["a/one.yml"]);
+}
+
 mod printf {
 	use crate::functions::render_format;
 	use crate::span::Span;

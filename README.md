@@ -980,7 +980,8 @@ project's lint leaves the directory out otherwise.
 what is checked in and reviewable. This is also why nothing has to be cleaned up after a job.
 
 Everything relative — `.env-file`, `.add-path`, `glob`, `read_file`, `{{ RUN.parent }}`, the working directory
-— resolves against **the parent of `runfiles/`**. One anchor, one rule.
+— resolves against **the parent of `runfiles/`**. One anchor, one rule. An absolute path is taken as written,
+and an absolute `glob` pattern answers with absolute paths.
 
 ## Setup targets
 

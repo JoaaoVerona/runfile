@@ -914,7 +914,7 @@ impl Check<'_> {
 				let Some(pattern) = args.first().and_then(literal_str) else {
 					return false;
 				};
-				let Err(e) = globset::GlobBuilder::new(&pattern).literal_separator(true).build() else {
+				let Err(e) = crate::functions::glob_plan(&pattern) else {
 					return false;
 				};
 				let detail = e.kind().to_string();
