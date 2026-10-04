@@ -1966,10 +1966,18 @@ intermediate release at once. A version whose tag did not arrive fails the relea
 - **GitHub's default branch should be `github`**: it is what the repository page, a clone, a pull request and the
   scheduled audit all read. Nothing here can set that; it is a repository setting.
 - **Every workflow is least-privilege** (audit SA-018). Each `.cicd/*.yml` and `.github/workflows/*.yml` file
-  declares top-level `permissions: contents: read`, only the Gitea `release` job raises itself to
-  `contents: write`, and every `actions/checkout` sets `persist-credentials: false`. So the third-party code an
-  ordinary CI job runs -- cargo and its build scripts, `npx`, the tree-sitter CLI's binary download -- cannot
-  reuse a persisted write-capable job token to rewrite a published release.
+  declares top-level `permissions: contents: read`, only a job that publishes raises itself -- `contents: write`
+  for Gitea's `release` and GitHub's `release` and `major-tag`, `id-token: write` for `npm` -- and every
+  `actions/checkout` sets `persist-credentials: false`. So the third-party code an ordinary CI job runs -- cargo
+  and its build scripts, `npx`, the tree-sitter CLI's binary download -- cannot reuse a persisted write-capable
+  job token to rewrite a published release. **A command that writes is handed the token itself.** `gh` reads
+  `GH_TOKEN`, but `major-tag`'s `git push` had been reading the one checkout left in `.git/config`, so with
+  nothing persisted it had no credentials at all -- `could not read Username` -- and v1.8.5 was mirrored with
+  `v1` still on v1.8.0. It is given the header checkout would have written, `http.https://github.com/.extraheader`,
+  in its own environment (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0`) and masked, so it is
+  gone when the push is. A job is not re-run to recover from this: a re-run uses the workflow file of the
+  commit it ran for, and a dispatch rebuilds and re-uploads every asset, then fails at an npm publish of a
+  version that already exists. The tag is moved by hand instead.
 
 What each side publishes is decided by what it can do:
 

@@ -315,6 +315,7 @@ jobs:
 
       - name: Point the major tag at this release
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
@@ -337,7 +338,18 @@ jobs:
           fi
           echo "moving $major to $TAG"
           git tag -f "$major"
-          git push --force origin "refs/tags/$major"
+          # The checkout keeps no token (`persist-credentials: false`, audit
+          # SA-018), so the one command here that writes is handed it for
+          # itself alone: the header actions/checkout would have left in
+          # .git/config, given to this push in its environment instead. With
+          # nothing persisted, the push had no credentials at all, and v1.8.5
+          # was mirrored with `v1` left behind.
+          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git push --force origin "refs/tags/$major"
 
   npm:
     name: Publish npm package
