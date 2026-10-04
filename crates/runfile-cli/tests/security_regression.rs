@@ -202,13 +202,24 @@ fn security_regression_a_command_string_for_another_shell_does_not_run_its_value
 /// `let` or `declare -i` is evaluated after quote removal, and stays open.
 #[test]
 fn security_regression_an_interpolation_inside_shell_arithmetic_does_not_run_its_value() {
-	let p = project(&[("runfiles/inc.run", "$ echo $(( {{ ARG.n }} + 1 ))\n")]);
-	let o = p.run(&["inc", "--n=a[$(touch VALUE_RAN)]"]);
-	assert!(
-		!p.exists("VALUE_RAN"),
-		"a value interpolated into $(( )) was run as a command: {}",
-		String::from_utf8_lossy(&o.stderr)
-	);
+	// The arithmetic *expansions* are rendered so the shell cannot expand the
+	// value; the arithmetic-*evaluating* positions are refused before the run.
+	let bodies = [
+		"$ echo $(( {{ ARG.n }} + 1 ))\n",
+		"$ (( {{ ARG.n }} )) && echo yes\n",
+		"$ [[ 1 -eq {{ ARG.n }} ]] && echo yes\n",
+		"$ let x={{ ARG.n }}\n",
+		"$ declare -i x={{ ARG.n }}\n",
+	];
+	for body in bodies {
+		let p = project(&[("runfiles/inc.run", body)]);
+		let o = p.run(&["inc", "--n=a[$(touch VALUE_RAN)]"]);
+		assert!(
+			!p.exists("VALUE_RAN"),
+			"a value in a shell arithmetic position ran as a command: {body}{}",
+			String::from_utf8_lossy(&o.stderr)
+		);
+	}
 }
 
 /// An unquoted heredoc expands `$(…)` the same way double quotes do.
@@ -321,4 +332,103 @@ fn security_regression_a_value_cannot_end_the_comment_it_is_in() {
 	assert!(!o.status.success());
 	assert!(!p.exists("VALUE_RAN"));
 	assert!(p.run(&["t", "--v=plain"]).status.success());
+}
+
+/// A data-driven delay or length that `Duration`/arithmetic cannot hold used to
+/// abort the process (exit 101 in debug, a wrapped length in release), and the
+/// abort skipped temp-file cleanup. Each now ends with a clean error or a
+/// clamped result, never a panic -- exit 101 and 134 are the failure here.
+#[test]
+fn security_regression_a_data_driven_number_does_not_abort_the_process() {
+	let cases: &[(&str, &str, &str)] = &[
+		("sleep", "$ echo start\nsleep(number(ARG.n))\n", "1e300"),
+		("retry", "retry 2 every number(ARG.n)\n\t$ false\nend\n", "1e300"),
+		(
+			"slice",
+			"let xs = [\"a\", \"b\"]\nprint(join(\",\", slice(xs, 0, number(ARG.n))))\n",
+			"1e20",
+		),
+	];
+	for (name, body, n) in cases {
+		let p = project(&[(&format!("runfiles/{name}.run"), body)]);
+		let o = p.run(&[name, &format!("--n={n}")]);
+		let code = o.status.code();
+		assert!(
+			code != Some(101) && code != Some(134),
+			"{name} aborted ({code:?}): {}",
+			String::from_utf8_lossy(&o.stderr)
+		);
+	}
+}
+
+/// An empty list interpolated with a path suffix glued onto it collapses the
+/// path -- `rm -rf {{ dirs }}/cache` becomes `rm -rf /cache`. `run :lint`
+/// refuses the glued shape before it can run (audit SA-005).
+#[test]
+fn security_regression_lint_flags_a_list_glued_to_a_path_suffix() {
+	let p = project(&[(
+		"runfiles/clean.run",
+		"let dirs = glob(\"build/*\")\n$ rm -rf {{ dirs }}/cache\n",
+	)]);
+	let o = p.run(&[":lint", "--check"]);
+	assert!(!o.status.success(), "lint should fail");
+	let out = format!(
+		"{}{}",
+		String::from_utf8_lossy(&o.stdout),
+		String::from_utf8_lossy(&o.stderr)
+	);
+	assert!(out.contains("glued-list"), "{out}");
+	// A list in its own word draws no such finding.
+	let ok = project(&[(
+		"runfiles/clean.run",
+		"let dirs = glob(\"build/*\")\n$ rm -rf {{ dirs }}\n",
+	)]);
+	let o = ok.run(&[":lint", "--check"]);
+	let out = format!(
+		"{}{}",
+		String::from_utf8_lossy(&o.stdout),
+		String::from_utf8_lossy(&o.stderr)
+	);
+	assert!(!out.contains("glued-list"), "{out}");
+}
+
+/// `run --dry-run` is documented as a safe preview of a repository before you
+/// decide to run it. It must not read files outside the project, probe for them,
+/// or unlock the credential store to decrypt the repository's values (audit
+/// SA-008). A read inside the project still works, so the preview stays useful.
+#[test]
+fn security_regression_dry_run_does_not_read_outside_the_project_or_touch_the_keyring() {
+	let p = project(&[(
+		"runfiles/t.run",
+		"print(\"abs:\", read_file(\"/etc/hostname\"))\n\
+		 print(\"exists:\", file_exists(\"/etc/hostname\"))\n\
+		 print(\"in:\", read_file(\"in.txt\"))\n",
+	)]);
+	std::fs::write(p.dir.path().join("in.txt"), "in-repo").unwrap();
+	let o = p.run(&["--dry-run", "t"]);
+	let out = String::from_utf8_lossy(&o.stdout);
+	assert!(
+		out.contains("abs: <contents of /etc/hostname>"),
+		"outside read was not a placeholder: {out}"
+	);
+	assert!(out.contains("exists: false"), "outside path was probed: {out}");
+	assert!(
+		out.contains("in: in-repo"),
+		"an in-project read should still work: {out}"
+	);
+
+	// An encrypted `.env-file` must not be read or decrypted during a preview:
+	// that would reach the keyring. With DBUS pointed nowhere a real decrypt
+	// would error or hang; the preview completes instead.
+	let enc = project(&[
+		("runfiles/d.run", ".env-file = \".env\"\nprint(\"done\")\n"),
+		(".env", "RUNFILE_ENCRYPTION_PUBLIC_KEY=deadbeef\nSECRET=encrypted:abc\n"),
+	]);
+	let o = enc.run(&["--dry-run", "d"]);
+	assert!(
+		o.status.success(),
+		"preview reached the keyring: {}",
+		String::from_utf8_lossy(&o.stderr)
+	);
+	assert!(String::from_utf8_lossy(&o.stdout).contains("done"));
 }

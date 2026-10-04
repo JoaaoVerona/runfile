@@ -41,6 +41,11 @@
 	"activationEvents": [
 		"onStartupFinished"
 	],
+	"capabilities": {
+		"untrustedWorkspaces": {
+			"supported": false
+		}
+	},
 	"contributes": {
 		"taskDefinitions": [
 			{
@@ -187,12 +192,13 @@
 				"runfile.catalogCommand": {
 					"type": "string",
 					"default": "run :list --json",
-					"markdownDescription": "Shell command run in each workspace folder to list targets as JSON on **stdout** — the `{ \"formatVersion\": 1, \"targets\": [...] }` document emitted by `run :list --json`. Discovery is the CLI's job, so it needs no flags: it walks up for the nearest `runfiles/`, down for subproject ones, and folds in the machine-wide `~/.runfiles/`. Anything on stderr is ignored. Re-run every time VS Code fetches tasks — keep it cheap."
+					"markdownDescription": "Shell command run in each workspace folder to list targets as JSON on **stdout** \u2014 the `{ \"formatVersion\": 1, \"targets\": [...] }` document emitted by `run :list --json`. Discovery is the CLI's job, so it needs no flags: it walks up for the nearest `runfiles/`, down for subproject ones, and folds in the machine-wide `~/.runfiles/`. Anything on stderr is ignored. Re-run every time VS Code fetches tasks \u2014 keep it cheap. Machine-scoped, so a workspace's `.vscode/settings.json` cannot choose the program the extension runs.",
+					"scope": "machine"
 				},
 				"runfile.codeLens": {
 					"type": "boolean",
 					"default": true,
-					"markdownDescription": "Show an inline **Run** button at the top of every `.run` file inside a `runfiles/` directory. One target is one file, so there is one button per file. It runs `run --stdin-args --dir <the runfiles parent> <target>`, so a target in a subproject runs under the name that directory gives it. `_shared.run` gets no button — it configures a directory rather than being a target."
+					"markdownDescription": "Show an inline **Run** button at the top of every `.run` file inside a `runfiles/` directory. One target is one file, so there is one button per file. It runs `run --stdin-args --dir <the runfiles parent> <target>`, so a target in a subproject runs under the name that directory gives it. `_shared.run` gets no button \u2014 it configures a directory rather than being a target."
 				},
 				"runfile.enabled": {
 					"type": "boolean",
@@ -212,7 +218,8 @@
 				"runfile.lspPath": {
 					"type": "string",
 					"default": "run",
-					"description": "Path to the run executable, which is asked to serve the language server as `run :lsp`. Looked up on PATH when left as a bare name."
+					"description": "Path to the run executable, which is asked to serve the language server as `run :lsp`. Looked up on PATH when left as a bare name. Machine-scoped: a workspace cannot point it at a repo-local program.",
+					"scope": "machine"
 				}
 			}
 		},

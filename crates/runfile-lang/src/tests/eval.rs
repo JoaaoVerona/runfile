@@ -1166,6 +1166,28 @@ fn slicing_past_the_end_is_empty_rather_than_an_error() {
 }
 
 #[test]
+fn a_huge_slice_length_clamps_rather_than_overflowing() {
+	// A float->int cast saturates to `usize::MAX`, and `start + usize::MAX`
+	// aborts in debug and wraps in release. `slice` clamps, so a huge length is
+	// the whole rest -- the same answer `99` gives, never a panic. The length is
+	// usually data, so it arrives through `number(...)`.
+	assert_eq!(v("slice([1, 2, 3], 1, number(\"1e20\"))"), v("[2, 3]"));
+	assert_eq!(v("slice([1, 2, 3], 1, number(\"1e308\"))"), v("[2, 3]"));
+}
+
+#[test]
+fn a_duration_that_no_run_can_hold_is_refused_rather_than_a_panic() {
+	use crate::functions::duration_secs;
+	// `Duration::from_secs_f64` panics on each of these; a delay is usually data.
+	assert!(duration_secs(f64::NAN).is_err());
+	assert!(duration_secs(-1.0).is_err());
+	assert!(duration_secs(1e300).is_err());
+	assert!(duration_secs(f64::INFINITY).is_err());
+	assert_eq!(duration_secs(0.0), Ok(std::time::Duration::ZERO));
+	assert_eq!(duration_secs(1.5), Ok(std::time::Duration::from_secs_f64(1.5)));
+}
+
+#[test]
 fn esc_is_an_escape_the_language_has() {
 	// Colour is what `printf` is for, and without this every coloured line had
 	// to stay a shell line.

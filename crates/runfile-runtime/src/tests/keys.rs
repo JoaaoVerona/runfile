@@ -383,6 +383,28 @@ fn a_temp_dir_is_removed_with_what_is_inside_it() {
 }
 
 #[test]
+fn the_temp_guard_cleans_up_when_it_is_dropped() {
+	// What protects a decrypted temp file from a panic: nothing catches an
+	// unwind, so cleanup has to happen on the way out, not only on return.
+	let d = project(&[(
+		"runfiles/t.run",
+		"let f = temp_file(\"secret\")\n$ echo {{ f }} > path.txt\n",
+	)]);
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	let path = {
+		let _guard = h.temp_guard();
+		h.run("t", &[]).unwrap();
+		std::fs::read_to_string(d.path().join("path.txt"))
+			.unwrap()
+			.trim()
+			.to_string()
+	};
+	assert!(!std::path::Path::new(&path).exists(), "the guard removed it on drop");
+}
+
+#[test]
 fn a_preview_creates_no_temp_file() {
 	let d = project(&[(
 		"runfiles/t.run",

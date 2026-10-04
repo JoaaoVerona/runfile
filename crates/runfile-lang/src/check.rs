@@ -58,6 +58,10 @@ pub const RULES: &[Rule] = &[
 		id: "capture-position",
 		summary: "A `$` run or a `run` dispatch where the runner has nothing to run it in.",
 	},
+	Rule {
+		id: "glued-list",
+		summary: "A list interpolated with no space between it and the text beside it, in a `$` line.",
+	},
 ];
 
 /// Something wrong with a runfile, found before it runs: by this checker, or by
@@ -313,6 +317,11 @@ impl Check<'_> {
 				}
 				for line in body {
 					self.parts(line);
+					// A `$` line is shell (command is `None`); an `exec` body is
+					// somebody else's language, where a list means something else.
+					if command.is_none() {
+						self.glued_lists(line);
+					}
 				}
 			}
 		}
@@ -333,6 +342,52 @@ impl Check<'_> {
 			}
 		}
 		fails
+	}
+
+	/// A list interpolated with no space between it and what is beside it, in a
+	/// shell line. A list is several words; glued to text it is wrong whatever
+	/// it holds -- `rm -rf {{ dirs }}/cache` is `rm -rf 'a' 'b'/cache` for two
+	/// and the silent `rm -rf /cache` for none -- so it is reported whether or
+	/// not the list can be empty. Only a value that can *only* be a list is
+	/// flagged; a `string ? list` is not, since the string form is fine.
+	fn glued_lists(&mut self, parts: &[InterpPart]) {
+		let starts_glued = |t: &str| t.starts_with(|c: char| !c.is_whitespace());
+		let ends_glued = |t: &str| t.ends_with(|c: char| !c.is_whitespace());
+		for (i, p) in parts.iter().enumerate() {
+			let InterpPart::Expr(e) = p else { continue };
+			// The footgun is a list that is its *own* word with a literal glued
+			// straight onto its end -- `rm -rf {{ dirs }}/cache`, which is
+			// `rm -rf /cache` when the list is empty and `'a' 'b'/cache` when it
+			// has several. So: a space (or the line start) before it, and a
+			// non-space literal after it. A list built *into* a word on purpose
+			// -- `inst={{ ARGS }};`, `-Dexec.args={{ ARGS }}` -- has a non-space
+			// prefix, and is the common "zero or one positional" idiom; it is
+			// left alone, as is a list with a space after it (`{{ ARGS }} -- x`).
+			let glued_before = match i.checked_sub(1).and_then(|k| parts.get(k)) {
+				Some(InterpPart::Literal(t)) => ends_glued(t),
+				Some(InterpPart::Expr(_)) => true,
+				None => false,
+			};
+			let suffix = match parts.get(i + 1) {
+				Some(InterpPart::Literal(t)) if starts_glued(t) => t.split_whitespace().next().unwrap_or_default(),
+				_ => continue,
+			};
+			// Only a value that can be nothing but a list -- a `string ? list`
+			// renders fine in its string form, so it is left alone.
+			if glued_before || suffix.is_empty() || !self.names.ty(e).refused(STR | NUM | BOOL) {
+				continue;
+			}
+			let t = self.text(e.span());
+			self.report(
+				"glued-list",
+				e.span(),
+				format!(
+					"`{t}` is a list on its own, with `{suffix}` glued straight onto it: an empty list leaves \
+					 `{suffix}` standing alone, and a list of several splits into words with `{suffix}` stuck to the last"
+				),
+				Some(format!("put a space before `{suffix}`, or give the list its own word")),
+			);
+		}
 	}
 
 	/// A `let` or a reassignment.

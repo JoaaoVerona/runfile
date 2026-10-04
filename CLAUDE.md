@@ -555,6 +555,14 @@ follows the real run: a file that dry-runs clean and fails for real is still ref
   process host"*. That is a condition's call (`if contains("a", $ cmd)`, `if code_of($ cmd)`) and every
   `_shared.run` `let`, which `fold_shared` evaluates with `eval_boundary`. A runtime test runs each and holds the
   runner to the rule. `code_of` given anything but a capture or a dispatch is `wrong-type`.
+- **`glued-list` catches a list with a literal glued onto its end in a `$` line**: `rm -rf {{ dirs }}/cache`,
+  which an empty `dirs` collapses to `rm -rf /cache` and several `dirs` split into words with `/cache` stuck to
+  the last -- wrong whatever the list holds (audit SA-005). Reported only for a list that is **its own word**
+  (a space or the line start before it) with a non-space literal after it: a list built *into* a word with a
+  prefix (`-Dexec.args={{ ARGS }}`, `inst={{ ARGS }};`) is the common "zero or one positional" idiom and is left
+  alone, as the author's 1,257-file corpus proved it had to be -- it flagged those before the rule was narrowed
+  to a trailing glue. Only a value that can be nothing but a list is flagged (`names.ty(e).refused(STR|NUM|BOOL)`),
+  so a `string ? list` is fine. `$` lines only (command `None`); an `exec` body is somebody else's language.
 
 ### Three context-sensitive lexer rules
 
@@ -625,13 +633,32 @@ quoting.
 - `Scope.dry_run` exists so `write_file` and `decrypt` can refuse to write, and so `confirm` does not ask. A
   preview that edits the working tree is worse than no preview, and one that stops to ask permission for what
   it is not going to do is not a preview at all.
+- `Scope.preview` is a **real `--dry-run`**, as opposed to the header probe, which sets `dry_run` to suppress
+  writes while it still reads. Under `preview` the file-reading functions (`read_file`, `glob`, `file_exists`,
+  `directory_exists`, `is_executable`) are confined to the anchor subtree by `escapes_base` -- an absolute path
+  or a `..` escape returns a placeholder (`<contents of …>`, `false`, `[]`) rather than reading -- so previewing
+  an untrusted repository cannot `read_file("/etc/passwd")` and `print` it, which it would do under the old
+  `--dry-run` (documented safe, and it ran every read): audit SA-008. A read **inside** the project still
+  happens, so a preview of your own project stays useful. `print`/`printf` keep running under a preview, now
+  over placeholders. `escapes_base` normalizes `.`/`..` lexically, with no disk access, so a path that does not
+  exist is judged all the same.
+- **A built-in given a number no type can hold is a clean error, not a panic.** `functions::duration_secs` is
+  the one check for `sleep` and `retry … every`: `Duration::from_secs_f64` panics on a NaN, a negative or a
+  value past ~1.8e19, and a delay is usually data (`sleep(number(ARG.delay))`). `slice`'s length saturates
+  (`start.saturating_add(len as usize).min(items.len())`) rather than overflowing -- a float→int cast
+  saturates to `usize::MAX`, and the unchecked `start + that` aborted in debug and wrapped in release. A panic
+  there unwound past temp-file cleanup, leaving a decrypted `temp_file` on disk -- audit SA-006, which is why
+  `Host::temp_guard` now cleans on `Drop` too (see *runfile-runtime*).
 - `FUNCTIONS` is exported and driven into editor completion, with tests in **both** directions: every listed
   name must dispatch, and every dispatch arm must be listed. Only the first existed at one point, and `min`
   sat implemented but unlisted, so completion never offered it.
 - `Scope.temps` is a `TempFiles`: a shared handle, not a process-global, holding what `temp_file` and
   `temp_dir` made. `Host::cleanup_temps` drains it however the run ended, which is the point — a target that
   fails half-way is exactly when a decoded credential must not be left in the temp directory. Watch mode
-  drains after every iteration.
+  drains after every iteration. `Host::temp_guard` wraps the run in a `Drop` that drains too, so a **panic** --
+  which unwinds past the explicit `cleanup_temps`, the release profile not being `panic = "abort"` -- cannot
+  leave a decrypted temp file behind (audit SA-006); cleanup is idempotent, so the guard and the explicit call
+  do not conflict.
 - Binding names are validated in both `let` and reassignment; a block closer (`end`/`else`/`case`/`default`)
   with nothing open is a parse error rather than an expression statement.
 - **`exit()` ends the target it is written in, with a status.** It leaves as `EvalError::Exit`, since an
@@ -711,6 +738,16 @@ naming both, since merging them would let one target shadow another invisibly. A
 (a leftover `mkdir` must not stop a run), and `$HOME/runfiles/` found by the upward walk is not collected a
 second time as the global. This replaced `includes` entirely.
 
+- **The walk does not follow symlinked directories, and every reader of a `.run` file goes through
+  `read_runfile`.** `walk_runs` classifies entries with the `DirEntry`'s own `file_type` (which, unlike
+  `is_dir`/`is_file`, does not follow a symlink), so `runfiles/a -> .` and `runfiles/b -> .` no longer loop or
+  branch the walk without end, a `.run` that is a symlink/FIFO/device is not registered, and a `MAX_RUN_DEPTH`
+  backstop bounds a pathologically deep real tree -- audit SA-007. `read_runfile` (used by `:list`, `--help`,
+  `:lint`, the language server, dispatch and `scope_of`) refuses a non-regular file -- checked with `metadata`
+  (a `stat`, which does not block) **before** opening, since opening a FIFO blocks until a writer appears -- and
+  caps the read at `MAX_RUNFILE_BYTES`, so a `.run` symlinked to `/dev/zero` cannot exhaust memory. Every one of
+  those readers runs before anything is executed, so a hostile repository must not be able to hang or OOM them
+  merely by being opened, listed or completed.
 - **The `runfiles/` the upward walk takes has to be trusted** (`discovery::trusted`, `owner.rs`): owned by the
   account running `run`, by the machine's administrators (root; `Administrators` or `SYSTEM` on Windows), or by
   whoever owns the directory the walk started in -- else `DiscoverError::NotYours`, and one whose owner cannot be
@@ -1020,6 +1057,21 @@ terminal's width, and how wide text is on it).
   `tests/keys.rs` counts that. `RUN.user` and `RUN.cwd` stay the process's. `runfile-runtime/src/tests/inherited.rs`
   holds each of these rules, `runfile-env/src/tests/called.rs` the layering beneath them, and `cli.rs` the
   whole of it against `$ run`, which must agree about everything but a caller's file values.
+- **Only a `.env-file`'s own values are decrypted** (`build_env`, after `load_env_files`, before they are
+  merged in). A ciphertext arriving any other way -- exported in the caller's shell, inherited, or written
+  into the `.env` block from `.env.X = ARG.x` -- is passed through unchanged, never scanned for `encrypted:`.
+  Before, three passes decrypted the whole merged map (process environment included) and the `.env` block, so a
+  CI job that holds the key and echoes a variable an outsider controls (a PR title via `env:`, the shape
+  GitHub recommends against script injection) was a decryption **oracle** for every secret in the repository's
+  committed `.env` files -- audit SA-004. The public key is still resolved against the environment so far plus
+  the file's own values, so a file that sets `RUNFILE_ENCRYPTION_PUBLIC_KEY` keeps working. `tests/encryption.rs`
+  holds both halves: a file value decrypts; an env-block or exported ciphertext is handed through.
+- **A preview (`--dry-run`) reads no `.env-file` and asks for no key.** `env::for_props`/`build` take a
+  `preview` flag; under it `build` passes `env_files: None` and `available_private_keys: None`, so previewing an
+  untrusted repository neither reads an arbitrary `.env-file` path nor unlocks the credential store (which, on
+  a locked keyring, would hang the preview) -- audit SA-008. `ENV.X` from a file is then absent in the preview.
+  `preview` is **not** the probe's `dry_run`: the header probe sets `dry_run` to suppress writes while it still
+  reads `.env-file`s to work out `.watch`, so the two are distinct flags (see *runfile-lang* `Scope.preview`).
 - `env::build` receives the same deferred key pool the `decrypt` function uses. It was previously passed `None`,
   which meant an encrypted `.env-file` value could never be decrypted at all.
 - **Precedence is decided in one place, `runfile_env::build_env`: `.env-file` < the caller's shell < the
@@ -1090,6 +1142,17 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
   script for each such rule and asserts the failure, or the wrong answer, its message describes -- and the corpus
   sweep reports `REFUSED` for a file the checker refuses whose every script `bash -n` reads, beside the `MISSED` it
   already reported the other way. The sweep prints the language's findings too.
+- **`arithmetic-interpolation` refuses a non-number interpolation in a shell arithmetic position.** `[[ a -eq b ]]`
+  (and `-ne`/`-lt`/`-le`/`-gt`/`-ge`), `let`, and `declare -i x=…` (also `typeset`/`local`/`readonly`) evaluate
+  their operands as arithmetic: bash re-expands the text -- `$( )`, backticks, array subscripts -- after quote
+  removal, so quoting the value cannot make it safe (audit SA-009). `rules::places` marks these operands
+  `Pos::Arith` (a `[` / `test` builtin does **not** re-evaluate, so it is left as `Pos::Test`), and `walk.rs`
+  reports one whose value is not a number -- judged with the type engine (`runfile_lang::Names`/`Ty`, now `pub`
+  for this). The three arithmetic *expansions* `$(( ))`, `(( ))`, `$[ ]` are not reported here: the runtime
+  writes an interpolation in one escaped for double quotes, so the shell cannot expand it (see
+  *Interpolation self-quotes*). The verified-but-rarer name positions (`[[ -v name ]]`, `printf -v name`) and
+  `${x:offset}` are not yet covered -- they need name-injection modelling rather than "must be a number", and no
+  corpus file uses them.
 
 ### runfile-lsp
 
@@ -1297,6 +1360,17 @@ token. Nothing weaker catches this; both bugs here passed tests that only asked 
 coloured. Two scopes are excluded from that comparison and named in the test: the root scope, which is the
 embedding rather than a colour, and `meta.statement.shell`, which comes from the anchored rule we cannot
 satisfy and which no shipped theme targets.
+
+**What the extension runs is the user's to choose, and is resolved before it is spawned.** `runfile.catalogCommand`
+and `runfile.lspPath` are `"scope": "machine"`, so a workspace's `.vscode/settings.json` can no longer pick the
+program the extension runs on folder open -- the way VS Code's own git extension scopes `git.path` -- and
+`capabilities.untrustedWorkspaces.supported` is declared `false`, so the whole extension is off in Restricted
+Mode (audit SA-010). And `exe.ts`'s `resolveProgram` turns a bare `run` into an **absolute** path from PATH
+before `execFile`/`spawn` -- for the catalog, the language server, and the task/pty -- because on Windows those
+search the child's cwd first, so a `run.exe` committed to a workspace folder would otherwise shadow the installed
+runner when the catalog is fetched with that folder as cwd. `pure.ts`'s `pathCandidates` (tested) is the
+PATH-splitting half: it skips relative and empty entries (an empty one means the cwd) and, on Windows, tries each
+`PATHEXT`; a name the user wrote with a path separator, or one not on PATH, is left as given.
 
 The LSP client is hand-rolled rather than `vscode-languageclient`: the server speaks a small, fixed subset,
 and a full client library is a large dependency for five message types. It was notification-only until

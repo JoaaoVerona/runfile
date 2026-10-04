@@ -235,26 +235,28 @@ pub fn build_env(
 	// `.env-file` paths resolve against `env_files_base_dir` — the
 	// anchor: the parent of `runfiles/` — NOT the resolved `.workdir`. Env files are
 	// configuration co-located with the Runfile.
-	if let Some(env_files) = params.env_files {
-		let file_vars = load_env_files(env_files, params.env_files_base_dir, substitute, &env_map)?;
-		env_map.extend(file_vars);
-	}
-
-	// Decrypt encrypted file-loaded values BEFORE the env block runs so that
-	// `{{ ENV.SECRET }}` references inside an `env` block see the decrypted
-	// plaintext (e.g. so `base64_decode(ENV.X)` works on a value that's both
-	// Runfile-encrypted in the file AND base64-encoded). Without this, the
-	// env block would see the literal `encrypted:abc...` form and any
-	// post-processing would error.
 	//
-	// `RUNFILE_ENCRYPTION_PUBLIC_KEY` is read from `env_map`, which already
-	// contains the environment the build was called with and any defaults, so
-	// a key set in the shell, or in a calling target's env file, works the same
-	// as one set in this env file. Any decrypted value can still be overwritten
-	// by `overlay_base` below — what was exported wins for keys it defines.
-	if runfile_crypto::has_encrypted_values(&env_map) {
-		let key_hex = resolve_decryption_key(&env_map, params.available_private_keys)?;
-		runfile_crypto::decrypt_env_values(&mut env_map, &key_hex).map_err(|e| EnvError::Encryption(e.to_string()))?;
+	// **Only a `.env-file`'s own values are decrypted**, and here, before they
+	// are merged in. An `encrypted:` ciphertext is the author's own exactly when
+	// a committed file holds it; one arriving any other way -- exported in the
+	// caller's shell, or written as `.env.X = ARG.x` from a value an outsider
+	// controls (a PR title a CI job exposes) -- used to be decrypted too, with
+	// the job's key, and handed back as plaintext: an oracle for every secret in
+	// the repository's committed `.env` files (audit SA-004). So the base
+	// environment, the `defaults` (already plain when a caller handed them over),
+	// and the `.env` block below are never scanned for `encrypted:`. The public
+	// key may be set by the file itself or inherited, so it is resolved against
+	// the environment so far plus the file's own values.
+	if let Some(env_files) = params.env_files {
+		let mut file_vars = load_env_files(env_files, params.env_files_base_dir, substitute, &env_map)?;
+		if runfile_crypto::has_encrypted_values(&file_vars) {
+			let mut view = env_map.clone();
+			view.extend(file_vars.iter().map(|(k, v)| (k.clone(), v.clone())));
+			let key_hex = resolve_decryption_key(&view, params.available_private_keys)?;
+			runfile_crypto::decrypt_env_values(&mut file_vars, &key_hex)
+				.map_err(|e| EnvError::Encryption(e.to_string()))?;
+		}
+		env_map.extend(file_vars);
 	}
 
 	// Re-overlay the environment the build was called with. Any key it defines
@@ -279,14 +281,9 @@ pub fn build_env(
 	// PATH is the shell's, so this re-prepends on top of it.
 	apply_add_to_path(&mut env_map, params.add_to_path, params.working_dir);
 
-	// Final decrypt pass: if the env block (or shell overlay) somehow
-	// introduced an `encrypted:...` value — uncommon but possible — make
-	// sure it doesn't leak through to the child process.
-	if runfile_crypto::has_encrypted_values(&env_map) {
-		let key_hex = resolve_decryption_key(&env_map, params.available_private_keys)?;
-		runfile_crypto::decrypt_env_values(&mut env_map, &key_hex).map_err(|e| EnvError::Encryption(e.to_string()))?;
-	}
-
+	// No final decrypt pass: a value is decrypted only where a `.env-file`
+	// supplied it, above. An `encrypted:` value the `.env` block or the shell
+	// introduced is left as it is -- decrypting it is the SA-004 oracle.
 	Ok(env_map)
 }
 

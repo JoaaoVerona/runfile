@@ -220,7 +220,7 @@ impl Server {
 	fn text_of(&self, path: &Path) -> Option<String> {
 		match self.docs.get(&path_to_uri(path)) {
 			Some(open) => Some(open.clone()),
-			None => std::fs::read_to_string(path).ok(),
+			None => runfile_discovery::read_runfile(path).ok(),
 		}
 	}
 

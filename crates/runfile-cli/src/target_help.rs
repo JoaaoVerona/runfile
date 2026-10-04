@@ -29,7 +29,7 @@ pub(crate) fn wants_help(args: &[String]) -> bool {
 /// never reads.
 pub(crate) fn inputs(cat: &Catalog, target: &Target) -> runfile_lang::Inputs {
 	let parse = |p: &std::path::Path| {
-		std::fs::read_to_string(p)
+		runfile_discovery::read_runfile(p)
 			.ok()
 			.and_then(|src| runfile_lang::parse(&src).ok())
 	};
@@ -45,7 +45,7 @@ pub(crate) fn inputs(cat: &Catalog, target: &Target) -> runfile_lang::Inputs {
 }
 
 pub(crate) fn render(cat: &Catalog, target: &Target) -> String {
-	let src = std::fs::read_to_string(&target.path).unwrap_or_default();
+	let src = runfile_discovery::read_runfile(&target.path).unwrap_or_default();
 	let description = runfile_lang::parse(&src)
 		.ok()
 		.and_then(|t| t.description)

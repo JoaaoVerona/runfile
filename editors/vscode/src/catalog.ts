@@ -5,6 +5,7 @@
 
 import { execFile } from "node:child_process";
 import * as vscode from "vscode";
+import { resolveProgram } from "./exe";
 import { type Target, parseCatalog } from "./pure";
 
 export { type Origin, type Target, SUPPORTED_FORMAT_VERSION, namespaceOf } from "./pure";
@@ -24,9 +25,12 @@ export async function load(
 	if (!program) {
 		return { folder, targets: [] };
 	}
+	// An absolute path, so the folder (as cwd) cannot shadow the runner with a
+	// committed `run.exe` on Windows -- see `resolveProgram`.
+	const resolved = resolveProgram(program);
 	const stdout = await new Promise<string>((resolve) => {
 		execFile(
-			program,
+			resolved,
 			args,
 			{ cwd: folder.uri.fsPath, maxBuffer: 8 * 1024 * 1024 },
 			(err, out, errOut) => {

@@ -677,3 +677,27 @@ $ [ "$(git rev-list --count HEAD)" -gt 100 ] && echo "a long history"
 
 A whole number is what bash's `[` reads as one: blanks, a sign, and digits. Left alone: an operand that expands,
 which could be a number, and `[[ … ]]`, where both sides are arithmetic.
+
+### `arithmetic-interpolation`
+
+An interpolation that is not a number in a shell arithmetic position.
+
+`[[ a -eq b ]]` (and `-ne`, `-lt`, `-le`, `-gt`, `-ge`), `let`, and `declare -i x=…` (also `typeset`/`local`/
+`readonly -i`) evaluate their operands as **arithmetic**: bash re-expands the text — `$( )`, backticks,
+`${…}` and array subscripts — after quote removal, so quoting the value does not make it safe. A value that is
+only ever a number is fine; anything else can carry code, so it is refused and asked for as a number.
+
+```sh
+# flagged
+$ [[ {{ ARG.count }} -gt 10 ]] && echo many
+```
+
+```sh
+# not flagged
+$ [[ {{ number(ARG.count) }} -gt 10 ]] && echo many
+```
+
+The value's type decides it, so a `let n = number(ARG.count)` used as `{{ n }}` is left alone. A string reached
+this way is reported wherever it is bound. The arithmetic *expansions* `$(( … ))`, `(( … ))` and `$[ … ]` are not
+reported here: an interpolation in one is written escaped so the shell cannot expand it, which the language
+check and `security_regression.rs` cover.

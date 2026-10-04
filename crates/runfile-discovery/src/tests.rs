@@ -718,3 +718,51 @@ fn a_projects_shared_file_is_not_replaced_by_the_machine_wide_one() {
 	assert_eq!(c.shared.get(&mine), Some(&Origin::Local));
 	assert_eq!(c.shared.get(&global), Some(&Origin::Global));
 }
+
+// ---- reading hostile files (audit SA-007)
+
+#[test]
+fn read_runfile_bounds_the_read() {
+	let d = TempDir::new().unwrap();
+	let p = d.path().join("big.run");
+	// Larger than the cap: the read is truncated, not refused, and never grows
+	// without bound.
+	let big = "x".repeat((MAX_RUNFILE_BYTES as usize) + 4096);
+	std::fs::write(&p, &big).unwrap();
+	let got = read_runfile(&p).unwrap();
+	assert_eq!(got.len() as u64, MAX_RUNFILE_BYTES, "capped at the limit");
+}
+
+#[cfg(unix)]
+#[test]
+fn read_runfile_refuses_a_non_regular_file() {
+	// A `.run` symlinked to a character device would read without end; a FIFO
+	// would block `open` forever. Both are refused before either can happen.
+	let d = TempDir::new().unwrap();
+	let dev = d.path().join("dev.run");
+	std::os::unix::fs::symlink("/dev/zero", &dev).unwrap();
+	assert!(read_runfile(&dev).is_err(), "a device is not a runfile");
+
+	let fifo = d.path().join("pipe.run");
+	let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+	// SAFETY: a FIFO at a path nothing else holds; removed with the temp dir.
+	assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+	assert!(read_runfile(&fifo).is_err(), "a FIFO is not a runfile");
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_does_not_follow_a_symlink_loop_or_register_a_non_regular_run() {
+	let d = TempDir::new().unwrap();
+	let runs = d.path().join("runfiles");
+	touch(&runs.join("build.run"));
+	// Two self-symlinks: following these branched the walk without end.
+	std::os::unix::fs::symlink(".", runs.join("a")).unwrap();
+	std::os::unix::fs::symlink(".", runs.join("b")).unwrap();
+	// A `.run` that is a symlink to a device, and a directory reached by symlink.
+	std::os::unix::fs::symlink("/dev/zero", runs.join("evil.run")).unwrap();
+
+	let c = discover(d.path(), None).unwrap();
+	let names: Vec<_> = c.targets.keys().cloned().collect();
+	assert_eq!(names, ["build"], "only the real regular `.run`, no loop: {names:?}");
+}

@@ -3,6 +3,7 @@ import * as vscode from "vscode"
 import { type Target, load, namespaceOf } from "./catalog"
 import { RUNFILE_LANGUAGE, RUNFILE_SELECTOR, RunfileCodeLensProvider } from "./codeLens"
 import { LanguageClient } from "./lsp"
+import { resolveProgram } from "./exe"
 
 /** The task type we register a provider for and stamp on every generated task. */
 const TASK_TYPE = "runfile"
@@ -313,9 +314,12 @@ function buildTask(
 	// everything after it as trailing arguments to pass through to the target itself.
 	const args = ["--stdin-args", ...(dir ? ["--dir", dir] : []), name]
 
+	// An absolute path, so a committed `run.exe` in `cwd` cannot shadow the
+	// installed runner on Windows (audit SA-010).
+	const run = resolveProgram("run")
 	const execution = isInteractive()
-		? new vscode.CustomExecution(async () => new RunfileInteractivePty("run", args, cwd))
-		: new vscode.ShellExecution("run", args, { cwd })
+		? new vscode.CustomExecution(async () => new RunfileInteractivePty(run, args, cwd))
+		: new vscode.ShellExecution(run, args, { cwd })
 
 	const definition: RunfileTaskDefinition = { type: TASK_TYPE, task: name }
 	if (dir) {

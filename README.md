@@ -605,6 +605,10 @@ The remote shell is handed `cd 'my dir' && ./restart`, quoted for it, and a `$( 
 is text to both shells. A value that would end the heredoc or the shell comment it sits in is refused rather
 than written.
 
+A list becomes one argument per item, so give it a word of its own rather than gluing text onto its end —
+`{{ files }} suffix`, not `{{ files }}suffix`. An empty list is no words at all, so `rm -rf {{ dirs }}/cache`
+with an empty `dirs` is `rm -rf /cache`; `run :lint` flags that glued shape.
+
 ### Asking whether a command worked
 
 A `$` run may stand as a condition or as a `match` subject. The condition is true when the command exits 0;
@@ -1038,7 +1042,7 @@ whose state is still worth keeping, so a `setup` run under it is still recorded.
 | --- | --- |
 | `-y`, `--yes` | Skip confirmation prompts |
 | `--stdin-args` | Prompt for every input the target reads, before it runs |
-| `--dry-run` | Print what would run, without running it |
+| `--dry-run` | Print what would run, without running it — a preview reads no files outside the project, probes none, and never unlocks the credential store |
 | `--dir <path>` | Start discovery somewhere else |
 | `-h`, `--help` | Show the help for `run` or any of its commands |
 | `-v`, `--version` | Print the version |
@@ -1088,10 +1092,16 @@ run :env rotate .env.production        # re-encrypt under a new key
 Keys live in the OS credential store — Keychain, Credential Manager, or Secret Service with a keyutils
 fallback. In CI, pass them as `RUNFILE_PRIVATE_KEYS` (newline-separated) and no credential store is involved.
 
+Only a value a `.env` file holds is decrypted — the one place an `encrypted:` value is the author's own. A
+ciphertext arriving any other way (exported in the caller's shell, or copied into `.env.X = {{ ARG.x }}` from
+data an outsider controls) is passed through unchanged, never decrypted with the run's keys, so it cannot be
+turned back into plaintext by a target that merely echoes a variable.
+
 Decryption happens in memory; secrets never reach disk. The credential store is only touched when something
 actually decrypts, so a locked keyring never gets in the way of an unrelated target — and it is asked once in
 a run, however many of the targets that run calls decrypt. In watch mode each re-run asks again, so unlocking
-the keyring or adding a missing key takes effect on the next save.
+the keyring or adding a missing key takes effect on the next save. `--dry-run` never touches it: a preview
+reads no `.env` files and asks for no key.
 
 ## Editor support
 

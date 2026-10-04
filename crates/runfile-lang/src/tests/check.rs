@@ -354,6 +354,36 @@ fn a_run_where_the_runner_runs_one_is_left_alone() {
 	assert!(check(src, &parsed(src), Some(&[]), true).is_empty());
 }
 
+// ---- glued-list
+
+#[test]
+fn a_list_with_a_literal_glued_onto_its_end_is_found() {
+	let f = one(
+		"let dirs = glob(\"build/*\")\n$ rm -rf {{ dirs }}/cache\n",
+		"glued-list",
+		"dirs",
+	);
+	assert_eq!(fix(&f), "put a space before `/cache`, or give the list its own word");
+	// ARGS is a list too.
+	one("$ cat {{ ARGS }}.log\n", "glued-list", "ARGS");
+}
+
+#[test]
+fn a_list_on_its_own_or_glued_only_on_the_left_is_left_alone() {
+	// A space after it: its own word, the ordinary way to pass a list.
+	clean("let dirs = glob(\"build/*\")\n$ rm -rf {{ dirs }}\n");
+	clean("$ tauri build {{ ARGS }} -- --no-default-features\n");
+	// Built into a word with a prefix: the "zero or one positional" idiom.
+	clean("$ go build -Dexec.args={{ ARGS }}\n");
+	clean("$ inst={{ ARGS }}; systemctl restart \"r${inst:+-$inst}\"\n");
+	// Sometimes a string, so its string form is fine glued.
+	clean("let d = ARG.d ? \"x\"\n$ rm -rf {{ d }}/cache\n");
+	// A string list element indexed out is a string, not a list.
+	clean("let xs = [\"a\"]\n$ echo {{ xs[0] }}/x\n");
+	// An `exec` body is not a `$` line: a list there is the author's language.
+	clean("let xs = glob(\"*\")\nexec python3\n\tprint({{ xs }}.count)\nend\n");
+}
+
 // ---- the documentation
 
 #[test]

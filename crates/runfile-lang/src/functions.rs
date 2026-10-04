@@ -14,6 +14,26 @@ fn ty(sp: Span, e: TypeError) -> EvalError {
 	EvalError::ty(sp.line, e)
 }
 
+/// A number of seconds as a `Duration`, or why it is not one.
+///
+/// `Duration::from_secs_f64` **panics** on a value it cannot hold -- a NaN, a
+/// negative, or anything past ~1.8e19 -- and a delay is usually data
+/// (`sleep(number(ARG.delay))`, `retry … every {{ ENV.BACKOFF }}`). A panic
+/// unwinds past temp-file cleanup, so a huge `--delay` left decrypted temp
+/// files on disk. Checked here, once, for both `sleep` and `retry`.
+pub fn duration_secs(secs: f64) -> Result<std::time::Duration, String> {
+	// `is_finite` is what rules out a NaN, which no comparison would.
+	if !secs.is_finite() || secs < 0.0 {
+		return Err(format!("needs a non-negative number of seconds, got {secs}"));
+	}
+	if secs > std::time::Duration::MAX.as_secs_f64() {
+		return Err(format!(
+			"was asked to wait {secs} seconds, which is longer than any run"
+		));
+	}
+	Ok(std::time::Duration::from_secs_f64(secs))
+}
+
 fn arity(name: &str, expected: &str, got: usize, sp: Span) -> EvalError {
 	EvalError::Arity {
 		name: name.into(),
@@ -510,9 +530,13 @@ pub fn call_with(name: &str, v: Vec<Value>, sc: &mut Scope, sp: Span) -> Result<
 				return Err(arity(name, "a list, a start and an optional length", n, sp));
 			}
 			let items = list(0)?;
+			// A float->int cast saturates, so a huge length becomes `usize::MAX`;
+			// `saturating_add` then stays inside the list rather than overflowing
+			// (a panic in debug, a wrap past `min` in release). `slice` clamps, so
+			// a length out of range is the whole rest, not an error.
 			let start = (num(1)?.max(0.0) as usize).min(items.len());
 			let end = match n {
-				3 => (start + num(2)?.max(0.0) as usize).min(items.len()),
+				3 => start.saturating_add(num(2)?.max(0.0) as usize).min(items.len()),
 				_ => items.len(),
 			};
 			Value::List(items[start..end].to_vec())
@@ -1014,6 +1038,38 @@ fn resolve(base: &Path, p: &str) -> PathBuf {
 		path.to_path_buf()
 	} else {
 		base.join(path)
+	}
+}
+
+/// Lexically normalize a path -- fold away `.` and `..` without touching the
+/// disk -- into its components, or `None` when `..` climbs above the root.
+fn normalized(path: &Path) -> Option<Vec<std::ffi::OsString>> {
+	let mut out: Vec<std::ffi::OsString> = Vec::new();
+	for c in path.components() {
+		match c {
+			std::path::Component::CurDir => {}
+			std::path::Component::ParentDir => {
+				out.pop()?;
+			}
+			other => out.push(other.as_os_str().to_os_string()),
+		}
+	}
+	Some(out)
+}
+
+/// Whether `p`, resolved against `base`, points outside the `base` subtree -- an
+/// absolute path, or one that climbs out with `..`.
+///
+/// Under `--dry-run` the file-reading functions are confined to the anchor with
+/// this, so previewing an untrusted repository (documented as safe before you
+/// decide to run it) cannot read `/etc/passwd` or `~/.aws/credentials` and print
+/// them -- audit SA-008. A real run is unconfined, since a target that reads an
+/// absolute path is doing its job; only a preview is held back.
+fn escapes_base(base: &Path, p: &str) -> bool {
+	match (normalized(base), normalized(&resolve(base, p))) {
+		(Some(b), Some(resolved)) => !resolved.starts_with(&b),
+		// `..` climbed above the root: outside by definition.
+		_ => true,
 	}
 }
 
@@ -1578,6 +1634,10 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		"glob" if n == 1 => (|| {
 			let pat = s(0)?;
 			let plan = glob_plan(pat).map_err(|e| other(format!("bad glob `{pat}`: {e}")))?;
+			// A preview does not walk outside the project: see `escapes_base`.
+			if sc.preview && escapes_base(&sc.base_dir, &plan.prefix) {
+				return Ok(V::List(Vec::new()));
+			}
 			let root = sc.base_dir.join(&plan.prefix);
 			let mut above: Vec<PathBuf> = std::fs::canonicalize(&root).into_iter().collect();
 			let mut hits = Vec::new();
@@ -1586,6 +1646,12 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 			Ok(V::List(hits.into_iter().map(V::Str).collect()))
 		})(),
 		"read_file" if n == 1 => (|| {
+			// A preview reads only inside the project, and shows a placeholder for
+			// anything outside it rather than printing a file you did not mean to
+			// expose -- see `escapes_base`.
+			if sc.preview && escapes_base(&sc.base_dir, s(0)?) {
+				return Ok(V::Str(format!("<contents of {}>", s(0)?)));
+			}
 			let p = resolve(&sc.base_dir, s(0)?);
 			std::fs::read_to_string(&p)
 				.map(V::Str)
@@ -1630,15 +1696,9 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		// full minute a real run takes is not a preview. Skipped under
 		// `--dry-run` for the same reason a write is.
 		"sleep" if n == 1 => (|| {
-			let secs = v[0].as_num().map_err(|e| ty(sp, e))?;
-			// `is_finite` is what rules out a NaN, which no comparison would.
-			if secs < 0.0 || !secs.is_finite() {
-				return Err(other(format!(
-					"`sleep` needs a non-negative number of seconds, got {secs}"
-				)));
-			}
+			let d = duration_secs(v[0].as_num().map_err(|e| ty(sp, e))?).map_err(|m| other(format!("`sleep` {m}")))?;
 			if !sc.dry_run {
-				std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+				std::thread::sleep(d);
 			}
 			Ok(V::Str(String::new()))
 		})(),
@@ -1656,9 +1716,20 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		// Files only, and directories only: `exists()` answers neither question
 		// on its own, and a check meant for one silently passing for the other
 		// is the kind of thing that surfaces as a confusing error much later.
-		"file_exists" if n == 1 => s(0).map(|p| V::Bool(resolve(&sc.base_dir, p).is_file())),
-		"directory_exists" if n == 1 => s(0).map(|p| V::Bool(resolve(&sc.base_dir, p).is_dir())),
-		"is_executable" if n == 1 => s(0).map(|p| V::Bool(is_executable(&resolve(&sc.base_dir, p)))),
+		// Under `--dry-run` a path outside the project is not probed (`false`),
+		// so a preview cannot map the filesystem outside what it was given.
+		"file_exists" if n == 1 => s(0).map(|p| match sc.preview && escapes_base(&sc.base_dir, p) {
+			true => V::Bool(false),
+			false => V::Bool(resolve(&sc.base_dir, p).is_file()),
+		}),
+		"directory_exists" if n == 1 => s(0).map(|p| match sc.preview && escapes_base(&sc.base_dir, p) {
+			true => V::Bool(false),
+			false => V::Bool(resolve(&sc.base_dir, p).is_dir()),
+		}),
+		"is_executable" if n == 1 => s(0).map(|p| match sc.preview && escapes_base(&sc.base_dir, p) {
+			true => V::Bool(false),
+			false => V::Bool(is_executable(&resolve(&sc.base_dir, p))),
+		}),
 		// Joins with this platform's separator, and lets an absolute later
 		// segment replace what came before, the way `Path::join` does.
 		"join_path" if n >= 1 => (|| {

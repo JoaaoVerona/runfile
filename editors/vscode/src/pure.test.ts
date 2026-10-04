@@ -14,6 +14,7 @@ import {
 	markdownOf,
 	namespaceOf,
 	parseCatalog,
+	pathCandidates,
 	replyId,
 	targetNameFor,
 } from "./pure";
@@ -192,4 +193,23 @@ test("markdown is read from either shape the protocol allows", () => {
 	assert.equal(markdownOf(["a", { value: "b" }]), "a\n\nb")
 	assert.equal(markdownOf(null), "")
 	assert.equal(markdownOf({ kind: "markdown" }), "")
+})
+
+test("pathCandidates resolves a bare name against absolute PATH dirs only", () => {
+	// Windows searches the cwd before PATH, so a committed `run.exe` would win
+	// unless the name is resolved to an absolute path first (audit SA-010).
+	const posix = { delimiter: ":", sep: "/", extensions: [] as string[] };
+	// An empty entry (which means the cwd) and a relative one are skipped.
+	assert.deepEqual(pathCandidates("run", "/usr/bin::rel:/bin", posix), ["/usr/bin/run", "/bin/run"]);
+	// A name with a separator is the user's own path: left for the caller.
+	assert.deepEqual(pathCandidates("./run", "/usr/bin", posix), []);
+	assert.deepEqual(pathCandidates("bin/run", "/usr/bin", posix), []);
+	// Windows: each absolute dir is tried bare and with each extension.
+	const win = { delimiter: ";", sep: "\\", extensions: [".EXE", ".CMD"] };
+	assert.deepEqual(pathCandidates("run", "C:\\tools;.;foo", win), [
+		"C:\\tools\\run",
+		"C:\\tools\\run.EXE",
+		"C:\\tools\\run.CMD",
+	]);
+	assert.deepEqual(pathCandidates("run", "", posix), []);
 })

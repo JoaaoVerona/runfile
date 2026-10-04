@@ -10,6 +10,7 @@
 // advertised by the server, wired to nothing, and simply did not happen.
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { resolveProgram } from "./exe";
 import * as vscode from "vscode";
 import { MessageReader, completionKind, completionPrefixStart, frame, markdownOf, replyId } from "./pure";
 
@@ -102,7 +103,7 @@ export class LanguageClient implements vscode.Disposable {
 		// the start of the next one's first message.
 		this.reader = new MessageReader();
 		try {
-			this.child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+			this.child = spawn(resolveProgram(command), args, { stdio: ["pipe", "pipe", "pipe"] });
 		} catch (e) {
 			this.log.appendLine(`language server did not start: ${String(e)}`);
 			this.child = undefined;

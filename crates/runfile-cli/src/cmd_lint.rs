@@ -158,7 +158,7 @@ pub fn lint(files: &[PathBuf], project: Option<&Catalog>, check: bool, to_stdout
 				.or_insert_with_key(|dir| catalog(dir).ok())
 				.as_ref(),
 		};
-		let read = |p: &Path| std::fs::read_to_string(p).ok();
+		let read = |p: &Path| runfile_discovery::read_runfile(p).ok();
 		for d in runfile_lsp::document::diagnostics(&text, Some(file), cat, &read) {
 			report.problem(
 				file,
@@ -183,7 +183,7 @@ pub fn lint(files: &[PathBuf], project: Option<&Catalog>, check: bool, to_stdout
 /// print it. Hands back the text the file holds afterwards, or `None` when it
 /// could not be read at all.
 fn shape(file: &Path, check: bool, to_stdout: bool, report: &Report, tally: &mut Tally) -> Option<String> {
-	let src = match std::fs::read_to_string(file) {
+	let src = match runfile_discovery::read_runfile(file) {
 		Ok(s) => s,
 		Err(e) => {
 			report.problem(file, None, Severity::Error, &e.to_string());

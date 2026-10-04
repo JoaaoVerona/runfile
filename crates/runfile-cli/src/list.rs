@@ -23,7 +23,7 @@ impl Facts {
 }
 
 pub(crate) fn facts(t: &Target) -> Facts {
-	let Ok(src) = std::fs::read_to_string(&t.path) else {
+	let Ok(src) = runfile_discovery::read_runfile(&t.path) else {
 		return Facts::none();
 	};
 	let Ok(ast) = runfile_lang::parse(&src) else {

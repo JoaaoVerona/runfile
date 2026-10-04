@@ -71,6 +71,16 @@ fn findings_of(path: &str, findings: &[runfile_lang::check::Finding]) -> String 
 		.join(&next)
 }
 
+/// Cleans a [`Host`]'s temp files on drop, so an unwinding panic cannot leave
+/// a decrypted one behind. See [`Host::temp_guard`].
+pub struct TempGuard<'a>(&'a Host<'a>);
+
+impl Drop for TempGuard<'_> {
+	fn drop(&mut self) {
+		self.0.cleanup_temps();
+	}
+}
+
 pub struct Host<'a> {
 	pub catalog: &'a Catalog,
 	pub assume_yes: bool,
@@ -130,6 +140,19 @@ impl<'a> Host<'a> {
 			.expect("key pool lock")
 			.get_or_insert_with(|| runfile_lang::Keys::new(self.keys))
 			.clone()
+	}
+
+	/// A guard whose `Drop` runs [`Host::cleanup_temps`], so a **panic** cannot
+	/// leave a decrypted temp file behind.
+	///
+	/// `cleanup_temps` is called explicitly on the normal path, but nothing
+	/// catches an unwind -- the release profile does not `panic = "abort"` -- so
+	/// a panic in the walker (a built-in given a value it could not hold, once)
+	/// skipped it. Holding one of these across `host.run` closes that: cleanup
+	/// is idempotent (`take` empties the list), so the explicit call and the
+	/// drop do not conflict.
+	pub fn temp_guard(&self) -> TempGuard<'_> {
+		TempGuard(self)
 	}
 
 	/// Delete everything `temp_file` and `temp_dir` made, and forget it.
@@ -265,6 +288,9 @@ impl<'a> Host<'a> {
 		scope.assume_yes = self.assume_yes;
 		scope.base_dir = target.anchor.clone();
 		scope.dry_run = self.dry_run || !real;
+		// A real `--dry-run` confines reads and skips `.env-file`s/keyring; the
+		// probe (`!real`) sets `dry_run` to suppress writes but must still read.
+		scope.preview = self.dry_run;
 		scope.temps = self.temps.clone();
 		scope.private_keys = self.key_pool();
 
@@ -484,7 +510,7 @@ fn refuse_findings(path: &Path, findings: Vec<runfile_lang::check::Finding>) -> 
 
 /// Parse a target file, keeping its text: the unread-input check is textual.
 fn parse_file(p: &Path) -> Result<(runfile_lang::Target, String), RunError> {
-	let src = std::fs::read_to_string(p).map_err(|e| {
+	let src = runfile_discovery::read_runfile(p).map_err(|e| {
 		RunError::Host(Box::new(HostError::Read {
 			path: p.display().to_string(),
 			source: e,

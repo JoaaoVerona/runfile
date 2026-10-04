@@ -541,6 +541,44 @@ fn a_file_that_may_not_be_the_one_read_is_left_alone() {
 	clean("$ cat names.txt | sort > names.txt\n");
 }
 
+// ---- arithmetic-interpolation
+
+#[test]
+fn an_interpolation_in_a_shell_arithmetic_position_must_be_a_number() {
+	// `[[ ]]` numeric comparisons, `let`, and `declare -i` evaluate their
+	// operands as arithmetic, so a non-number there can carry a `$( )`.
+	one("$ [[ 1 -eq {{ ARG.v }} ]]\n", "arithmetic-interpolation", "{{ ARG.v }}");
+	one(
+		"$ [[ {{ ARG.v }} -gt 10 ]]\n",
+		"arithmetic-interpolation",
+		"{{ ARG.v }}",
+	);
+	one("$ let x={{ ARG.v }}\n", "arithmetic-interpolation", "{{ ARG.v }}");
+	one(
+		"$ declare -i n={{ ARG.v }}\n",
+		"arithmetic-interpolation",
+		"{{ ARG.v }}",
+	);
+	let f = one("$ [[ 1 -eq {{ ARG.v }} ]]\n", "arithmetic-interpolation", "{{ ARG.v }}");
+	assert_eq!(fix(&f), "make it a number, as `{{ number(ARG.v) }}`");
+}
+
+#[test]
+fn a_number_in_an_arithmetic_position_is_left_alone() {
+	// The type decides it: `number(…)`, a literal, or a name bound to one.
+	clean("$ [[ 1 -eq {{ number(ARG.v) }} ]]\n");
+	clean("let n = number(ARG.v)\n$ [[ {{ n }} -gt 10 ]]\n");
+	clean("$ let x={{ 5 }}\n");
+	// A string comparison is not arithmetic, so a string operand is fine.
+	clean("$ [[ {{ ARG.v }} == main ]]\n");
+	// `[` / `test` is a builtin that does not re-evaluate its operands, so an
+	// interpolation there is inert -- unlike `[[ … ]]`.
+	clean("$ [ {{ ARG.v }} -gt 3 ]\n");
+	// `docker run -v` and `command -v` are not bash's `[[ -v ]]`.
+	clean("$ docker run --rm -v {{ ARG.v }}:/dst alpine true\n");
+	clean("$ command -v {{ ARG.v }}\n");
+}
+
 // ---- the tests of `[`
 
 #[test]

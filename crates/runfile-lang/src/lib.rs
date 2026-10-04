@@ -19,7 +19,7 @@ pub mod parser;
 pub mod resolve;
 pub mod span;
 pub mod structured;
-mod types;
+pub mod types;
 pub mod value;
 
 pub use args::Arg;
@@ -89,6 +89,7 @@ pub use keywords::{KEYWORDS, Keyword};
 pub use resolve::Unresolved;
 pub use span::Span;
 pub use structured::Structured;
+pub use types::{Names, Ty};
 pub use value::{Delimiter, Quoting, Spot, TypeError, Value};
 
 #[cfg(test)]

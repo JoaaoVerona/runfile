@@ -29,6 +29,39 @@ const MAX_DEPTH: usize = 3;
 /// `globals` analog. Not a target.
 pub const SHARED: &str = "_shared.run";
 
+/// The most of a `.run` file any reader takes in. Real runfiles are well under a
+/// kilobyte -- this repository's 49 total 545 lines -- so the cap is only to
+/// stop a hostile one from exhausting memory when a read-only command reads it
+/// without the user asking to run anything.
+pub const MAX_RUNFILE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Read a `.run` file, refusing one that is not a regular file and bounding the
+/// read at [`MAX_RUNFILE_BYTES`].
+///
+/// Every reader of a `.run`/`_shared.run` path goes through this, because all of
+/// them run before anything is executed -- `:list`, Tab completion, `--help`,
+/// `:lint`, the language server, discovery itself -- so a hostile repository
+/// must not be able to hang or OOM them. A FIFO, device or socket named `*.run`
+/// is refused: the type is checked with `metadata` (a `stat`, which does not
+/// block) *before* the file is opened, since opening a FIFO blocks until a
+/// writer appears. A regular file past the cap is truncated rather than read
+/// whole, so a `.run` symlinked to `/dev/zero` cannot exhaust memory.
+pub fn read_runfile(path: &Path) -> std::io::Result<String> {
+	use std::io::Read;
+	let meta = std::fs::metadata(path)?;
+	if !meta.is_file() {
+		return Err(std::io::Error::new(
+			std::io::ErrorKind::InvalidInput,
+			format!("{} is not a regular file", path.display()),
+		));
+	}
+	let mut s = String::new();
+	std::fs::File::open(path)?
+		.take(MAX_RUNFILE_BYTES)
+		.read_to_string(&mut s)?;
+	Ok(s)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Origin {
 	/// The `runfiles/` at or above the working directory.
@@ -155,7 +188,7 @@ struct Reach<'a> {
 /// will say so when it runs, and a machine-wide directory holding one must not
 /// stop every `run` on the machine.
 fn scope_of(path: &Path) -> Result<Vec<String>, DiscoverError> {
-	let Ok(src) = std::fs::read_to_string(path) else {
+	let Ok(src) = read_runfile(path) else {
 		return Ok(Vec::new());
 	};
 	// The property has to appear literally to be declared, so the text is an
@@ -512,9 +545,16 @@ fn collect(
 	reach: Option<&Reach<'_>>,
 	cat: &mut Catalog,
 ) -> Result<(), DiscoverError> {
-	walk_runs(dir, dir, anchor, prefix, origin, reach, cat)
+	walk_runs(dir, dir, anchor, prefix, origin, reach, 0, cat)
 }
 
+/// How deep a single `runfiles/` tree is walked. Namespaces nest a few levels;
+/// this is only a backstop against a pathologically deep real tree, now that a
+/// symlinked directory is never descended (which is what used to make the walk
+/// loop or branch without end).
+const MAX_RUN_DEPTH: usize = 40;
+
+#[allow(clippy::too_many_arguments)]
 fn walk_runs(
 	root: &Path,
 	dir: &Path,
@@ -522,8 +562,12 @@ fn walk_runs(
 	prefix: &str,
 	origin: Origin,
 	reach: Option<&Reach<'_>>,
+	depth: usize,
 	cat: &mut Catalog,
 ) -> Result<(), DiscoverError> {
+	if depth > MAX_RUN_DEPTH {
+		return Ok(());
+	}
 	// A directory's `_shared.run` scopes everything below it, so a subtree we
 	// are standing outside of is pruned whole -- one file read rather than one
 	// per target, which is the common case for a scoped machine-wide
@@ -543,14 +587,21 @@ fn walk_runs(
 	}
 
 	let Ok(rd) = std::fs::read_dir(dir) else { return Ok(()) };
-	let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
-	entries.sort();
-	for p in entries {
-		if p.is_dir() {
-			walk_runs(root, &p, anchor, prefix, origin, reach, cat)?;
+	// The entry's own type, which (unlike `is_dir`/`is_file`) does **not** follow
+	// a symlink: a symlinked directory is not descended, so `runfiles/a -> .` and
+	// `runfiles/b -> .` can no longer loop the walk or branch it without end, and
+	// a `.run` that is a symlink, FIFO or device is not registered.
+	let mut entries: Vec<(PathBuf, std::fs::FileType)> = rd
+		.flatten()
+		.filter_map(|e| Some((e.path(), e.file_type().ok()?)))
+		.collect();
+	entries.sort_by(|a, b| a.0.cmp(&b.0));
+	for (p, file_type) in entries {
+		if file_type.is_dir() {
+			walk_runs(root, &p, anchor, prefix, origin, reach, depth + 1, cat)?;
 			continue;
 		}
-		if p.extension().is_none_or(|x| x != "run") {
+		if !file_type.is_file() || p.extension().is_none_or(|x| x != "run") {
 			continue;
 		}
 		if p.file_name().is_some_and(|n| n == SHARED) {

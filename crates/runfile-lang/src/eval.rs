@@ -123,8 +123,16 @@ pub struct Scope {
 	/// crate never has to know about credential stores.
 	pub private_keys: Keys,
 	/// When set, functions that write must not. Reads still happen, since a
-	/// preview that cannot read a file cannot say what would run.
+	/// preview that cannot read a file cannot say what would run. Set by a real
+	/// `--dry-run` **and** by the header probe, which suppresses writes while it
+	/// reads `.watch` -- so it is not the flag that confines reads.
 	pub dry_run: bool,
+	/// A real `--dry-run`, as opposed to the probe. Reads are confined to the
+	/// project and `.env-file`s and the keyring are left untouched, so previewing
+	/// an untrusted repository cannot read `/etc/passwd` or unlock the credential
+	/// store -- audit SA-008. The probe sets `dry_run` but not this, since it has
+	/// to read `.env-file`s to work out a header value.
+	pub preview: bool,
 	/// What `temp_file` and `temp_dir` created, for the caller to delete when
 	/// the run ends.
 	pub temps: TempFiles,
@@ -222,6 +230,7 @@ impl Scope {
 			base_dir: std::path::PathBuf::from("."),
 			private_keys: Keys::default(),
 			dry_run: false,
+			preview: false,
 			temps: TempFiles::default(),
 			branch: None,
 		}

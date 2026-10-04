@@ -62,6 +62,7 @@ pub(crate) fn check(src: &str, file: &Target, chain: Option<&[Target]>) -> Vec<F
 		src: &source,
 		dollar: script::dollar(file, chain),
 		bash: script::dollar_bash(file, chain),
+		names: runfile_lang::Names::of(file, chain),
 		out: Vec::new(),
 		seen: BTreeSet::new(),
 	};
@@ -218,6 +219,9 @@ struct Walk<'a> {
 	dollar: Option<bool>,
 	/// Whether the `$` runs are bash's.
 	bash: bool,
+	/// The types of what is in scope, for judging an interpolation in an
+	/// arithmetic position -- which has to be a number.
+	names: runfile_lang::Names,
 	out: Vec<Finding>,
 	/// What has been reported, since a loop's body is walked twice.
 	seen: BTreeSet<(&'static str, usize, usize)>,
@@ -479,6 +483,23 @@ impl Walk<'_> {
 		}
 		for place in rules::places(&list) {
 			let hole = &s.holes[place.hole];
+			// A value bash evaluates as arithmetic -- `[[ a -eq {{ x }} ]]`,
+			// `let`, `declare -i` -- is re-expanded whatever its quoting, so a
+			// `$( )` or array subscript in a non-number runs. It must be a number.
+			if place.pos == Pos::Arith && !self.names.ty(&hole.expr).is_number() {
+				let t = self.src.text.get(hole.start..hole.end).unwrap_or_default();
+				let inner = t.trim_start_matches("{{").trim_end_matches("}}").trim();
+				self.report(
+					"arithmetic-interpolation",
+					(hole.start, hole.end),
+					format!(
+						"`{t}` reaches a shell arithmetic position, where bash evaluates it as an expression -- a \
+						 `$( )` or an array subscript in the value would run, whatever quotes are around it"
+					),
+					Some(format!("make it a number, as `{{{{ number({inner}) }}}}`")),
+				);
+				continue;
+			}
 			for t in taints(&hole.expr, env, true) {
 				match &t.kind {
 					Kind::Unexpanded { spelled, leading } => {

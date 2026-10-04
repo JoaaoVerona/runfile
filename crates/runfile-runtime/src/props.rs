@@ -264,7 +264,7 @@ pub(crate) fn keep_current(
 	stale: &mut bool,
 ) -> Result<(), PropError> {
 	if *stale && value.is_some_and(Expr::reads_env) {
-		sc.env = crate::env::for_props(props, &sc.base_dir, &sc.private_keys)?;
+		sc.env = crate::env::for_props(props, &sc.base_dir, &sc.private_keys, sc.preview)?;
 		*stale = false;
 	}
 	Ok(())

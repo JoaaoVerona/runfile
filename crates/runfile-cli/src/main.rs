@@ -286,6 +286,9 @@ fn real_main() -> Result<ExitCode, String> {
 	if !watching.is_empty() {
 		let anchor = target.anchor.clone();
 		return watch::watch(&anchor, &watching, || {
+			// Cleans even if a run panics; the explicit call below is kept
+			// because cleanup is idempotent and the intent is clearer with it.
+			let _temps = host.temp_guard();
 			match host.run(&first, &args) {
 				Ok(()) => prepare::record(&cat, target),
 				Err(e) => eprintln!("{} {e}", runfile_runtime::exec::tag()),
@@ -300,10 +303,13 @@ fn real_main() -> Result<ExitCode, String> {
 		.map(|()| ExitCode::SUCCESS);
 	}
 
+	// The guard is what cleans up if the run panics -- an unwind would skip the
+	// explicit call below, leaving a decrypted temp file on disk.
+	let temps = host.temp_guard();
 	let outcome = host.run(&first, &args);
 	// However it ended. A target that fails half-way is exactly when a decoded
 	// credential must not be left in the temp directory.
-	host.cleanup_temps();
+	drop(temps);
 	if flags.dry_run {
 		// However it ended, too. A preview that stopped part-way -- at an
 		// `exit()`, or at a failure -- would still have run everything above

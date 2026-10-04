@@ -129,6 +129,10 @@ pub const RULES: &[Rule] = &[
 		id: "not-a-number",
 		summary: "`-eq` or `-lt` inside `[ … ]` with an operand that is not a whole number.",
 	},
+	Rule {
+		id: "arithmetic-interpolation",
+		summary: "An interpolation that is not a number in a shell arithmetic position.",
+	},
 ];
 
 /// Everything wrong with the shell in `file`, whose text is `src`.

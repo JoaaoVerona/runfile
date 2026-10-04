@@ -414,11 +414,20 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				.as_num()
 				.map_err(|e| EvalError::ty(span.line, e))?
 				.max(1.0) as u64;
+			// A delay is usually data, and `from_secs_f64` panics on a value it
+			// cannot hold -- validated here, where `sleep` is, so neither aborts.
 			let secs = match delay {
-				Some(d) => eval_boundary(d, &mut r.scope)?
-					.as_num()
-					.map_err(|e| EvalError::ty(span.line, e))?
-					.max(0.0),
+				Some(d) => {
+					let s = eval_boundary(d, &mut r.scope)?
+						.as_num()
+						.map_err(|e| EvalError::ty(span.line, e))?;
+					runfile_lang::functions::duration_secs(s)
+						.map_err(|m| EvalError::Other {
+							msg: format!("`retry … every` {m}"),
+							line: span.line,
+						})?
+						.as_secs_f64()
+				}
 				None => 0.0,
 			};
 			// The body has to see its own failures: `.ignore-errors` around it
@@ -532,7 +541,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 /// the scope -- the second is what lets `{{ ENV.x }}` read what a `.env-file`
 /// brought in.
 fn build_env(props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let built = crate::env::for_props(props, &r.anchor, &r.scope.private_keys)?;
+	let built = crate::env::for_props(props, &r.anchor, &r.scope.private_keys, r.dry_run)?;
 	r.scope.env = built.clone();
 	r.env = built.into_iter().collect();
 	r.env.sort();

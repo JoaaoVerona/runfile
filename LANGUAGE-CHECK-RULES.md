@@ -255,3 +255,31 @@ end
 ```
 
 Left alone: a `let` inside a block of a `_shared.run`, which never runs at all.
+
+### `glued-list`
+
+A list interpolated with no space between it and the text beside it, in a `$` line.
+
+An interpolation is one shell word, or — for a list — one word per item, so a list rendered next to literal text
+with no space is wrong whatever it holds: an empty list leaves the text standing on its own, and a list of
+several splits into words with the text stuck to the last. The silent case is the dangerous one —
+`rm -rf {{ dirs }}/cache` is `rm -rf /cache` when the glob matched nothing.
+
+Reported only for a list that is **its own word with a literal glued onto its end**: a space (or the line start)
+before it, and a non-space literal after it.
+
+```sh
+# flagged
+let dirs = glob("build/*")
+$ rm -rf {{ dirs }}/cache
+```
+
+```sh
+# not flagged
+let dirs = glob("build/*")
+$ rm -rf {{ dirs }}
+```
+
+Left alone: a list built *into* a word on purpose, with a non-space prefix (`-Dexec.args={{ ARGS }}`,
+`inst={{ ARGS }}; …`), which is the common "zero or one positional" idiom; a list with a space after it
+(`{{ ARGS }} -- --flag`); and a value that is only sometimes a list (`ARG.x ? glob("…")`), whose string form is fine.

@@ -110,22 +110,34 @@ pub fn handed_over(props: &Props, env: &[(String, String)]) -> Inherited {
 /// The same deferred pool the `decrypt` function uses, so an encrypted
 /// `.env-file` value resolves, and an unencrypted one never touches the
 /// credential store.
-pub fn for_props(props: &Props, anchor: &Path, keys: &runfile_lang::Keys) -> Result<HashMap<String, String>, EnvError> {
+pub fn for_props(
+	props: &Props,
+	anchor: &Path,
+	keys: &runfile_lang::Keys,
+	preview: bool,
+) -> Result<HashMap<String, String>, EnvError> {
 	let workdir = match &props.workdir {
 		Some(w) => anchor.join(w),
 		None => anchor.to_path_buf(),
 	};
-	build(props, anchor, &workdir, Some(&Provider(keys.clone())))
+	build(props, anchor, &workdir, Some(&Provider(keys.clone())), preview)
 }
 
 /// Merge the environment the target was run with -- the process's, unless
 /// another target ran it -- the declared env files and `.env` into one map,
 /// with `.add-path` entries prepended to PATH.
+///
+/// A preview (`dry_run`) reads no `.env-file` and asks for no key: both would be
+/// a side effect of a command documented as changing nothing, and reading an
+/// untrusted repository's `.env-file`s unlocks the credential store to decrypt
+/// its values with the user's keys -- audit SA-008. `ENV.X` from a file is then
+/// absent in the preview, and an `encrypted:` value is left as its ciphertext.
 pub fn build(
 	props: &Props,
 	anchor: &Path,
 	workdir: &Path,
 	keys: Option<&dyn PrivateKeyProvider>,
+	preview: bool,
 ) -> Result<HashMap<String, String>, EnvError> {
 	let env: HashMap<String, String> = props.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 	// Relative `.add-path` entries anchor to the target's directory, the same
@@ -147,12 +159,13 @@ pub fn build(
 	// when applied -- so the substitution hook is the identity.
 	let inherited = props.inherited.as_deref();
 	let params = EnvBuildParams {
-		env_files: Some(&props.env_files),
+		// A preview reads no files and holds no keys: see the note on `build`.
+		env_files: if preview { None } else { Some(&props.env_files) },
 		env: Some(&env),
 		add_to_path: Some(&paths),
 		working_dir: workdir,
 		env_files_base_dir: anchor,
-		available_private_keys: keys,
+		available_private_keys: if preview { None } else { keys },
 		base_env: inherited.map(|i| &i.exported),
 		defaults: inherited.map(|i| &i.defaults),
 	};

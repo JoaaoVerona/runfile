@@ -189,3 +189,36 @@ export function frame(message: unknown): string {
 	const body = Buffer.from(JSON.stringify(message), "utf8");
 	return `Content-Length: ${body.length}\r\n\r\n${body.toString("utf8")}`;
 }
+
+/**
+ * Absolute candidate paths for a program name, from a `PATH` string.
+ *
+ * `execFile` and `spawn` search the child's working directory before `PATH` on
+ * Windows, so a `run.exe` committed to a workspace folder shadows the real
+ * runner when a command is spawned with that folder as cwd (audit SA-010).
+ * Resolving the name to an absolute path first means neither the cwd nor a
+ * relative or empty `PATH` entry (which also means the cwd) is ever searched.
+ *
+ * Empty for a name that already holds a path separator -- the user gave a path,
+ * so the caller uses it unchanged. Only absolute `PATH` directories are
+ * considered, each tried bare and with every extension (Windows `PATHEXT`).
+ */
+export function pathCandidates(
+	program: string,
+	pathVar: string | undefined,
+	opts: { delimiter: string; sep: string; extensions: readonly string[] },
+): string[] {
+	if (program.includes("/") || program.includes("\\")) {
+		return [];
+	}
+	const absolute = (d: string) => /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(d);
+	const dirs = (pathVar ?? "").split(opts.delimiter).filter((d) => d.length > 0 && absolute(d));
+	const names = ["", ...opts.extensions].map((ext) => program + ext);
+	const out: string[] = [];
+	for (const dir of dirs) {
+		for (const name of names) {
+			out.push(dir.endsWith(opts.sep) ? dir + name : dir + opts.sep + name);
+		}
+	}
+	return out;
+}

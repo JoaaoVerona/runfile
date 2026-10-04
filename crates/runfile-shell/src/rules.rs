@@ -56,9 +56,29 @@ pub(crate) enum Pos {
 	Pattern,
 	/// A heredoc's delimiter.
 	Delimiter,
+	/// An operand bash evaluates as an **arithmetic expression** after quote
+	/// removal: `[[ a -eq b ]]`, `let`, `declare -i x=…`. A value there is
+	/// re-expanded whatever its quoting, so an interpolation must be a number --
+	/// otherwise a `$( )` or array subscript in it runs (audit SA-009).
+	Arith,
 	/// Anywhere else, including every argument that may be code for something
 	/// else to run: `sh -c`, `ssh`, `eval`, `echo` into a file.
 	Unknown,
+}
+
+/// The `[[ … ]]` / `[ … ]` operators that force their operands to be evaluated
+/// as arithmetic.
+const ARITH_OPS: &[&str] = &["-eq", "-ne", "-lt", "-le", "-gt", "-ge"];
+
+/// Whether `w` is one of [`ARITH_OPS`], written plainly.
+fn is_arith_op(w: &Word) -> bool {
+	w.plain().as_deref().is_some_and(|t| ARITH_OPS.contains(&t))
+}
+
+/// Whether a `[[ … ]]` / `[ … ]` / `test` operand at `j` is arithmetic: next to a
+/// numeric comparison operator.
+fn arith_operand(words: &[Word], j: usize) -> bool {
+	(j > 0 && is_arith_op(&words[j - 1])) || words.get(j + 1).is_some_and(is_arith_op)
 }
 
 pub(crate) enum Visit<'t> {
@@ -157,8 +177,15 @@ fn visit_command<'t>(c: &'t Command, around: Around, f: &mut dyn FnMut(Visit<'t>
 					f(Visit::Test(words));
 					let paired = words.iter().filter(|w| double_hole(w)).count() > 1;
 					for (k, w) in words.iter().enumerate() {
-						let path = k > 0 && is_file_test(&words[k - 1]);
-						visit_word(w, Pos::Test { path, paired }, around, f);
+						let pos = if arith_operand(words, k) {
+							Pos::Arith
+						} else {
+							Pos::Test {
+								path: k > 0 && is_file_test(&words[k - 1]),
+								paired,
+							}
+						};
+						visit_word(w, pos, around, f);
 					}
 				}
 			}
@@ -268,6 +295,10 @@ pub(crate) fn positions(s: &Simple) -> Vec<Pos> {
 				*pos = Pos::Plain { path: false };
 			}
 		}
+		// `[` / `test` is a builtin, not `[[ … ]]`: it compares its already
+		// expanded, inert operands as integers and never re-evaluates them, so an
+		// interpolation here is safe. Only `[[ … ]]`, in the visitor, evaluates
+		// operands as arithmetic.
 		Some(name @ ("[" | "test")) => {
 			let end = match texts[n - 1].as_deref() {
 				Some("]") if name == "[" && n > k + 1 => n - 1,
@@ -277,6 +308,25 @@ pub(crate) fn positions(s: &Simple) -> Vec<Pos> {
 			for (j, pos) in out.iter_mut().enumerate().take(end).skip(k + 1) {
 				let path = j > k + 1 && is_file_test(&s.words[j - 1]);
 				*pos = Pos::Test { path, paired };
+			}
+		}
+		// `let` takes arithmetic; `declare -i` (and `typeset`/`local`/`readonly`
+		// -i) evaluates each assignment's right-hand side as arithmetic.
+		Some("let") => {
+			for pos in out.iter_mut().skip(k + 1) {
+				*pos = Pos::Arith;
+			}
+		}
+		Some("declare" | "typeset" | "local" | "readonly")
+			if texts
+				.iter()
+				.skip(k + 1)
+				.any(|t| t.as_deref().is_some_and(|t| t.starts_with('-') && t.contains('i'))) =>
+		{
+			for (j, pos) in out.iter_mut().enumerate().skip(k + 1) {
+				if !option(j) {
+					*pos = Pos::Arith;
+				}
 			}
 		}
 		Some("find") => {

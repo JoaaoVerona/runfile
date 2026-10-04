@@ -33,7 +33,7 @@ pub(crate) const ANY: Kinds = STR | NUM | BOOL | LIST;
 /// What a value can be: its kinds, and -- when one of them is a list -- what
 /// the items of that list can be. One level deep; deeper is unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Ty {
+pub struct Ty {
 	pub kinds: Kinds,
 	pub items: Kinds,
 }
@@ -75,6 +75,13 @@ impl Ty {
 	/// none of what it can be is accepted.
 	pub fn refused(self, accepted: Kinds) -> bool {
 		self.kinds != 0 && self.kinds & accepted == 0
+	}
+
+	/// Whether this is known to be a number and nothing else -- what a value
+	/// reaching a shell arithmetic position has to be, so that bash does not
+	/// evaluate it as an expression and run a `$( )` inside it.
+	pub fn is_number(self) -> bool {
+		self.refused(STR | BOOL | LIST)
 	}
 }
 
@@ -345,7 +352,7 @@ enum Site<'a> {
 }
 
 /// What every name in a file can hold, anywhere in it.
-pub(crate) struct Names {
+pub struct Names {
 	types: BTreeMap<String, Ty>,
 	values: BTreeMap<String, Values>,
 	/// Whether what the `_shared.run` files above bind is known. When it is not,
