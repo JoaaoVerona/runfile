@@ -26,7 +26,12 @@ pub fn parse_env_file(content: &str) -> Result<Vec<(String, String)>, (usize, St
 		let eq_pos = match trimmed.find('=') {
 			Some(pos) => pos,
 			None => {
-				return Err((i + 1, format!("expected KEY=VALUE, got: {trimmed}")));
+				// The line itself is never echoed: a continuation line of a
+				// multi-line secret, or a plaintext key body `:env encrypt` left
+				// behind, lands here and would otherwise be printed to the
+				// terminal and the CI log (audit SA-026). The caller already
+				// reports the line number.
+				return Err((i + 1, "expected KEY=VALUE (no '=' on this line)".to_string()));
 			}
 		};
 
@@ -170,4 +175,61 @@ fn unescape_double_quoted(s: &str) -> String {
 		}
 	}
 	result
+}
+
+/// Whether `value`, written bare after `KEY=`, would not read back as itself.
+///
+/// A newline would split it into further `KEY=VALUE` lines (so a value could
+/// smuggle in an extra variable -- `NODE_OPTIONS`, `LD_PRELOAD` -- past review);
+/// a leading quote reads as a quoted value; a leading or trailing blank is
+/// trimmed off; a `"`, a backslash, or an inline-comment ` #` / ` //` is re-read
+/// differently. Any of these means the value must be written double-quoted
+/// (audit SA-030).
+fn needs_quoting(value: &str) -> bool {
+	if value.is_empty() {
+		return false;
+	}
+	let b = value.as_bytes();
+	let ends = [b[0], b[b.len() - 1]];
+	ends.contains(&b'"')
+		|| ends.contains(&b'\'')
+		|| ends.contains(&b' ')
+		|| ends.contains(&b'\t')
+		|| value.contains(['\n', '\r', '\t', '"', '\\'])
+		|| value.contains(" #")
+		|| value.contains(" //")
+}
+
+/// Serialize a value for the right-hand side of a `KEY=VALUE` line, the exact
+/// inverse of the parser above: a value that would not read back as itself is
+/// written double-quoted with `\n`, `\r`, `\t`, `\"` and `\\` escapes (the ones
+/// [`unescape_double_quoted`] decodes), and a simple value is written bare so an
+/// ordinary file stays unquoted. One serializer for every writer -- `:env
+/// decrypt`, `:env set`, and the `decrypt()` builtin -- so a multi-line secret
+/// (a PEM key, a certificate) survives the round trip and no value can inject a
+/// second variable (audit SA-030). `parse_env_file(serialize_env_line(k, v))`
+/// yields `v` for any value; a round-trip test pins it.
+pub fn serialize_env_value(value: &str) -> String {
+	if !needs_quoting(value) {
+		return value.to_string();
+	}
+	let mut out = String::with_capacity(value.len() + 2);
+	out.push('"');
+	for c in value.chars() {
+		match c {
+			'\\' => out.push_str("\\\\"),
+			'"' => out.push_str("\\\""),
+			'\n' => out.push_str("\\n"),
+			'\r' => out.push_str("\\r"),
+			'\t' => out.push_str("\\t"),
+			_ => out.push(c),
+		}
+	}
+	out.push('"');
+	out
+}
+
+/// `KEY=VALUE` with the value serialized by [`serialize_env_value`].
+pub fn serialize_env_line(key: &str, value: &str) -> String {
+	format!("{key}={}", serialize_env_value(value))
 }

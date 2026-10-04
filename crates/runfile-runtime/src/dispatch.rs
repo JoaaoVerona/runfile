@@ -217,12 +217,18 @@ impl<'a> Host<'a> {
 				.map(String::as_str)
 				.take(5)
 				.collect();
+			// Strip control characters: `near` are catalog target names (file
+			// names from the repo) and `name` is echoed back, both to the
+			// terminal (audit SA-027).
 			RunError::Host(Box::new(HostError::Unknown {
-				name: name.to_string(),
+				name: crate::term::sanitize(name).into_owned(),
 				near: if near.is_empty() {
 					"run :list".into()
 				} else {
-					near.join(", ")
+					near.iter()
+						.map(|k| crate::term::sanitize(k).into_owned())
+						.collect::<Vec<_>>()
+						.join(", ")
 				},
 			}))
 		})?;
@@ -557,7 +563,9 @@ pub(crate) fn populate_run_context(sc: &mut Scope, t: &runfile_discovery::Target
 		"namespaces".into(),
 		Value::List(ns.into_iter().map(Value::Str).collect()),
 	);
-	sc.env = std::env::vars().collect();
+	// `process_env` uses `vars_os`, so a non-UTF-8 variable skips rather than
+	// panicking and aborting the run before anything starts (audit SA-023).
+	sc.env = runfile_env::process_env();
 }
 
 /// Apply a command line to the scope, answering the first word the target

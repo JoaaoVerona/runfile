@@ -2068,9 +2068,10 @@ fn decrypt_file(src: &Path, dst: &Path, keys: &[String]) -> Result<(), String> {
 					.iter()
 					.find_map(|key| runfile_crypto::decrypt(val.trim(), key).ok())
 					.ok_or_else(|| format!("no key can decrypt {k}"))?;
-				out.push_str(k);
-				out.push('=');
-				out.push_str(&plain);
+				// Quote a value that would not read back bare -- a multi-line
+				// PEM key, a value with a newline that would otherwise become a
+				// second variable (audit SA-030).
+				out.push_str(&runfile_env::serialize_env_line(k, &plain));
 			}
 			_ if line.starts_with("RUNFILE_ENCRYPTION_PUBLIC_KEY=") => continue,
 			_ => out.push_str(line),

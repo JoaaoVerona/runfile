@@ -187,29 +187,43 @@ static bool scan_marker(TSLexer *lexer, const char *word, const char *const *mar
 // The line's indentation is recorded whether or not this turns out to be an
 // `exec` line, so a capture later on the same line knows where it opened.
 static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
-	bool at_column_0 = lexer->get_column(lexer) == 0;
-	bool spaced = at_column_0;
-	if (at_column_0) {
-		s->line_indent_len = read_indent(lexer, s->line_indent);
-	} else {
-		while (is_blank(lexer->lookahead)) {
-			skip(lexer);
-			spaced = true;
+	// Skip and record the leading blanks WITHOUT asking the column first:
+	// `get_column` costs O(column), and this runs after almost every token, so
+	// asking it each time made parsing quadratic in line length (audit SA-025).
+	// The column is consulted below only for the handful of lookaheads that can
+	// actually produce a token here; for any other it cannot change the outcome.
+	char indent[MAX_INDENT];
+	uint8_t indent_len = read_indent(lexer, indent);
+	bool spaced = indent_len > 0;
+	int32_t c = lexer->lookahead;
+
+	if (valid[COMMENT] && c == '#') {
+		// A `#` is a comment where it begins a word: after a blank, or at the
+		// start of a line. Only the no-blank case needs the real column.
+		if (spaced || lexer->get_column(lexer) == indent_len) {
+			while (!at_eol(lexer)) advance(lexer);
+			lexer->mark_end(lexer);
+			lexer->result_symbol = COMMENT;
+			return true;
 		}
+		return false;
 	}
-	if (valid[COMMENT] && spaced && lexer->lookahead == '#') {
-		while (!at_eol(lexer)) advance(lexer);
-		lexer->mark_end(lexer);
-		lexer->result_symbol = COMMENT;
-		return true;
-	}
-	if (!at_column_0) return false;
-	// One pass reads the line's first word, so the three are told apart by its
-	// first letter: a check that read part of the word and failed would leave
-	// the next one looking at the rest of it.
-	switch (lexer->lookahead) {
+
+	// `exec`, `parallel` and `detach` are recognised only at the start of a
+	// line, told apart by its first letter. Ask for the column only for those
+	// three lookaheads, and only then confirm we are at column 0.
+	bool keyword =
+		(valid[EXEC_KEYWORD] && c == 'e') || (valid[PARALLEL_MARKER] && c == 'p') || (valid[DETACH_MARKER] && c == 'd');
+	if (!keyword || lexer->get_column(lexer) != indent_len) return false;
+
+	// The line's indentation is recorded whether or not this is an `exec` line,
+	// so a capture later on the same line knows where it opened. The newline
+	// token records it for every line but the first; this covers the first.
+	s->line_indent_len = indent_len;
+	memcpy(s->line_indent, indent, MAX_INDENT);
+	switch (c) {
 	case 'e':
-		if (!valid[EXEC_KEYWORD] || !read_exec_word(lexer)) return false;
+		if (!read_exec_word(lexer)) return false;
 		lexer->mark_end(lexer);
 		s->exec_indent_len = s->line_indent_len;
 		memcpy(s->exec_indent, s->line_indent, MAX_INDENT);
@@ -217,11 +231,11 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
 		return true;
 	case 'p': {
 		static const char *const marked[] = {"do", "for", NULL};
-		return valid[PARALLEL_MARKER] && scan_marker(lexer, "parallel", marked, PARALLEL_MARKER);
+		return scan_marker(lexer, "parallel", marked, PARALLEL_MARKER);
 	}
 	case 'd': {
 		static const char *const marked[] = {"$", "exec", NULL};
-		return valid[DETACH_MARKER] && scan_marker(lexer, "detach", marked, DETACH_MARKER);
+		return scan_marker(lexer, "detach", marked, DETACH_MARKER);
 	}
 	default:
 		return false;
@@ -277,12 +291,23 @@ static bool at_terminator(Scanner *s, TSLexer *lexer) {
 // decide is never accidentally kept.
 static bool scan_exec_content(Scanner *s, TSLexer *lexer) {
 	bool any = false;
+	// Track line starts from the newlines consumed rather than asking the column
+	// every iteration: `get_column` costs O(column), so a long body line was
+	// re-scanned once per character (audit SA-025). The body begins at the start
+	// of its first line. The column is confirmed only when the lookahead could
+	// begin the terminator line -- the exec indent's first blank, or `e` when it
+	// has none -- which is the only time it matters.
+	bool line_start = true;
 	for (;;) {
-		if (lexer->get_column(lexer) == 0) {
-			lexer->mark_end(lexer);
-			if (at_terminator(s, lexer)) break;
-			// Whatever the check read is body text.
-			if (lexer->get_column(lexer) > 0) any = true;
+		if (line_start) {
+			int32_t first = s->exec_indent_len > 0 ? (int32_t)(unsigned char)s->exec_indent[0] : 'e';
+			if (lexer->lookahead == first && lexer->get_column(lexer) == 0) {
+				lexer->mark_end(lexer);
+				if (at_terminator(s, lexer)) break;
+				// Whatever the check read is body text.
+				if (lexer->get_column(lexer) > 0) any = true;
+			}
+			line_start = false;
 		}
 		if (lexer->eof(lexer)) {
 			lexer->mark_end(lexer);
@@ -296,9 +321,11 @@ static bool scan_exec_content(Scanner *s, TSLexer *lexer) {
 			lexer->mark_end(lexer);
 			continue;
 		}
+		bool newline = lexer->lookahead == '\n' || lexer->lookahead == '\r';
 		advance(lexer);
 		any = true;
 		lexer->mark_end(lexer);
+		if (newline) line_start = true;
 	}
 	if (!any) return false;
 	lexer->result_symbol = EXEC_CONTENT;

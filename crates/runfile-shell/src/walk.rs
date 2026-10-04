@@ -65,6 +65,7 @@ pub(crate) fn check(src: &str, file: &Target, chain: Option<&[Target]>) -> Vec<F
 		names: runfile_lang::Names::of(file, chain),
 		out: Vec::new(),
 		seen: BTreeSet::new(),
+		budget: 200_000,
 	};
 	let mut env = Env::new();
 	// A shared file binds with its top-level `let`s, in order, and nothing else.
@@ -225,6 +226,13 @@ struct Walk<'a> {
 	out: Vec<Finding>,
 	/// What has been reported, since a loop's body is walked twice.
 	seen: BTreeSet<(&'static str, usize, usize)>,
+	/// Block walks left before the walk gives up. A `for`/`loop`/`retry` walks
+	/// its body twice for flow sensitivity, which is multiplicative across
+	/// nesting -- N nested loops are 2^N walks of the innermost body -- so a tiny
+	/// crafted file could peg a core in `:lint`, the pre-run check and the
+	/// language server (audit SA-024). No real file comes near this bound; past
+	/// it the walk stops, reporting what it found so far.
+	budget: usize,
 }
 
 impl Walk<'_> {
@@ -240,6 +248,12 @@ impl Walk<'_> {
 	}
 
 	fn block(&mut self, b: &Block, env: &mut Env) {
+		// Bounded so a pathologically nested loop/retry cannot drive 2^N walks
+		// (audit SA-024). A real file spends a handful of this budget.
+		if self.budget == 0 {
+			return;
+		}
+		self.budget -= 1;
 		for p in b.declaration() {
 			self.property(p, env);
 		}

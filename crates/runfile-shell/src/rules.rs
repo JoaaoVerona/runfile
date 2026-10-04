@@ -512,12 +512,17 @@ pub(crate) fn unquoted(text: &str, holes: &[(usize, usize)]) -> String {
 	let mut segs = vec![Seg::Text(String::new())];
 	let mut st = St::Bare;
 	let mut k = 0;
+	// Index the holes by start, so each character is an O(1) lookup rather than a
+	// scan of the whole hole list: the loop was O(length × holes) on a word of
+	// thousands of interpolations (audit SA-024).
+	let hole_end: std::collections::HashMap<usize, usize> = holes.iter().copied().collect();
 	let push = |segs: &mut Vec<Seg>, s: &str| match segs.last_mut() {
 		Some(Seg::Text(t)) | Some(Seg::Quoted(_, t, _)) => t.push_str(s),
 		None => {}
 	};
 	while k < text.len() {
-		if let Some(&(from, to)) = holes.iter().find(|(from, _)| *from == k) {
+		if let Some(&to) = hole_end.get(&k) {
+			let from = k;
 			if st == St::Bare {
 				push(&mut segs, &text[from..to]);
 			} else {
@@ -1944,13 +1949,22 @@ fn truncated_input(s: &Simple, text: &Texts, out: &mut Vec<Found>) {
 	let Some((files, stdin)) = inputs(reader, &s.words[k + 1..]) else {
 		return;
 	};
+	// Build each operand's text and each `<` target once, rather than calling
+	// `exact` (which allocates) for every operand on every emptied target: the
+	// loop was O(targets × operands) on a line of repeated operands/redirects
+	// (audit SA-024).
+	let named: std::collections::HashSet<String> = files.iter().filter_map(|w| exact(w)).collect();
+	let fed: std::collections::HashSet<String> = if stdin {
+		s.redirects
+			.iter()
+			.filter(|i| i.op == "<")
+			.filter_map(|i| exact(&i.target))
+			.collect()
+	} else {
+		std::collections::HashSet::new()
+	};
 	for (redirect, target) in emptied {
-		let named = files.iter().any(|w| exact(w).as_deref() == Some(target.as_str()));
-		let fed = stdin
-			&& s.redirects
-				.iter()
-				.any(|i| i.op == "<" && exact(&i.target).as_deref() == Some(target.as_str()));
-		if !(named || fed) {
+		if !(named.contains(&target) || fed.contains(&target)) {
 			continue;
 		}
 		let (a, b) = text.script.bytes(redirect.i, redirect.target.end);

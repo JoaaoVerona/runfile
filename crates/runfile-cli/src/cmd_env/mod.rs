@@ -479,6 +479,10 @@ pub(crate) fn set_env_line(content: &str, var: &str, value: &str) -> String {
 	let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
 	let prefix_plain = format!("{var}=");
 	let prefix_export = format!("export {var}=");
+	// Quote a value that would not read back bare: a newline would otherwise
+	// become a second `KEY=VALUE` line (audit SA-030). Ciphertext and simple
+	// values are written unchanged.
+	let value = runfile_env::serialize_env_value(value);
 
 	let mut found = false;
 	for line in &mut lines {

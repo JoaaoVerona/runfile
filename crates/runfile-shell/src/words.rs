@@ -269,6 +269,21 @@ impl P<'_> {
 
 	/// Whatever a `$` starts, with the cursor on it.
 	pub(crate) fn dollar(&mut self, parts: &mut Vec<Part>, quote: Quote) -> R<()> {
+		// `${x+${x+…}}` recurses dollar→parameter→dollar with no bound; cap it
+		// the way `command()` caps `$( )` nesting, so a crafted `$` line gives up
+		// cleanly (`Stop::Lost`) instead of overflowing the stack (audit SA-022).
+		// Decrement even on an inner error, since an error may be caught (the
+		// arithmetic probe below does), the way `command()` balances its depth.
+		self.depth += 1;
+		if self.depth > 64 {
+			return Err(Stop::Lost);
+		}
+		let r = self.dollar_inner(parts, quote);
+		self.depth -= 1;
+		r
+	}
+
+	fn dollar_inner(&mut self, parts: &mut Vec<Part>, quote: Quote) -> R<()> {
 		let i = self.i;
 		match self.peek_at(1) {
 			Some('\'') if quote == Quote::Bare => self.ansi(parts)?,

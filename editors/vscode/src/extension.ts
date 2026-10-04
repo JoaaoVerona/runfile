@@ -2,6 +2,7 @@ import * as cp from "node:child_process"
 import * as vscode from "vscode"
 import { type Target, load, namespaceOf } from "./catalog"
 import { RUNFILE_LANGUAGE, RUNFILE_SELECTOR, RunfileCodeLensProvider } from "./codeLens"
+import { hasTaskVar } from "./pure"
 import { LanguageClient } from "./lsp"
 import { resolveProgram } from "./exe"
 
@@ -91,6 +92,10 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}),
 		vscode.commands.registerCommand("runfile.runTargetInFile", (arg?: { name: string; anchor: string }) => {
+			if (arg && hasTaskVar(arg.name, arg.anchor)) {
+				output.appendLine(`not running ${JSON.stringify(arg.name)}: VS Code would expand \${…} in it or its directory`)
+				return
+			}
 			if (arg) {
 				void vscode.tasks.executeTask(buildFileTargetTask(arg.name, arg.anchor))
 			}
@@ -161,6 +166,12 @@ async function collectEntries(): Promise<TargetEntry[]> {
 	for (const folder of vscode.workspace.workspaceFolders ?? []) {
 		const catalog = await load(folder, commandFor(folder), output)
 		for (const target of catalog.targets) {
+			// VS Code would resolve a `${…}` in the name when the task runs, so a
+			// name carrying one is not turned into a task (audit SA-029).
+			if (hasTaskVar(target.name)) {
+				output.appendLine(`skipping target ${JSON.stringify(target.name)}: VS Code would expand \${…} in it`)
+				continue
+			}
 			entries.push(entryFor(target, folder))
 		}
 	}
@@ -317,9 +328,13 @@ function buildTask(
 	// An absolute path, so a committed `run.exe` in `cwd` cannot shadow the
 	// installed runner on Windows (audit SA-010).
 	const run = resolveProgram("run")
+	// `ProcessExecution` spawns `run` with `args` directly -- no shell -- so a
+	// target name holding `;`, `$(…)` or a backtick is one literal argument, not
+	// shell syntax, when the interactive setting is off (audit SA-029). The
+	// interactive path already spawns without a shell via the pseudoterminal.
 	const execution = isInteractive()
 		? new vscode.CustomExecution(async () => new RunfileInteractivePty(run, args, cwd))
-		: new vscode.ShellExecution(run, args, { cwd })
+		: new vscode.ProcessExecution(run, args, { cwd })
 
 	const definition: RunfileTaskDefinition = { type: TASK_TYPE, task: name }
 	if (dir) {
@@ -345,6 +360,11 @@ async function resolveRunfileTask(task: vscode.Task): Promise<vscode.Task | unde
 	const definition = task.definition as RunfileTaskDefinition
 	const wanted = definition.task
 	if (typeof wanted !== "string") {
+		return undefined
+	}
+	// A `${…}` in the task name or its dir would be resolved by VS Code on Run,
+	// so such a task is not resolved (audit SA-029).
+	if (hasTaskVar(wanted, typeof definition.dir === "string" ? definition.dir : undefined)) {
 		return undefined
 	}
 	// A `dir` pins discovery, so there is nothing to look up.

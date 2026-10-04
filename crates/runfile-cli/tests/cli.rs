@@ -2417,7 +2417,11 @@ fn generate_jetbrains_writes_one_configuration_per_target_and_respects_foreign_f
 	);
 	let deploy = std::fs::read_to_string(dir.join("Runfile_web_dev.run.xml")).unwrap();
 	assert!(deploy.contains(r#"name="Web Dev""#), "{deploy}");
-	assert!(deploy.contains(r#"value="run --stdin-args web:dev""#), "{deploy}");
+	// The target is shell-single-quoted and XML-escaped in SCRIPT_TEXT (SA-028).
+	assert!(
+		deploy.contains(r#"value="run --stdin-args &apos;web:dev&apos;""#),
+		"{deploy}"
+	);
 }
 
 #[test]
@@ -4275,4 +4279,54 @@ fn a_dispatched_target_that_names_nothing_is_refused_before_any_of_it_runs() {
 	assert!(p.dir.path().join("before").exists());
 	assert!(!p.dir.path().join("inner").exists(), "nothing of the broken target ran");
 	assert!(!p.dir.path().join("after").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_environment_variable_does_not_panic_the_run() {
+	// `std::env::vars` panics on a non-UTF-8 value (bash exports a Latin-1
+	// `OLDPWD` after `cd`), which aborted every `run <target>` with exit 101
+	// before anything ran (audit SA-023). It is skipped now, and the run works.
+	use std::os::unix::ffi::OsStringExt;
+	let p = project(&[("runfiles/t.run", "$ true\n")]);
+	let bad = std::ffi::OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xe9]);
+	let o = p
+		.command(p.dir.path(), &["t"])
+		.env("OLDPWD", bad)
+		.output()
+		.expect("run binary");
+	assert!(
+		o.status.success(),
+		"a non-UTF-8 env var must not fail the run: {}",
+		err(&o)
+	);
+	assert_ne!(o.status.code(), Some(101), "must not panic");
+}
+
+#[cfg(unix)]
+#[test]
+fn lint_does_not_rewrite_through_a_symlink() {
+	// `:lint` formats in place; writing through a symlinked `.run` would rewrite
+	// the file it points at, outside the tree being linted (audit SA-021).
+	let p = project(&[("runfiles/real.run", "$ true\n")]);
+	// A valid-but-unformatted file outside the project, and a symlink to it.
+	let outside = p.home.path().join("victim.run");
+	std::fs::write(&outside, "let  x = 1\n$ true\n").unwrap();
+	let link = p.dir.path().join("runfiles/link.run");
+	std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+	let o = p.run(&[":lint", "runfiles/link.run"]);
+	// The symlink is reported and refused, and its target is left exactly as it
+	// was -- not reformatted through the link.
+	assert!(
+		err(&o).contains("symlink") || out(&o).contains("symlink"),
+		"{} {}",
+		out(&o),
+		err(&o)
+	);
+	assert_eq!(
+		std::fs::read_to_string(&outside).unwrap(),
+		"let  x = 1\n$ true\n",
+		"the file the symlink points at was rewritten through the link"
+	);
 }

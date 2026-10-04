@@ -98,7 +98,10 @@ fn quote(s: &str) -> String {
 pub fn names(cat: &Catalog) -> Vec<String> {
 	cat.targets
 		.values()
-		.filter(|t| !facts(t).hidden)
+		// `is_hidden` reads the name alone; `facts` would parse the whole file,
+		// so a crafted target file could hang or crash Tab completion through
+		// this path for no reason (audit SA-022/SA-024).
+		.filter(|t| !runfile_discovery::is_hidden(&t.name))
 		.map(|t| t.name.clone())
 		.collect()
 }
@@ -144,14 +147,21 @@ pub fn print(cat: &Catalog) {
 		}
 		first = false;
 		for (t, f) in group {
+			// Strip control characters from both the name and the description: a
+			// target name is a file name and a description is the file's leading
+			// comment, both attacker-controlled in an untrusted repo, and `:list`
+			// is read to decide what to run (audit SA-027). The `--json` form is
+			// already escaped, so only this human path needs it.
+			let name = runfile_runtime::term::sanitize(&t.name);
+			let desc = runfile_runtime::term::sanitize(&f.description);
 			let described = match room {
-				Some(r) => runfile_runtime::term::fit(&f.description, r),
-				None => f.description.as_str().into(),
+				Some(r) => runfile_runtime::term::fit(&desc, r),
+				None => std::borrow::Cow::Borrowed(desc.as_ref()),
 			};
 			if described.is_empty() {
-				println!("  {}", t.name);
+				println!("  {name}");
 			} else {
-				println!("  {:<width$}  {described}", t.name);
+				println!("  {name:<width$}  {described}");
 			}
 		}
 	}
@@ -173,9 +183,16 @@ pub fn unknown(cat: &Catalog, name: &str) -> String {
 		.map(String::as_str)
 		.take(5)
 		.collect();
+	// Strip control characters for display: the suggestions are catalog target
+	// names (file names from the repo), and the typed name is echoed too (SA-027).
+	let shown = runfile_runtime::term::sanitize(name);
 	if near.is_empty() {
-		format!("no target named `{name}`; run `run :list` to see them")
+		format!("no target named `{shown}`; run `run :list` to see them")
 	} else {
-		format!("no target named `{name}`\n\ndid you mean: {}", near.join(", "))
+		let near: Vec<String> = near
+			.iter()
+			.map(|k| runfile_runtime::term::sanitize(k).into_owned())
+			.collect();
+		format!("no target named `{shown}`\n\ndid you mean: {}", near.join(", "))
 	}
 }

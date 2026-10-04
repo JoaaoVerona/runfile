@@ -1044,8 +1044,12 @@ fn segment(label: &str, colour: usize, width: usize) -> String {
 		// blank gutter in front of the branch names that do say something.
 		return String::new();
 	}
-	let mut s = exec::paint_branch(label, colour, exec::paints(false));
-	let w = term::width_of(label);
+	// Strip control characters before painting, so a label built from a glob
+	// path, captured output or an ARG/ENV value cannot carry an escape sequence
+	// into the terminal; the runner's own colour is added after (audit SA-027).
+	let label = term::sanitize(label);
+	let mut s = exec::paint_branch(&label, colour, exec::paints(false));
+	let w = term::width_of(&label);
 	if w < width {
 		s.push_str(&" ".repeat(width - w));
 	}

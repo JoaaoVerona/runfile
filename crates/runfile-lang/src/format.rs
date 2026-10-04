@@ -270,10 +270,13 @@ fn exec_body(
 		body.push(raw[j]);
 		j += 1;
 	}
+	// ASCII ' '/'\t' only, so `base` lands on a char boundary and a Unicode-space
+	// indent cannot make the slice below panic (audit SA-022); `format` parses
+	// first so this is shadowed in practice, but it carries the same bug.
 	let base = body
 		.iter()
 		.filter(|l| !l.trim().is_empty())
-		.map(|l| l.len() - l.trim_start().len())
+		.map(|l| l.len() - l.trim_start_matches([' ', '\t']).len())
 		.min()
 		.unwrap_or(0);
 	let dedented: Vec<&str> = body

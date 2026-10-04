@@ -222,3 +222,17 @@ export function pathCandidates(
 	}
 	return out;
 }
+
+/**
+ * Whether any of these strings carries VS Code's `${…}` task-variable syntax.
+ *
+ * A target name is a file name and `dir` is a directory path, both chosen by an
+ * untrusted repository. VS Code resolves every `${…}` in a task's definition and
+ * arguments before the task runs -- and `${command:<id>}` / `${input:<id>}` run
+ * an editor command or read a workspace-defined input on Run -- with no way to
+ * pass a literal `${`. So a name or dir that holds one cannot be turned into a
+ * safe task and is skipped (audit SA-029).
+ */
+export function hasTaskVar(...parts: (string | undefined)[]): boolean {
+	return parts.some((p) => p !== undefined && p.includes("${"));
+}

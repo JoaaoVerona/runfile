@@ -11,6 +11,7 @@ import {
 	completionKind,
 	completionPrefixStart,
 	frame,
+	hasTaskVar,
 	markdownOf,
 	namespaceOf,
 	parseCatalog,
@@ -213,3 +214,15 @@ test("pathCandidates resolves a bare name against absolute PATH dirs only", () =
 	]);
 	assert.deepEqual(pathCandidates("run", "", posix), []);
 })
+
+test("hasTaskVar flags VS Code variable syntax in a name or dir (SA-029)", () => {
+	assert.equal(hasTaskVar("build"), false);
+	assert.equal(hasTaskVar("api:deploy"), false);
+	assert.equal(hasTaskVar(undefined), false);
+	// A target file literally named with a task-variable, and a carrier dir.
+	assert.equal(hasTaskVar("${command:workbench.action.reloadWindow}"), true);
+	assert.equal(hasTaskVar("${input:x}"), true);
+	assert.equal(hasTaskVar("build", "/p/${command:x}"), true);
+	// A plain `$` or `{` on its own is not the `${` trigger.
+	assert.equal(hasTaskVar("$HOME", "a{b}"), false);
+});

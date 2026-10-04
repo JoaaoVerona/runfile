@@ -65,6 +65,24 @@ fn queried() -> Option<usize> {
 /// description holding either run past the edge and wrap -- the one thing a
 /// listing of one line per target must not do. The ranges are the classic
 /// `wcwidth` table, trimmed to what a comment in a runfile plausibly holds.
+/// Replace every control character with `\u{FFFD}`, so text from an untrusted
+/// repository -- a target name, a description line, a `parallel` branch label
+/// built from a glob path, captured output or an `ARG`/`ENV` value -- cannot
+/// carry ANSI/OSC escapes into the terminal it is printed to (audit SA-027).
+/// `char::is_control` covers C0, DEL and C1. A multi-line description is split
+/// on newlines by its caller, so this only ever sees one line.
+pub fn sanitize(text: &str) -> Cow<'_, str> {
+	if text.contains(char::is_control) {
+		Cow::Owned(
+			text.chars()
+				.map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+				.collect(),
+		)
+	} else {
+		Cow::Borrowed(text)
+	}
+}
+
 pub fn width_of(s: &str) -> usize {
 	s.chars().map(char_width).sum()
 }

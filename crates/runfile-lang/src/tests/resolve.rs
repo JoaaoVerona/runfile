@@ -339,3 +339,34 @@ fn a_suggestion_is_only_offered_when_something_is_near() {
 		Some("did you mean `dir_exists`, `directory_exists` or `file_exists`?")
 	);
 }
+
+#[test]
+fn edits_within_is_bounded_and_agrees_with_full_distance_when_near() {
+	use crate::resolve::{edits, edits_within};
+	// Within the bound it is the exact distance; far apart it stops early and
+	// reports `max + 1` rather than computing the whole table (audit SA-024).
+	assert_eq!(edits_within("kitten", "sitting", 3), 3);
+	assert_eq!(edits_within("kitten", "sitting", 2), 3, "past the bound → max+1");
+	assert_eq!(edits_within("abc", "abc", 2), 0);
+	// A length gap larger than the bound is rejected without walking the table.
+	let long_a = "a".repeat(5000);
+	let long_b = "b".repeat(4000);
+	assert_eq!(edits_within(&long_a, &long_b, 2), 3);
+	// `edits` is still the exact distance (the LSP sorts completions by it).
+	assert_eq!(edits("exists", "exit"), 2);
+}
+
+#[test]
+fn suggest_over_many_long_candidates_stays_cheap_and_correct() {
+	use crate::resolve::suggest;
+	// The real hint is unchanged for a plausible typo (one edit away)...
+	assert_eq!(
+		suggest("buld", ["build", "test", "deploy"]).as_deref(),
+		Some("did you mean `build`?")
+	);
+	// ...and a flood of long, near-identical unknown names does not blow up:
+	// the length gate and banded distance keep each comparison cheap (SA-024).
+	let names: Vec<String> = (0..5000).map(|i| format!("{}{i}", "z".repeat(200))).collect();
+	let got = suggest(&"q".repeat(200), names.iter().map(String::as_str));
+	assert!(got.is_none(), "no near match among long names");
+}

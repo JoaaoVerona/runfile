@@ -180,6 +180,18 @@ pub fn load_env_files(
 	Ok(result)
 }
 
+/// The process environment as a UTF-8 map. `vars_os` rather than `vars`: a
+/// value that is not valid UTF-8 -- bash exports a Latin-1 `OLDPWD`/`PWD` after
+/// `cd` into such a directory -- makes `std::env::vars` panic, which aborted
+/// every `run <target>` before anything ran (audit SA-023). A non-UTF-8 entry
+/// is skipped here and still reaches a child untouched, since the runner never
+/// clears the environment, only overrides keys.
+pub fn process_env() -> HashMap<String, String> {
+	env::vars_os()
+		.filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+		.collect()
+}
+
 /// Build the complete environment variable map for a command execution.
 ///
 /// Merge order (lowest → highest priority for non-PATH vars):
@@ -221,7 +233,7 @@ pub fn build_env(
 	let base = match params.base_env {
 		Some(base) => base,
 		None => {
-			process = env::vars().collect();
+			process = process_env();
 			&process
 		}
 	};

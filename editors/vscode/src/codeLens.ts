@@ -6,7 +6,7 @@
 
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { anchorFor as anchorOf, targetNameFor } from "./pure";
+import { anchorFor as anchorOf, hasTaskVar, targetNameFor } from "./pure";
 
 export { targetNameFor };
 
@@ -53,6 +53,11 @@ export class RunfileCodeLensProvider implements vscode.CodeLensProvider, vscode.
 		const name = targetNameFor(doc.uri.fsPath);
 		const anchor = anchorFor(doc.uri.fsPath);
 		if (name === undefined || anchor === undefined) {
+			return [];
+		}
+		// No Run button for a target whose name or anchor carries VS Code's
+		// `${…}` syntax: it would be expanded when the task runs (audit SA-029).
+		if (hasTaskVar(name, anchor)) {
 			return [];
 		}
 		const range = new vscode.Range(0, 0, 0, 0);

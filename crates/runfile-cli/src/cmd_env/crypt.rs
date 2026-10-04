@@ -64,7 +64,10 @@ pub fn cmd_decrypt_file(source: Option<&str>, output: Option<&str>) {
 				let key_part = &trimmed[..eq_pos];
 				match runfile_crypto::decrypt(val_unquoted, &key_hex) {
 					Ok(plaintext) => {
-						out_lines.push(format!("{key_part}={plaintext}"));
+						// Quote a value that would not read back bare, so a
+						// multi-line secret survives and none can inject a second
+						// variable (audit SA-030).
+						out_lines.push(runfile_env::serialize_env_line(key_part, &plaintext));
 						continue;
 					}
 					Err(e) => {

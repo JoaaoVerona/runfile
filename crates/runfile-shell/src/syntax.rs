@@ -1205,6 +1205,10 @@ struct Cond<'t> {
 	toks: &'t [Tok],
 	texts: &'t [String],
 	at: usize,
+	/// Nesting of `( … )` groups, so a pathologically deep test gives up rather
+	/// than overflowing the stack (audit SA-022). `||`/`&&` width is handled by
+	/// the loops in `or`/`and`, which do not recurse.
+	depth: usize,
 }
 
 impl Cond<'_> {
@@ -1213,19 +1217,35 @@ impl Cond<'_> {
 	}
 
 	fn or(&mut self) -> Result<(), Refusal> {
-		self.and()?;
-		if self.peek() == Tok::Or {
-			self.at += 1;
-			self.or()?;
+		// A loop rather than right-recursion, so `[[ x || x || … ]]` tens of
+		// thousands wide validates without a stack frame per operator (SA-022).
+		// `or` is also the entry for each `( … )` group (via `term`), so its
+		// depth bounds parenthesis nesting; decremented on success so sibling
+		// groups do not accumulate.
+		self.depth += 1;
+		if self.depth > 64 {
+			return Err((None, "`[[ … ]]` is nested too deeply".into()));
 		}
+		loop {
+			self.and()?;
+			if self.peek() == Tok::Or {
+				self.at += 1;
+			} else {
+				break;
+			}
+		}
+		self.depth -= 1;
 		Ok(())
 	}
 
 	fn and(&mut self) -> Result<(), Refusal> {
-		self.term()?;
-		if self.peek() == Tok::And {
-			self.at += 1;
-			self.and()?;
+		loop {
+			self.term()?;
+			if self.peek() == Tok::And {
+				self.at += 1;
+			} else {
+				break;
+			}
 		}
 		Ok(())
 	}
@@ -1341,6 +1361,7 @@ fn conditional(chars: &[Ch], words: &[Word], open: usize, close: usize) -> R<()>
 		toks: &toks,
 		texts: &texts,
 		at: 0,
+		depth: 0,
 	};
 	let refused = match c.or() {
 		Err(r) => r,

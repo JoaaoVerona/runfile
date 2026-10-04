@@ -84,7 +84,8 @@ pub fn handed_over(props: &Props, env: &[(String, String)]) -> Inherited {
 	let run_with = match &props.inherited {
 		Some(inherited) => &inherited.exported,
 		None => {
-			process = std::env::vars().collect();
+			// `vars_os`, so a non-UTF-8 variable does not panic the run (SA-023).
+			process = runfile_env::process_env();
 			&process
 		}
 	};

@@ -112,7 +112,7 @@ pub fn from_paths(paths: &[String]) -> Result<Vec<PathBuf>, String> {
 	for p in paths {
 		let p = PathBuf::from(p);
 		if p.is_dir() {
-			walk(&p, &mut out);
+			walk(&p, &mut out, 0);
 		} else if p.is_file() {
 			out.push(p);
 		} else {
@@ -124,13 +124,34 @@ pub fn from_paths(paths: &[String]) -> Result<Vec<PathBuf>, String> {
 	Ok(out)
 }
 
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Directories the walk never enters, matching discovery's own list.
+const WALK_SKIP: &[&str] = &["node_modules", "target", "dist", "build", ".git", "vendor"];
+
+/// A backstop against a pathologically deep tree; far below any real project.
+const WALK_MAX_DEPTH: usize = 64;
+
+fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+	if depth > WALK_MAX_DEPTH {
+		return;
+	}
 	let Ok(rd) = std::fs::read_dir(dir) else { return };
 	for e in rd.flatten() {
 		let p = e.path();
-		if p.is_dir() {
-			walk(&p, out);
-		} else if p.extension().is_some_and(|x| x == "run") {
+		// The entry's own type, which (unlike `is_dir`/`is_file`) does not follow
+		// a symlink: a symlinked directory is not descended -- so a loop cannot
+		// spin and the walk cannot leave the named tree -- and a symlinked `.run`
+		// is not collected, which would otherwise be rewritten through the link,
+		// truncating a file outside the tree (audit SA-021). Mirrors discovery.
+		let Ok(ft) = e.file_type() else { continue };
+		if ft.is_symlink() {
+			continue;
+		}
+		if ft.is_dir() {
+			if p.file_name().is_some_and(|n| WALK_SKIP.iter().any(|s| n == *s)) {
+				continue;
+			}
+			walk(&p, out, depth + 1);
+		} else if ft.is_file() && p.extension().is_some_and(|x| x == "run") {
 			out.push(p);
 		}
 	}
@@ -216,13 +237,33 @@ fn shape(file: &Path, check: bool, to_stdout: bool, report: &Report, tally: &mut
 		tally.unformatted += 1;
 		return Some(src);
 	}
-	match std::fs::write(file, &out) {
+	// Never rewrite a symlink: `fs::write` would follow it and truncate the file
+	// it points at, outside the tree being linted (audit SA-021). Report it and
+	// leave both the link and its target untouched; lint the target directly.
+	if file.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+		report.problem(
+			file,
+			None,
+			Severity::Error,
+			"is a symlink; not rewritten (lint its target directly)",
+		);
+		tally.error(file);
+		return Some(src);
+	}
+	// Write atomically -- a temp file beside the target, then rename over it --
+	// so an interrupt mid-write cannot leave the file truncated (audit SA-021).
+	let mut tmp = file.as_os_str().to_owned();
+	tmp.push(".lint-tmp");
+	let tmp = PathBuf::from(tmp);
+	let written = std::fs::write(&tmp, &out).and_then(|()| std::fs::rename(&tmp, file));
+	match written {
 		Ok(()) => {
 			report.note(file, "formatted");
 			tally.formatted += 1;
 			Some(out)
 		}
 		Err(e) => {
+			let _ = std::fs::remove_file(&tmp);
 			report.problem(file, None, Severity::Error, &e.to_string());
 			tally.error(file);
 			Some(src)

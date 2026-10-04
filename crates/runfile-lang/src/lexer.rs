@@ -327,6 +327,30 @@ pub fn brackets(text: &str, no: usize) -> (i32, i32) {
 	(delta, leading)
 }
 
+/// The net `[` − `]` a single line contributes, or `None` when the line does not
+/// tokenise on its own -- an unterminated string that spans lines, whose
+/// brackets cannot be counted without the lines around it.
+///
+/// `logical` sums this per appended line so gathering an N-line spilled list is
+/// O(N) rather than re-tokenising all N lines on every pass (audit SA-024); a
+/// `None` line makes it fall back to [`brackets`] over the whole text, which is
+/// what it always did. For a line that tokenises cleanly the per-line delta
+/// equals the whole-text delta, since no token crosses a clean line boundary.
+pub fn line_delta(code: &str, no: usize) -> Option<i32> {
+	let toks = tokenize(code, 0, no)
+		.ok()
+		.or_else(|| code.split_once(" = ").and_then(|(_, r)| tokenize(r, 0, no).ok()))?;
+	let mut delta = 0i32;
+	for t in &toks {
+		match &t.token {
+			Token::Punct("[") => delta += 1,
+			Token::Punct("]") => delta -= 1,
+			_ => {}
+		}
+	}
+	Some(delta)
+}
+
 /// Where a comment begins on this line, if one does.
 ///
 /// A `#` starts a comment when it starts a **word** -- at the start of the line

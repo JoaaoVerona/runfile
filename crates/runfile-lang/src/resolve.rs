@@ -577,6 +577,11 @@ fn read_hint(name: &str, sc: &Scope) -> Option<String> {
 /// those that turn anything up is offered: `exit` is two letters from `exists`,
 /// and a worse guess beside a good one only makes the good one harder to see.
 pub fn suggest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<String> {
+	// No edit-distance hint for an identifier longer than this: the table is
+	// `O(len·clen)`, and a 65-character name is not a typo worth guessing at.
+	// With the length gate below it bounds the work a crafted file can force
+	// through the suggester (audit SA-024).
+	const MAX_LEN: usize = 64;
 	let len = name.chars().count();
 	let mut near: Vec<(u8, &str)> = candidates
 		.into_iter()
@@ -585,9 +590,16 @@ pub fn suggest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) ->
 			if c.eq_ignore_ascii_case(name) {
 				return Some((0, c));
 			}
-			match edits(name, c) {
+			let clen = c.chars().count();
+			// Run the edit distance only where it could land within a tier: a
+			// candidate too different in length cannot be within two edits, and
+			// an over-long one gets no edit-distance hint at all. `edits_within`
+			// stops early, so this is cheap even when it does run.
+			let close = len <= MAX_LEN && clen <= MAX_LEN && clen.abs_diff(len) <= 2;
+			let d = if close { edits_within(name, c, 2) } else { 3 };
+			match d {
 				1 if len >= 3 => Some((1, c)),
-				_ if len >= 4 && c.split('_').any(|word| word == name) => Some((2, c)),
+				_ if len >= 4 && clen <= MAX_LEN && c.split('_').any(|word| word == name) => Some((2, c)),
 				2 if len >= 6 => Some((3, c)),
 				_ => None,
 			}
@@ -611,16 +623,46 @@ pub fn suggest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) ->
 
 /// How many single-character edits turn `a` into `b`.
 pub fn edits(a: &str, b: &str) -> usize {
-	let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-	let mut prev: Vec<usize> = (0..=b.len()).collect();
-	let mut cur = vec![0; b.len() + 1];
+	edits_within(a, b, a.chars().count().max(b.chars().count()))
+}
+
+/// Levenshtein distance, computed only within the diagonal band `|i - j| <= max`
+/// and reported as `max + 1` once it is certain to exceed `max`.
+///
+/// A "did you mean" only asks whether a candidate is within a small distance, so
+/// the full `O(|a|·|b|)` table is never needed: bounding the work per call to
+/// `O(|a|·(2·max+1))` is what keeps a crafted file of many long, near-identical
+/// unknown names from pegging a core in `:lint`, the pre-run check and the
+/// language server (audit SA-024). With `max` at least the longer length the
+/// band covers every cell, so `edits` above is the exact distance as before.
+pub fn edits_within(a: &str, b: &str, max: usize) -> usize {
+	let a: Vec<char> = a.chars().collect();
+	let b: Vec<char> = b.chars().collect();
+	// A path from one length to the other costs at least their difference, so a
+	// large gap is already past `max`.
+	if a.len().abs_diff(b.len()) > max {
+		return max + 1;
+	}
+	let n = b.len();
+	let inf = max.saturating_add(1);
+	// Cells outside the band are `inf`: any route through them already exceeds
+	// `max`, so they never win a `min`.
+	let mut prev: Vec<usize> = (0..=n).map(|j| if j <= max { j } else { inf }).collect();
+	let mut cur = vec![inf; n + 1];
 	for i in 1..=a.len() {
-		cur[0] = i;
-		for j in 1..=b.len() {
-			let sub = prev[j - 1] + usize::from(a[i - 1] != b[j - 1]);
-			cur[j] = sub.min(prev[j] + 1).min(cur[j - 1] + 1);
+		cur.iter_mut().for_each(|x| *x = inf);
+		if i <= max {
+			cur[0] = i;
+		}
+		let lo = i.saturating_sub(max).max(1);
+		let hi = (i + max).min(n);
+		for j in lo..=hi {
+			let sub = prev[j - 1].saturating_add(usize::from(a[i - 1] != b[j - 1]));
+			let del = prev[j].saturating_add(1);
+			let ins = cur[j - 1].saturating_add(1);
+			cur[j] = sub.min(del).min(ins).min(inf);
 		}
 		std::mem::swap(&mut prev, &mut cur);
 	}
-	prev[b.len()]
+	prev[n].min(inf)
 }

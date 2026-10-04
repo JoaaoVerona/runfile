@@ -1188,3 +1188,41 @@ fn shared_above(path: &std::path::Path) -> Option<Vec<Target>> {
 	found.reverse();
 	Some(found)
 }
+
+#[test]
+fn a_deeply_nested_parameter_expansion_gives_up_instead_of_overflowing() {
+	// `${x+${x+…}}` recurses dollar→parameter→dollar; past the bound the word
+	// reader gives up (`Stop::Lost`) rather than overflowing the stack and
+	// aborting the process (audit SA-022). Reaching this line is the assertion.
+	let line = format!("$ echo {}y{}\n", "${x+".repeat(4096), "}".repeat(4096));
+	let _ = findings(&line);
+}
+
+#[test]
+fn a_very_wide_conditional_does_not_overflow() {
+	// `[[ x || x || … ]]` tens of thousands wide used to recurse once per `||`;
+	// `or`/`and` are loops now (audit SA-022).
+	let line = format!("$ [[ {}x ]]\n", "x || ".repeat(60000));
+	let _ = findings(&line);
+}
+
+#[test]
+fn nested_loops_do_not_cause_an_exponential_walk() {
+	// A sequential `for` walks its body twice for flow sensitivity, which is
+	// multiplicative across nesting -- 40 nested loops would be 2^40 walks
+	// without the budget (audit SA-024). Run in a thread with a timeout so a
+	// regression fails the test rather than hanging the suite.
+	let mut src = String::from("$ true\n");
+	for _ in 0..40 {
+		src = format!("for x in [1, 2]\n{src}end\n");
+	}
+	let (tx, rx) = std::sync::mpsc::channel();
+	std::thread::spawn(move || {
+		let _ = findings(&src);
+		let _ = tx.send(());
+	});
+	assert!(
+		rx.recv_timeout(std::time::Duration::from_secs(20)).is_ok(),
+		"the shell-check walk did not terminate -- the loop budget regressed"
+	);
+}

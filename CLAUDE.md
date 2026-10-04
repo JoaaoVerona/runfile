@@ -726,6 +726,30 @@ quoting.
   a statement's span reads `.line`, and spans are stripped from the fingerprint and the golden trees. An
   `else if` is the one exception — an `If` of its own inside its chain's `else`, closed by the chain's one
   `end` — so only the `if` that opened the chain reaches it.
+- **The parser bounds its own recursion** (`parser::MAX_DEPTH` = 128, audit SA-022). Recursive descent is one
+  descent per level -- `block_of` per nested block, the precedence climb back into `chain` per `(`/`[`/call
+  level, `unary` per `!`/`-` -- and a stack overflow is an uncatchable `abort`. So `block_of`, `chain` and
+  `unary` increment a depth on entry and return a clean `ParseError` past the bound, which every caller turns
+  into one diagnostic. Decremented on the success return, so a wide list or argument list does not accumulate
+  depth across its elements. The bound is kept well inside the smallest stack this parse runs on: the CLI and
+  the language server parse on the 8 MB main thread (a parallel branch never parses -- it walks a pre-parsed
+  tree), but a `cargo test` worker is 2 MB, and a debug build's `statement` frame is large, so the
+  deep-nesting test runs on an explicit 8 MB thread. Far above any hand-written file. Two byte-slice panics
+  went with it: the trailing-tokens message truncates on a character boundary (`chars().take(60)`), and the
+  `exec`-body dedent counts only ASCII `' '`/`'\t'` as indent, so a line indented with a multi-byte Unicode
+  space no longer slices inside a character.
+- **`resolve::edits` is a banded, early-exiting Levenshtein** (`edits_within`, audit SA-024). A "did you mean"
+  only asks whether a candidate is within a small distance, so the full `O(|a|·|b|)` table is never built: the
+  band is `|i − j| ≤ max` and a row whose cells all exceed `max` stops the walk. `suggest` runs it only for
+  candidates whose length is within two of the name and at most 64 long, so a file of thousands of long,
+  near-identical unknown names cannot hang the suggester in `:lint`, the pre-run check or the language server.
+  `edits` itself (the LSP's completion sort) is `edits_within` with an unbounded band, so it is the exact
+  distance as before.
+- **A spilled list's bracket depth is tracked incrementally** (`lexer::line_delta`, used by `parser::logical`,
+  audit SA-024). `logical` gathered a list spilled over N lines by re-tokenising the whole accumulated text on
+  every line -- O(N²). It now sums each appended line's `[`−`]` delta into a running count; a line that does
+  not tokenise on its own (an unterminated string spanning lines) falls back to the whole-text count, exactly
+  as before, which is rare and keeps those lists tiny.
 
 ### runfile-discovery
 
@@ -1109,6 +1133,18 @@ terminal's width, and how wide text is on it).
   `rotate --delete-current-key` refuses to delete the old key when the store is not persistent, so a reboot
   cannot leave the only copy gone and every value encrypted under it unreadable. `is_persistent` is `true` on
   Windows/macOS and whenever Secret Service is in use.
+- **The process environment is read with `vars_os`, not `vars`** (`runfile_env::process_env`, audit SA-023).
+  `std::env::vars` panics on a value that is not valid UTF-8 -- bash exports a Latin-1 `OLDPWD`/`PWD` after a
+  `cd` into such a directory -- which aborted every `run <target>` before anything ran. The three call sites
+  (`dispatch.rs`, `env.rs`, `build_env`) use `process_env`, which skips a non-UTF-8 entry; it still reaches a
+  child, since the runner overrides keys rather than clearing the environment.
+- **One serializer writes every `KEY=VALUE`** (`runfile_env::serialize_env_value`, audit SA-030). `:env
+  decrypt`, `:env set` and the `decrypt()` builtin wrote the value raw, so a newline became a second variable
+  (a key holder could smuggle a `NODE_OPTIONS` past review) and a multi-line PEM did not survive the round
+  trip. The serializer double-quotes, with `\n`/`\"`/`\\` escapes, any value that would not read back bare --
+  a newline, a quote, a backslash, an inline-comment ` #`/` //`, or a leading/trailing blank -- and is the
+  exact inverse of `parse.rs`'s unescape, pinned by a round-trip test. A `.env` parse error no longer echoes
+  the offending line, only its number and what is wrong, so a secret on it does not reach a log (audit SA-026).
 - **Precedence is decided in one place, `runfile_env::build_env`: `.env-file` < the caller's shell < the
   target's `.env`.** A file is a default -- the dotenv convention, so a checked-in `.env` does not clobber what
   someone exported -- and the target's own assignment beats both, since it is the one way a target can force
@@ -1188,6 +1224,17 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
   *Interpolation self-quotes*). The verified-but-rarer name positions (`[[ -v name ]]`, `printf -v name`) and
   `${x:offset}` are not yet covered -- they need name-injection modelling rather than "must be a number", and no
   corpus file uses them.
+- **The reader and the walk are bounded, so a crafted file cannot hang or crash the check** (audit SA-022,
+  SA-024). The word reader shares `P.depth` with `command()`: `dollar` increments it and gives up with
+  `Stop::Lost` past 64, so `${x+${x+…}}` cannot recurse the stack to an abort; it always decrements, even on an
+  inner error, since the arithmetic probe catches one. `Cond`'s `or`/`and` read `||`/`&&` as a loop rather than
+  right-recursion (a 60 000-wide `[[ … ]]` was a frame per operator), and `or` carries its own small depth for
+  the `( … )` nesting that remains. The tree walk carries a `budget` (200 000 block walks): a `for`/`loop`/
+  `retry` walks its body twice for flow sensitivity, which is multiplicative across nesting -- N nested loops
+  are 2^N walks -- so past the budget the walk stops, having reported what it found; no real file spends a
+  fraction of it. Two rules that were quadratic are linear now: `truncated-input` builds the operand and `<`
+  sets once (a `HashSet`) instead of calling `exact` per pair, and `unquoted` indexes the holes by start (a
+  `HashMap`) instead of scanning the list per character.
 
 ### runfile-lsp
 
@@ -1414,6 +1461,14 @@ its ~136 transitive packages fresh from npm at release time -- in no lockfile at
 compromised version could enter a release build unobserved. `pnpm-workspace.yaml` (`allowBuilds`) approves only
 the one build script the pinned tree needs, so pnpm's install-script block does not have to be lifted wholesale.
 
+**A target name is not shell text, and never carries VS Code's `${…}`** (audit SA-029). The non-interactive
+task is a `ProcessExecution` (`run` spawned with the name as an argv element, no shell) rather than a
+`ShellExecution`, so a name holding `;`/`$(…)`/a backtick is one literal argument; the interactive path already
+spawns through the pseudoterminal without a shell. And VS Code resolves every `${…}` in a task's definition and
+arguments on Run -- `${command:<id>}` runs an editor command, `${input:<id>}` reads a workspace-defined input,
+with no way to pass a literal `${` -- so a target whose name or `dir` holds one is skipped (`pure.ts`'s
+`hasTaskVar`) in the task list, the Run-in-file command, task resolution and the CodeLens.
+
 The LSP client is hand-rolled rather than `vscode-languageclient`: the server speaks a small, fixed subset,
 and a full client library is a large dependency for five message types. It was notification-only until
 format-on-save needed a reply, so it now correlates requests by id with a **timeout** — this runs on save, and
@@ -1466,7 +1521,13 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   word and failed would leave the next one looking at the rest of it. The string rule needs no
   scanner: the interpolation's expression is parsed as an expression, quotes and all. A dispatch's word inside
   `code_of(…)` is a second token, because there the `)` closing the call ends it — unless a `(` in the word
-  opened it, which is how the parser reads one too.
+  opened it, which is how the parser reads one too. **It asks `get_column` only when the answer can matter**
+  (audit SA-025): `get_column` costs O(column), `scan_line_start` runs after almost every token (a comment may
+  follow nearly any), and asking each time made parsing quadratic in line length (a 96 KB single-line list
+  took ~13 s). It skips the blanks first, then consults the column only for the four lookaheads that can
+  produce a token here -- `#`, `e`, `p`, `d` -- and returns early for any other. `scan_exec_content` tracks
+  line starts from the newlines it consumes rather than asking the column each character, and confirms the
+  column only when the lookahead could begin the terminator. A 192 KB file now parses in ~0.06 s.
 - **`parallel` and `detach` are scanner tokens, not keywords** (`scan_marker`). Each is a marker only in
   front of what it marks -- `do` or `for`, `$` or `exec` -- and an ordinary name everywhere else, as the
   runner reads them. As plain tokens they were keywords wherever a statement may start, because the grammar's
@@ -1619,6 +1680,28 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   file is rewritten with the indentation it already uses. The 661-line `.editorconfig` reader did not come
   back. Global targets are left out unless `--include-global`, since a task file is committed and
   the machine-wide directory is one person's. `Catalog.root` (the parent of the nearest `runfiles/`) is where the files go.
+  **A JetBrains `SCRIPT_TEXT` is a shell command, so the target is shell-single-quoted** in it and then
+  XML-escaped (audit SA-028): JetBrains XML-unescapes the attribute before the shell reads it, so a name
+  holding `;`, `$(…)`, a backtick or `|` arrives as one literal word rather than running. `jetbrains_target_of`
+  reverses both (`xml_unescape` + `shell_unquote`) to still recognise a stale config of ours for replacement,
+  including one written before the fix (the target unquoted). The VS Code and Zed generators were already safe:
+  the name is a JSON `args` element, which VS Code quotes and Zed spawns without a shell.
+- **`:lint`'s own directory walk does not escape the tree, and never writes through a symlink** (audit SA-021).
+  `walk` classifies entries by their `file_type` (not `is_dir`/`is_file`, which follow a link), skips symlinks
+  and the `node_modules`/`target`/`dist`/`build`/`.git`/`vendor` list, and caps depth -- so a symlinked
+  directory cannot loop it or lead it out of the named tree, and a symlinked `.run` is not collected. The
+  formatter refuses to rewrite a file whose `symlink_metadata` says it is a link (reports it instead) and
+  writes atomically, a temp file beside the target then a rename, so an interrupt cannot truncate it. Discovery
+  already rejected symlinked targets (SA-007), so the catalog path was safe; this covers a directory or file
+  named on the command line.
+- **The human output strips control characters** (`term::sanitize`, audit SA-027). A target name is a file
+  name and a description is the leading comment, both attacker-controlled in an untrusted repo, and `:list`
+  (read to choose what to run) and `--help` print them; a control character is replaced by `\u{FFFD}`, so no
+  ANSI/OSC escape reaches the terminal. Applied to the name and description in `:list`, the description and the
+  usage line in `--help`, the suggestions in the "no target named" errors, and (in the runtime) a `parallel`
+  branch label before it is painted. The `--json` form was already escaped. `:list`'s completion list
+  (`list::names`) also asks `is_hidden` directly rather than parsing every file, so Tab cannot be hung or
+  crashed through that path (SA-022/SA-024).
 
 ## Properties
 

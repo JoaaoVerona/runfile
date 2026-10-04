@@ -341,6 +341,44 @@ fn xml_attr(s: &str) -> String {
 	out
 }
 
+/// Single-quote a word for a POSIX shell: wrap it in `'…'` and write any
+/// embedded `'` as `'\''`. JetBrains runs `SCRIPT_TEXT` through a shell, so a
+/// target name holding `;`, `$(…)`, a backtick or `|` would otherwise execute
+/// when the generated configuration is run (audit SA-028). XML-escaping the
+/// quoted word afterwards is undone by JetBrains before the shell sees it, so
+/// the shell reads exactly one literal word.
+fn shell_single_quote(s: &str) -> String {
+	let mut out = String::with_capacity(s.len() + 2);
+	out.push('\'');
+	for c in s.chars() {
+		if c == '\'' {
+			out.push_str("'\\''");
+		} else {
+			out.push(c);
+		}
+	}
+	out.push('\'');
+	out
+}
+
+/// Reverse [`xml_attr`]; `&amp;` last so `&amp;lt;` does not become `<`.
+fn xml_unescape(s: &str) -> String {
+	s.replace("&lt;", "<")
+		.replace("&gt;", ">")
+		.replace("&quot;", "\"")
+		.replace("&apos;", "'")
+		.replace("&amp;", "&")
+}
+
+/// Reverse [`shell_single_quote`]; a configuration from before SA-028 (the
+/// target unquoted) is returned unchanged, so an upgrade still recognises it.
+fn shell_unquote(s: &str) -> String {
+	match s.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+		Some(inner) => inner.replace("'\\''", "'"),
+		None => s.to_string(),
+	}
+}
+
 /// `api:deploy` -> `Api Deploy`, the way run configurations are named.
 fn pretty(name: &str) -> String {
 	name.split(|c: char| !c.is_alphanumeric())
@@ -365,11 +403,15 @@ fn config_file(name: &str) -> String {
 }
 
 fn jetbrains_config(e: &Entry) -> String {
-	let (name, target) = (xml_attr(&pretty(&e.name)), xml_attr(&e.name));
+	let name = xml_attr(&pretty(&e.name));
+	// Shell-quote the target before it becomes shell text, then XML-escape the
+	// whole command; JetBrains XML-unescapes `SCRIPT_TEXT` before handing it to
+	// the shell, which then reads one quoted word (audit SA-028).
+	let script = xml_attr(&format!("run --stdin-args {}", shell_single_quote(&e.name)));
 	format!(
 		r#"<component name="ProjectRunConfigurationManager">
   <configuration default="false" name="{name}" type="ShConfigurationType">
-    <option name="SCRIPT_TEXT" value="run --stdin-args {target}" />
+    <option name="SCRIPT_TEXT" value="{script}" />
     <option name="INDEPENDENT_SCRIPT_PATH" value="true" />
     <option name="SCRIPT_PATH" value="" />
     <option name="SCRIPT_OPTIONS" value="" />
@@ -399,7 +441,10 @@ fn jetbrains_target_of(contents: &str) -> Option<String> {
 	let rest = contents
 		.split(r#"name="SCRIPT_TEXT" value="run --stdin-args "#)
 		.nth(1)?;
-	Some(rest.split('"').next()?.to_string())
+	// The SCRIPT_TEXT tail is the target, XML-escaped and shell-single-quoted
+	// (audit SA-028); undo both to recover the name a stale config is checked by.
+	let escaped = rest.split('"').next()?;
+	Some(shell_unquote(&xml_unescape(escaped)))
 }
 
 fn jetbrains(entries: &[Entry], root: &Path, opts: &Options) -> Result<String, String> {
@@ -527,13 +572,43 @@ mod tests {
 		};
 		let xml = jetbrains_config(&e);
 		assert!(xml.contains(r#"name="Api Deploy""#), "{xml}");
-		assert!(xml.contains(r#"value="run --stdin-args api:deploy""#), "{xml}");
+		// The target is shell-single-quoted and then XML-escaped (audit SA-028).
+		assert!(
+			xml.contains(r#"value="run --stdin-args &apos;api:deploy&apos;""#),
+			"{xml}"
+		);
 		assert_eq!(jetbrains_target_of(&xml).as_deref(), Some("api:deploy"));
 		assert!(
 			jetbrains_target_of("<component/>").is_none(),
 			"a foreign file is not ours"
 		);
+		// A config from before SA-028 (unquoted target) is still recognised.
+		let old = xml.replace("&apos;api:deploy&apos;", "api:deploy");
+		assert_eq!(jetbrains_target_of(&old).as_deref(), Some("api:deploy"));
 		assert_eq!(config_file("api:deploy"), "Runfile_api_deploy.run.xml");
+	}
+
+	#[test]
+	fn a_jetbrains_target_name_cannot_inject_shell() {
+		// A name holding shell metacharacters is one quoted word to the shell
+		// JetBrains runs, not a command separator or substitution (audit SA-028).
+		for name in ["build; touch INJECTED", "x$(id)", "a`id`b", "p|q", "it's"] {
+			let e = Entry {
+				name: name.into(),
+				description: String::new(),
+				uses_args: false,
+			};
+			let xml = jetbrains_config(&e);
+			// The SCRIPT_TEXT, as the shell will see it after JetBrains un-escapes
+			// the XML attribute, is `run --stdin-args '<name>'` -- one quoted word.
+			let after_jetbrains = xml_unescape(&xml);
+			assert!(
+				after_jetbrains.contains(&format!("run --stdin-args {}", shell_single_quote(name))),
+				"{name:?} not shell-quoted in {after_jetbrains}"
+			);
+			// And it still round-trips through the recogniser.
+			assert_eq!(jetbrains_target_of(&xml).as_deref(), Some(name));
+		}
 	}
 
 	#[test]

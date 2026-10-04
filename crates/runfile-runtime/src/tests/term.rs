@@ -51,3 +51,16 @@ fn no_room_at_all_is_nothing_and_one_column_is_the_ellipsis() {
 	assert_eq!(fit("anything", 0), "");
 	assert_eq!(fit("anything", 1), "…");
 }
+
+#[test]
+fn sanitize_replaces_control_characters_so_escapes_cannot_reach_the_terminal() {
+	use crate::term::sanitize;
+	// A clean string is borrowed unchanged.
+	assert_eq!(sanitize("deploy to prod"), "deploy to prod");
+	// ESC, BEL, CR, a C1 byte and DEL all become the replacement character, so a
+	// target name or branch label cannot carry ANSI/OSC sequences (audit SA-027).
+	assert_eq!(sanitize("a\u{1b}[31mRED\u{7}b"), "a\u{fffd}[31mRED\u{fffd}b");
+	assert_eq!(sanitize("x\u{9b}0c\u{7f}y"), "x\u{fffd}0c\u{fffd}y");
+	// A tab within a line is a control character too.
+	assert_eq!(sanitize("a\tb"), "a\u{fffd}b");
+}

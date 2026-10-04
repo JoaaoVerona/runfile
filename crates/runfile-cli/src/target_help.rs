@@ -54,7 +54,9 @@ pub(crate) fn render(cat: &Catalog, target: &Target) -> String {
 
 	// The usage line names what a caller has to supply. Required first, since
 	// that is the half a run fails without.
-	let mut usage = format!("run {}", target.name);
+	// Strip control characters from the name: it is a file name, attacker-chosen
+	// in an untrusted repo, and this runs on `--help` (audit SA-027).
+	let mut usage = format!("run {}", runfile_runtime::term::sanitize(&target.name));
 	for (name, u) in &reads.args {
 		usage.push_str(&if u.required {
 			format!(" --{name}=<value>")
@@ -80,11 +82,15 @@ pub(crate) fn render(cat: &Catalog, target: &Target) -> String {
 		for line in description.lines() {
 			for wrapped in wrap(line, 92) {
 				// A blank line in the description stays blank rather than
-				// becoming two spaces.
+				// becoming two spaces. Control characters are stripped: the
+				// description is the file's leading comment, attacker-controlled
+				// in an untrusted repo, and `--help` is documented as safe to run
+				// (audit SA-027). Split into lines already, so only within-line
+				// escapes remain to strip.
 				out.push_str(&if wrapped.is_empty() {
 					"\n".to_string()
 				} else {
-					format!("  {wrapped}\n")
+					format!("  {}\n", runfile_runtime::term::sanitize(&wrapped))
 				});
 			}
 		}

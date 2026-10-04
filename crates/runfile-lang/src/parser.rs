@@ -162,6 +162,7 @@ pub fn parse(src: &str) -> Result<Target, ParseError> {
 	let mut p = P {
 		lines: &lines,
 		i: 0,
+		depth: 0,
 		loops: 0,
 		unfold_next: false,
 		branch: None,
@@ -176,9 +177,24 @@ pub fn parse(src: &str) -> Result<Target, ParseError> {
 	Ok(Target { description, body })
 }
 
+/// How deeply blocks and expressions may nest before the parser gives up with a
+/// clean error rather than recursing until the stack guard page aborts the whole
+/// process (audit SA-022). Recursive descent is several frames per level -- a
+/// whole precedence climb for an expression, `statement`'s large frame for a
+/// block -- and a stack overflow is an uncatchable `abort`, so the bound is kept
+/// well inside the smallest stack this parse ever runs on (a 2 MB worker thread,
+/// as in the test harness), not just the 8 MB main thread. This parse runs with
+/// no intent to execute -- `run :list`, Tab completion, `--help`, `:lint`, every
+/// language-server edit -- so a crafted file must not crash them. Far above any
+/// hand-written file: the author's corpus nests only a handful deep.
+const MAX_DEPTH: usize = 128;
+
 struct P<'a> {
 	lines: &'a [Line<'a>],
 	i: usize,
+	/// Block-nesting depth, so a file of thousands of nested `if`/`end` reports
+	/// a syntax error instead of overflowing the stack (audit SA-022).
+	depth: usize,
 	/// How many loop bodies enclose the line being parsed.
 	///
 	/// `break` and `continue` are refused outside one *here* rather than at
@@ -254,6 +270,15 @@ impl<'a> P<'a> {
 	/// A block, whose statements are each a branch of their own when it is the
 	/// body of a `parallel do`.
 	fn block_of(&mut self, kw: Option<&str>, branches: bool) -> Result<Block, ParseError> {
+		// One frame per nested block; past the bound, a clean error rather than a
+		// stack-overflow abort (audit SA-022). Decremented on the success return
+		// so sibling blocks do not accumulate; an error aborts the whole parse,
+		// so leaving `depth` raised there is harmless.
+		self.depth += 1;
+		if self.depth > MAX_DEPTH {
+			let line = self.lines.get(self.i).map_or(0, |l| l.no);
+			return err(line, "blocks nested too deeply");
+		}
 		let mut b = Block::default();
 		loop {
 			while self.i < self.lines.len() {
@@ -265,6 +290,7 @@ impl<'a> P<'a> {
 				}
 			}
 			if self.at_block_end(kw) {
+				self.depth -= 1;
 				return Ok(b);
 			}
 			let line = &self.lines[self.i];
@@ -347,7 +373,13 @@ impl<'a> P<'a> {
 		// Just past the last byte of code joined so far, in the source.
 		let mut end = at + code.len();
 		self.i += 1;
-		while lexer::brackets(&text, first.no).0 > 0 && self.i < lines.len() {
+		// Running bracket depth, updated per appended line rather than by
+		// re-tokenising all of `text` every pass -- O(N) instead of O(N^2) for a
+		// list spilled over N lines (audit SA-024). A line that does not tokenise
+		// alone has no reliable per-line delta, so there the whole accumulated
+		// text is counted, exactly as before.
+		let mut depth = lexer::line_delta(code, first.no).unwrap_or_else(|| lexer::brackets(&text, first.no).0);
+		while depth > 0 && self.i < lines.len() {
 			let (prev, line) = (&lines[self.i - 1], &lines[self.i]);
 			let prev_end = prev.offset + prev.raw.len();
 			// A `\r\n` is two bytes and one line ending, so its `\r` is a blank.
@@ -361,6 +393,10 @@ impl<'a> P<'a> {
 			text.push_str(code);
 			end = line.offset + line.indent.len() + code.len();
 			self.i += 1;
+			depth = match lexer::line_delta(code, line.no) {
+				Some(d) => depth + d,
+				None => lexer::brackets(&text, line.no).0,
+			};
 		}
 		Logical {
 			text,
@@ -908,10 +944,15 @@ impl<'a> P<'a> {
 			raw.push(l);
 			j += 1;
 		}
+		// Count only ASCII ' '/'\t' as indent, as `closes_body` does. `l.indent`
+		// is `trim_start`'s Unicode whitespace, so a line indented with a 3-byte
+		// U+3000 gave `base` a byte length that sliced inside a multi-byte char
+		// on another line and panicked (audit SA-022). An ASCII count always
+		// lands on a char boundary, and Unicode "indent" stays content.
 		let base = raw
 			.iter()
 			.filter(|l| !l.trimmed.is_empty())
-			.map(|l| l.indent.len())
+			.map(|l| l.raw.len() - l.raw.trim_start_matches([' ', '\t']).len())
 			.min()
 			.unwrap_or(0);
 		let body = raw
@@ -1411,12 +1452,23 @@ pub fn parse_expr(s: &str, base: usize, line: usize) -> Result<Expr, ParseError>
 	if toks.is_empty() {
 		return err(line, "expected an expression");
 	}
-	let mut e = E { t: &toks, i: 0, line };
+	let mut e = E {
+		t: &toks,
+		i: 0,
+		line,
+		depth: 0,
+	};
 	let out = e.chain()?;
 	if e.i != e.t.len() {
 		return err(
 			line,
-			format!("trailing tokens after expression: `{}`", &s[..s.len().min(60)]),
+			// Truncate on a character boundary, not a byte: `&s[..60]` inside a
+			// multi-byte char panics, aborting every read-only entry point that
+			// parses this file (audit SA-022).
+			format!(
+				"trailing tokens after expression: `{}`",
+				s.chars().take(60).collect::<String>()
+			),
 		);
 	}
 	Ok(out)
@@ -1426,6 +1478,9 @@ struct E<'a> {
 	t: &'a [Spanned],
 	i: usize,
 	line: usize,
+	/// Expression-nesting depth, so `(((…)))` or `[[[…]]]` thousands deep reports
+	/// a syntax error instead of overflowing the stack (audit SA-022).
+	depth: usize,
 }
 
 impl<'a> E<'a> {
@@ -1446,6 +1501,14 @@ impl<'a> E<'a> {
 	}
 
 	fn chain(&mut self) -> Result<Expr, ParseError> {
+		// Every nested `(`/`[` and every call argument re-enters here, so this is
+		// where the `(((…)))` recursion is bounded; `unary` guards its own `!`/`-`
+		// recursion. Decremented on success so a wide list or argument list does
+		// not accumulate depth across its elements (audit SA-022).
+		self.depth += 1;
+		if self.depth > MAX_DEPTH {
+			return err(self.line, "expression nested too deeply");
+		}
 		let from = self.i;
 		let mut lhs = self.or()?;
 		while self.eat("?") {
@@ -1456,6 +1519,7 @@ impl<'a> E<'a> {
 				span: self.span(from),
 			};
 		}
+		self.depth -= 1;
 		Ok(lhs)
 	}
 	fn or(&mut self) -> Result<Expr, ParseError> {
@@ -1524,10 +1588,17 @@ impl<'a> E<'a> {
 		}
 	}
 	fn unary(&mut self) -> Result<Expr, ParseError> {
+		// `!!!…x` / `---x` recurse here rather than through `chain`, so guard it
+		// too (audit SA-022).
+		self.depth += 1;
+		if self.depth > MAX_DEPTH {
+			return err(self.line, "expression nested too deeply");
+		}
 		let from = self.i;
 		for (p, op) in [("!", UnaryOp::Not), ("-", UnaryOp::Neg)] {
 			if self.eat(p) {
 				let rhs = self.unary()?;
+				self.depth -= 1;
 				return Ok(Expr::Unary {
 					op,
 					rhs: Box::new(rhs),
@@ -1535,7 +1606,9 @@ impl<'a> E<'a> {
 				});
 			}
 		}
-		self.postfix()
+		let r = self.postfix();
+		self.depth -= 1;
+		r
 	}
 	fn postfix(&mut self) -> Result<Expr, ParseError> {
 		let from = self.i;

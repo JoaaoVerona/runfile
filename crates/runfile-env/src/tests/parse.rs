@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn serialize_round_trips_awkward_values_and_leaves_simple_ones_bare() {
+	// A value that would not read back bare is quoted; one that would is left
+	// as it is, so an ordinary decrypted file stays unquoted (audit SA-030).
+	let bare = [
+		"value",
+		"hello world",
+		"http://example.com/a//b",
+		"a#b",
+		"",
+		"/usr/bin:/bin",
+	];
+	for v in bare {
+		assert_eq!(serialize_env_value(v), v, "{v:?} should stay bare");
+	}
+	let quoted = [
+		"-----BEGIN KEY-----\nLINE\n-----END KEY-----", // multi-line PEM
+		"first\nNODE_OPTIONS=--require ./evil.js",      // the injection the finding reproduces
+		"has \" quote",
+		"has \\ backslash",
+		" leading-space",
+		"trailing-space ",
+		"'single-quoted'",
+		"inline # comment",
+		"inline // comment",
+		"tab\there",
+	];
+	for v in quoted {
+		let line = serialize_env_line("K", v);
+		assert!(line.starts_with("K=\""), "{v:?} -> {line:?} should be quoted");
+		let pairs = parse_env_file(&line).unwrap_or_else(|e| panic!("{v:?} -> {line:?} did not parse: {e:?}"));
+		assert_eq!(
+			pairs,
+			vec![("K".to_string(), v.to_string())],
+			"{v:?} did not round-trip via {line:?}"
+		);
+	}
+	// The whole point: a decrypted multi-line value is one variable, not two.
+	let two_vars = parse_env_file(&serialize_env_line("CERT", "first\nNODE_OPTIONS=x")).unwrap();
+	assert_eq!(two_vars.len(), 1, "a newline must not inject a second variable");
+}
+
+#[test]
 fn parse_env_file_simple() {
 	let content = "KEY=value\nANOTHER=hello world\n";
 	let pairs = parse_env_file(content).unwrap();
@@ -266,3 +308,18 @@ fn parse_env_file_empty_quoted_value_with_trailing_comment() {
 // ══════════════════════════════════════════════════════════════════════
 // load_env_files tests
 // ══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn a_malformed_line_error_does_not_echo_the_line(/* audit SA-026 */) {
+	// A line with no `=` -- a continuation of a multi-line secret, or a key body
+	// left in plaintext -- must not have its content printed; only the line
+	// number and what is wrong.
+	let secret = "ghp_FAKE_0123456789abcdef";
+	let (line, msg) = parse_env_file(&format!("API_TOKEN=\n{secret}\n")).unwrap_err();
+	assert_eq!(line, 2);
+	assert!(!msg.contains(secret), "the offending line leaked into the error: {msg}");
+	assert!(
+		msg.contains("KEY=VALUE") || msg.contains("'='"),
+		"still says what is wrong: {msg}"
+	);
+}

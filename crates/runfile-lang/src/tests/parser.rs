@@ -508,3 +508,43 @@ fn parallel_is_claimed_only_in_front_of_a_keyword() {
 	assert!(e.contains("takes `do` or `for`"), "{e}");
 	crate::parse("let parallel = 5\nparallel = 6\n").expect("an ordinary name everywhere else");
 }
+
+#[test]
+fn deep_nesting_is_a_clean_error_not_a_stack_overflow() {
+	// Past the bound the parser reports a syntax error instead of aborting the
+	// process (audit SA-022). Run on an 8 MB stack, matching the main thread the
+	// CLI and the language server parse on in production; a cargo test thread is
+	// 2 MB, far smaller than anything that parses for real, and a debug build's
+	// `statement` frame is large enough to overflow it before the bound is hit.
+	std::thread::Builder::new()
+		.stack_size(8 * 1024 * 1024)
+		.spawn(|| {
+			let parens = format!("let x = {}1{}\n", "(".repeat(4096), ")".repeat(4096));
+			assert!(crate::parse(&parens).is_err(), "deep parens must not abort");
+			let lists = format!("let x = {}1{}\n", "[".repeat(4096), "]".repeat(4096));
+			assert!(crate::parse(&lists).is_err(), "deep lists must not abort");
+			let bangs = format!("let x = {}true\n", "!".repeat(4096));
+			assert!(crate::parse(&bangs).is_err(), "deep unary must not abort");
+			let blocks = format!("{}$ true\n{}", "if true\n".repeat(4096), "end\n".repeat(4096));
+			assert!(crate::parse(&blocks).is_err(), "deep blocks must not abort");
+			// A file nested within the bound still parses -- far more than real code.
+			let ok = format!("let x = {}1{}\n", "(".repeat(20), ")".repeat(20));
+			assert!(crate::parse(&ok).is_ok(), "modest nesting is fine: {ok}");
+			let ok_blocks = format!("{}$ true\n{}", "if true\n".repeat(20), "end\n".repeat(20));
+			assert!(crate::parse(&ok_blocks).is_ok(), "modest block nesting is fine");
+		})
+		.unwrap()
+		.join()
+		.unwrap();
+}
+
+#[test]
+fn a_non_ascii_byte_at_a_truncation_boundary_does_not_panic() {
+	// The trailing-tokens error truncated by byte, which panicked inside a
+	// multi-byte character (audit SA-022); it truncates by character now.
+	let src = format!("let x = 1 \"{}\"\n", "é".repeat(40));
+	assert!(crate::parse(&src).is_err(), "reported as an error, not a panic");
+	// An exec body indented with a multi-byte space no longer panics the dedent.
+	let body = "exec cat\n\tone\n\u{3000}two\nend\n";
+	let _ = crate::parse(body); // must not panic; Ok or Err are both acceptable
+}
