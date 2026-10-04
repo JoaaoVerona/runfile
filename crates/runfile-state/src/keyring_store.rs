@@ -181,3 +181,25 @@ pub fn is_available() -> bool {
 	}
 	keyring_core_is_available()
 }
+
+/// Whether a key stored here survives a reboot.
+///
+/// Windows Credential Manager and macOS Keychain do. The Linux keyutils
+/// fallback does **not**: its keys live in kernel memory, cleared on reboot and
+/// expired a few days after logout (keyrings(7)). A caller that generates and
+/// stores a key where this is false must warn, or the only copy of the key --
+/// and everything encrypted under it -- is lost on the next reboot (audit
+/// SA-017). `true` whenever no store is available at all, so the separate
+/// `is_available` check is what reports that case.
+pub fn is_persistent() -> bool {
+	// Each arm is the function's tail on its own platform: the other is removed
+	// by `cfg`, so there is no `return` for clippy to call needless.
+	#[cfg(target_os = "linux")]
+	{
+		using_secret_service()
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		true
+	}
+}

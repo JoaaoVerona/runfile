@@ -516,13 +516,21 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 		Statement::Exec {
 			command, body, detach, ..
 		} => {
-			let (cmd, text) = render(command.as_deref(), body, props, r)?;
-			r.trace.push(text.clone());
+			let rendered = render(command.as_deref(), body, props, r)?;
+			// The preview shows the resolved body -- its documented contract, and
+			// what the argument-parsing tests read back. A `--dry-run` reads no
+			// `.env-file` and holds no key (SA-008), so a decrypted secret is
+			// never in scope to be interpolated here; the auto-firing paths that
+			// *do* run for real -- failure messages and `.logging` -- redact via
+			// the display form instead (SA-012).
+			r.trace.push(rendered.body.clone());
 			let env = merged_env(r);
 			let dir = cwd(props, &r.anchor);
 			exec::spawn(Spawn {
-				command: command_for(cmd.as_deref(), props),
-				body: &text,
+				command: command_for(rendered.cmd.as_deref(), props),
+				body: &rendered.body,
+				show_command: command_for(rendered.show_cmd.as_deref(), props),
+				display: &rendered.show_body,
 				cwd: &dir,
 				env: &env,
 				capture: false,
@@ -718,12 +726,14 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 	let Expr::Capture { command, body, .. } = e else {
 		return Ok(eval_boundary(e, &mut r.scope)?);
 	};
-	let (cmd, text) = render(command.as_deref(), body, props, r)?;
+	let rendered = render(command.as_deref(), body, props, r)?;
 	let env = merged_env(r);
 	let dir = cwd(props, &r.anchor);
 	let out = exec::spawn(Spawn {
-		command: command_for(cmd.as_deref(), props),
-		body: &text,
+		command: command_for(rendered.cmd.as_deref(), props),
+		body: &rendered.body,
+		show_command: command_for(rendered.show_cmd.as_deref(), props),
+		display: &rendered.show_body,
 		cwd: &dir,
 		env: &env,
 		capture: true,
@@ -767,12 +777,14 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 			line: e.span().line,
 		}));
 	};
-	let (cmd, text) = render(command.as_deref(), body, props, r)?;
+	let rendered = render(command.as_deref(), body, props, r)?;
 	let env = merged_env(r);
 	let dir = cwd(props, &r.anchor);
 	Ok(exec::spawn_code(Spawn {
-		command: command_for(cmd.as_deref(), props),
-		body: &text,
+		command: command_for(rendered.cmd.as_deref(), props),
+		body: &rendered.body,
+		show_command: command_for(rendered.show_cmd.as_deref(), props),
+		display: &rendered.show_body,
 		cwd: &dir,
 		env: &env,
 		capture: false,
@@ -871,12 +883,24 @@ fn run_args(words: &[Vec<InterpPart>], sc: &mut Scope) -> Result<Vec<String>, Ru
 /// `$( )` in a value is text everywhere -- see [`runfile_lang::Quoting`]. In a
 /// shell that reading does not follow, every value is the one quoted word it
 /// always was.
+/// The two forms of a command. `cmd`/`body` are what the shell runs, values
+/// spliced in. `show_cmd`/`show_body` are what a human is shown -- every
+/// `{{ … }}` kept as a source-form placeholder -- so an interpolated secret
+/// does not reach a failure message, a `.logging` line or a `--dry-run` preview
+/// (audit SA-012).
+struct Rendered {
+	cmd: Option<String>,
+	body: String,
+	show_cmd: Option<String>,
+	show_body: String,
+}
+
 fn render(
 	command: Option<&[InterpPart]>,
 	body: &[Vec<InterpPart>],
 	props: &Props,
 	r: &mut Runner<'_>,
-) -> Result<(Option<String>, String), RunError> {
+) -> Result<Rendered, RunError> {
 	let cmd = match command {
 		Some(c) => Some(interpolate_shell(c, &mut r.scope)?),
 		None => None,
@@ -891,7 +915,19 @@ fn render(
 		}
 		lines
 	};
-	Ok((cmd, lines.join("\n")))
+	// The display form evaluates nothing, so it reads no value and cannot fail.
+	let show_cmd = command.map(runfile_lang::eval::interpolate_display);
+	let show_body = body
+		.iter()
+		.map(|l| runfile_lang::eval::interpolate_display(l))
+		.collect::<Vec<_>>()
+		.join("\n");
+	Ok(Rendered {
+		cmd,
+		body: lines.join("\n"),
+		show_cmd,
+		show_body,
+	})
 }
 
 fn cwd(props: &Props, anchor: &Path) -> PathBuf {

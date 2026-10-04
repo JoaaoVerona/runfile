@@ -155,6 +155,40 @@ fn interpolation_quotes_itself_and_expands_lists() {
 }
 
 #[test]
+fn display_names_an_interpolation_by_source_and_never_its_value() {
+	use crate::ast::InterpPart;
+	use crate::eval::interpolate_display;
+	use crate::{Expr, Span};
+	let p = |src: &str| InterpPart::Expr(parse_expr(src, 0, 1).unwrap());
+	let lit = |t: &str| InterpPart::Literal(t.into());
+
+	// The finding's own repro: the body shows where the value comes from, not
+	// the value. No `Scope` is involved, so there is nothing to leak.
+	assert_eq!(
+		interpolate_display(&[lit("false "), p("ENV.FAKE_TOKEN")]),
+		"false {{ ENV.FAKE_TOKEN }}"
+	);
+	// Every source kind, a bound variable and a call keep their name.
+	assert_eq!(interpolate_display(&[p("ARG.x")]), "{{ ARG.x }}");
+	assert_eq!(interpolate_display(&[p("FLAG.y")]), "{{ FLAG.y }}");
+	assert_eq!(interpolate_display(&[p("RUN.os")]), "{{ RUN.os }}");
+	assert_eq!(interpolate_display(&[p("ARGS")]), "{{ ARGS }}");
+	assert_eq!(interpolate_display(&[p("token")]), "{{ token }}");
+	assert_eq!(interpolate_display(&[p("decrypt(ENV.K)")]), "{{ decrypt(…) }}");
+	// A capture shows that it runs something, not the command's output.
+	let cap = Expr::Capture {
+		command: Some(vec![InterpPart::Literal("cat secret".into())]),
+		body: vec![],
+		span: Span::new(0, 0, 1),
+	};
+	assert_eq!(interpolate_display(&[InterpPart::Expr(cap)]), "{{ $ … }}");
+	// A literal or an operator could carry a value through -- a `?` fallback, a
+	// nested interpolation, a hard-coded token -- so it is reduced to `…`.
+	assert_eq!(interpolate_display(&[p("\"tok_literal\"")]), "{{ … }}");
+	assert_eq!(interpolate_display(&[p("ENV.A ? ENV.B")]), "{{ … }}");
+}
+
+#[test]
 fn shell_quoting_defuses_expansion() {
 	use crate::value::shell_quote;
 	assert_eq!(shell_quote("$HOME"), "'$HOME'", "a bare $ would otherwise expand");

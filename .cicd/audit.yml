@@ -8,12 +8,21 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+# Least privilege: the job token is read-only. A job that must publish grants
+# itself `contents: write` explicitly; the steps that run third-party code
+# (cargo, npx, build scripts) stay read-only, so a compromised dependency cannot
+# rewrite a published release through the token actions/checkout persists.
+permissions:
+  contents: read
+
 jobs:
   audit:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Rust toolchain
         uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1

@@ -577,6 +577,56 @@ pub fn interpolate_shell(parts: &[InterpPart], sc: &mut Scope) -> Result<String,
 	Ok(out)
 }
 
+/// Join interpolation parts for a human-facing *display* -- a failure message,
+/// a `.logging` line, a `--dry-run` preview. Literal parts are copied verbatim;
+/// each interpolation becomes a source-form `{{ … }}` placeholder that names
+/// where its value comes from and never contains the value itself.
+///
+/// Nothing is evaluated here, so a secret interpolated with `{{ }}` -- a
+/// decrypted `.env-file` value, a `decrypt()`/`read_file()` result, a CI
+/// variable -- cannot escape into a terminal, a CI log, or scrollback (audit
+/// SA-012). It also needs no [`Scope`] and cannot fail, since there is no value
+/// to resolve.
+pub fn interpolate_display(parts: &[InterpPart]) -> String {
+	let mut out = String::new();
+	for p in parts {
+		match p {
+			InterpPart::Literal(t) => out.push_str(t),
+			InterpPart::Expr(e) => {
+				out.push_str("{{ ");
+				out.push_str(&display_expr(e));
+				out.push_str(" }}");
+			}
+		}
+	}
+	out
+}
+
+/// A name for an interpolated expression that reveals no value: a source is its
+/// `KIND.key` (`ENV.TOKEN`, `ARG.x`, `RUN.os`, bare `ARGS`), a variable its
+/// name, a call its `name(…)`, a capture `$ …`. Anything else -- a literal, an
+/// operator, an index -- is `…`, since its rendered text could carry a value a
+/// `?` fallback or a nested interpolation put there. Never evaluated.
+fn display_expr(e: &Expr) -> String {
+	match e {
+		Expr::Source { kind, key, .. } => match (kind, key) {
+			(SourceKind::Args, _) => "ARGS".to_string(),
+			(SourceKind::Arg, Some(k)) => format!("ARG.{k}"),
+			(SourceKind::Env, Some(k)) => format!("ENV.{k}"),
+			(SourceKind::Flag, Some(k)) => format!("FLAG.{k}"),
+			(SourceKind::Run, Some(k)) => format!("RUN.{k}"),
+			(SourceKind::Arg, None) => "ARG".to_string(),
+			(SourceKind::Env, None) => "ENV".to_string(),
+			(SourceKind::Flag, None) => "FLAG".to_string(),
+			(SourceKind::Run, None) => "RUN".to_string(),
+		},
+		Expr::Ident(name, _) => name.clone(),
+		Expr::Call { name, .. } => format!("{name}(…)"),
+		Expr::Capture { .. } => "$ …".to_string(),
+		_ => "…".to_string(),
+	}
+}
+
 /// A shell body's lines, each value written for the place it sits in.
 ///
 /// `spots` has one entry per interpolation, in order, from the shell checker's

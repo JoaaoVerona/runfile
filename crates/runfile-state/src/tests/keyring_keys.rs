@@ -97,3 +97,15 @@ fn roundtrip_preserves_entries() {
 	let parsed = parse_blob(&raw).unwrap();
 	assert_eq!(blob, parsed);
 }
+
+#[test]
+fn is_persistent_answers_without_panic_and_holds_on_persistent_platforms() {
+	// The signal SA-017's warning is gated on. It must be callable without a
+	// live keyring; its value depends on the backend, except where the store is
+	// always persistent.
+	let persistent = crate::keyring_store::is_persistent();
+	#[cfg(not(target_os = "linux"))]
+	assert!(persistent, "Credential Manager / Keychain keep keys across a reboot");
+	#[cfg(target_os = "linux")]
+	let _ = persistent; // keyutils vs Secret Service -- decided by the environment
+}

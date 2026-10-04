@@ -29,6 +29,13 @@ pub struct Spawn<'a> {
 	/// `None` means the default shell, which is what `$` resolves to.
 	pub command: Option<&'a str>,
 	pub body: &'a str,
+	/// The command and body as a human is shown them: every `{{ … }}` kept as a
+	/// source-form placeholder rather than its value, so a failure message, a
+	/// `.logging` line or a `--dry-run` preview names an interpolated secret by
+	/// where it comes from instead of printing it (audit SA-012). `command`/
+	/// `body` are what actually runs; these are only ever displayed.
+	pub show_command: Option<&'a str>,
+	pub display: &'a str,
 	pub cwd: &'a Path,
 	pub env: &'a [(String, String)],
 	pub capture: bool,
@@ -298,8 +305,13 @@ pub fn spawn_code(s: Spawn<'_>) -> Result<i32, ExecError> {
 pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 	let (program, args) = program_and_args(s.command)?;
 	let shell = is_shell(&program);
+	// Built from the *display* command, never the executed one: `label` is used
+	// only in the messages below (announce, every `ExecError`), so an `exec`
+	// whose command word interpolates a secret is named by its source form here
+	// while the real program is still what gets spawned (audit SA-012). A `$`
+	// line has no command word, so this is the program's own path -- no value.
 	let label = s
-		.command
+		.show_command
 		.map(str::to_string)
 		.unwrap_or_else(|| program.display().to_string());
 
@@ -316,11 +328,16 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 	})?;
 	// Announced from inside the script where that is safe, so each command is
 	// named as it runs rather than all of them before any of them do.
-	let script = if s.announce && shell { traced(s.body) } else { None };
+	let script = if s.announce && shell {
+		traced(s.body, s.display)
+	} else {
+		None
+	};
 	if s.announce && script.is_none() {
 		// stderr, so a pipeline reading `run`'s output is unaffected. Bold
-		// cyan when a terminal is watching, plain when it is not.
-		announce(&label, s.body);
+		// cyan when a terminal is watching, plain when it is not. The display
+		// form, so a secret in the body is not announced (audit SA-012).
+		announce(&label, s.display);
 	}
 
 	let mut c = Command::new(&*exe);
@@ -396,7 +413,10 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 	})?;
 	if !out.status.success() {
 		return Err(ExecError::Status {
-			cmd: failed_label(&program, s.command, s.body, script.is_some()),
+			// The display command and body, so an interpolated secret is named
+			// by its source rather than printed on this very common path -- a
+			// non-zero exit from a network flake or a bad argument (SA-012).
+			cmd: failed_label(&program, s.show_command, s.display, script.is_some()),
 			code: out.status.code().unwrap_or(-1),
 		});
 	}
@@ -556,24 +576,36 @@ pub fn paint_branch(label: &str, colour: usize, paint: bool) -> String {
 /// command to the shell, and a line inserted into the middle of it would cut
 /// it in half; so would one inserted inside a quote or a heredoc that spans
 /// lines. The test is deliberately blunt: anything it is unsure of falls back.
-fn traced(body: &str) -> Option<String> {
+fn traced(body: &str, display: &str) -> Option<String> {
 	let lines: Vec<&str> = body.lines().collect();
+	let shown: Vec<&str> = display.lines().collect();
 	// One command already announces itself in the right place.
 	if lines.len() < 2 {
 		return None;
 	}
+	// The announcement is the redacted display form (SA-012), and it has to name
+	// the command it precedes. The two line up one-to-one unless an interpolated
+	// value held a newline -- which makes the executed body longer than the
+	// display -- and then the block is announced whole instead, which is safe
+	// because `announce` is also given the display form.
+	if shown.len() != lines.len() {
+		return None;
+	}
 	let (tag, bold, reset) = tags();
 	let mut out = String::new();
-	for l in &lines {
+	for (l, s) in lines.iter().zip(&shown) {
 		let t = l.trim();
 		if t.is_empty() {
 			out.push('\n');
 			continue;
 		}
+		// The structural test is on the *executed* line: whether a `printf` may
+		// be inserted before it is a question about the real shell text, not the
+		// placeholder.
 		if !standalone(t) {
 			return None;
 		}
-		let said = runfile_lang::Value::Str(format!("{tag} {bold}{t}{reset}")).to_shell();
+		let said = runfile_lang::Value::Str(format!("{tag} {bold}{}{reset}", s.trim())).to_shell();
 		out.push_str(&format!("printf '%s\\n' {said} >&2\n"));
 		out.push_str(l);
 		out.push('\n');
@@ -714,6 +746,8 @@ mod tests {
 			spawn_code(Spawn {
 				command: Some("busybox sh"),
 				body,
+				show_command: Some("busybox sh"),
+				display: body,
 				cwd: &dir,
 				env: &[],
 				capture: false,

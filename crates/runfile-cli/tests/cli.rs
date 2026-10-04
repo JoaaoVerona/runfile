@@ -328,6 +328,46 @@ fn dry_run_prints_resolved_commands_without_running_them() {
 	assert!(!p.dir.path().join("out.txt").exists(), "nothing actually ran");
 }
 
+#[test]
+fn an_interpolated_secret_is_not_leaked_by_the_runner() {
+	// A secret interpolated with `{{ }}` -- here a stand-in token placed in the
+	// environment by a `.env` property, standing for a decrypted `.env-file`
+	// value or a CI variable -- must appear in neither of the messages the
+	// runner writes itself on a real run: the failure message on a non-zero
+	// exit (which has no opt-in) and a `.logging` announcement. Each shows the
+	// source form `{{ ENV.FAKE_TOKEN }}` instead (audit SA-012).
+	//
+	// `--dry-run` is not covered here on purpose: it reads no `.env-file` and
+	// holds no key (SA-008), so a decrypted secret is never in scope to preview,
+	// and resolving the values it *can* see is its documented contract -- see
+	// `dry_run_prints_resolved_commands_without_running_them`.
+	const TOKEN: &str = "tok_FAKE_0123456789";
+
+	// 1. The failure-message path, the one with no opt-in: a command fails
+	// while interpolating the secret.
+	let fail = project(&[(
+		"runfiles/f.run",
+		".env.FAKE_TOKEN = \"tok_FAKE_0123456789\"\n$ false {{ ENV.FAKE_TOKEN }}\n",
+	)]);
+	let o = fail.run(&["f"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("{{ ENV.FAKE_TOKEN }}"), "source form: {}", err(&o));
+	assert!(!err(&o).contains(TOKEN), "value leaked into the error: {}", err(&o));
+
+	// 2. `.logging`: the announcement the runner prints before the command.
+	// `true` prints nothing, so only the runner's own `[runfile]` lines can
+	// carry the value, and they must not.
+	let log = project(&[(
+		"runfiles/l.run",
+		".logging = true\n.env.FAKE_TOKEN = \"tok_FAKE_0123456789\"\n$ true {{ ENV.FAKE_TOKEN }}\n",
+	)]);
+	let o = log.run(&["l"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let announced: String = err(&o).lines().filter(|l| l.starts_with("[runfile]")).collect();
+	assert!(announced.contains("{{ ENV.FAKE_TOKEN }}"), "source form: {announced}");
+	assert!(!announced.contains(TOKEN), "value leaked into .logging: {announced}");
+}
+
 // ------------------------------------------------------------- prepare gate
 
 #[test]

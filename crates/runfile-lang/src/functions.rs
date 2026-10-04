@@ -1032,6 +1032,53 @@ fn unique_temp_path(ext: Option<&str>) -> PathBuf {
 	std::env::temp_dir().join(name)
 }
 
+/// `OpenOptions` set to create a file only this user can read, for a decrypted
+/// secret. Without `mode(0o600)` the OS temp directory's default (0644, or
+/// 0664 under a group-writable umask) lets another local user read it -- audit
+/// SA-011. A no-op beyond the usual flags on Windows, where the question has no
+/// umask equivalent.
+fn private_file_options() -> std::fs::OpenOptions {
+	let mut opts = std::fs::OpenOptions::new();
+	opts.write(true);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		opts.mode(0o600);
+	}
+	opts
+}
+
+/// Create a directory only this user may enter (`0700` on Unix), for temp files
+/// that hold secrets.
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+	// Each arm is the tail on its own platform; the other is removed by `cfg`,
+	// so there is no unused `mut` on Windows (which sets no mode) and no `return`.
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::DirBuilderExt;
+		std::fs::DirBuilder::new().mode(0o700).create(path)
+	}
+	#[cfg(not(unix))]
+	{
+		std::fs::DirBuilder::new().create(path)
+	}
+}
+
+/// Write `bytes` to `path` as a file only this user can read, truncating any
+/// existing one -- for `decrypt`'s plaintext destination.
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+	use std::io::Write as _;
+	let mut file = private_file_options().create(true).truncate(true).open(path)?;
+	// `OpenOptions::mode` only applies when the file is *created*, so an existing
+	// one would keep its old (possibly world-readable) mode; set it explicitly.
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+	}
+	file.write_all(bytes)
+}
+
 fn resolve(base: &Path, p: &str) -> PathBuf {
 	let path = Path::new(p);
 	if path.is_absolute() {
@@ -1752,9 +1799,9 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 			};
 			let path = unique_temp_path(ext);
 			// Exclusive creation: in a world-writable directory this refuses to
-			// follow a planted symlink or to truncate an existing file.
-			let mut file = std::fs::OpenOptions::new()
-				.write(true)
+			// follow a planted symlink or to truncate an existing file. Owner-only
+			// (0600), since a decoded credential is its usual content.
+			let mut file = private_file_options()
 				.create_new(true)
 				.open(&path)
 				.map_err(|e| other(format!("could not create a temp file: {e}")))?;
@@ -1771,7 +1818,7 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 				Ok(V::Str("<would create a temp directory>".into()))
 			} else {
 				let path = unique_temp_path(None);
-				match std::fs::create_dir(&path) {
+				match create_private_dir(&path) {
 					Ok(()) => {
 						sc.temps.track(path.clone());
 						Ok(V::Str(path.to_string_lossy().into_owned()))
@@ -2030,7 +2077,8 @@ fn decrypt_file(src: &Path, dst: &Path, keys: &[String]) -> Result<(), String> {
 		}
 		out.push('\n');
 	}
-	std::fs::write(dst, out).map_err(|e| format!("could not write {}: {e}", dst.display()))
+	// Owner-only: the destination is plaintext secrets.
+	write_private(dst, out.as_bytes()).map_err(|e| format!("could not write {}: {e}", dst.display()))
 }
 
 /// Whether a path is a file this user may execute.

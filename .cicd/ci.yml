@@ -24,6 +24,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: the job token is read-only. A job that must publish grants
+# itself `contents: write` explicitly; the steps that run third-party code
+# (cargo, npx, build scripts) stay read-only, so a compromised dependency cannot
+# rewrite a published release through the token actions/checkout persists.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Check
@@ -31,6 +38,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Rust toolchain
         uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
@@ -72,6 +81,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       # rustup settles a Windows machine's host ABI once, when it is installed,
       # and settles on GNU if Visual Studio was not there yet -- which still
@@ -106,6 +117,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Setup pnpm and Node.js
         uses: pnpm/setup@v2.1.0
@@ -161,6 +174,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Setup Runfile
         uses: ./.github/actions/setup
@@ -186,6 +201,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Rust toolchain
         uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1

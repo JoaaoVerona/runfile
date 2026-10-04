@@ -318,3 +318,39 @@ mod printf {
 		}
 	}
 }
+
+#[cfg(unix)]
+#[test]
+fn temp_file_and_temp_dir_are_owner_only() {
+	// A decoded credential's usual home. Without an explicit mode the OS temp
+	// directory's default (0644, or 0664/0777 under a lax umask) lets another
+	// local user read it -- audit SA-011. The mode is forced, so it is 0600/0700
+	// whatever the umask is.
+	use std::os::unix::fs::PermissionsExt;
+	let d = tempfile::TempDir::new().unwrap();
+	let Value::Str(fp) = in_dir(d.path(), r#"temp_file("secret", "txt")"#).unwrap() else {
+		panic!()
+	};
+	let Value::Str(dp) = in_dir(d.path(), r#"temp_dir()"#).unwrap() else {
+		panic!()
+	};
+	let fmode = std::fs::metadata(&fp).unwrap().permissions().mode() & 0o777;
+	let dmode = std::fs::metadata(&dp).unwrap().permissions().mode() & 0o777;
+	assert_eq!(fmode, 0o600, "temp_file is owner-only");
+	assert_eq!(dmode, 0o700, "temp_dir is owner-only");
+	let _ = std::fs::remove_file(&fp);
+	let _ = std::fs::remove_dir_all(&dp);
+}
+
+#[cfg(unix)]
+#[test]
+fn write_private_is_owner_only_even_over_an_existing_file() {
+	use std::os::unix::fs::PermissionsExt;
+	let d = tempfile::TempDir::new().unwrap();
+	let p = d.path().join("secret.env");
+	std::fs::write(&p, "old").unwrap();
+	std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+	crate::functions::write_private(&p, b"KEY=plaintext").unwrap();
+	assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+	assert_eq!(std::fs::read_to_string(&p).unwrap(), "KEY=plaintext");
+}

@@ -21,6 +21,13 @@ on:
         description: "Tag to release again"
         required: true
 
+# Least privilege: the job token is read-only. A job that must publish grants
+# itself `contents: write` explicitly; the steps that run third-party code
+# (cargo, npx, build scripts) stay read-only, so a compromised dependency cannot
+# rewrite a published release through the token actions/checkout persists.
+permissions:
+  contents: read
+
 jobs:
   resolve:
     name: Find the release to mirror
@@ -34,6 +41,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           # Every tag, for the one Cargo.toml names.
           fetch-depth: 0
 
@@ -106,6 +114,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ needs.resolve.outputs.tag }}
 
       # `rustflags: ""` is load-bearing: the action defaults to exporting
@@ -180,6 +189,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Setup pnpm and Node.js
@@ -238,6 +248,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Verify tag matches the workspace version
@@ -297,6 +308,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ needs.resolve.outputs.tag }}
           # The whole history, for the tags the step below compares against.
           fetch-depth: 0
@@ -338,6 +350,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Download artifacts

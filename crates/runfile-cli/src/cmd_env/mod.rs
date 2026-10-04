@@ -1,7 +1,24 @@
 pub mod dispatch;
 use crate::ci_detect;
 pub use dispatch::dispatch;
-use runfile_state::keyring_keys;
+use runfile_state::{keyring_keys, keyring_store};
+
+/// Warn, after a key has just been stored, when the store cannot keep it across
+/// a reboot -- the Linux keyutils fallback, which a headless host, a container or
+/// WSL commonly lands on. The key, and everything encrypted under it, is lost on
+/// the next reboot unless it is saved elsewhere (audit SA-017).
+pub(crate) fn warn_if_volatile(public_key: &str) {
+	if keyring_store::is_persistent() {
+		return;
+	}
+	let prefix = public_key.get(..8).unwrap_or(public_key);
+	eprintln!(
+		"[runfile] warning: no persistent credential store is available here (no Secret Service / D-Bus \
+		 session), so the key is held in kernel keyutils -- cleared on reboot, and gone a few days after \
+		 logout. Save it elsewhere now, or everything encrypted under it becomes unrecoverable:\n  \
+		 run :env secret-keys get-private {prefix}\n  (or set RUNFILE_PRIVATE_KEYS from a saved copy)"
+	);
+}
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read};
 use std::path::Path;
@@ -106,6 +123,7 @@ pub fn cmd_init(path: &str, plain: bool, key_partial: Option<&str>) {
 	println!("  Public key: {public_key}");
 
 	if auto_generated {
+		warn_if_volatile(&public_key);
 		println!();
 		println!("A new private key was generated and added to your local settings.");
 		println!();

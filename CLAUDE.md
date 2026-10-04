@@ -658,7 +658,12 @@ quoting.
   drains after every iteration. `Host::temp_guard` wraps the run in a `Drop` that drains too, so a **panic** --
   which unwinds past the explicit `cleanup_temps`, the release profile not being `panic = "abort"` -- cannot
   leave a decrypted temp file behind (audit SA-006); cleanup is idempotent, so the guard and the explicit call
-  do not conflict.
+  do not conflict. **The files are created owner-only** (`0600`, and `0700` for `temp_dir`) on Unix (audit
+  SA-011): `private_file_options`, `create_private_dir` and `write_private` set the mode, and `write_private`
+  re-applies `set_permissions(0o600)` after opening, since `OpenOptions::mode` only takes effect when the file
+  is *created* and `decrypt`'s destination may already exist. A no-op on Windows, which has no umask. Without
+  it a decrypted secret sat at the temp directory's default (0644, or 0664 under a group-writable umask),
+  readable by another local user for as long as the run lasted.
 - Binding names are validated in both `let` and reassignment; a block closer (`end`/`else`/`case`/`default`)
   with nothing open is a parse error rather than an expression statement.
 - **`exit()` ends the target it is written in, with a status.** It leaves as `EvalError::Exit`, since an
@@ -904,7 +909,11 @@ terminal's width, and how wide text is on it).
 - **Ctrl+C** is caught so the run can stop between statements, delete its temp files, and exit 130. The flag
   is process-global because a signal handler has nowhere else to write, but the runtime reads an injected
   predicate (`Host::interrupted`), so it reaches for no process state of its own and one test cannot
-  interrupt another. `.ignore-errors` does not apply to it.
+  interrupt another. `.ignore-errors` does not apply to it. **The same handler also catches the other ways a
+  run is ended** (audit SA-011): SIGTERM (a CI cancellation, `timeout`), SIGHUP (a closed terminal or dropped
+  SSH session) and SIGQUIT on Unix, and CTRL_CLOSE/LOGOFF/SHUTDOWN on Windows — each only sets the flag, so
+  the walker still stops between statements and drains the temp registry rather than being killed with a
+  decrypted file left behind. SIGKILL still cannot be caught, and the `temp_guard` `Drop` covers a panic.
 - `Dispatch` is `Sync` with `&self` and an explicit `chain: &[String]`. Per-path rather than shared, so
   parallel siblings are not mistaken for a cycle.
 - **A parallel branch is a `Runner::fork`**, walked by the same `statement` and `walk` as everything else --
@@ -934,6 +943,19 @@ terminal's width, and how wide text is on it).
   announcements can say which one stopped — but only when the block was traced. A block announced whole has
   no single line above to point at, so it is named instead (*"a command in `for f in a b; do …`"*): pointing
   at output that says something else would be worse than saying less.
+- **What the runner shows is the source form, never an interpolated value** (audit SA-012). `render` returns
+  two bodies: the executed one, with values spliced in, and a display one where every `{{ … }}` is kept as a
+  placeholder naming where its value comes from (`{{ ENV.TOKEN }}`, `{{ ARG.x }}`, `{{ decrypt(…) }}`) —
+  built by `eval::interpolate_display`, which evaluates nothing, so it has no value to leak. `Spawn` carries
+  the display command and body beside the real ones; `failed_label`, `announce`, `traced` and every
+  `ExecError` message (`spawn`'s `label` is built from the display command) use them, so a non-zero exit —
+  which fires with no opt-in, on a network flake as readily as a real bug — a `.logging` line, and a
+  failed-to-start error name a secret rather than printing it into scrollback and CI logs. The executed body
+  still carries the real value, so nothing a command *receives* changes. `--dry-run` is the one place that
+  keeps resolving values — its documented contract, and what the argument-classification tests read back —
+  and that stays safe because a preview already reads no `.env-file` and holds no key (audit SA-008), so a
+  decrypted secret is never in scope to be previewed. A value a command prints itself (`$ echo {{ x }}`) is
+  the command's own output and still appears: the runner can only redact what *it* writes.
 - **On Windows that argument has to be quoted by hand when it holds no space.** The standard library quotes
   an argument containing a space or a tab and nothing else -- a newline does not count -- so a block whose
   every line is a bare word (`true`, then `false`) reached the command line bare, and the shell's own parser,
@@ -1074,6 +1096,19 @@ terminal's width, and how wide text is on it).
   reads `.env-file`s to work out `.watch`, so the two are distinct flags (see *runfile-lang* `Scope.preview`).
 - `env::build` receives the same deferred key pool the `decrypt` function uses. It was previously passed `None`,
   which meant an encrypted `.env-file` value could never be decrypted at all.
+- **`run :env encrypt` encrypts whole parsed values, and verifies the round-trip** (`cmd_env/crypt.rs`, audit
+  SA-013). It used to split each line on the first `=` and encrypt the text after it, so a multi-line value (a
+  PEM key, a certificate) had only its first line encrypted and the rest left as plaintext in the "encrypted"
+  file, and a quoted or trailing-comment value was silently rewritten. It now parses with
+  `runfile_env::parse_env_file` -- the same reader the runtime uses -- encrypts each parsed value whole, then
+  re-parses and decrypts the output and refuses to write a file whose values would not round-trip.
+- **A key kept only in kernel keyutils is volatile, and the `:env` commands say so** (`keyring_store::is_persistent`,
+  audit SA-017). On Linux with no usable Secret Service the backend falls back to keyutils, which a reboot (or
+  a few days logged out) clears. `:env init`, `:env secret-keys add` and `:env rotate` warn (`warn_if_volatile`)
+  when a freshly generated key lands there, `:env secret-keys list` labels such keys, and
+  `rotate --delete-current-key` refuses to delete the old key when the store is not persistent, so a reboot
+  cannot leave the only copy gone and every value encrypted under it unreadable. `is_persistent` is `true` on
+  Windows/macOS and whenever Secret Service is in use.
 - **Precedence is decided in one place, `runfile_env::build_env`: `.env-file` < the caller's shell < the
   target's `.env`.** A file is a default -- the dotenv convention, so a checked-in `.env` does not clobber what
   someone exported -- and the target's own assignment beats both, since it is the one way a target can force
@@ -1371,6 +1406,13 @@ search the child's cwd first, so a `run.exe` committed to a workspace folder wou
 runner when the catalog is fetched with that folder as cwd. `pure.ts`'s `pathCandidates` (tested) is the
 PATH-splitting half: it skips relative and empty entries (an empty one means the cwd) and, on Windows, tries each
 `PATHEXT`; a name the user wrote with a path separator, or one not on PATH, is left as given.
+
+**The `.vsix` is packaged by a pinned `vsce`, from the lockfile** (audit SA-015). `package.json` pins
+`@vscode/vsce` to an exact version in `devDependencies`, and `runfiles/package.run` runs
+`vsce package --no-dependencies` from that install rather than `npx @vscode/vsce`, which resolved the tool and
+its ~136 transitive packages fresh from npm at release time -- in no lockfile at all, so a yanked or
+compromised version could enter a release build unobserved. `pnpm-workspace.yaml` (`allowBuilds`) approves only
+the one build script the pinned tree needs, so pnpm's install-script block does not have to be lifted wholesale.
 
 The LSP client is hand-rolled rather than `vscode-languageclient`: the server speaks a small, fixed subset,
 and a full client library is a large dependency for five message types. It was notification-only until
@@ -1763,6 +1805,11 @@ intermediate release at once. A version whose tag did not arrive fails the relea
   anywhere else is one the mirror could never reach.
 - **GitHub's default branch should be `github`**: it is what the repository page, a clone, a pull request and the
   scheduled audit all read. Nothing here can set that; it is a repository setting.
+- **Every workflow is least-privilege** (audit SA-018). Each `.cicd/*.yml` and `.github/workflows/*.yml` file
+  declares top-level `permissions: contents: read`, only the Gitea `release` job raises itself to
+  `contents: write`, and every `actions/checkout` sets `persist-credentials: false`. So the third-party code an
+  ordinary CI job runs -- cargo and its build scripts, `npx`, the tree-sitter CLI's binary download -- cannot
+  reuse a persisted write-capable job token to rewrite a published release.
 
 What each side publishes is decided by what it can do:
 

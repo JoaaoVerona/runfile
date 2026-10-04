@@ -341,8 +341,11 @@ confirm("Deploy to production?")
 $ terraform apply -auto-approve
 ```
 
-The temp file is deleted when the run ends, however it ends — including a failure half-way, which is exactly
-when a decoded credential must not be left behind.
+The temp file is deleted when the run ends, however it ends — including a failure half-way, or a SIGTERM/SIGHUP,
+which is exactly when a decoded credential must not be left behind — and it is created readable only by you
+(`0600`). The runner also keeps interpolated secrets out of **its own** output: a failed command and a
+`.logging` line show `{{ ENV.TOKEN }}` where the value would be, not the value, so a secret does not land in
+terminal scrollback or a CI log.
 
 ### A pre-commit hook
 

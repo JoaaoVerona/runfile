@@ -50,6 +50,13 @@ on:
         description: "Tag to release"
         required: true
 
+# Least privilege: the job token is read-only. A job that must publish grants
+# itself `contents: write` explicitly; the steps that run third-party code
+# (cargo, npx, build scripts) stay read-only, so a compromised dependency cannot
+# rewrite a published release through the token actions/checkout persists.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build (${{ matrix.platform.target }})
@@ -74,6 +81,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || gitea.ref_name }}
 
       # See .cicd/ci.yml: the release is then built by the toolchain CI tested,
@@ -160,6 +168,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || gitea.ref_name }}
 
       - name: Setup pnpm and Node.js
@@ -207,10 +216,15 @@ jobs:
     name: Publish Gitea release
     needs: [build, extension]
     runs-on: ubuntu-24.04
+    # The one job that writes: it publishes the release (through the explicit
+    # token below, with the job token as a fallback). Nothing else gets write.
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || gitea.ref_name }}
 
       # Also hands the bare version to `required` below, which has to name the

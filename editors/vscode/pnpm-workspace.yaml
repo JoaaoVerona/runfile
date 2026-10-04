@@ -1,0 +1,5 @@
+# `vsce package` does not sign, so @vscode/vsce-sign's postinstall (which only
+# prepares Marketplace signing) is deliberately not built -- `false` records the
+# decision so `pnpm install` neither runs it nor errors asking about it.
+allowBuilds:
+  '@vscode/vsce-sign': false

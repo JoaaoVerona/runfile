@@ -65,13 +65,20 @@ fn install_inner() {
 	// Only an atomic store, which is async-signal-safe. Anything more -- a
 	// print, an allocation -- is not, and this handler runs on whatever thread
 	// the signal lands on.
-	extern "C" fn on_sigint(_: libc::c_int) {
+	extern "C" fn on_signal(_: libc::c_int) {
 		INTERRUPTED.store(true, Ordering::SeqCst);
 	}
-	// SAFETY: `signal` with a plain extern "C" fn is the documented use, and
-	// the handler touches nothing but one atomic.
+	// SIGINT is Ctrl+C; the others are the ordinary ways a run is ended that
+	// would otherwise terminate it before it could delete its temp files -- a CI
+	// cancellation or `timeout` (SIGTERM), a closed terminal or dropped SSH
+	// session (SIGHUP), Ctrl+\ (SIGQUIT). Each only sets the flag, so the walker
+	// stops between statements and cleans up; SIGKILL still cannot be caught.
+	// SAFETY: `signal` with a plain extern "C" fn is the documented use, and the
+	// handler touches nothing but one atomic.
 	unsafe {
-		libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t);
+		for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
+			libc::signal(sig, on_signal as *const () as libc::sighandler_t);
+		}
 	}
 }
 
@@ -82,14 +89,20 @@ fn install_inner() {
 	// -- stayed. Taking it from where it is defined is the spelling that holds
 	// either way.
 	use windows_sys::Win32::Foundation::{FALSE, TRUE};
-	use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler};
+	use windows_sys::Win32::System::Console::{
+		CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT, SetConsoleCtrlHandler,
+	};
 	use windows_sys::core::BOOL;
 
 	unsafe extern "system" fn on_ctrl(kind: u32) -> BOOL {
-		if kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT {
+		// Ctrl+C/Break, and the three that would otherwise terminate the process
+		// outright -- the console window closing, logoff, shutdown -- which give a
+		// handler a few seconds to let the walker clean up its temp files.
+		if matches!(
+			kind,
+			CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT
+		) {
 			INTERRUPTED.store(true, Ordering::SeqCst);
-			// Handled: Windows would otherwise terminate the process outright,
-			// leaving the temp files behind.
 			return TRUE;
 		}
 		FALSE

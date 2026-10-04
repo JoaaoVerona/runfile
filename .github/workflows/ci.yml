@@ -10,6 +10,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: the job token is read-only. A job that must publish grants
+# itself `contents: write` explicitly; the steps that run third-party code
+# (cargo, npx, build scripts) stay read-only, so a compromised dependency cannot
+# rewrite a published release through the token actions/checkout persists.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Check
@@ -17,6 +24,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       # See release.yml: `rustflags: ""` keeps `.cargo/config.toml` in effect.
       # `ci:check` passes `-D warnings` to clippy explicitly, so nothing is lost.
@@ -57,6 +66,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       # Same as the check job — and here it also makes the windows-2025 leg
       # actually build with `+crt-static`, so the release configuration is
@@ -80,6 +91,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Setup pnpm and Node.js
         uses: pnpm/setup@v2.1.0
@@ -145,6 +158,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Setup Runfile
         uses: ./.github/actions/setup
