@@ -1,0 +1,262 @@
+path	bytes	component	assigned_agent	status
+.cargo/config.toml	1262	.cargo/config.toml	supply-chain-ci	assigned
+.cicd/audit.yml	991	.cicd/audit.yml	supply-chain-ci	assigned
+.cicd/ci.yml	9173	.cicd/ci.yml	supply-chain-ci	assigned
+.cicd/release-assets/install.ps1	4143	.cicd/release-assets	supply-chain-ci	assigned
+.cicd/release-assets/install.sh	2211	.cicd/release-assets	supply-chain-ci	assigned
+.cicd/release.yml	10355	.cicd/release.yml	supply-chain-ci	assigned
+.editorconfig	221	(root)	supply-chain-ci	assigned
+.gitattributes	19	(root)	supply-chain-ci	assigned
+.githooks/pre-commit	25	.githooks/pre-commit	supply-chain-ci	assigned
+.githooks/pre-push	21	.githooks/pre-push	supply-chain-ci	assigned
+.github/actions/setup/action.yml	6166	.github/actions	supply-chain-ci	assigned
+.github/workflows/audit.yml	992	.github/workflows	supply-chain-ci	assigned
+.github/workflows/ci.yml	5935	.github/workflows	supply-chain-ci	assigned
+.github/workflows/release.yml	15412	.github/workflows	supply-chain-ci	assigned
+.gitignore	353	(root)	supply-chain-ci	assigned
+CLAUDE.md	175310	(root)	-	excluded: documentation / media
+Cargo.lock	53642	(root)	dependencies	excluded: lockfile (audited by dependency agent via dep_audit.py, not line by line)
+Cargo.toml	1912	(root)	supply-chain-ci	assigned
+GRAMMAR.ebnf	7941	(root)	-	excluded: documentation / media
+LANGUAGE-CHECK-RULES.md	7410	(root)	-	excluded: documentation / media
+LICENSE	1081	(root)	-	excluded: documentation / media
+README.md	46723	(root)	-	excluded: documentation / media
+SHELL-CHECK-RULES.md	21456	(root)	-	excluded: documentation / media
+crates/runfile-cli/Cargo.toml	880	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/ci_detect.rs	1224	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/cmd_env/crypt.rs	11072	crates/runfile-cli	secrets-crypto	assigned
+crates/runfile-cli/src/cmd_env/dispatch.rs	3909	crates/runfile-cli	secrets-crypto	assigned
+crates/runfile-cli/src/cmd_env/mod.rs	16521	crates/runfile-cli	secrets-crypto	assigned
+crates/runfile-cli/src/cmd_env/secret_keys.rs	8140	crates/runfile-cli	secrets-crypto	assigned
+crates/runfile-cli/src/cmd_generate.rs	16511	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/cmd_lint.rs	11097	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/cmd_update.rs	27630	crates/runfile-cli	supply-chain-ci	assigned
+crates/runfile-cli/src/completions.rs	23392	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/help.rs	2826	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/init.rs	2058	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/list.rs	5088	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/main.rs	13439	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/prepare.rs	3223	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/prompt.rs	2528	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/stdin_args.rs	3113	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/target_help.rs	5741	crates/runfile-cli	cli	assigned
+crates/runfile-cli/src/watch.rs	5720	crates/runfile-cli	cli	assigned
+crates/runfile-cli/tests/cli.rs	150462	crates/runfile-cli	cli	assigned
+crates/runfile-cli/tests/lsp.rs	5751	crates/runfile-cli	lsp	assigned
+crates/runfile-cli/tests/update.rs	9179	crates/runfile-cli	supply-chain-ci	assigned
+crates/runfile-crypto/Cargo.toml	469	crates/runfile-crypto	secrets-crypto	assigned
+crates/runfile-crypto/src/lib.rs	7150	crates/runfile-crypto	secrets-crypto	assigned
+crates/runfile-crypto/src/tests/constant_time.rs	1762	crates/runfile-crypto	secrets-crypto	assigned
+crates/runfile-crypto/src/tests/core.rs	8207	crates/runfile-crypto	secrets-crypto	assigned
+crates/runfile-crypto/src/tests/mod.rs	88	crates/runfile-crypto	secrets-crypto	assigned
+crates/runfile-crypto/src/tests/zeroize.rs	2696	crates/runfile-crypto	secrets-crypto	assigned
+crates/runfile-discovery/Cargo.toml	231	crates/runfile-discovery	untrusted-repo	assigned
+crates/runfile-discovery/examples/list.rs	330	crates/runfile-discovery	untrusted-repo	assigned
+crates/runfile-discovery/src/lib.rs	19257	crates/runfile-discovery	untrusted-repo	assigned
+crates/runfile-discovery/src/tests.rs	25743	crates/runfile-discovery	untrusted-repo	assigned
+crates/runfile-env/Cargo.toml	369	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-env/src/lib.rs	18428	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-env/src/parse.rs	4739	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-env/src/tests/build.rs	10685	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-env/src/tests/called.rs	10144	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-env/src/tests/encryption.rs	6365	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-env/src/tests/load.rs	3164	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-env/src/tests/mod.rs	1166	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-env/src/tests/parse.rs	8609	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-env/src/tests/path.rs	6861	crates/runfile-env	secrets-crypto	assigned
+crates/runfile-lang/Cargo.toml	393	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/args.rs	5025	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/ast.rs	16291	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/check.rs	32502	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/eval.rs	19126	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/format.rs	23559	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/functions.rs	73655	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/inputs.rs	11086	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/keywords.rs	12692	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/lexer.rs	12562	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/lib.rs	3880	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/parser.rs	52959	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/resolve.rs	20364	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/span.rs	629	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/structured.rs	7398	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/tests/args.rs	7297	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/tests/check.rs	19794	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/tests/eval.rs	43319	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/tests/exec.rs	2492	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/tests/expr.rs	3663	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/tests/inputs.rs	8837	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/tests/io.rs	10503	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/tests/lines.rs	9819	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/tests/mod.rs	260	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/src/tests/parser.rs	18273	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/tests/resolve.rs	12596	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/tests/spans.rs	8246	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/types.rs	17593	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/src/value.rs	4277	crates/runfile-lang	lang-eval	assigned
+crates/runfile-lang/tests/editor_grammars.rs	2726	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/tests/format.rs	15901	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/tests/golden.rs	3036	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/tests/golden/bindings.ast	4338	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/bindings.run	218	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/control-flow.ast	13416	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/control-flow.run	383	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/detach.ast	1872	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/detach.run	180	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/dispatch.ast	3019	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/dispatch.run	198	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/exec.ast	2612	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/exec.run	156	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/expressions.ast	8813	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/expressions.run	320	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/loops.ast	7625	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/loops.run	280	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/parallel.ast	6378	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/parallel.run	293	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/properties.ast	2419	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/properties.run	156	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/shell.ast	1252	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/shell.run	155	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/strings.ast	2172	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/golden/strings.run	164	crates/runfile-lang	-	excluded: test fixture (golden AST trees)
+crates/runfile-lang/tests/readme.rs	2922	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/tests/repo_format.rs	2685	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lang/tests/rules_doc.rs	3037	crates/runfile-lang	lang-parser	assigned
+crates/runfile-lsp/Cargo.toml	353	crates/runfile-lsp	lsp	assigned
+crates/runfile-lsp/src/analysis.rs	82601	crates/runfile-lsp	lsp	assigned
+crates/runfile-lsp/src/document.rs	5738	crates/runfile-lsp	lsp	assigned
+crates/runfile-lsp/src/lib.rs	939	crates/runfile-lsp	lsp	assigned
+crates/runfile-lsp/src/rpc.rs	3448	crates/runfile-lsp	lsp	assigned
+crates/runfile-lsp/src/server.rs	12776	crates/runfile-lsp	lsp	assigned
+crates/runfile-lsp/tests/protocol.rs	23566	crates/runfile-lsp	lsp	assigned
+crates/runfile-runtime/Cargo.toml	471	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/examples/run.rs	913	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/dispatch.rs	22755	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/env.rs	5987	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/exec.rs	28023	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/interrupt.rs	4087	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/lib.rs	418	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/props.rs	18523	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/run.rs	49789	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/shell.rs	7087	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/term.rs	5251	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/args.rs	9291	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/checks.rs	4154	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/exec.rs	18658	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/exit.rs	6811	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/inherited.rs	22130	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/interrupt.rs	4021	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/keys.rs	15928	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/loops.rs	5460	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/mod.rs	3821	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/names.rs	5753	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/parallel.rs	16066	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/term.rs	1711	crates/runfile-runtime	runtime	assigned
+crates/runfile-runtime/src/tests/walk.rs	16797	crates/runfile-runtime	runtime	assigned
+crates/runfile-shell/Cargo.toml	154	crates/runfile-shell	shell-checker	assigned
+crates/runfile-shell/src/lib.rs	4235	crates/runfile-shell	shell-checker	assigned
+crates/runfile-shell/src/rules.rs	52047	crates/runfile-shell	shell-checker	assigned
+crates/runfile-shell/src/script.rs	11753	crates/runfile-shell	shell-checker	assigned
+crates/runfile-shell/src/syntax.rs	30525	crates/runfile-shell	shell-checker	assigned
+crates/runfile-shell/src/tests.rs	33874	crates/runfile-shell	shell-checker	assigned
+crates/runfile-shell/src/walk.rs	14885	crates/runfile-shell	shell-checker	assigned
+crates/runfile-shell/src/words.rs	15477	crates/runfile-shell	shell-checker	assigned
+crates/runfile-shell/tests/rules_doc.rs	2795	crates/runfile-shell	shell-checker	assigned
+crates/runfile-state/Cargo.toml	813	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/keyring_keys.rs	6958	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/keyring_store.rs	6018	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/lib.rs	456	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/paths.rs	1612	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/prepare_state.rs	3759	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/secret_service_store.rs	5267	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/tests/keyring_keys.rs	3125	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/tests/mod.rs	92	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/tests/prepare_state.rs	1521	crates/runfile-state	secrets-crypto	assigned
+crates/runfile-state/src/tests/secret_keys.rs	146	crates/runfile-state	secrets-crypto	assigned
+editors/tree-sitter/.gitattributes	144	editors/tree-sitter	editors	assigned
+editors/tree-sitter/.gitignore	37	editors/tree-sitter	editors	assigned
+editors/tree-sitter/grammar.js	16579	editors/tree-sitter	editors	assigned
+editors/tree-sitter/package.json	303	editors/tree-sitter	editors	assigned
+editors/tree-sitter/pnpm-lock.yaml	5019	editors/tree-sitter	dependencies	excluded: lockfile (audited by dependency agent via dep_audit.py, not line by line)
+editors/tree-sitter/pnpm-workspace.yaml	37	editors/tree-sitter	editors	assigned
+editors/tree-sitter/queries/highlights.scm	3833	editors/tree-sitter	editors	assigned
+editors/tree-sitter/queries/injections.scm	1034	editors/tree-sitter	editors	assigned
+editors/tree-sitter/runfiles/_shared.run	75	editors/tree-sitter	editors	assigned
+editors/tree-sitter/runfiles/generate.run	66	editors/tree-sitter	editors	assigned
+editors/tree-sitter/runfiles/setup.run	173	editors/tree-sitter	editors	assigned
+editors/tree-sitter/runfiles/test.run	367	editors/tree-sitter	editors	assigned
+editors/tree-sitter/src/grammar.json	56015	editors/tree-sitter	-	excluded: generated by `tree-sitter generate` from grammar.js
+editors/tree-sitter/src/node-types.json	55575	editors/tree-sitter	-	excluded: generated by `tree-sitter generate` from grammar.js
+editors/tree-sitter/src/parser.c	518984	editors/tree-sitter	-	excluded: generated by `tree-sitter generate` from grammar.js
+editors/tree-sitter/src/scanner.c	15333	editors/tree-sitter	editors	assigned
+editors/tree-sitter/src/tree_sitter/alloc.h	985	editors/tree-sitter	-	excluded: vendored tree-sitter runtime headers
+editors/tree-sitter/src/tree_sitter/array.h	10431	editors/tree-sitter	-	excluded: vendored tree-sitter runtime headers
+editors/tree-sitter/src/tree_sitter/parser.h	7624	editors/tree-sitter	-	excluded: vendored tree-sitter runtime headers
+editors/tree-sitter/test/corpus/exec.txt	1953	editors/tree-sitter	-	excluded: test fixture (tree-sitter corpus)
+editors/tree-sitter/test/corpus/expressions.txt	3462	editors/tree-sitter	-	excluded: test fixture (tree-sitter corpus)
+editors/tree-sitter/test/corpus/lines.txt	3308	editors/tree-sitter	-	excluded: test fixture (tree-sitter corpus)
+editors/tree-sitter/test/corpus/properties.txt	1297	editors/tree-sitter	-	excluded: test fixture (tree-sitter corpus)
+editors/tree-sitter/test/corpus/shell.txt	1748	editors/tree-sitter	-	excluded: test fixture (tree-sitter corpus)
+editors/tree-sitter/test/corpus/statements.txt	11497	editors/tree-sitter	-	excluded: test fixture (tree-sitter corpus)
+editors/tree-sitter/tree-sitter.json	603	editors/tree-sitter	editors	assigned
+editors/vscode/.vscodeignore	139	editors/vscode	editors	assigned
+editors/vscode/LICENSE	1086	editors/vscode	-	excluded: documentation / media
+editors/vscode/README.md	3217	editors/vscode	-	excluded: documentation / media
+editors/vscode/language-configuration.json	646	editors/vscode	editors	assigned
+editors/vscode/media/activity-icon.svg	500	editors/vscode	-	excluded: documentation / media
+editors/vscode/media/icon.png	3984	editors/vscode	-	excluded: documentation / media
+editors/vscode/media/icon.svg	754	editors/vscode	-	excluded: documentation / media
+editors/vscode/package.json	7214	editors/vscode	editors	assigned
+editors/vscode/pnpm-lock.yaml	10960	editors/vscode	dependencies	excluded: lockfile (audited by dependency agent via dep_audit.py, not line by line)
+editors/vscode/runfiles/_shared.run	77	editors/vscode	editors	assigned
+editors/vscode/runfiles/compile.run	61	editors/vscode	editors	assigned
+editors/vscode/runfiles/install.run	230	editors/vscode	editors	assigned
+editors/vscode/runfiles/package.run	254	editors/vscode	editors	assigned
+editors/vscode/runfiles/setup.run	182	editors/vscode	editors	assigned
+editors/vscode/runfiles/test.run	109	editors/vscode	editors	assigned
+editors/vscode/runfiles/uninstall.run	86	editors/vscode	editors	assigned
+editors/vscode/runfiles/watch.run	94	editors/vscode	editors	assigned
+editors/vscode/src/catalog.ts	1410	editors/vscode	editors	assigned
+editors/vscode/src/codeLens.ts	2272	editors/vscode	editors	assigned
+editors/vscode/src/extension.ts	27095	editors/vscode	editors	assigned
+editors/vscode/src/grammar.test.ts	27805	editors/vscode	editors	assigned
+editors/vscode/src/lsp.ts	11721	editors/vscode	editors	assigned
+editors/vscode/src/pure.test.ts	7739	editors/vscode	editors	assigned
+editors/vscode/src/pure.ts	6309	editors/vscode	editors	assigned
+editors/vscode/syntaxes/runfile-interpolation.injection.json	754	editors/vscode	editors	assigned
+editors/vscode/syntaxes/runfile.tmLanguage.json	20259	editors/vscode	editors	assigned
+editors/vscode/tsconfig.json	282	editors/vscode	editors	assigned
+npm/package.json	370	npm/package.json	supply-chain-ci	assigned
+npm/run.js	835	npm/run.js	supply-chain-ci	assigned
+runfiles/_bump-vscode-extension.run	394	runfiles/_bump-vscode-extension.run	supply-chain-ci	assigned
+runfiles/_shared.run	132	runfiles/_shared.run	supply-chain-ci	assigned
+runfiles/audit.run	67	runfiles/audit.run	supply-chain-ci	assigned
+runfiles/build-release.run	94	runfiles/build-release.run	supply-chain-ci	assigned
+runfiles/build.run	72	runfiles/build.run	supply-chain-ci	assigned
+runfiles/check.run	1471	runfiles/check.run	supply-chain-ci	assigned
+runfiles/ci/_shared.run	487	runfiles/ci	supply-chain-ci	assigned
+runfiles/ci/build.run	76	runfiles/ci	supply-chain-ci	assigned
+runfiles/ci/check.run	225	runfiles/ci	supply-chain-ci	assigned
+runfiles/ci/test.run	87	runfiles/ci	supply-chain-ci	assigned
+runfiles/clean.run	120	runfiles/clean.run	supply-chain-ci	assigned
+runfiles/cli.run	112	runfiles/cli.run	supply-chain-ci	assigned
+runfiles/install.run	791	runfiles/install.run	supply-chain-ci	assigned
+runfiles/lint.run	164	runfiles/lint.run	supply-chain-ci	assigned
+runfiles/miri-setup.run	150	runfiles/miri-setup.run	supply-chain-ci	assigned
+runfiles/miri.run	190	runfiles/miri.run	supply-chain-ci	assigned
+runfiles/mirror.run	2450	runfiles/mirror.run	supply-chain-ci	assigned
+runfiles/precommit.run	255	runfiles/precommit.run	supply-chain-ci	assigned
+runfiles/release.run	2509	runfiles/release.run	supply-chain-ci	assigned
+runfiles/setup.run	229	runfiles/setup.run	supply-chain-ci	assigned
+runfiles/test.run	87	runfiles/test.run	supply-chain-ci	assigned
+runfiles/wsl/_shared.run	384	runfiles/wsl	supply-chain-ci	assigned
+runfiles/wsl/build-release.run	133	runfiles/wsl	supply-chain-ci	assigned
+runfiles/wsl/build.run	111	runfiles/wsl	supply-chain-ci	assigned
+runfiles/wsl/lint.run	280	runfiles/wsl	supply-chain-ci	assigned
+runfiles/wsl/test.run	126	runfiles/wsl	supply-chain-ci	assigned
+rust-toolchain.toml	86	(root)	supply-chain-ci	assigned
+rustfmt.toml	88	(root)	supply-chain-ci	assigned
+target-linux/**	0	target-linux	-	excluded: build output (gitignored)
+target/**	0	target	-	excluded: build output (gitignored)
+editors/vscode/out/**	0	editors/vscode/out	-	excluded: tsc output of editors/vscode/src (gitignored); audited via source
+editors/vscode/node_modules/**	0	editors/vscode/node_modules	-	excluded: installed dependencies (gitignored)
+editors/tree-sitter/node_modules/**	0	editors/tree-sitter/node_modules	-	excluded: installed dependencies (gitignored)

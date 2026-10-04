@@ -1,0 +1,1538 @@
+{
+  "root": "/home/verona/Workspace/runfile",
+  "auditable_count": 208,
+  "excluded_count": 53,
+  "total_bytes": 1779290,
+  "components": {
+    ".cargo/config.toml": {
+      "files": 1,
+      "bytes": 1262
+    },
+    ".cicd/audit.yml": {
+      "files": 1,
+      "bytes": 991
+    },
+    ".cicd/ci.yml": {
+      "files": 1,
+      "bytes": 9173
+    },
+    ".cicd/release-assets": {
+      "files": 2,
+      "bytes": 6354
+    },
+    ".cicd/release.yml": {
+      "files": 1,
+      "bytes": 10355
+    },
+    "(root)": {
+      "files": 6,
+      "bytes": 2679
+    },
+    ".githooks/pre-commit": {
+      "files": 1,
+      "bytes": 25
+    },
+    ".githooks/pre-push": {
+      "files": 1,
+      "bytes": 21
+    },
+    ".github/actions": {
+      "files": 1,
+      "bytes": 6166
+    },
+    ".github/workflows": {
+      "files": 3,
+      "bytes": 22339
+    },
+    "crates/runfile-cli": {
+      "files": 22,
+      "bytes": 329504
+    },
+    "crates/runfile-crypto": {
+      "files": 6,
+      "bytes": 20372
+    },
+    "crates/runfile-discovery": {
+      "files": 4,
+      "bytes": 45561
+    },
+    "crates/runfile-env": {
+      "files": 10,
+      "bytes": 70530
+    },
+    "crates/runfile-lang": {
+      "files": 35,
+      "bytes": 489397
+    },
+    "crates/runfile-lsp": {
+      "files": 7,
+      "bytes": 129421
+    },
+    "crates/runfile-runtime": {
+      "files": 24,
+      "bytes": 273905
+    },
+    "crates/runfile-shell": {
+      "files": 9,
+      "bytes": 165745
+    },
+    "crates/runfile-state": {
+      "files": 11,
+      "bytes": 29767
+    },
+    "editors/tree-sitter": {
+      "files": 13,
+      "bytes": 38584
+    },
+    "editors/vscode": {
+      "files": 21,
+      "bytes": 114738
+    },
+    "npm/package.json": {
+      "files": 1,
+      "bytes": 370
+    },
+    "npm/run.js": {
+      "files": 1,
+      "bytes": 835
+    },
+    "runfiles/_bump-vscode-extension.run": {
+      "files": 1,
+      "bytes": 394
+    },
+    "runfiles/_shared.run": {
+      "files": 1,
+      "bytes": 132
+    },
+    "runfiles/audit.run": {
+      "files": 1,
+      "bytes": 67
+    },
+    "runfiles/build-release.run": {
+      "files": 1,
+      "bytes": 94
+    },
+    "runfiles/build.run": {
+      "files": 1,
+      "bytes": 72
+    },
+    "runfiles/check.run": {
+      "files": 1,
+      "bytes": 1471
+    },
+    "runfiles/ci": {
+      "files": 4,
+      "bytes": 875
+    },
+    "runfiles/clean.run": {
+      "files": 1,
+      "bytes": 120
+    },
+    "runfiles/cli.run": {
+      "files": 1,
+      "bytes": 112
+    },
+    "runfiles/install.run": {
+      "files": 1,
+      "bytes": 791
+    },
+    "runfiles/lint.run": {
+      "files": 1,
+      "bytes": 164
+    },
+    "runfiles/miri-setup.run": {
+      "files": 1,
+      "bytes": 150
+    },
+    "runfiles/miri.run": {
+      "files": 1,
+      "bytes": 190
+    },
+    "runfiles/mirror.run": {
+      "files": 1,
+      "bytes": 2450
+    },
+    "runfiles/precommit.run": {
+      "files": 1,
+      "bytes": 255
+    },
+    "runfiles/release.run": {
+      "files": 1,
+      "bytes": 2509
+    },
+    "runfiles/setup.run": {
+      "files": 1,
+      "bytes": 229
+    },
+    "runfiles/test.run": {
+      "files": 1,
+      "bytes": 87
+    },
+    "runfiles/wsl": {
+      "files": 5,
+      "bytes": 1034
+    }
+  },
+  "auditable": [
+    {
+      "path": ".cargo/config.toml",
+      "bytes": 1262,
+      "component": ".cargo/config.toml"
+    },
+    {
+      "path": ".cicd/audit.yml",
+      "bytes": 991,
+      "component": ".cicd/audit.yml"
+    },
+    {
+      "path": ".cicd/ci.yml",
+      "bytes": 9173,
+      "component": ".cicd/ci.yml"
+    },
+    {
+      "path": ".cicd/release-assets/install.ps1",
+      "bytes": 4143,
+      "component": ".cicd/release-assets"
+    },
+    {
+      "path": ".cicd/release-assets/install.sh",
+      "bytes": 2211,
+      "component": ".cicd/release-assets"
+    },
+    {
+      "path": ".cicd/release.yml",
+      "bytes": 10355,
+      "component": ".cicd/release.yml"
+    },
+    {
+      "path": ".editorconfig",
+      "bytes": 221,
+      "component": "(root)"
+    },
+    {
+      "path": ".gitattributes",
+      "bytes": 19,
+      "component": "(root)"
+    },
+    {
+      "path": ".githooks/pre-commit",
+      "bytes": 25,
+      "component": ".githooks/pre-commit"
+    },
+    {
+      "path": ".githooks/pre-push",
+      "bytes": 21,
+      "component": ".githooks/pre-push"
+    },
+    {
+      "path": ".github/actions/setup/action.yml",
+      "bytes": 6166,
+      "component": ".github/actions"
+    },
+    {
+      "path": ".github/workflows/audit.yml",
+      "bytes": 992,
+      "component": ".github/workflows"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "bytes": 5935,
+      "component": ".github/workflows"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "bytes": 15412,
+      "component": ".github/workflows"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 353,
+      "component": "(root)"
+    },
+    {
+      "path": "Cargo.toml",
+      "bytes": 1912,
+      "component": "(root)"
+    },
+    {
+      "path": "crates/runfile-cli/Cargo.toml",
+      "bytes": 880,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/ci_detect.rs",
+      "bytes": 1224,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/cmd_env/crypt.rs",
+      "bytes": 11072,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/cmd_env/dispatch.rs",
+      "bytes": 3909,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/cmd_env/mod.rs",
+      "bytes": 16521,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/cmd_env/secret_keys.rs",
+      "bytes": 8140,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/cmd_generate.rs",
+      "bytes": 16511,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/cmd_lint.rs",
+      "bytes": 11097,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/cmd_update.rs",
+      "bytes": 27630,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/completions.rs",
+      "bytes": 23392,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/help.rs",
+      "bytes": 2826,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/init.rs",
+      "bytes": 2058,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/list.rs",
+      "bytes": 5088,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/main.rs",
+      "bytes": 13439,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/prepare.rs",
+      "bytes": 3223,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/prompt.rs",
+      "bytes": 2528,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/stdin_args.rs",
+      "bytes": 3113,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/target_help.rs",
+      "bytes": 5741,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/src/watch.rs",
+      "bytes": 5720,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/tests/cli.rs",
+      "bytes": 150462,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/tests/lsp.rs",
+      "bytes": 5751,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-cli/tests/update.rs",
+      "bytes": 9179,
+      "component": "crates/runfile-cli"
+    },
+    {
+      "path": "crates/runfile-crypto/Cargo.toml",
+      "bytes": 469,
+      "component": "crates/runfile-crypto"
+    },
+    {
+      "path": "crates/runfile-crypto/src/lib.rs",
+      "bytes": 7150,
+      "component": "crates/runfile-crypto"
+    },
+    {
+      "path": "crates/runfile-crypto/src/tests/constant_time.rs",
+      "bytes": 1762,
+      "component": "crates/runfile-crypto"
+    },
+    {
+      "path": "crates/runfile-crypto/src/tests/core.rs",
+      "bytes": 8207,
+      "component": "crates/runfile-crypto"
+    },
+    {
+      "path": "crates/runfile-crypto/src/tests/mod.rs",
+      "bytes": 88,
+      "component": "crates/runfile-crypto"
+    },
+    {
+      "path": "crates/runfile-crypto/src/tests/zeroize.rs",
+      "bytes": 2696,
+      "component": "crates/runfile-crypto"
+    },
+    {
+      "path": "crates/runfile-discovery/Cargo.toml",
+      "bytes": 231,
+      "component": "crates/runfile-discovery"
+    },
+    {
+      "path": "crates/runfile-discovery/examples/list.rs",
+      "bytes": 330,
+      "component": "crates/runfile-discovery"
+    },
+    {
+      "path": "crates/runfile-discovery/src/lib.rs",
+      "bytes": 19257,
+      "component": "crates/runfile-discovery"
+    },
+    {
+      "path": "crates/runfile-discovery/src/tests.rs",
+      "bytes": 25743,
+      "component": "crates/runfile-discovery"
+    },
+    {
+      "path": "crates/runfile-env/Cargo.toml",
+      "bytes": 369,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-env/src/lib.rs",
+      "bytes": 18428,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-env/src/parse.rs",
+      "bytes": 4739,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-env/src/tests/build.rs",
+      "bytes": 10685,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-env/src/tests/called.rs",
+      "bytes": 10144,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-env/src/tests/encryption.rs",
+      "bytes": 6365,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-env/src/tests/load.rs",
+      "bytes": 3164,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-env/src/tests/mod.rs",
+      "bytes": 1166,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-env/src/tests/parse.rs",
+      "bytes": 8609,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-env/src/tests/path.rs",
+      "bytes": 6861,
+      "component": "crates/runfile-env"
+    },
+    {
+      "path": "crates/runfile-lang/Cargo.toml",
+      "bytes": 393,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/args.rs",
+      "bytes": 5025,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/ast.rs",
+      "bytes": 16291,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/check.rs",
+      "bytes": 32502,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/eval.rs",
+      "bytes": 19126,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/format.rs",
+      "bytes": 23559,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/functions.rs",
+      "bytes": 73655,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/inputs.rs",
+      "bytes": 11086,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/keywords.rs",
+      "bytes": 12692,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/lexer.rs",
+      "bytes": 12562,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/lib.rs",
+      "bytes": 3880,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/parser.rs",
+      "bytes": 52959,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/resolve.rs",
+      "bytes": 20364,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/span.rs",
+      "bytes": 629,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/structured.rs",
+      "bytes": 7398,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/args.rs",
+      "bytes": 7297,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/check.rs",
+      "bytes": 19794,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/eval.rs",
+      "bytes": 43319,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/exec.rs",
+      "bytes": 2492,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/expr.rs",
+      "bytes": 3663,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/inputs.rs",
+      "bytes": 8837,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/io.rs",
+      "bytes": 10503,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/lines.rs",
+      "bytes": 9819,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/mod.rs",
+      "bytes": 260,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/parser.rs",
+      "bytes": 18273,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/resolve.rs",
+      "bytes": 12596,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/tests/spans.rs",
+      "bytes": 8246,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/types.rs",
+      "bytes": 17593,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/src/value.rs",
+      "bytes": 4277,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/tests/editor_grammars.rs",
+      "bytes": 2726,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/tests/format.rs",
+      "bytes": 15901,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden.rs",
+      "bytes": 3036,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/tests/readme.rs",
+      "bytes": 2922,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/tests/repo_format.rs",
+      "bytes": 2685,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lang/tests/rules_doc.rs",
+      "bytes": 3037,
+      "component": "crates/runfile-lang"
+    },
+    {
+      "path": "crates/runfile-lsp/Cargo.toml",
+      "bytes": 353,
+      "component": "crates/runfile-lsp"
+    },
+    {
+      "path": "crates/runfile-lsp/src/analysis.rs",
+      "bytes": 82601,
+      "component": "crates/runfile-lsp"
+    },
+    {
+      "path": "crates/runfile-lsp/src/document.rs",
+      "bytes": 5738,
+      "component": "crates/runfile-lsp"
+    },
+    {
+      "path": "crates/runfile-lsp/src/lib.rs",
+      "bytes": 939,
+      "component": "crates/runfile-lsp"
+    },
+    {
+      "path": "crates/runfile-lsp/src/rpc.rs",
+      "bytes": 3448,
+      "component": "crates/runfile-lsp"
+    },
+    {
+      "path": "crates/runfile-lsp/src/server.rs",
+      "bytes": 12776,
+      "component": "crates/runfile-lsp"
+    },
+    {
+      "path": "crates/runfile-lsp/tests/protocol.rs",
+      "bytes": 23566,
+      "component": "crates/runfile-lsp"
+    },
+    {
+      "path": "crates/runfile-runtime/Cargo.toml",
+      "bytes": 471,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/examples/run.rs",
+      "bytes": 913,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/dispatch.rs",
+      "bytes": 22755,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/env.rs",
+      "bytes": 5987,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/exec.rs",
+      "bytes": 28023,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/interrupt.rs",
+      "bytes": 4087,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/lib.rs",
+      "bytes": 418,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/props.rs",
+      "bytes": 18523,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/run.rs",
+      "bytes": 49789,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/shell.rs",
+      "bytes": 7087,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/term.rs",
+      "bytes": 5251,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/args.rs",
+      "bytes": 9291,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/checks.rs",
+      "bytes": 4154,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/exec.rs",
+      "bytes": 18658,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/exit.rs",
+      "bytes": 6811,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/inherited.rs",
+      "bytes": 22130,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/interrupt.rs",
+      "bytes": 4021,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/keys.rs",
+      "bytes": 15928,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/loops.rs",
+      "bytes": 5460,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/mod.rs",
+      "bytes": 3821,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/names.rs",
+      "bytes": 5753,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/parallel.rs",
+      "bytes": 16066,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/term.rs",
+      "bytes": 1711,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-runtime/src/tests/walk.rs",
+      "bytes": 16797,
+      "component": "crates/runfile-runtime"
+    },
+    {
+      "path": "crates/runfile-shell/Cargo.toml",
+      "bytes": 154,
+      "component": "crates/runfile-shell"
+    },
+    {
+      "path": "crates/runfile-shell/src/lib.rs",
+      "bytes": 4235,
+      "component": "crates/runfile-shell"
+    },
+    {
+      "path": "crates/runfile-shell/src/rules.rs",
+      "bytes": 52047,
+      "component": "crates/runfile-shell"
+    },
+    {
+      "path": "crates/runfile-shell/src/script.rs",
+      "bytes": 11753,
+      "component": "crates/runfile-shell"
+    },
+    {
+      "path": "crates/runfile-shell/src/syntax.rs",
+      "bytes": 30525,
+      "component": "crates/runfile-shell"
+    },
+    {
+      "path": "crates/runfile-shell/src/tests.rs",
+      "bytes": 33874,
+      "component": "crates/runfile-shell"
+    },
+    {
+      "path": "crates/runfile-shell/src/walk.rs",
+      "bytes": 14885,
+      "component": "crates/runfile-shell"
+    },
+    {
+      "path": "crates/runfile-shell/src/words.rs",
+      "bytes": 15477,
+      "component": "crates/runfile-shell"
+    },
+    {
+      "path": "crates/runfile-shell/tests/rules_doc.rs",
+      "bytes": 2795,
+      "component": "crates/runfile-shell"
+    },
+    {
+      "path": "crates/runfile-state/Cargo.toml",
+      "bytes": 813,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/keyring_keys.rs",
+      "bytes": 6958,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/keyring_store.rs",
+      "bytes": 6018,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/lib.rs",
+      "bytes": 456,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/paths.rs",
+      "bytes": 1612,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/prepare_state.rs",
+      "bytes": 3759,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/secret_service_store.rs",
+      "bytes": 5267,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/tests/keyring_keys.rs",
+      "bytes": 3125,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/tests/mod.rs",
+      "bytes": 92,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/tests/prepare_state.rs",
+      "bytes": 1521,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "crates/runfile-state/src/tests/secret_keys.rs",
+      "bytes": 146,
+      "component": "crates/runfile-state"
+    },
+    {
+      "path": "editors/tree-sitter/.gitattributes",
+      "bytes": 144,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/.gitignore",
+      "bytes": 37,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/grammar.js",
+      "bytes": 16579,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/package.json",
+      "bytes": 303,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/pnpm-workspace.yaml",
+      "bytes": 37,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/queries/highlights.scm",
+      "bytes": 3833,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/queries/injections.scm",
+      "bytes": 1034,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/runfiles/_shared.run",
+      "bytes": 75,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/runfiles/generate.run",
+      "bytes": 66,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/runfiles/setup.run",
+      "bytes": 173,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/runfiles/test.run",
+      "bytes": 367,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/src/scanner.c",
+      "bytes": 15333,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/tree-sitter/tree-sitter.json",
+      "bytes": 603,
+      "component": "editors/tree-sitter"
+    },
+    {
+      "path": "editors/vscode/.vscodeignore",
+      "bytes": 139,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/language-configuration.json",
+      "bytes": 646,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/package.json",
+      "bytes": 7214,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/runfiles/_shared.run",
+      "bytes": 77,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/runfiles/compile.run",
+      "bytes": 61,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/runfiles/install.run",
+      "bytes": 230,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/runfiles/package.run",
+      "bytes": 254,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/runfiles/setup.run",
+      "bytes": 182,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/runfiles/test.run",
+      "bytes": 109,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/runfiles/uninstall.run",
+      "bytes": 86,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/runfiles/watch.run",
+      "bytes": 94,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/src/catalog.ts",
+      "bytes": 1410,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/src/codeLens.ts",
+      "bytes": 2272,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/src/extension.ts",
+      "bytes": 27095,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/src/grammar.test.ts",
+      "bytes": 27805,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/src/lsp.ts",
+      "bytes": 11721,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/src/pure.test.ts",
+      "bytes": 7739,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/src/pure.ts",
+      "bytes": 6309,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/syntaxes/runfile-interpolation.injection.json",
+      "bytes": 754,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/syntaxes/runfile.tmLanguage.json",
+      "bytes": 20259,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "editors/vscode/tsconfig.json",
+      "bytes": 282,
+      "component": "editors/vscode"
+    },
+    {
+      "path": "npm/package.json",
+      "bytes": 370,
+      "component": "npm/package.json"
+    },
+    {
+      "path": "npm/run.js",
+      "bytes": 835,
+      "component": "npm/run.js"
+    },
+    {
+      "path": "runfiles/_bump-vscode-extension.run",
+      "bytes": 394,
+      "component": "runfiles/_bump-vscode-extension.run"
+    },
+    {
+      "path": "runfiles/_shared.run",
+      "bytes": 132,
+      "component": "runfiles/_shared.run"
+    },
+    {
+      "path": "runfiles/audit.run",
+      "bytes": 67,
+      "component": "runfiles/audit.run"
+    },
+    {
+      "path": "runfiles/build-release.run",
+      "bytes": 94,
+      "component": "runfiles/build-release.run"
+    },
+    {
+      "path": "runfiles/build.run",
+      "bytes": 72,
+      "component": "runfiles/build.run"
+    },
+    {
+      "path": "runfiles/check.run",
+      "bytes": 1471,
+      "component": "runfiles/check.run"
+    },
+    {
+      "path": "runfiles/ci/_shared.run",
+      "bytes": 487,
+      "component": "runfiles/ci"
+    },
+    {
+      "path": "runfiles/ci/build.run",
+      "bytes": 76,
+      "component": "runfiles/ci"
+    },
+    {
+      "path": "runfiles/ci/check.run",
+      "bytes": 225,
+      "component": "runfiles/ci"
+    },
+    {
+      "path": "runfiles/ci/test.run",
+      "bytes": 87,
+      "component": "runfiles/ci"
+    },
+    {
+      "path": "runfiles/clean.run",
+      "bytes": 120,
+      "component": "runfiles/clean.run"
+    },
+    {
+      "path": "runfiles/cli.run",
+      "bytes": 112,
+      "component": "runfiles/cli.run"
+    },
+    {
+      "path": "runfiles/install.run",
+      "bytes": 791,
+      "component": "runfiles/install.run"
+    },
+    {
+      "path": "runfiles/lint.run",
+      "bytes": 164,
+      "component": "runfiles/lint.run"
+    },
+    {
+      "path": "runfiles/miri-setup.run",
+      "bytes": 150,
+      "component": "runfiles/miri-setup.run"
+    },
+    {
+      "path": "runfiles/miri.run",
+      "bytes": 190,
+      "component": "runfiles/miri.run"
+    },
+    {
+      "path": "runfiles/mirror.run",
+      "bytes": 2450,
+      "component": "runfiles/mirror.run"
+    },
+    {
+      "path": "runfiles/precommit.run",
+      "bytes": 255,
+      "component": "runfiles/precommit.run"
+    },
+    {
+      "path": "runfiles/release.run",
+      "bytes": 2509,
+      "component": "runfiles/release.run"
+    },
+    {
+      "path": "runfiles/setup.run",
+      "bytes": 229,
+      "component": "runfiles/setup.run"
+    },
+    {
+      "path": "runfiles/test.run",
+      "bytes": 87,
+      "component": "runfiles/test.run"
+    },
+    {
+      "path": "runfiles/wsl/_shared.run",
+      "bytes": 384,
+      "component": "runfiles/wsl"
+    },
+    {
+      "path": "runfiles/wsl/build-release.run",
+      "bytes": 133,
+      "component": "runfiles/wsl"
+    },
+    {
+      "path": "runfiles/wsl/build.run",
+      "bytes": 111,
+      "component": "runfiles/wsl"
+    },
+    {
+      "path": "runfiles/wsl/lint.run",
+      "bytes": 280,
+      "component": "runfiles/wsl"
+    },
+    {
+      "path": "runfiles/wsl/test.run",
+      "bytes": 126,
+      "component": "runfiles/wsl"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "bytes": 86,
+      "component": "(root)"
+    },
+    {
+      "path": "rustfmt.toml",
+      "bytes": 88,
+      "component": "(root)"
+    }
+  ],
+  "excluded": [
+    {
+      "path": "CLAUDE.md",
+      "bytes": 175310,
+      "component": "(root)",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "Cargo.lock",
+      "bytes": 53642,
+      "component": "(root)",
+      "excluded": "lockfile (audited by dependency agent via dep_audit.py, not line by line)"
+    },
+    {
+      "path": "GRAMMAR.ebnf",
+      "bytes": 7941,
+      "component": "(root)",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "LANGUAGE-CHECK-RULES.md",
+      "bytes": 7410,
+      "component": "(root)",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "LICENSE",
+      "bytes": 1081,
+      "component": "(root)",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "README.md",
+      "bytes": 46723,
+      "component": "(root)",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "SHELL-CHECK-RULES.md",
+      "bytes": 21456,
+      "component": "(root)",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/bindings.ast",
+      "bytes": 4338,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/bindings.run",
+      "bytes": 218,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/control-flow.ast",
+      "bytes": 13416,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/control-flow.run",
+      "bytes": 383,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/detach.ast",
+      "bytes": 1872,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/detach.run",
+      "bytes": 180,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/dispatch.ast",
+      "bytes": 3019,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/dispatch.run",
+      "bytes": 198,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/exec.ast",
+      "bytes": 2612,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/exec.run",
+      "bytes": 156,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/expressions.ast",
+      "bytes": 8813,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/expressions.run",
+      "bytes": 320,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/loops.ast",
+      "bytes": 7625,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/loops.run",
+      "bytes": 280,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/parallel.ast",
+      "bytes": 6378,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/parallel.run",
+      "bytes": 293,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/properties.ast",
+      "bytes": 2419,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/properties.run",
+      "bytes": 156,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/shell.ast",
+      "bytes": 1252,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/shell.run",
+      "bytes": 155,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/strings.ast",
+      "bytes": 2172,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "crates/runfile-lang/tests/golden/strings.run",
+      "bytes": 164,
+      "component": "crates/runfile-lang",
+      "excluded": "test fixture (golden AST trees)"
+    },
+    {
+      "path": "editors/tree-sitter/pnpm-lock.yaml",
+      "bytes": 5019,
+      "component": "editors/tree-sitter",
+      "excluded": "lockfile (audited by dependency agent via dep_audit.py, not line by line)"
+    },
+    {
+      "path": "editors/tree-sitter/src/grammar.json",
+      "bytes": 56015,
+      "component": "editors/tree-sitter",
+      "excluded": "generated by `tree-sitter generate` from grammar.js"
+    },
+    {
+      "path": "editors/tree-sitter/src/node-types.json",
+      "bytes": 55575,
+      "component": "editors/tree-sitter",
+      "excluded": "generated by `tree-sitter generate` from grammar.js"
+    },
+    {
+      "path": "editors/tree-sitter/src/parser.c",
+      "bytes": 518984,
+      "component": "editors/tree-sitter",
+      "excluded": "generated by `tree-sitter generate` from grammar.js"
+    },
+    {
+      "path": "editors/tree-sitter/src/tree_sitter/alloc.h",
+      "bytes": 985,
+      "component": "editors/tree-sitter",
+      "excluded": "vendored tree-sitter runtime headers"
+    },
+    {
+      "path": "editors/tree-sitter/src/tree_sitter/array.h",
+      "bytes": 10431,
+      "component": "editors/tree-sitter",
+      "excluded": "vendored tree-sitter runtime headers"
+    },
+    {
+      "path": "editors/tree-sitter/src/tree_sitter/parser.h",
+      "bytes": 7624,
+      "component": "editors/tree-sitter",
+      "excluded": "vendored tree-sitter runtime headers"
+    },
+    {
+      "path": "editors/tree-sitter/test/corpus/exec.txt",
+      "bytes": 1953,
+      "component": "editors/tree-sitter",
+      "excluded": "test fixture (tree-sitter corpus)"
+    },
+    {
+      "path": "editors/tree-sitter/test/corpus/expressions.txt",
+      "bytes": 3462,
+      "component": "editors/tree-sitter",
+      "excluded": "test fixture (tree-sitter corpus)"
+    },
+    {
+      "path": "editors/tree-sitter/test/corpus/lines.txt",
+      "bytes": 3308,
+      "component": "editors/tree-sitter",
+      "excluded": "test fixture (tree-sitter corpus)"
+    },
+    {
+      "path": "editors/tree-sitter/test/corpus/properties.txt",
+      "bytes": 1297,
+      "component": "editors/tree-sitter",
+      "excluded": "test fixture (tree-sitter corpus)"
+    },
+    {
+      "path": "editors/tree-sitter/test/corpus/shell.txt",
+      "bytes": 1748,
+      "component": "editors/tree-sitter",
+      "excluded": "test fixture (tree-sitter corpus)"
+    },
+    {
+      "path": "editors/tree-sitter/test/corpus/statements.txt",
+      "bytes": 11497,
+      "component": "editors/tree-sitter",
+      "excluded": "test fixture (tree-sitter corpus)"
+    },
+    {
+      "path": "editors/vscode/LICENSE",
+      "bytes": 1086,
+      "component": "editors/vscode",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "editors/vscode/README.md",
+      "bytes": 3217,
+      "component": "editors/vscode",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "editors/vscode/media/activity-icon.svg",
+      "bytes": 500,
+      "component": "editors/vscode",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "editors/vscode/media/icon.png",
+      "bytes": 3984,
+      "component": "editors/vscode",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "editors/vscode/media/icon.svg",
+      "bytes": 754,
+      "component": "editors/vscode",
+      "excluded": "documentation / media"
+    },
+    {
+      "path": "editors/vscode/pnpm-lock.yaml",
+      "bytes": 10960,
+      "component": "editors/vscode",
+      "excluded": "lockfile (audited by dependency agent via dep_audit.py, not line by line)"
+    },
+    {
+      "path": "target-linux/**",
+      "bytes": 0,
+      "component": "target-linux/",
+      "excluded": "build output (gitignored)"
+    },
+    {
+      "path": "target/**",
+      "bytes": 0,
+      "component": "target/",
+      "excluded": "build output (gitignored)"
+    },
+    {
+      "path": "editors/vscode/out/**",
+      "bytes": 0,
+      "component": "editors/vscode/out/",
+      "excluded": "tsc output of editors/vscode/src (gitignored); audited via source"
+    },
+    {
+      "path": "editors/vscode/node_modules/**",
+      "bytes": 0,
+      "component": "editors/vscode/node_modules/",
+      "excluded": "installed dependencies (gitignored)"
+    },
+    {
+      "path": "editors/tree-sitter/node_modules/**",
+      "bytes": 0,
+      "component": "editors/tree-sitter/node_modules/",
+      "excluded": "installed dependencies (gitignored)"
+    }
+  ]
+}
