@@ -161,8 +161,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # Asked for by name: left empty, the version is the one this checkout's
+      # Cargo.toml names, which the release workflow may still be publishing.
       - name: Setup Runfile
         uses: ./.github/actions/setup
+        with:
+          version: latest
 
       - name: The binary is on PATH and serves the protocol
         run: |

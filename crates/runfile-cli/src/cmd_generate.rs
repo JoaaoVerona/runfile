@@ -179,8 +179,14 @@ fn merge(existing: &mut Vec<Value>, generated: Vec<Value>) -> Stats {
 
 /// An existing JSON document and the indentation it uses, or nothing.
 fn read_json(path: &Path) -> Result<(Option<Value>, String), String> {
-	let Ok(text) = std::fs::read_to_string(path) else {
-		return Ok((None, DEFAULT_INDENT.to_string()));
+	// Only a file that is not there is "no tasks yet". Any other failure to read
+	// it -- permission, or bytes that are not UTF-8 -- used to count as absent
+	// too, and the generated tasks were then written over a file nobody had read
+	// (audit SA-038).
+	let text = match std::fs::read_to_string(path) {
+		Ok(text) => text,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((None, DEFAULT_INDENT.to_string())),
+		Err(e) => return Err(format!("{}: could not be read ({e}); not touching it", path.display())),
 	};
 	let value: Value = serde_json::from_str(&text)
 		.map_err(|e| format!("{}: not valid JSON ({e}); not touching it", path.display()))?;
@@ -210,11 +216,15 @@ fn render(v: &Value, indent: &str) -> String {
 	out
 }
 
+/// Atomically, keeping the file's mode: `fs::write` truncated first, so a full
+/// disk or a kill mid-write left a task file someone had customised empty
+/// (audit SA-038).
 fn write(path: &Path, text: &str) -> Result<(), String> {
 	if let Some(d) = path.parent() {
 		std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
 	}
-	std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+	runfile_lang::atomic::write(path, text.as_bytes(), runfile_lang::atomic::Mode::Keep)
+		.map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn shown(root: &Path, path: &Path) -> String {
@@ -494,10 +504,13 @@ fn jetbrains(entries: &[Entry], root: &Path, opts: &Options) -> Result<String, S
 				write(&path, &fresh)?;
 				stats.updated += 1;
 			}
-			Err(_) => {
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
 				write(&path, &fresh)?;
 				stats.added += 1;
 			}
+			// Unreadable is not absent: it may be a configuration of someone else's
+			// that the check above would have kept (audit SA-038).
+			Err(e) => return Err(format!("{}: could not be read ({e}); not touching it", path.display())),
 		}
 	}
 	Ok(format!("{}/: {stats}", shown(root, &dir)))

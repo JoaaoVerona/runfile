@@ -7,7 +7,20 @@ $ProgressPreference = 'SilentlyContinue'
 $installDir = if ($env:RUNFILE_INSTALL_DIR) { $env:RUNFILE_INSTALL_DIR } else { "$env:LOCALAPPDATA\runfile\bin" }
 # Version precedence: positional arg, then $env:RUNFILE_VERSION (the
 # `iwr ... | iex` invocation form can't pass positional args), then latest.
-$version = if ($args[0]) { $args[0] } elseif ($env:RUNFILE_VERSION) { $env:RUNFILE_VERSION } else { 'latest' }
+$version = if ($args[0]) { "$($args[0])" } elseif ($env:RUNFILE_VERSION) { $env:RUNFILE_VERSION } else { 'latest' }
+
+# The version goes into the download URL's path, so it has to be a release tag
+# and nothing else: a `/` or a `..` in it reached somewhere other than these
+# releases (audit SA-032). `\z` rather than `$`, which also matches before a
+# final newline; `-cmatch`, because a tag's `v` is lowercase.
+$tagPattern = '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?\z'
+if ($version -ne 'latest') {
+  if ($version -cnotmatch $tagPattern) {
+    throw "runfile: invalid version: $($version -replace '\p{Cc}', '') (expected latest, or a release tag such as v1.2.3)"
+  }
+  # Every release is tagged with the `v`, as `run :update` assumes too.
+  if (-not $version.StartsWith('v')) { $version = "v$version" }
+}
 
 # Where releases come from. Gitea cuts every one; GitHub mirrors them when the
 # mirror is pushed, so it can lag. `run :update --channel=github` sets this.
@@ -40,6 +53,8 @@ if ($version -eq 'latest') {
   # different places.
   $final = if ($page.BaseResponse.ResponseUri) { $page.BaseResponse.ResponseUri } else { $page.BaseResponse.RequestMessage.RequestUri }
   if ("$final" -match '/releases/tag/([^/]+)$') { $version = $Matches[1] } else { throw "runfile: found no release on $server" }
+  # The tag it names goes into a URL as well.
+  if ($version -cnotmatch $tagPattern) { throw "runfile: $releases/latest led to $final, which is not a release" }
 }
 
 $url = "$releases/download/$version/$archive"

@@ -1703,6 +1703,32 @@ fn generate_refuses_to_touch_a_file_it_cannot_parse() {
 }
 
 #[test]
+fn generate_refuses_a_file_it_cannot_read_rather_than_replacing_it() {
+	// Bytes that are not UTF-8 are not "no tasks yet": they used to be, and the
+	// generated tasks were written over a file nobody had read (audit SA-038).
+	let p = project(GEN);
+	let tasks = p.dir.path().join(".vscode/tasks.json");
+	std::fs::create_dir_all(tasks.parent().unwrap()).unwrap();
+	let mine: &[u8] = b"{\"version\": \"2.0.0\", \"tasks\": []} // caf\xe9\n";
+	std::fs::write(&tasks, mine).unwrap();
+	let o = p.run(&[":generate", "vscode"]);
+	assert!(!o.status.success(), "{}", out(&o));
+	assert!(err(&o).contains("could not be read"), "{}", err(&o));
+	assert_eq!(std::fs::read(&tasks).unwrap(), mine);
+
+	// The same for a JetBrains configuration, which may be someone else's.
+	let dir = p.dir.path().join(".idea/runConfigurations");
+	std::fs::create_dir_all(&dir).unwrap();
+	let config = dir.join("Runfile_build.run.xml");
+	let theirs: &[u8] = b"<component>caf\xe9</component>\n";
+	std::fs::write(&config, theirs).unwrap();
+	let o = p.run(&[":generate", "jetbrains"]);
+	assert!(!o.status.success(), "{}", out(&o));
+	assert!(err(&o).contains("could not be read"), "{}", err(&o));
+	assert_eq!(std::fs::read(&config).unwrap(), theirs);
+}
+
+#[test]
 fn global_runfiles_may_use_any_of_the_three_names() {
 	for name in [".runfiles", "runfiles", "Runfiles"] {
 		let p = project(&[("runfiles/local.run", "$ true\n")]);
@@ -3203,6 +3229,55 @@ fn install_creates_a_profile_that_does_not_exist_yet() {
 }
 
 #[test]
+fn install_refuses_a_profile_it_cannot_read_rather_than_replacing_it() {
+	// A `.zshrc` holding one Latin-1 byte is not UTF-8. It used to read as empty,
+	// and was then rewritten as nothing but the hook (audit SA-038).
+	let p = project(&[(MARK, &marker("o"))]);
+	let rc = p.home.path().join(".zshrc");
+	let mine: &[u8] = b"# caf\xe9\nexport EDITOR=vim\n";
+	std::fs::write(&rc, mine).unwrap();
+	let o = p.run(&[":completions", "install", "zsh"]);
+	assert!(!o.status.success(), "{}", out(&o));
+	assert!(err(&o).contains("could not be read"), "{}", err(&o));
+	assert!(
+		err(&o).contains(":completions output zsh"),
+		"the line to add by hand is given: {}",
+		err(&o)
+	);
+	assert_eq!(std::fs::read(&rc).unwrap(), mine, "left exactly as it was");
+}
+
+#[cfg(unix)]
+#[test]
+fn install_writes_through_a_symlinked_profile_and_keeps_the_link_and_its_mode() {
+	// A `.zshrc` linked into a dotfiles repository is updated where it lives:
+	// replacing the link with a plain file would quietly fork the dotfiles.
+	use std::os::unix::fs::PermissionsExt;
+	let p = project(&[(MARK, &marker("o"))]);
+	let real = p.home.path().join("dotfiles-zshrc");
+	std::fs::write(&real, "# mine\n").unwrap();
+	std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640)).unwrap();
+	let rc = p.home.path().join(".zshrc");
+	std::os::unix::fs::symlink(&real, &rc).unwrap();
+	let o = p.run(&[":completions", "install", "zsh"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(
+		std::fs::symlink_metadata(&rc).unwrap().file_type().is_symlink(),
+		"still a link"
+	);
+	let text = std::fs::read_to_string(&real).unwrap();
+	assert!(
+		text.starts_with("# mine\n") && text.contains("# runfile completions"),
+		"{text}"
+	);
+	assert_eq!(
+		std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+		0o640,
+		"the profile's own mode is kept"
+	);
+}
+
+#[test]
 fn fish_gets_a_file_of_its_own_rather_than_a_profile_line() {
 	// Fish reads a completions directory, so the whole script goes there.
 	let p = project(&[(MARK, &marker("o"))]);
@@ -4329,4 +4404,75 @@ fn lint_does_not_rewrite_through_a_symlink() {
 		"let  x = 1\n$ true\n",
 		"the file the symlink points at was rewritten through the link"
 	);
+}
+
+#[test]
+fn env_set_never_falls_back_to_plaintext_and_sees_a_header_past_a_bom() {
+	// `:env set` decided to encrypt only on seeing the header, so a UTF-8 BOM in
+	// front of it, or a header kept in another file, silently wrote the secret in
+	// plaintext beside encrypted values and reported success (audit SA-034).
+	let key = runfile_crypto::generate_key();
+	let public = runfile_crypto::derive_public_key(&key).unwrap();
+	let other = runfile_crypto::generate_key();
+	let p = project(&[]);
+	let file = |name: &str, body: &str| std::fs::write(p.dir.path().join(name), body).unwrap();
+	let read = |name: &str| std::fs::read_to_string(p.dir.path().join(name)).unwrap();
+	let token_in = |text: &str| {
+		runfile_env::parse_env_file(text)
+			.unwrap()
+			.into_iter()
+			.find(|(k, _)| k == "TOKEN")
+			.map(|(_, v)| v)
+			.unwrap_or_else(|| panic!("no TOKEN in {text:?}"))
+	};
+	let set = |args: &[&str]| {
+		let mut all = vec![":env", "set"];
+		all.extend_from_slice(args);
+		p.command(p.dir.path(), &all)
+			.env("RUNFILE_PRIVATE_KEYS", format!("{key}\n{other}"))
+			.output()
+			.expect("run binary")
+	};
+
+	// No header and nothing encrypted: refused rather than written in plaintext.
+	file("plain.env", "A=1\n");
+	let o = set(&["plain.env", "TOKEN", "tok_FAKE"]);
+	assert!(!o.status.success(), "a headerless file took a plaintext secret");
+	assert!(err(&o).contains("--plain") && err(&o).contains("--key"), "{}", err(&o));
+	assert_eq!(read("plain.env"), "A=1\n", "the file was changed");
+
+	// `--plain` is how plaintext is asked for.
+	let o = set(&["plain.env", "TOKEN", "tok_FAKE", "--plain"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(token_in(&read("plain.env")), "tok_FAKE");
+
+	// Encrypted values with the header kept in another file: refused, saying so.
+	file("secrets.env", "OLD=encrypted:abc\n");
+	let o = set(&["secrets.env", "TOKEN", "tok_FAKE"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("encrypted values"), "{}", err(&o));
+	assert!(!read("secrets.env").contains("tok_FAKE"));
+
+	// `--key PREFIX` encrypts with that key -- given as its own word, which used
+	// to be read as the value to store.
+	let o = set(&["secrets.env", "TOKEN", "tok_FAKE", "--key", &public[..8]]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		runfile_crypto::decrypt(&token_in(&read("secrets.env")), &key).unwrap(),
+		"tok_FAKE"
+	);
+
+	// A header behind a BOM is seen, so the value is encrypted.
+	file("bom.env", &format!("\u{FEFF}RUNFILE_ENCRYPTION_PUBLIC_KEY={public}\n"));
+	let o = set(&["bom.env", "TOKEN", "tok_FAKE"]);
+	assert!(o.status.success(), "{}", err(&o));
+	let text = read("bom.env");
+	assert!(!text.contains("tok_FAKE"), "plaintext beside a header: {text}");
+	assert_eq!(runfile_crypto::decrypt(&token_in(&text), &key).unwrap(), "tok_FAKE");
+
+	// `--key` naming another key than the header's is refused: a value under it
+	// could not be decrypted with the rest of the file.
+	let other_public = runfile_crypto::derive_public_key(&other).unwrap();
+	let o = set(&["bom.env", "X", "y", "--key", &other_public[..8]]);
+	assert!(!o.status.success(), "a value under another key was written");
 }

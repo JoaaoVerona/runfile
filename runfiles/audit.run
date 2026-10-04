@@ -1,3 +1,19 @@
-# Fail on RustSec advisories in the dependency tree
+# Fail on RustSec advisories in the dependency tree, or on a toolchain pin more than one stable behind
+#
+# The pin in rust-toolchain.toml builds every release, and its standard library
+# is linked into every shipped `run`, so a std or Cargo security fix reaches
+# users only once the pin is bumped by hand -- and nothing else watches it. One
+# release behind is normal between the six-weekly bumps; two means it was
+# forgotten (audit SA-035). The weekly audit job runs this on both forges.
 
 $ cargo audit
+
+let pinned = number(regex_capture(read_file("rust-toolchain.toml"), "(?m)^channel = \"1\\.([0-9]+)", 1))
+let manifest = $ curl -fsSL --proto =https https://static.rust-lang.org/dist/channel-rust-stable.toml
+let stable = number(regex_capture(manifest, "\\[pkg\\.rust\\]\\s+version = \"1\\.([0-9]+)", 1))
+
+if stable - pinned > 1
+	error("rust-toolchain.toml pins Rust 1.{{ pinned }}, but the current stable is 1.{{ stable }}: bump the pin")
+end
+
+print("toolchain pin 1.{{ pinned }} is current enough (stable is 1.{{ stable }})")

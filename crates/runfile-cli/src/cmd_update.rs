@@ -204,13 +204,14 @@ pub(crate) fn classify_install(exe: &Path) -> InstallKind {
 /// `/`, `;`, `|`, `$`, backticks — is rejected. Release tags look like
 /// `v0.35.0` / `0.35.0`, all covered by `[A-Za-z0-9._-]`.
 ///
-/// A leading `-` is refused too: no tag starts with one, and without the rule
-/// `run :update --bogus` was read as a request for a release called `--bogus`
-/// and sent to the server, rather than being reported here.
+/// It has to start with a letter or a digit, as the refusal says. A leading
+/// `-` is how `run :update --bogus` was read as a request for a release called
+/// `--bogus` and sent to the server, rather than being reported here; and a
+/// leading `.` let `..` through, a dot-segment curl removes from the URL.
 pub(crate) fn is_valid_version_tag(v: &str) -> bool {
 	!v.is_empty()
 		&& v.len() <= 64
-		&& !v.starts_with('-')
+		&& v.starts_with(|c: char| c.is_ascii_alphanumeric())
 		&& v.chars()
 			.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
@@ -735,7 +736,18 @@ mod tests {
 
 	#[test]
 	fn a_version_carrying_shell_or_path_syntax_is_refused() {
-		for v in ["", "v1; rm -rf ~", "$(id)", "v1 v2", "../v1", "v1/x", "`id`"] {
+		for v in [
+			"",
+			"v1; rm -rf ~",
+			"$(id)",
+			"v1 v2",
+			"../v1",
+			"v1/x",
+			"`id`",
+			"..",
+			".",
+			"_v1",
+		] {
 			assert!(!is_valid_version_tag(v), "{v:?}");
 		}
 	}

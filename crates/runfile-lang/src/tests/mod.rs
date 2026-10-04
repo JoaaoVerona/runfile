@@ -2,6 +2,7 @@
 //! got wrong; each maps to a rule the EBNF could not express.
 
 mod args;
+mod atomic;
 mod check;
 mod eval;
 mod exec;

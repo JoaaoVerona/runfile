@@ -323,3 +323,15 @@ fn a_malformed_line_error_does_not_echo_the_line(/* audit SA-026 */) {
 		"still says what is wrong: {msg}"
 	);
 }
+
+#[test]
+fn a_utf8_bom_is_not_part_of_the_first_key() {
+	// Windows tools write one; it made the first key `\u{FEFF}KEY`, so a header on
+	// line 1 went unseen at run time and by `:env set` (audit SA-034).
+	let pairs = parse_env_file("\u{FEFF}RUNFILE_ENCRYPTION_PUBLIC_KEY=abc\nB=2\n").unwrap();
+	assert_eq!(
+		pairs[0],
+		("RUNFILE_ENCRYPTION_PUBLIC_KEY".to_string(), "abc".to_string())
+	);
+	assert_eq!(pairs[1], ("B".to_string(), "2".to_string()));
+}

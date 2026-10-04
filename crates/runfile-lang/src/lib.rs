@@ -8,6 +8,7 @@
 
 pub mod args;
 pub mod ast;
+pub mod atomic;
 pub mod check;
 pub mod eval;
 pub mod format;

@@ -250,20 +250,16 @@ fn shape(file: &Path, check: bool, to_stdout: bool, report: &Report, tally: &mut
 		tally.error(file);
 		return Some(src);
 	}
-	// Write atomically -- a temp file beside the target, then rename over it --
-	// so an interrupt mid-write cannot leave the file truncated (audit SA-021).
-	let mut tmp = file.as_os_str().to_owned();
-	tmp.push(".lint-tmp");
-	let tmp = PathBuf::from(tmp);
-	let written = std::fs::write(&tmp, &out).and_then(|()| std::fs::rename(&tmp, file));
-	match written {
+	// Atomically, keeping the file's mode: a temp file beside the target, synced
+	// and renamed over it, so a full disk or a kill mid-write cannot leave a
+	// source file empty or half-formatted (audit SA-021, SA-038).
+	match runfile_lang::atomic::write(file, out.as_bytes(), runfile_lang::atomic::Mode::Keep) {
 		Ok(()) => {
 			report.note(file, "formatted");
 			tally.formatted += 1;
 			Some(out)
 		}
 		Err(e) => {
-			let _ = std::fs::remove_file(&tmp);
 			report.problem(file, None, Severity::Error, &e.to_string());
 			tally.error(file);
 			Some(src)

@@ -193,12 +193,24 @@ fn read_value_from_stdin() -> String {
 	buf
 }
 
-/// Set a variable in an env file. Auto-detects encryption and encrypts if needed.
-/// When `plain` is true, the value is stored as plaintext even if the file is encrypted.
+/// Set a variable in an env file, encrypted unless `plain`.
+///
+/// The key is the one the file's header names, or the one `key_partial` (a
+/// public-key prefix) selects -- for a file whose header is loaded from another
+/// file, a layout the runtime supports. With neither, the value is refused rather
+/// than written in plaintext: the decision used to rest on seeing the header
+/// alone, so a BOM in front of it, or a header kept in another file, silently
+/// committed a secret the user had asked to encrypt (audit SA-034). `--plain` is
+/// how plaintext is asked for.
+///
 /// When `value` is `None`, the value is read from stdin (until EOF), with a single
 /// trailing newline stripped — useful to keep secrets out of shell history and to
 /// pass values containing shell-special characters without escaping.
-pub fn cmd_set(file: &str, var: &str, value: Option<&str>, plain: bool) {
+pub fn cmd_set(file: &str, var: &str, value: Option<&str>, plain: bool, key_partial: Option<&str>) {
+	if plain && key_partial.is_some() {
+		eprintln!("Error: --plain and --key cannot be used together.");
+		process::exit(1);
+	}
 	let stdin_value;
 	let value = match value {
 		Some(v) => v,
@@ -225,9 +237,10 @@ pub fn cmd_set(file: &str, var: &str, value: Option<&str>, plain: bool) {
 	};
 	let env_map: HashMap<String, String> = pairs.into_iter().collect();
 
-	let final_value = if !plain && env_map.contains_key(runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR) {
-		// File is encrypted — encrypt the value
-		let key_hex = resolve_private_key_for_file(&env_map);
+	let final_value = if plain {
+		value.to_string()
+	} else {
+		let key_hex = key_for_set(file, &env_map, key_partial);
 		match runfile_crypto::encrypt(value, &key_hex) {
 			Ok(encrypted) => encrypted,
 			Err(e) => {
@@ -235,8 +248,6 @@ pub fn cmd_set(file: &str, var: &str, value: Option<&str>, plain: bool) {
 				process::exit(1);
 			}
 		}
-	} else {
-		value.to_string()
 	};
 
 	let new_content = set_env_line(&content, var, &final_value);
@@ -251,21 +262,60 @@ pub fn cmd_set(file: &str, var: &str, value: Option<&str>, plain: bool) {
 	println!("{var} set in {file}");
 }
 
-/// Write `content` to `path`, restricting the file to owner read/write only
-/// (mode 0600) on Unix. Used for files that may hold secrets — decrypted `.env`
-/// output and `:env set` rewrites — so they are not left group/other-readable
-/// (the default `0644` under a typical umask) on a shared host. On non-Unix
-/// platforms this is a plain write. The permission is set after the write so a
-/// freshly-created file never has a wider-permission window.
-pub(crate) fn write_secret_file(path: impl AsRef<Path>, content: &[u8]) -> std::io::Result<()> {
-	let path = path.as_ref();
-	std::fs::write(path, content)?;
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::PermissionsExt;
-		std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+/// The private key `:env set` encrypts with: the one `key_partial` selects (which
+/// has to be the one the header names, when there is a header), else the
+/// header's. With neither, nothing says which key encrypts this file, and the
+/// command stops rather than fall back to plaintext (audit SA-034).
+fn key_for_set(file: &str, env_map: &HashMap<String, String>, key_partial: Option<&str>) -> String {
+	let var = runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR;
+	let header = env_map.get(var);
+	let Some(partial) = key_partial else {
+		if header.is_some() {
+			return resolve_private_key_for_file(env_map);
+		}
+		let why = if env_map.values().any(|v| runfile_crypto::is_encrypted(v)) {
+			format!("{file} holds encrypted values but no {var} header (it may be kept in another file)")
+		} else {
+			format!("{file} has no {var} header, so nothing says which key encrypts it")
+		};
+		eprintln!(
+			"Error: {why}.\n  Pass --key <public-key-prefix> to encrypt with one of your keys, --plain to write \
+			 the value unencrypted, or start an encrypted file with `run :env init {file}`."
+		);
+		process::exit(1);
+	};
+	let all_keys = keyring_keys::all_private_keys();
+	let key_hex = runfile_crypto::find_private_key_by_public_prefix(partial, &all_keys).unwrap_or_else(|e| {
+		eprintln!("Error: {e}");
+		process::exit(1);
+	});
+	if let Some(named) = header {
+		let chosen = runfile_crypto::derive_public_key(&key_hex).unwrap_or_else(|e| {
+			eprintln!("Error deriving public key: {e}");
+			process::exit(1);
+		});
+		if &chosen != named {
+			eprintln!(
+				"Error: --key {partial} is not the key {file} is encrypted with ({var}={named}); a value under \
+				 another key could not be decrypted with the rest. Drop --key to use the file's own."
+			);
+			process::exit(1);
+		}
 	}
-	Ok(())
+	key_hex
+}
+
+/// Write `content` to `path` as a file only its owner can read (`0600` on
+/// Unix), for files that may hold secrets -- decrypted `.env` output and
+/// `:env set` rewrites. It used to `fs::write` and only then `chmod`, so the
+/// plaintext sat at the umask's mode (`0644`) until the `chmod`, and another
+/// local user could open it in that window and keep reading through the
+/// descriptor; and the truncate-then-write could leave the file half-written
+/// (audit SA-033). It goes through a temp file created owner-only and renamed
+/// over the target now, so the plaintext is never wider than `0600`, lands in a
+/// new inode no earlier descriptor can see, and replaces the file in one step.
+pub(crate) fn write_secret_file(path: impl AsRef<Path>, content: &[u8]) -> std::io::Result<()> {
+	runfile_lang::atomic::write(path.as_ref(), content, runfile_lang::atomic::Mode::Private)
 }
 
 /// Drops any key from `env_map` that the parent process already defines, so that
@@ -413,9 +463,17 @@ pub fn cmd_inject(files: &[String], command_args: &[String]) {
 /// Rotate the encryption key for an encrypted env file.
 /// Generates a new key, decrypts all values with the old key, re-encrypts with the new key,
 /// and updates the file in place. Optionally deletes the old key from the OS credential store.
+/// A file's text, without the UTF-8 byte-order mark a Windows tool may have put
+/// in front of it: every `:env` command reads lines with `KEY=` prefixes, and a
+/// BOM made the first line's key `\u{FEFF}KEY` -- so `:env set` missed a header
+/// on line 1, or appended a second copy of a key instead of replacing it (audit
+/// SA-034). A rewrite therefore drops the BOM, which no `.env` reader needs.
 fn read_file_content(file: &str) -> String {
 	match std::fs::read_to_string(file) {
-		Ok(c) => c,
+		Ok(c) => match c.strip_prefix('\u{FEFF}') {
+			Some(rest) => rest.to_string(),
+			None => c,
+		},
 		Err(e) => {
 			eprintln!("Error reading {file}: {e}");
 			process::exit(1);

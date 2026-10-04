@@ -152,7 +152,13 @@ pub fn cmd_encrypt_file(source: &str, output: &str, partial_key: &str) {
 		}
 	};
 
-	if let Err(e) = std::fs::write(output, &out_content) {
+	// Atomically, so a failed write cannot leave a half-encrypted file -- and
+	// `encrypt f f` (in place) cannot leave neither copy (audit SA-033).
+	if let Err(e) = runfile_lang::atomic::write(
+		std::path::Path::new(output),
+		out_content.as_bytes(),
+		runfile_lang::atomic::Mode::Keep,
+	) {
 		eprintln!("Error writing {output}: {e}");
 		process::exit(1);
 	}
@@ -353,7 +359,14 @@ pub fn cmd_rotate(file: &str, delete_current_key: bool) {
 		out_content.push('\n');
 	}
 
-	if let Err(e) = std::fs::write(file, &out_content) {
+	// Atomically: the new key is already stored, so a write that failed half-way
+	// in place would leave the old ciphertexts gone and only part of the new ones
+	// written (audit SA-033). The file keeps the mode it had.
+	if let Err(e) = runfile_lang::atomic::write(
+		std::path::Path::new(file),
+		out_content.as_bytes(),
+		runfile_lang::atomic::Mode::Keep,
+	) {
 		eprintln!("Error writing {file}: {e}");
 		process::exit(1);
 	}

@@ -59,7 +59,8 @@ irm https://git.joaoverona.com/joaaoverona/runfile/releases/download/latest/inst
 
 Either one installs a single binary: `~/.local/bin/run`, or `run.exe` under `%LOCALAPPDATA%\runfile\bin`, which
 the PowerShell script adds to your PATH for you — open a new shell and `run` is there. `RUNFILE_VERSION` installs
-a release other than the latest, and `RUNFILE_INSTALL_DIR` chooses where it goes.
+a release other than the latest (`v1.8.4`, or `1.8.4`), and `RUNFILE_INSTALL_DIR` chooses where it goes. Both
+are read by the shell running the script, so that is where they go: `curl -fsSL … | RUNFILE_VERSION=v1.8.4 sh`.
 
 ```bash
 run :init             # creates runfiles/ with an example
@@ -74,8 +75,9 @@ run :completions install bash   # tab-completion (or zsh, fish, powershell)
 ```
 
 Runner flags go **before** the target name; everything after it belongs to the target. `run build --dry-run`
-passes `--dry-run` to `build` as `FLAG.dry-run` and runs it for real — so the position is the whole meaning.
-`run` warns when a target is handed a flag it never reads, which is what catches that.
+hands `--dry-run` to `build` and runs it for real — as `FLAG.dry-run` if `build` reads that, or in `ARGS`, its
+positional arguments, if it reads those — so the position is the whole meaning. A target that reads neither
+refuses the flag rather than running without it, which is what catches a `--dry-run` on the wrong side.
 
 In CI, the setup action installs `run` and puts it on PATH, so every step after it is a target name:
 
@@ -88,7 +90,9 @@ In CI, the setup action installs `run` and puts it on PATH, so every step after 
 ```
 
 `@v1` is the major alias, moved to each release as it ships — so a fix arrives without editing every
-workflow, and a new major never arrives unannounced. Pin `@v1.0.0` instead to hold one exact version.
+workflow, and a new major never arrives unannounced. Pin `@v1.8.4`, or a commit SHA, instead to hold one exact
+version: the action installs the release its own ref belongs to, so the pin holds the binary as well as the
+action. `version:` overrides that — a tag such as `v1.8.4`, or `latest` for whatever was published last.
 
 ## What a runfile looks like
 
@@ -1074,7 +1078,8 @@ you wrote it: only the layout of a file is ever rewritten.
 Formatting has no settings: one shape, everywhere. It reindents with tabs, spaces expressions, places blank
 lines, lays out `json` blocks, and leaves the three things that are not the language's to touch — strings, the
 text after `$ `, and `exec` bodies — exactly as written. A file that does not parse is left alone, and the
-formatter checks that its output still means the same thing before writing it.
+formatter checks that its output still means the same thing before writing it. The file is then replaced in one
+step, keeping its permissions, so an interrupted write never leaves half of one behind.
 
 ## Encrypted environment variables
 
@@ -1091,6 +1096,10 @@ run :env set .env.production KEY value # encrypts on write
 run :env get .env.production KEY       # decrypts on read
 run :env rotate .env.production        # re-encrypt under a new key
 ```
+
+`set` encrypts under the public key the file itself records — `:env init` writes it at the top — and never
+falls back to plaintext: for a file that records none, `--key <prefix>` names the key to use, and `--plain`
+stores the value as it is.
 
 Keys live in the OS credential store — Keychain, Credential Manager, or Secret Service with a keyutils
 fallback. In CI, pass them as `RUNFILE_PRIVATE_KEYS` (newline-separated) and no credential store is involved.
@@ -1158,7 +1167,8 @@ vim.filetype.add({ extension = { run = "runfile" } })
 ```
 
 `run :generate zed` writes every target into `.zed/tasks.json`, and `run :generate jetbrains` into
-`.idea/runConfigurations/`; both leave entries you wrote yourself alone and replace only their own.
+`.idea/runConfigurations/`; both leave entries you wrote yourself alone and replace only their own, and a file
+they cannot read is left as it is rather than written over.
 
 ## Why a language
 

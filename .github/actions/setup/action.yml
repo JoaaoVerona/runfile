@@ -12,8 +12,13 @@ author: JoaaoVerona
 
 inputs:
   version:
-    description: 'Version to install. Defaults to latest. Ignored when `from-source` is true.'
-    default: latest
+    description: |
+      The release to install: a tag such as `v1.8.4` (`1.8.4` means the same),
+      or `latest` for the newest. Left empty, it is the release this action's own
+      ref belongs to, so pinning the action -- `@v1.8.4`, or a commit SHA -- pins
+      the binary too, while `@v1`, which moves to each release as it ships, still
+      installs the newest. Ignored when `from-source` is true.
+    default: ''
   from-source:
     description: |
       If `true`, build runfile from the current checkout via `cargo build` and
@@ -77,15 +82,59 @@ runs:
       run: |
         archive="runfile-cli-${TARGET}.${EXT}"
 
-        if [ "$VERSION" = "latest" ]; then
+        # Nothing asked for is the release this action's ref belongs to: the
+        # version the Cargo.toml in its own checkout names, which is the tag's at
+        # a release tag and the newest release's at `v1`. Defaulting to `latest`
+        # meant a pin to `@v1.0.0` or a SHA froze this file and nothing it
+        # downloaded -- every run installed whatever was published last (audit
+        # SA-036).
+        # On Windows the path arrives with backslashes; as slashes, the `..`s
+        # after it are ordinary components to whatever reads the path.
+        derived=
+        if [ -z "$VERSION" ]; then
+          manifest="${GITHUB_ACTION_PATH//\\//}/../../../Cargo.toml"
+          VERSION="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' "$manifest" | head -n 1)"
+          derived=1
+          if [ -z "$VERSION" ]; then
+            echo "found no version in $manifest; pass \`version:\` to say which release to install" >&2
+            exit 1
+          fi
+        fi
+
+        # The version goes into the URL's path, so it has to be a release tag
+        # and nothing else. curl removes dot-segments before it sends a request,
+        # so `../../../../someone/else/releases/download/v1` fetched -- and then
+        # ran -- an archive from any repository on github.com (audit SA-032).
+        # `[[ =~ ]]` matches the whole value, where grep would match a line of
+        # it, and C collation keeps the ranges ASCII; `%q` keeps a refused
+        # value's newlines out of the log, where a line opening `::` would be
+        # read as a workflow command.
+        is_release_tag() {
+          local LC_ALL=C
+          [[ $1 =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+        }
+        if [ "$VERSION" = latest ]; then
           url="https://github.com/JoaaoVerona/runfile/releases/latest/download/${archive}"
-        else
+        elif is_release_tag "$VERSION"; then
+          # Every release is tagged with the `v`, as `run :update` assumes too.
+          case "$VERSION" in v*) ;; *) VERSION="v$VERSION" ;; esac
           url="https://github.com/JoaaoVerona/runfile/releases/download/${VERSION}/${archive}"
+        else
+          printf 'invalid version %q: expected `latest`, or a release tag such as v1.2.3\n' "$VERSION" >&2
+          exit 1
         fi
 
         install_dir="$RUNNER_TEMP/runfile-bin"
         mkdir -p "$install_dir"
-        curl -fsSL "$url" -o "$RUNNER_TEMP/$archive"
+        # `--path-as-is` sends the path exactly as built, and `--proto` keeps
+        # every hop, redirects included, on https.
+        if ! curl -fsSL --proto '=https' --path-as-is "$url" -o "$RUNNER_TEMP/$archive"; then
+          echo "could not download $url" >&2
+          if [ -n "$derived" ]; then
+            echo "$VERSION is the release this action's ref belongs to; pass \`version:\` to install another" >&2
+          fi
+          exit 1
+        fi
 
         if [ "$EXT" = "zip" ]; then
           unzip -q "$RUNNER_TEMP/$archive" -d "$RUNNER_TEMP"

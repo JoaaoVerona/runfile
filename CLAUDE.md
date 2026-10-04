@@ -17,6 +17,7 @@ run build                  # Debug build
 run check                  # Non-mutating gate: fmt --check + clippy (deny warnings) + every release target compiles
 run lint                   # Formats, then lints
 run test                   # All workspace tests
+run audit                  # RustSec advisories, and a toolchain pin more than one stable release behind
 run install                # Builds release and installs BOTH binaries to ~/.local/bin
 
 run vscode:setup           # One-time: pnpm install for the VS Code extension. Gates its other targets.
@@ -33,6 +34,15 @@ has, and again whenever `setup.run` itself changes. `RUNFILE_SKIP_PREPARE=1` byp
 automatically. Note the bypass must NOT be exported when running the CLI test suite — the fixture strips it, but
 only because a developer setting it in their own shell would otherwise silently disable the tests that check
 the gate.
+
+**The toolchain pin is kept within one stable release of current** (audit SA-035). `rust-toolchain.toml` builds
+every release on both forges, and nothing moved it: it sat at 1.94.1, five stable releases behind, unchanged
+since the first public commit, so the next standard-library or Cargo fix would have reached no shipped binary
+until someone remembered to bump it. `run audit` -- the weekly `audit` job on
+both forges -- now reads the newest stable from `static.rust-lang.org`'s channel manifest and fails when the pin
+is more than one minor behind it. One, so a release cut the week a new stable lands does not fail for it.
+`Cargo.toml`'s `rust-version` moves with the pin: nothing tests an older compiler, so it would be a promise
+nobody keeps.
 
 ## The `.run` language
 
@@ -659,11 +669,27 @@ quoting.
   which unwinds past the explicit `cleanup_temps`, the release profile not being `panic = "abort"` -- cannot
   leave a decrypted temp file behind (audit SA-006); cleanup is idempotent, so the guard and the explicit call
   do not conflict. **The files are created owner-only** (`0600`, and `0700` for `temp_dir`) on Unix (audit
-  SA-011): `private_file_options`, `create_private_dir` and `write_private` set the mode, and `write_private`
-  re-applies `set_permissions(0o600)` after opening, since `OpenOptions::mode` only takes effect when the file
-  is *created* and `decrypt`'s destination may already exist. A no-op on Windows, which has no umask. Without
-  it a decrypted secret sat at the temp directory's default (0644, or 0664 under a group-writable umask),
-  readable by another local user for as long as the run lasted.
+  SA-011): `private_file_options` and `create_private_dir` set the mode, and `write_private` -- `decrypt`'s
+  destination, which may already exist -- writes through `atomic::write` with `Mode::Private`, whose temp file
+  is created `0600` and then renamed over it (below), so an existing file's wider mode never holds the plaintext
+  even for a moment. A no-op on Windows, which has no umask. Without it a decrypted secret sat at the temp
+  directory's default (0644, or 0664 under a group-writable umask), readable by another local user for as long
+  as the run lasted.
+- **Every file the CLI rewrites is replaced, never truncated** (`runfile_lang::atomic::write`, audit SA-033 and
+  SA-038). The bytes go to a temp file beside the target, are synced, and are renamed over it. `fs::write` and
+  then `chmod` left decrypted plaintext at the default mode, or an existing file's wider one, until the chmod --
+  and whoever opened it in that window, or had it open from before, kept reading through the descriptor, since
+  a permission is checked only at open. It also truncated first, so a full disk or a kill mid-write left an
+  empty `.env`, `.zshrc` or `tasks.json`. The temp file is private from its creation, and the rename gives the
+  target a new inode that no earlier descriptor refers to. `Mode::Private` creates the temp file `0600` (`:env decrypt`'s
+  output, `:env set`, the `decrypt()` builtin); `Mode::Keep` gives it the old file's mode and, best-effort, its
+  owner (`:env encrypt` and `rotate`, `:lint`, `:generate`, `:completions`), and a new file gets what `fs::write`
+  would have made. A symlink is resolved and its target replaced, so a `~/.zshrc` linked into a dotfiles
+  repository stays a link (`:lint` still refuses one, SA-021). Where a rename cannot do the job -- a target that
+  is not a regular file (`/dev/null`), a directory that refuses a new file, a rename that fails -- it writes in
+  place, which is what everything did before. It lives in `runfile-lang` because the `decrypt()` builtin needs
+  it and every crate that writes files sits above that one. `tests/atomic.rs` holds each case, the new inode
+  included.
 - Binding names are validated in both `let` and reassignment; a block closer (`end`/`else`/`case`/`default`)
   with nothing open is a parse error rather than an expression statement.
 - **`exit()` ends the target it is written in, with a status.** It leaves as `EvalError::Exit`, since an
@@ -1126,6 +1152,16 @@ terminal's width, and how wide text is on it).
   file, and a quoted or trailing-comment value was silently rewritten. It now parses with
   `runfile_env::parse_env_file` -- the same reader the runtime uses -- encrypts each parsed value whole, then
   re-parses and decrypts the output and refuses to write a file whose values would not round-trip.
+- **`:env set` never falls back to plaintext** (`cmd_env::key_for_set`, audit SA-034). It encrypts under the
+  file's `RUNFILE_ENCRYPTION_PUBLIC_KEY` header; a file with none is refused rather than written in the clear --
+  it may hold encrypted values whose header is kept elsewhere, and the message says so when it does -- naming
+  `--key <public-key-prefix>`, `--plain` and `:env init`. `--key` picks the private key by its public key's
+  prefix, and where there is a header the two have to agree; `--plain` stores the value as given, and asking for
+  both is refused. A UTF-8 byte-order mark is stripped by `parse_env_file` and by `:env`'s own reader: Windows
+  PowerShell 5.1's `Set-Content -Encoding UTF8` writes one, it made the first key `\u{FEFF}RUNFILE_…`, and so
+  the header on line 1 went unseen -- which is how a file saved on Windows had plaintext set into it. And
+  `--key` is a valued flag to `dispatch::positionals`: as two words, `set f K --key abc12345` had read
+  `abc12345` as the value to store.
 - **A key kept only in kernel keyutils is volatile, and the `:env` commands say so** (`keyring_store::is_persistent`,
   audit SA-017). On Linux with no usable Secret Service the backend falls back to keyutils, which a reboot (or
   a few days logged out) clears. `:env init`, `:env secret-keys add` and `:env rotate` warn (`warn_if_volatile`)
@@ -1333,6 +1369,16 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
   three lines up, above `read_file` for `re`, and a keyword above a binding at the start of a line. A source is
   a `Module` (read through a dot), except `ARGS`, and is not offered at the start of a line, where a line
   that is only a value is an error.
+- **A binding's documentation is the one markdown built from a file's text, and it is fenced so it cannot
+  leave its code block** (`analysis::fenced`, audit SA-039). The line comes from the document or from a
+  `_shared.run` the server reads off disk -- in a repository someone just cloned, the author's. The parser
+  splits lines on `\n` alone, so a lone `\r` stays inside one, and a markdown renderer reads it as a line break
+  (VS Code's normalises `\r` to `\n` before parsing): `"eu\r```\r![x](https://…)"` closed the fence, and an
+  image the popup fetched as it opened rendered after it. Every control character but a tab, and U+2028/U+2029,
+  becomes a blank, and the fence is one backtick longer than the longest run inside, since only a run at least
+  as long can close it; an ordinary line is fenced exactly as before. Everything else sent as markdown is the
+  server's own text: `card` and `with_example` render constants, and a hover's heading is `word_at`'s, which
+  holds only letters, digits, `_`, `-` and `.`.
 - **Go to definition** answers for a `run <target>` *and* for a binding. A `run` target is matched by
   **position** rather than by word, because `word_at` stops at `:` and a namespaced `build:release` is two
   words to it -- clicking either half, the `:` between them, or the keyword, means the same thing. The span
@@ -1574,9 +1620,13 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   --`**, not run as `curl … | sh`: a pipeline's status is its last command's, and `sh` given an empty script
   succeeds, so a failed download used to be reported as a successful update that had changed nothing. `1.2.0`
   is taken as `v1.2.0`; a version starting with `-` is refused, and `:update --help` prints its usage -- both
-  were read as a release name and sent to the server. `tests/update.rs` walks every outcome against a fake
-  `curl` serving the repository's real `install.sh`; its tests take turns, because each writes an executable
-  and runs it, and a fork from a parallel test in between holds the file open for writing ("Text file busy").
+  were read as a release name and sent to the server. A version has to start with a letter or a digit, as the
+  refusal had always said while letting a leading `.` through: `..` is a dot-segment curl removes from a URL.
+  `tests/update.rs` walks every outcome against a fake `curl` serving the repository's real `install.sh`; its
+  tests take turns, because each writes an executable and runs it, and a fork from a parallel test in between
+  holds the file open for writing ("Text file busy"). The same fake answers install.sh run on its own and the
+  setup action's install step, cut out of `action.yml` and handed to bash as a runner hands it -- which is the
+  only way that script is ever run before a consumer runs it.
 - **`:list` shows the machine-wide targets first**, under `global:`. They are reachable from every directory
   and appear in no file a reader of the project can see, so they are the group worth meeting first; the local
   ones follow. `local:` is the unlabelled default only while nothing precedes it, which is every project
@@ -1680,6 +1730,12 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   file is rewritten with the indentation it already uses. The 661-line `.editorconfig` reader did not come
   back. Global targets are left out unless `--include-global`, since a task file is committed and
   the machine-wide directory is one person's. `Catalog.root` (the parent of the nearest `runfiles/`) is where the files go.
+  **A file that cannot be read is not a file that is not there** (audit SA-038), here and in `:completions
+  install`: only `NotFound` means "nothing yet". A `tasks.json` it could not read -- a permission, or bytes that
+  are not UTF-8 -- counted as absent and had the generated tasks written over it, an unreadable JetBrains
+  configuration was replaced as if it were missing though it might be someone else's, and a `.zshrc` holding one
+  Latin-1 byte was rewritten as nothing but the hook. Each now refuses, naming the file; `:completions` prints the
+  line to add by hand.
   **A JetBrains `SCRIPT_TEXT` is a shell command, so the target is shell-single-quoted** in it and then
   XML-escaped (audit SA-028): JetBrains XML-unescapes the attribute before the shell reads it, so a name
   holding `;`, `$(…)`, a backtick or `|` arrives as one literal word rather than running. `jetbrains_target_of`
@@ -1860,6 +1916,27 @@ which CI no longer writes. A workflow that wants a materialized env file writes 
 at the path — one step in the workflow rather than a capability in the action, and the CLI keeps
 `RUNFILE_ENV_FILE_TARGET` for whoever sets it. Deleting `$HOME/.runfiles` had also turned actively wrong once
 the CLI stopped reading it in CI: on a self-hosted runner it destroyed a directory the run was already ignoring.
+
+**An empty `version` is the release the action's own ref belongs to** (audit SA-036): the version the
+`Cargo.toml` in the action's checkout names, found from `$GITHUB_ACTION_PATH/../../..`, with a Windows path's
+backslashes made slashes first. It defaulted to `latest`, so a consumer who pinned `@v1.0.0` or a SHA -- as the
+README and GitHub's own hardening guide say to -- froze `action.yml` and nothing it downloaded. The major tag
+keeps meaning "the newest": `major-tag` moves `v1` only once a release has finished, to that release's commit,
+whose `Cargo.toml` names it. `latest` is the explicit opt-in, which is what both CI files' `action` jobs now
+pass: left empty there, the version would be the commit under test's, which GitHub may not have released yet.
+
+**Every installer refuses a version that is not a release tag** (audit SA-032) -- `latest`, or
+`^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`, a bare one taken as its `v` tag -- before it asks anything of a
+server, and checks the tag a `latest` lookup leads to the same way. The version goes into the URL's path, and
+curl removes dot-segments before it sends, so `version: ../../../../someone/else/releases/download/v1` fetched
+an archive from any repository on github.com, and the step then ran it. The action matches with `[[ =~ ]]`,
+which takes the whole value where grep takes a line, under C collation, and prints a refused value with `%q`, so
+a newline in it cannot open a `::` workflow command in the log; install.sh spells its characters out rather
+than ranging them and strips control characters from what it echoes; install.ps1 matches to `\z`, which unlike
+`$` will not stop before a final newline. Both curl-based ones also pass `--proto '=https' --path-as-is`.
+install.sh now reads `RUNFILE_VERSION` after its argument, as install.ps1 always had: it read the argument
+alone, so the pin the README documented installed the newest release. install.ps1 has no test here -- there is
+no PowerShell on the machines that run the suite -- so a change to it is checked by reading.
 
 ## Gitea, and GitHub as a mirror
 

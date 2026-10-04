@@ -1064,19 +1064,13 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
 	}
 }
 
-/// Write `bytes` to `path` as a file only this user can read, truncating any
-/// existing one -- for `decrypt`'s plaintext destination.
+/// Write `bytes` to `path` as a file only this user can read -- for `decrypt`'s
+/// plaintext destination. Atomically, through a temp file created owner-only and
+/// renamed over the target: truncating an existing file in place let a reader
+/// who had opened it before the write keep reading the new plaintext through
+/// that descriptor, and a failed write left it half-written (audit SA-033).
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-	use std::io::Write as _;
-	let mut file = private_file_options().create(true).truncate(true).open(path)?;
-	// `OpenOptions::mode` only applies when the file is *created*, so an existing
-	// one would keep its old (possibly world-readable) mode; set it explicitly.
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::PermissionsExt;
-		file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-	}
-	file.write_all(bytes)
+	crate::atomic::write(path, bytes, crate::atomic::Mode::Private)
 }
 
 fn resolve(base: &Path, p: &str) -> PathBuf {

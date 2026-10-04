@@ -145,7 +145,20 @@ pub fn install(shell: &str) -> Result<String, String> {
 			Ok(format!("Installed to {}", path.display()))
 		}
 		Where::Profile(path, line) => {
-			let existing = std::fs::read_to_string(&path).unwrap_or_default();
+			// A profile that is not there yet starts empty; one that cannot be read
+			// -- permission, or bytes that are not UTF-8 -- is refused. It used to be
+			// read as empty too, and was then rewritten as nothing but the hook,
+			// losing everything else in the user's `.zshrc` (audit SA-038).
+			let existing = match std::fs::read_to_string(&path) {
+				Ok(text) => text,
+				Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+				Err(e) => {
+					return Err(format!(
+						"{}: could not be read ({e}); not touching it -- add this line yourself:\n{line}",
+						path.display()
+					));
+				}
+			};
 			if existing.contains(MARKER) {
 				return Ok(format!("Already installed in {}", path.display()));
 			}
@@ -218,11 +231,16 @@ fn without_block(text: &str) -> Option<String> {
 	Some(out)
 }
 
+/// Atomically, keeping the file's mode -- and following a symlink, so a
+/// `~/.zshrc` linked into a dotfiles repository is updated there and stays
+/// linked. `fs::write` truncated first, so a full disk or a kill mid-write left
+/// a shell profile empty (audit SA-038).
 fn write_new(path: &Path, body: &str) -> Result<(), String> {
 	if let Some(d) = path.parent() {
 		std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
 	}
-	std::fs::write(path, body).map_err(|e| format!("{}: {e}", path.display()))
+	runfile_lang::atomic::write(path, body.as_bytes(), runfile_lang::atomic::Mode::Keep)
+		.map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn unknown(shell: &str) -> String {
@@ -334,7 +352,7 @@ pub const ROOT: Cmd = Cmd {
 			subs: &[
 				takes_file("init", &[Flag("--plain", Arg::None), KEY]),
 				takes_file("get", &[]),
-				takes_file("set", &[Flag("--plain", Arg::None)]),
+				takes_file("set", &[Flag("--plain", Arg::None), KEY]),
 				takes_file("encrypt", &[]),
 				takes_file("decrypt", &[]),
 				takes_file("rotate", &[Flag("--delete-current-key", Arg::None)]),

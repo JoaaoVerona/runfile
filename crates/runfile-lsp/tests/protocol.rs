@@ -475,6 +475,36 @@ fn completion_offers_keywords_and_every_name_in_scope() {
 }
 
 #[test]
+fn a_shared_binding_with_a_carriage_return_stays_inside_its_code_block() {
+	// What the audit sent through `run :lsp` (SA-039): a `_shared.run` on disk
+	// whose binding holds lone `\r`s, which the parser leaves inside the line and
+	// a markdown renderer reads as line breaks -- so the fence closed, and an
+	// image the completion popup fetched on sight rendered after it.
+	let d = tempfile::TempDir::new().unwrap();
+	let dir = d.path().join("runfiles");
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(
+		dir.join("_shared.run"),
+		"let region = \"eu\r```\r![x](https://evil.example/b.png) [Setup](https://evil.example/)\r```\"\n",
+	)
+	.unwrap();
+	let doc = dir.join("deploy.run");
+	std::fs::write(&doc, "print()\n").unwrap();
+	let uri = path_to_uri(&doc);
+
+	let out = converse(&[did_open(&uri, "print()\n"), completion(4, &uri, 0, 6)]);
+	let items = offered(&out, 4);
+	let region = items.get("region").expect("the shared binding is offered");
+	assert_eq!(region["documentation"]["kind"], "markdown");
+	let md = region["documentation"]["value"].as_str().unwrap();
+	assert!(!md.contains('\r'), "{md:?}");
+	let lines: Vec<&str> = md.split('\n').collect();
+	assert_eq!(lines.len(), 3, "one line between two fences: {md:?}");
+	assert!(lines[0].starts_with("````") && lines[0].ends_with("runfile"), "{md:?}");
+	assert!(!lines[1].contains(lines[2]), "nothing inside closes it: {md:?}");
+}
+
+#[test]
 fn completion_reads_an_open_shared_file_as_the_editor_has_it() {
 	// Unsaved: the file on disk binds only `osvImage`.
 	let (_d, dir) = project_with_shared();

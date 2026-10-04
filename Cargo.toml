@@ -7,7 +7,7 @@ edition = "2024"
 homepage = "https://github.com/JoaaoVerona/runfile"
 license = "MIT"
 repository = "https://github.com/JoaaoVerona/runfile"
-rust-version = "1.94.1"
+rust-version = "1.99.0"
 version = "1.8.4"
 
 [workspace.dependencies]

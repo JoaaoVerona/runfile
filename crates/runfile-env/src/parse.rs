@@ -8,6 +8,11 @@
 /// - `KEY=` (empty string value)
 /// - Blank lines are ignored
 pub fn parse_env_file(content: &str) -> Result<Vec<(String, String)>, (usize, String)> {
+	// A UTF-8 byte-order mark is not part of the first key. Windows PowerShell
+	// 5.1's `Set-Content -Encoding UTF8` and other Windows tools write one, and it
+	// made the first key `\u{FEFF}KEY` -- so a header on line 1 went unseen and
+	// `:env set` wrote plaintext into an encrypted file (audit SA-034).
+	let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
 	let mut result = Vec::new();
 	let lines: Vec<&str> = content.lines().collect();
 	let mut i = 0;

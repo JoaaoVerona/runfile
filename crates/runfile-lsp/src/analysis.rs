@@ -718,15 +718,36 @@ fn in_scope(here: Option<&Place>, shared: impl FnOnce() -> Vec<Binding>, rank: u
 				Binder::For => "loop variable",
 				Binder::Shared => "binding from _shared.run",
 			};
-			Item::new(
-				&b.name,
-				detail,
-				&format!("```runfile\n{}\n```", b.line),
-				Kind::Variable,
-				rank,
-			)
+			Item::new(&b.name, detail, &fenced(&b.line), Kind::Variable, rank)
 		})
 		.collect()
+}
+
+/// A line of a file as a code block it can neither close nor step out of.
+///
+/// The line is the file's own text, and the file can be anyone's -- a
+/// `_shared.run` in a repository cloned a minute ago. A lone `\r` is not a line
+/// break to the parser, which splits on `\n`, but a markdown renderer reads one
+/// as a line break (VS Code's does), so `"eu\r```\r![x](https://…)"` closed the
+/// fence and the rest rendered as markdown: an image the popup fetched as it
+/// opened, and a link dressed as documentation (audit SA-039). So every control
+/// character but a tab, and the two Unicode separators a renderer may also
+/// break at, becomes a blank; and the fence is longer than any run of
+/// backticks in the line, since only one at least as long can close it.
+fn fenced(line: &str) -> String {
+	let flat: String = line
+		.chars()
+		.map(|c| {
+			if (c.is_control() && c != '\t') || matches!(c, '\u{2028}' | '\u{2029}') {
+				' '
+			} else {
+				c
+			}
+		})
+		.collect();
+	let longest = flat.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+	let fence = "`".repeat(longest.max(2) + 1);
+	format!("{fence}runfile\n{flat}\n{fence}")
 }
 
 /// Whether a keyword may open the line the cursor is on, as far as the blocks
@@ -2001,6 +2022,37 @@ mod tests {
 		let region: Vec<&Item> = got.iter().filter(|i| i.label == "region").collect();
 		assert_eq!(region.len(), 1, "{region:?}");
 		assert_eq!(region[0].detail, "binding", "this file's, which shadows the shared one");
+	}
+
+	#[test]
+	fn a_binding_line_cannot_close_its_code_block() {
+		// A `\r` the parser leaves inside the line is a line break to a markdown
+		// renderer, and closed the fence (audit SA-039); so is a separator, and a
+		// run of backticks only needs a line of its own to close one.
+		let hostile = "let region = \"eu\r```\r![x](https://evil.example/b.png)\u{2028}`````\u{85}\x1b[2J\"";
+		let shared = || {
+			vec![Binding {
+				name: "region".into(),
+				line: hostile.into(),
+				binder: Binder::Shared,
+			}]
+		};
+		let got = items(complete_with("print(‸)\n", shared));
+		let doc = &got.iter().find(|i| i.label == "region").expect("offered").doc;
+		let lines: Vec<&str> = doc.split('\n').collect();
+		assert_eq!(lines.len(), 3, "one line between two fences: {doc:?}");
+		assert!(
+			!doc.contains(['\r', '\u{2028}', '\u{2029}', '\u{85}', '\x1b']),
+			"{doc:?}"
+		);
+		let fence = lines[2];
+		assert!(fence.len() > 5 && fence.chars().all(|c| c == '`'), "{doc:?}");
+		assert_eq!(lines[0], format!("{fence}runfile"));
+		assert!(!lines[1].contains(fence), "nothing inside is as long as the fence");
+		assert!(lines[1].contains("evil.example"), "the line is shown, as code");
+
+		// An ordinary line is fenced exactly as before, tabs and all.
+		assert_eq!(fenced("\tlet x = \"a\""), "```runfile\n\tlet x = \"a\"\n```");
 	}
 
 	#[test]

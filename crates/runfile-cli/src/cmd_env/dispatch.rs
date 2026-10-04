@@ -13,7 +13,7 @@ const SECTIONS: &[Section] = &[Section(
 		Row("run :env get <file> <var>", "read one value, decrypting if needed"),
 		Row(
 			"run :env set <file> <var> [value]",
-			"write one value, encrypting by default",
+			"write one value, encrypted (--key <prefix> picks the key, --plain stores plaintext)",
 		),
 		Row("run :env encrypt <src> <dst> <key>", "encrypt a plain file"),
 		Row("run :env decrypt [src] [dst]", "decrypt to a plain file"),
@@ -41,11 +41,7 @@ pub fn dispatch(args: &[String]) -> Result<ExitCode, String> {
 	};
 	let rest = &args[1..];
 	let flag = |n: &str| rest.iter().any(|a| a == n);
-	let positional: Vec<&str> = rest
-		.iter()
-		.filter(|a| !a.starts_with("--"))
-		.map(String::as_str)
-		.collect();
+	let positional = positionals(rest);
 
 	match sub {
 		"init" => super::cmd_init(
@@ -59,7 +55,13 @@ pub fn dispatch(args: &[String]) -> Result<ExitCode, String> {
 		}
 		"set" => {
 			let (f, v) = two(&positional, "set <file> <var> [value]")?;
-			super::cmd_set(f, v, positional.get(2).copied(), flag("--plain"));
+			super::cmd_set(
+				f,
+				v,
+				positional.get(2).copied(),
+				flag("--plain"),
+				value_of(rest, "--key"),
+			);
 		}
 		"encrypt" => {
 			let (s, d) = two(&positional, "encrypt <src> <dst> <key-prefix>")?;
@@ -111,6 +113,25 @@ fn two<'a>(p: &[&'a str], usage: &str) -> Result<(&'a str, &'a str), String> {
 		(Some(a), Some(b)) => Ok((a, b)),
 		_ => Err(format!("`:env {usage}`")),
 	}
+}
+
+/// Flags whose value may follow as the next word, `--key VALUE`.
+const VALUED: &[&str] = &["--key"];
+
+/// The words that are not flags -- and not a valued flag's value either: taken
+/// for a positional, `set f K --key abc12345` read `abc12345` as the value to
+/// store, and `init --key abc12345` created a file of that name.
+fn positionals(args: &[String]) -> Vec<&str> {
+	let mut out = Vec::new();
+	let mut it = args.iter();
+	while let Some(a) = it.next() {
+		if VALUED.contains(&a.as_str()) {
+			it.next();
+		} else if !a.starts_with("--") {
+			out.push(a.as_str());
+		}
+	}
+	out
 }
 
 /// `--key=VALUE` or `--key VALUE`.
