@@ -42,6 +42,21 @@ Every high finding was re-opened at its cited lines and reproduced on the HEAD b
 - **SA-002** — Arbitrary command execution on Tab via bash completion (compgen -W expands malicious target file names) (High, confirmed)
 - **SA-003** — Self-quoted interpolation is executed as shell code inside double-quotes and heredoc bodies ($ lines / exec shell bodies) (High, confirmed)
 
+## Fix status
+
+The three high findings were fixed after the audit, in the working tree (not yet committed or released). All
+1,217 workspace tests and `run check` (fmt, clippy with warnings denied, all six release targets) pass, and the
+corpus sweep over the author's 1,257 runfiles reports no new findings and no unplaced interpolations.
+
+| Finding | Status | What changed | Test |
+|---|---|---|---|
+| SA-001 | **Fixed** | The `runfiles/` the upward walk finds must be owned by the user, by the machine's administrators (root; `Administrators`/`SYSTEM` on Windows), or by the owner of the directory the walk started in; otherwise discovery refuses it, naming the owner. `RUNFILE_SAFE_DIRECTORIES` (paths, or `*`) opts in. New `crates/runfile-discovery/src/owner.rs` (Unix `geteuid`/`st_uid`; Windows owner SIDs via `GetNamedSecurityInfoW`). | Unit tests with a stand-in identity; verified end to end in a user namespace with a foreign-owned `runfiles/` (1.8.2 accepted it, the fix refuses it, the opt-in admits it). The Windows lookup compiles for both Windows triples but has not been run on Windows. |
+| SA-002 | **Fixed** | The bash completion script reads candidates line by line and adds them escaped with `printf %q`; nothing goes through `compgen -W`. The binary no longer offers a target name holding `$`, a backtick, `<(`, `>(` or a control character, which also protects bash scripts installed by 1.8.2 or older until they are reinstalled. | `security_regression.rs`: Tab with `$( )` and backtick file names, and the 1.8.2 script verbatim against the new binary; unit tests for the filter and the script. |
+| SA-003 | **Fixed** | The runner asks the shell checker's bash reading where each interpolation sits and writes the value for that place: unchanged outside quotes, escaped inside `"…"`, `${…}`, heredocs and backticks, closed and reopened inside the author's `'…'`. A value that would end its heredoc, or put a line break in a shell comment, is refused. Shells the reading does not follow (zsh, ksh, a computed `.shell`) keep the old rendering. | `security_regression.rs`: 11 forms × 13 hostile values in real bash, asserting nothing runs and the output is exact; heredoc-delimiter and comment refusals; placement unit tests in runfile-shell. |
+| SA-009 | **Partly fixed** (medium) | As a side effect of SA-003, `$(( ))`, `(( ))` and `$[ ]` now write values like double quotes, so `$( )` in a value is text there. An operand of `[[ -eq ]]`, `let`, `declare -i` or an array subscript is still evaluated after quote removal. | `security_regression.rs`: the `$(( ))` case. |
+
+The regression tests are no longer `#[ignore]`d; they run with the suite.
+
 ## Fixes that change product behavior
 
 These need a decision before they ship. Applying them without one is how a security fix becomes an outage.
@@ -181,7 +196,7 @@ Users who legitimately rely on a runfiles/ owned by another account (e.g. a shar
 
 *Safer rollout:* Ship the ownership check with a safe.directory-style opt-in and a precise error naming the directory and the exact allowlist line to add, exactly as git did; consider a one-time warning (log-only) release before hard enforcement to surface legitimate shared-owner setups.
 
-**Regression test:** not-possible
+**Regression test:** not-possible (see *Fix status*: unit tests with a stand-in identity, and an end-to-end check in a user namespace)
 
 **References**
 
@@ -257,7 +272,7 @@ Completion candidate handling changes; target names containing shell metacharact
 
 **Regression test**
 
-`crates/runfile-cli/tests/security_regression.rs` — status: `failing-as-expected`
+`crates/runfile-cli/tests/security_regression.rs` — status: `failed against 1.8.2; passes after the fix`
 
 Run: `run test -- --test security_regression -- --ignored pressing_tab`
 
@@ -327,7 +342,7 @@ Tightening the checker turns today's 'correct' ssh/sh -c/echo-into-rc patterns i
 
 **Regression test**
 
-`crates/runfile-cli/tests/security_regression.rs` — status: `failing-as-expected`
+`crates/runfile-cli/tests/security_regression.rs` — status: `failed against 1.8.2; passes after the fix`
 
 Run: `run test -- --test security_regression -- --ignored does_not_run_its_value`
 
@@ -949,7 +964,7 @@ Files that interpolate a string-typed value into shell arithmetic would be refus
 
 **Regression test**
 
-`crates/runfile-cli/tests/security_regression.rs` — status: `failing-as-expected`
+`crates/runfile-cli/tests/security_regression.rs` — status: `failed against 1.8.2; passes after the fix`
 
 Run: `run test -- --test security_regression -- --ignored shell_arithmetic`
 
@@ -4310,22 +4325,23 @@ Windows users' no-whitespace `$` lines would be quoted differently; a target tha
 
 ## Regression tests
 
-Six tests in `crates/runfile-cli/tests/security_regression.rs` assert the secure behaviour. Each fails against the current code on its own assertion (a marker file the payload creates inside the test's temporary directory), not on setup. They pass once the finding is fixed, so they are its acceptance criteria.
-
-They are **`#[ignore]`d**, so `run test` and CI stay green (`0 passed; 0 failed; 6 ignored`). Run them as a group, and drop each `#[ignore]` as its fix lands:
+`crates/runfile-cli/tests/security_regression.rs` asserts the secure behaviour for each high finding. When the
+audit ended, each test failed against 1.8.2 on its own assertion (a marker file the payload creates inside the
+test's temporary directory), not on setup. After the fixes, all ten pass and run with the suite: none is
+`#[ignore]`d any longer.
 
 ```bash
-run test -- --test security_regression -- --ignored
+run test -- --test security_regression
 ```
 
-| Finding | Test | Status | Observed failure |
+| Finding | Tests | Before the fix (1.8.2) | Now |
 |---|---|---|---|
-| SA-002 | `security_regression_pressing_tab_does_not_run_a_command_spelled_in_a_file_name`, `…_a_backtick_in_a_file_name` | failing as expected | `pressing Tab after `run` ran the command spelled in a target's file name` |
-| SA-003 | `security_regression_an_interpolation_inside_double_quotes_does_not_run_its_value`, `…_a_command_string_for_another_shell_…`, `…_inside_a_heredoc_…` | failing as expected | `a value interpolated inside double quotes was run as a command: Deploying ''` (and the same for `sh -c "…"` and an `exec bash` heredoc) |
-| SA-009 | `security_regression_an_interpolation_inside_shell_arithmetic_does_not_run_its_value` | failing as expected | `a value interpolated into $(( )) was run as a command` |
-| SA-001 | — | not safely testable | Needs a `runfiles/` owned by a different uid. Manual steps are in the finding. |
+| SA-002 | `…_pressing_tab_does_not_run_a_command_spelled_in_a_file_name`, `…_a_backtick_in_a_file_name`, `…_the_script_an_older_run_installed_does_not_run_a_file_name` | `pressing Tab after `run` ran the command spelled in a target's file name` | pass |
+| SA-003 | `…_an_interpolation_inside_double_quotes_…`, `…_a_command_string_for_another_shell_…`, `…_inside_a_heredoc_…`, `…_a_value_is_text_wherever_it_sits`, `…_a_value_cannot_end_the_heredoc_it_is_in`, `…_a_value_cannot_end_the_comment_it_is_in` | `a value interpolated inside double quotes was run as a command: Deploying ''` (and the same for `sh -c "…"` and an `exec bash` heredoc) | pass |
+| SA-009 | `…_an_interpolation_inside_shell_arithmetic_does_not_run_its_value` (the `$(( ))` form only) | `a value interpolated into $(( )) was run as a command` | pass |
+| SA-001 | `a_runfiles_another_account_owns_is_refused_unless_the_walk_started_in_its_tree`, `a_runfiles_of_ones_own_is_trusted` (runfile-discovery unit tests) | not testable as a CLI test: it needs a directory another uid owns | pass |
 
-The tests are tagged `cfg(unix)`, since they drive bash. They pass rustfmt with the repository's config; clippy was not run on them.
+The CLI tests are `cfg(unix)`, since they drive bash.
 
 ## Dependencies
 

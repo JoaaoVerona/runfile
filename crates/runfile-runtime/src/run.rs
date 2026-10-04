@@ -507,7 +507,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 		Statement::Exec {
 			command, body, detach, ..
 		} => {
-			let (cmd, text) = render(command.as_deref(), body, r)?;
+			let (cmd, text) = render(command.as_deref(), body, props, r)?;
 			r.trace.push(text.clone());
 			let env = merged_env(r);
 			let dir = cwd(props, &r.anchor);
@@ -709,7 +709,7 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 	let Expr::Capture { command, body, .. } = e else {
 		return Ok(eval_boundary(e, &mut r.scope)?);
 	};
-	let (cmd, text) = render(command.as_deref(), body, r)?;
+	let (cmd, text) = render(command.as_deref(), body, props, r)?;
 	let env = merged_env(r);
 	let dir = cwd(props, &r.anchor);
 	let out = exec::spawn(Spawn {
@@ -758,7 +758,7 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 			line: e.span().line,
 		}));
 	};
-	let (cmd, text) = render(command.as_deref(), body, r)?;
+	let (cmd, text) = render(command.as_deref(), body, props, r)?;
 	let env = merged_env(r);
 	let dir = cwd(props, &r.anchor);
 	Ok(exec::spawn_code(Spawn {
@@ -855,24 +855,33 @@ fn run_args(words: &[Vec<InterpPart>], sc: &mut Scope) -> Result<Vec<String>, Ru
 /// in it needed quoting. Left alone, a value arrives as itself and the author
 /// quotes it the way that language wants, which is the only thing that can be
 /// right for every language.
+///
+/// A shell body's values are written for where each one sits, as the shell
+/// checker reads the body the way bash would: one word outside quotes, and
+/// escaped for the quotes around it inside `"…"`, a heredoc or backticks, so a
+/// `$( )` in a value is text everywhere -- see [`runfile_lang::Quoting`]. In a
+/// shell that reading does not follow, every value is the one quoted word it
+/// always was.
 fn render(
 	command: Option<&[InterpPart]>,
 	body: &[Vec<InterpPart>],
+	props: &Props,
 	r: &mut Runner<'_>,
 ) -> Result<(Option<String>, String), RunError> {
 	let cmd = match command {
 		Some(c) => Some(interpolate_shell(c, &mut r.scope)?),
 		None => None,
 	};
-	let shell = exec::body_is_shell(cmd.as_deref());
-	let mut lines = Vec::with_capacity(body.len());
-	for l in body {
-		lines.push(if shell {
-			interpolate_shell(l, &mut r.scope)?
-		} else {
-			runfile_lang::eval::interpolate_plain(l, &mut r.scope)?
-		});
-	}
+	let lines = if exec::body_is_shell(cmd.as_deref()) {
+		let spots = runfile_shell::spots(command_for(cmd.as_deref(), props), body);
+		runfile_lang::eval::interpolate_script(body, spots.as_deref(), &mut r.scope)?
+	} else {
+		let mut lines = Vec::with_capacity(body.len());
+		for l in body {
+			lines.push(runfile_lang::eval::interpolate_plain(l, &mut r.scope)?);
+		}
+		lines
+	};
 	Ok((cmd, lines.join("\n")))
 }
 

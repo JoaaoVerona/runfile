@@ -188,6 +188,24 @@ interpolation sites in the corpus, 48 would have been unsafe under manual quotin
 Quotes inside `{{ }}` need no escaping — an interpolation is opaque to the string containing it.
 `confirm("Greet {{ ARG.name ? "world" }}?")` is correct as written.
 
+**A value is written for the quotes around it** (`runfile_lang::Quoting`, `Value::to_shell_at`). Single
+quotes are inert only where they are quotes, so `echo "Deploying {{ v }}"` and `ssh host "cd {{ dir }} && …"`
+-- shapes the rules call correct -- ran a `$( )` in the value in the *local* shell; the 2026-10-03 audit's
+SA-003. The runner now asks the shell checker's own reading where each hole sits (`runfile_shell::spots`,
+from `run::render`) and writes the quoted word for it: as it is outside quotes and inside `$( )`, closed and
+reopened inside the author's `'…'` or `$'…'`, and with `\ $ \` "` escaped *inside its quoted pieces* where a
+shell expands and keeps quotes as text -- `"…"`, a `${…}` in them or in a heredoc, arithmetic. The `\'`
+joining two pieces is left alone, because inside a `${…}` bash still reads `'` as a quote while it looks for
+the `}`, and an escaped backslash there unbalanced it. An expanding heredoc's body escapes `\ $ \`` (a `"` is
+text there), a backtick's body is read again in a sandbox after bash's own backslash pass and escaped once more
+for it, and a quoted heredoc's body is left as it is. The word keeps its quotes in every case, so a message
+reads as it did and a command string for another shell gets the value quoted for *that* shell. Two places
+refuse instead of writing: a value inside a heredoc whose line would be the delimiter (it would end the body,
+and what followed would run), and a value holding a line break inside a shell comment. Where the reading does
+not follow the body -- it gave up, or the shell is zsh, ksh or one only known at run time -- every value is the
+one quoted word it always was. `security_regression.rs` runs eleven forms against thirteen hostile values in
+real bash and asserts both that nothing runs and that what arrives is the value, or its quoted text, exactly.
+
 ### Structured blocks
 
 `json … end` is a block of JSON in value position. **An interpolation inside renders as one value of the
@@ -693,6 +711,22 @@ naming both, since merging them would let one target shadow another invisibly. A
 (a leftover `mkdir` must not stop a run), and `$HOME/runfiles/` found by the upward walk is not collected a
 second time as the global. This replaced `includes` entirely.
 
+- **The `runfiles/` the upward walk takes has to be trusted** (`discovery::trusted`, `owner.rs`): owned by the
+  account running `run`, by the machine's administrators (root; `Administrators` or `SYSTEM` on Windows), or by
+  whoever owns the directory the walk started in -- else `DiscoverError::NotYours`, and one whose owner cannot be
+  read is `Unverifiable` rather than waved through. It took the nearest one on sight, so `/tmp/runfiles`, or a
+  `C:\runfiles` any signed-in Windows user may create, answered for every directory below it with none of its
+  own: git's CVE-2022-24765, and the audit's SA-001. The third owner is the deliberate part. Git refuses any
+  repository you do not own, which broke every container running as root over a bind mount; trusting the start
+  directory's owner keeps `cd` into a colleague's checkout, or a root container over its user's files, a choice
+  rather than a refusal, while refusing the walk *crossing* to an owner the start did not have. A symlinked
+  `runfiles/` is judged by the link and by what it points at. `RUNFILE_SAFE_DIRECTORIES` (paths split the way
+  `PATH` is, or `*`) is the opt-in, an environment variable because there is no settings file and because it
+  must be the person's, never something a repository writes; an empty entry trusts nothing. The check is the
+  same for the runner, `:list`, completion, `:lint` and the language server, since all of them go through
+  `discover_with`. Tested with a stand-in identity on Unix -- refusing needs a directory another uid owns,
+  which a test cannot make -- and on every platform for the case that has to work, so a Windows lookup that
+  failed would fail there rather than refuse every project.
 - **The anchor rule**: the parent of `runfiles/` is the single anchor for cwd, `.env-file`, `.add-path`,
   `glob`, `read_file` and `{{ RUN.parent }}`.
 - **`_shared.run` layers by directory.** `Catalog::shared_chain` returns every one that applies, outermost
@@ -1021,6 +1055,12 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
   wrong, and it had to be installed -- so a gate built on it passed on one machine and failed on another. Here an
   interpolation is one opaque character (`script::HOLE`) standing for its whole `{{ … }}`, which is exactly what
   the runner makes of it: one quoted word.
+- **It also tells the runner where each interpolation sits** (`spots`, `syntax::spots`), which is what the
+  runner writes values for (see *Interpolation self-quotes*). The same reader records a `Spot` for every hole it
+  passes, from a stack of what encloses the position (`Nest`); a backtick's body and an expanding heredoc's are
+  read a second time in a `sandbox` that can only add places, never findings, since that reading is not held to
+  bash's. When nobody asks -- the checker's own reading -- `spots` is empty and nothing is recorded or re-read,
+  so no finding can move. A `((` read both ways is why a later reading of a hole wins over an earlier one.
 - **A script it cannot follow is left alone** (`Stop::Lost`): `coproc`, a heredoc delimiter that expands, a `(`
   after a word that is neither an extended glob nor an array. Giving up costs a check; guessing costs a false
   report. Every script in the author's 1,194-file corpus is read without giving up.
@@ -1403,6 +1443,17 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   sourcing it and driving `_run` the way the shell does — **splitting the line on the script's own
   `COMP_WORDBREAKS`, not on spaces**, since a harness that splits by hand cannot see that class of bug at
   all. The tree is tested directly, and in both directions against the help.
+  **A candidate is data.** The bash script used to filter with `compgen -W`, which *expands* its word list --
+  and a target's name is its file name, so `runfiles/$(…).run` ran on Tab: the 2026-10-03 audit's SA-002, and
+  `<( )` does it with no `$` at all. It reads the binary's answer a line at a time now, matches the typed
+  prefix against the name or its escaped form, and adds each one escaped by `printf %q` for the command line it
+  is about to be typed into, so a `;` or a space in a name arrives as one word. Paths still come from
+  `compgen -d`/`-f`, which do not expand, under `compopt -o filenames` where bash has it (3.2 does not). An
+  *installed* bash script is a copy that upgrading does not replace, so `completions::offerable` also keeps
+  every name holding `$`, a backtick, `<(`, `>(` or a control character out of what `:complete` offers: a copy
+  installed by 1.8.2 stays safe until it is reinstalled, and `security_regression.rs` drives that very script
+  against the new binary. Such a name can only be typed quoted anyway. zsh's `compadd`, fish's `complete` and
+  PowerShell's `CompletionResult` take candidates literally, and are unchanged.
   `:completions` takes `install`, `uninstall` or `output`, the shape the old CLI had. **bash and fish get a
   file in the directory their completion system reads on demand**, not a line in a profile: Ubuntu's
   `~/.profile` sources `.bashrc` *before* it puts `~/.local/bin` on PATH, so a startup hook that shells out to
@@ -1861,8 +1912,8 @@ tests that assert the mechanism rather than the symptom.
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with
    `HOME`, `USERPROFILE`, `RUNFILE_CONFIG_DIR`, `XDG_*` and `APPDATA` pointed at an empty directory and
-   `RUNFILE_SKIP_PREPARE`, `RUNFILE_PRIVATE_KEYS` and **every one of the ten variables `ci_detect` looks at**
-   stripped — not just `CI` and `GITHUB_ACTIONS`, because CI mode now decides whether the machine-wide
+   `RUNFILE_SKIP_PREPARE`, `RUNFILE_PRIVATE_KEYS`, `RUNFILE_SAFE_DIRECTORIES` and **every one of the ten
+   variables `ci_detect` looks at** stripped — not just `CI` and `GITHUB_ACTIONS`, because CI mode now decides whether the machine-wide
    directory is read and whether `state.json` is written, so a stray `BUILDKITE` in someone's shell would
    quietly turn off the tests that check both and they would pass. The first three
    matter on Windows, where the Known Folder API ignores `HOME` and `APPDATA`; the CLI reads `HOME` before

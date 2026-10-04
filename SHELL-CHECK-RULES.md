@@ -188,7 +188,9 @@ $ echo "Deploying {{ ARG.version }}"
 
 There the string is shell code for another shell, and the interpolation's quoting is what makes it correct —
 or it is a message, where a value shown in quotes is not wrong. The same goes for `[ "{{ a }}" = "{{ b }}" ]`,
-where both sides carry the same quotes and still compare equal.
+where both sides carry the same quotes and still compare equal. Nothing in the value runs in the shell that reads
+the double quotes either: the runner writes it for them, escaping what that shell would expand, so `$( )` in a
+value is text to both shells.
 
 ### `unexpanded-string`
 

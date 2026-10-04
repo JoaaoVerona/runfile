@@ -594,6 +594,17 @@ $ cp {{ ARG.src }} {{ ARG.dest }}
 left to quote: the substitution already did it. The same rule holds one layer up inside a `json` block, where
 an interpolation becomes one JSON value.
 
+Where the shell around an interpolation is quoted already — a message in `"…"`, a heredoc, a command string for
+another shell — the value is written for those quotes too, so it stays text whatever it holds:
+
+```sh
+$ ssh deploy@host "cd {{ ARG.dir }} && ./restart"
+```
+
+The remote shell is handed `cd 'my dir' && ./restart`, quoted for it, and a `$( )` or a backtick in the value
+is text to both shells. A value that would end the heredoc or the shell comment it sits in is refused rather
+than written.
+
 ### Asking whether a command worked
 
 A `$` run may stand as a condition or as a `match` subject. The condition is true when the command exits 0;
@@ -950,6 +961,13 @@ runfiles/api/deploy.run     → run api:deploy
 Inside a subproject, `run build` means *that* subproject's `build` — so a file reads the same wherever you
 invoke `run` from.
 
+**The `runfiles/` the walk finds has to be yours.** A directory any account can write — `/tmp`, or the root of
+a Windows drive — would otherwise hand its targets to every directory beneath it that has none of its own. So
+it must belong to you, to the machine's administrators, or to whoever owns the directory you started in, which
+keeps working inside a colleague's checkout as deliberate as it always was. A directory meant to be shared
+between accounts is trusted by naming it, or the project holding it, in `RUNFILE_SAFE_DIRECTORIES` — paths
+separated the way `PATH` separates them, or `*` for all.
+
 `$HOME/.runfiles/` holds machine-wide targets, available in every project. If you would rather see the
 directory than hide it, `$HOME/runfiles/` and `$HOME/Runfiles/` are read too — but only one of the three may
 hold anything. `run :list` puts them first, under `global:`: they are the part of the listing you cannot see
@@ -1012,7 +1030,7 @@ whose state is still worth keeping, so a `setup` run under it is still recorded.
 | `run :init` | Create `runfiles/` with an example |
 | `run :lint [path…]` | Format runfiles in place and report anything the runner would refuse (`--check` writes nothing, `--stdout`) |
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
-| `run :completions <command> <shell>` | `install`, `uninstall` or `output` a completion script for `bash`, `zsh`, `fish` or `powershell` |
+| `run :completions <command> <shell>` | `install`, `uninstall` or `output` a completion script for `bash`, `zsh`, `fish` or `powershell` — after upgrading from 1.8.2 or older, `install bash` again: the installed script is a copy |
 | `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
 | `run :update [version]` | Update the binary to the newest release, or to the tag named; `--channel=github` takes it from the GitHub mirror, `--force` reinstalls |
 

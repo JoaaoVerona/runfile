@@ -444,7 +444,7 @@ pub fn complete(words: &[String], cword: usize, targets: &dyn Fn() -> Vec<String
 			return node.flags.iter().map(|f| f.0.to_string()).collect();
 		}
 		let mut out: Vec<String> = node.subs.iter().map(|c| c.name.to_string()).collect();
-		out.extend(targets());
+		out.extend(targets().into_iter().filter(|t| offerable(t)));
 		return out;
 	}
 
@@ -463,6 +463,19 @@ fn marker(arg: Arg) -> String {
 		Arg::Dirs => DIRS.to_string(),
 		_ => FILES.to_string(),
 	}
+}
+
+/// Whether a target's name may be offered as a candidate at all.
+///
+/// A name is its file name, so a repository picks it. The bash script installed
+/// by an older `run` is a copy that upgrading does not replace, and it fed every
+/// candidate through `compgen -W` -- which *expands* its word list, so `$( )`,
+/// backticks and `<( )` in a name ran on Tab. Leaving those names out here is
+/// what keeps that copy safe until it is reinstalled. Nothing is lost: such a
+/// name can only be typed quoted, and a control character would split the
+/// one-candidate-per-line answer every script reads.
+fn offerable(name: &str) -> bool {
+	!name.chars().any(|c| c == '$' || c == '`' || c.is_control()) && !name.contains("<(") && !name.contains(">(")
 }
 
 pub fn script(shell: &str) -> Result<String, String> {
@@ -488,16 +501,40 @@ const BASH: &str = r#"# run(1) completion. Install: run :completions install bas
 # reads the variable after the function returns, not before.
 COMP_WORDBREAKS="${COMP_WORDBREAKS//:/}"
 
+# Every candidate is data: read a line at a time and added as it is. Never
+# through `compgen -W`, which *expands* its word list -- a target's name is its
+# file name, so `$( )`, backticks and `<( )` in one ran on Tab. Each is escaped
+# for the command line it is about to be typed into, so a name holding a `;` or
+# a space arrives as one word rather than as shell.
 _run() {
-	local cur out
+	local cur out word quoted
 	cur="${COMP_WORDS[COMP_CWORD]}"
 	out="$(run :complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null)"
 	COMPREPLY=()
-	case "$out" in
-		*"<dirs>"*) COMPREPLY=( $(compgen -d -- "$cur") ); out="${out/<dirs>/}" ;;
-		*"<files>"*) COMPREPLY=( $(compgen -f -- "$cur") ); out="${out/<files>/}" ;;
-	esac
-	COMPREPLY+=( $(compgen -W "$out" -- "$cur") )
+	while IFS= read -r word; do
+		case "$word" in
+			"") ;;
+			"<dirs>") _run_paths -d "$cur" ;;
+			"<files>") _run_paths -f "$cur" ;;
+			*)
+				printf -v quoted '%q' "$word"
+				if [[ "$word" == "$cur"* || "$quoted" == "$cur"* ]]; then
+					COMPREPLY+=("$quoted")
+				fi
+				;;
+		esac
+	done <<< "$out"
+}
+
+# Paths are the shell's to complete. `-o filenames` is what lets readline quote
+# one and put a `/` after a directory; bash 3.2 has no `compopt`, and gets the
+# paths without either.
+_run_paths() {
+	local path
+	compopt -o filenames 2>/dev/null
+	while IFS= read -r path; do
+		[[ -n "$path" ]] && COMPREPLY+=("$path")
+	done <<< "$(compgen "$1" -- "$2")"
 }
 complete -F _run run
 "#;
@@ -680,6 +717,51 @@ mod tests {
 		let targets = || vec!["build".to_string()];
 		let words: Vec<String> = ["run", "build", ""].iter().map(|s| s.to_string()).collect();
 		assert!(complete(&words, 2, &targets).is_empty());
+	}
+
+	#[test]
+	fn a_name_a_shell_would_expand_is_never_offered() {
+		// A name is a file name, so a repository picks it -- and the bash script
+		// an older `run` installed runs `$( )`, backticks and `<( )` in every
+		// candidate it is handed. Upgrading does not replace that copy.
+		let targets = || {
+			[
+				"build",
+				"$(touch x)",
+				"`touch x`",
+				"a<(touch x)",
+				"a>(touch x)",
+				"${X:=1}",
+				"two\nlines",
+			]
+			.iter()
+			.map(|s| s.to_string())
+			.collect()
+		};
+		let words = vec!["run".to_string(), String::new()];
+		let got = complete(&words, 1, &targets);
+		assert!(got.contains(&"build".to_string()), "{got:?}");
+		for bad in [
+			"$(touch x)",
+			"`touch x`",
+			"a<(touch x)",
+			"a>(touch x)",
+			"${X:=1}",
+			"two\nlines",
+		] {
+			assert!(!got.contains(&bad.to_string()), "{bad:?} was offered: {got:?}");
+		}
+		// What only looks odd is still offered: no shell expands these.
+		assert!(offerable("deploy;now") && offerable("my target") && offerable("déploiement"));
+	}
+
+	#[test]
+	fn the_bash_script_never_expands_a_candidate() {
+		// `compgen -W` expands its word list, which is how a file name ran on
+		// Tab. The paths it still asks for come from `-d`/`-f`, which do not.
+		let code: Vec<&str> = BASH.lines().filter(|l| !l.trim_start().starts_with('#')).collect();
+		assert!(!code.iter().any(|l| l.contains("compgen -W")), "{BASH}");
+		assert!(code.iter().any(|l| l.contains("printf -v quoted '%q'")), "{BASH}");
 	}
 
 	#[test]

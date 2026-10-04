@@ -163,6 +163,37 @@ fn shell_quoting_defuses_expansion() {
 }
 
 #[test]
+fn a_value_is_written_for_the_quotes_around_it() {
+	use crate::value::{Quoting, Spot};
+	let at = |v: &str, quoting| {
+		Value::Str(v.into())
+			.to_shell_at(&Spot {
+				quoting,
+				heredocs: Vec::new(),
+			})
+			.unwrap()
+	};
+	assert_eq!(at("$HOME", Quoting::Bare), "'$HOME'");
+	// Inside double quotes the word keeps its quotes, as text, and what this
+	// shell would expand is escaped inside them -- but not the `\'` joining two
+	// quoted pieces, which a `${…}` would then read as a quote left open.
+	assert_eq!(at("$(x) `y` \\ \"", Quoting::Double), r#"'\$(x) \`y\` \\ \"'"#);
+	assert_eq!(at("it's", Quoting::Double), r#"'it'\''s'"#);
+	// A heredoc's body expands `$`, backticks and `\`, and nothing else.
+	assert_eq!(at("$x \"q\" it's", Quoting::Heredoc), r#"'\$x "q" it'\\''s'"#);
+	// The author's own quotes are closed around the word and reopened.
+	assert_eq!(at("a b", Quoting::Single), "''a b''");
+	assert_eq!(at("$x", Quoting::SingleExpanded), r#"''\$x''"#);
+	// What only looks quoted is a word no shell expands: unchanged everywhere.
+	assert_eq!(at("plain", Quoting::Double), "plain");
+	let comment = Value::Str("a\nb".into()).to_shell_at(&Spot {
+		quoting: Quoting::Comment,
+		heredocs: Vec::new(),
+	});
+	assert!(comment.is_err(), "a line break would end the comment");
+}
+
+#[test]
 fn every_exported_function_name_is_actually_dispatched() {
 	// The exported list drives editor completion. A name here that `call` does
 	// not know would be offered and then fail, so the list is checked against

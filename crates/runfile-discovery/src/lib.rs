@@ -14,7 +14,12 @@
 //! NTFS forbids it -- so a namespace is always a real directory.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
+mod owner;
+
+use owner::Owner;
 
 /// Directories never descended into when looking for `runfiles/`.
 const SKIP: &[&str] = &["node_modules", "target", "dist", "build", ".git", "vendor"];
@@ -89,7 +94,34 @@ pub enum DiscoverError {
 	AmbiguousGlobal { a: PathBuf, b: PathBuf },
 	#[error("{path}: line {line}: {UNREADABLE_SCOPE}")]
 	UnreadableScope { path: PathBuf, line: usize },
+	#[error(
+		"{path} belongs to {owner}, not to you: a `runfiles/` another account controls would decide what runs \
+		 here -- if it is meant to be shared, trust it with {var}={anchor}",
+		var = SAFE_DIRECTORIES
+	)]
+	NotYours {
+		path: PathBuf,
+		anchor: PathBuf,
+		owner: String,
+	},
+	#[error(
+		"cannot tell who owns {path} ({error}), so it cannot be trusted to decide what runs here -- to trust it \
+		 anyway, set {var}={anchor}",
+		var = SAFE_DIRECTORIES
+	)]
+	Unverifiable {
+		path: PathBuf,
+		anchor: PathBuf,
+		error: String,
+	},
 }
+
+/// The opt-in for a `runfiles/` that [`trusted`] would refuse: paths, separated
+/// the way `PATH` separates them, each naming such a directory or the project
+/// holding it -- or `*`, for every one. An environment variable because there
+/// is no settings file to put it in, and because it belongs to the person, not
+/// to anything a repository can write.
+pub const SAFE_DIRECTORIES: &str = "RUNFILE_SAFE_DIRECTORIES";
 
 /// The property that scopes the machine-wide directory.
 pub const SCOPE: &str = "only-in-directories";
@@ -264,6 +296,9 @@ pub fn discover_unscoped(from: &Path, home: Option<&Path>) -> Result<Catalog, Di
 fn discover_with(from: &Path, home: Option<&Path>, scoped: bool) -> Result<Catalog, DiscoverError> {
 	let mut cat = Catalog::default();
 	let local = find_upward(from);
+	if let Some(dir) = &local {
+		trusted(dir, from)?;
+	}
 	let global = match home {
 		Some(h) => global_dir(h)?,
 		None => None,
@@ -356,6 +391,71 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 		(Ok(a), Ok(b)) => a == b,
 		_ => false,
 	}
+}
+
+/// Whether the `runfiles/` the upward walk reached may decide what runs.
+///
+/// It must belong to the account running `run`, to the machine's
+/// administrators, or to whoever owns the directory the walk started in --
+/// see [`owner`] for why those three and no others. The nearest `runfiles/`
+/// used to be taken on sight, so `/tmp/runfiles`, or a `C:\runfiles` any
+/// signed-in Windows user can create, answered for every directory beneath it
+/// that had none of its own. A directory whose owner cannot be read at all is
+/// refused too: failing open here is the bug. Either way [`SAFE_DIRECTORIES`]
+/// is the way to say it is meant.
+fn trusted(found: &Path, from: &Path) -> Result<(), DiscoverError> {
+	trusted_as(found, from, Owner::me(), std::env::var_os(SAFE_DIRECTORIES).as_deref())
+}
+
+fn trusted_as(
+	found: &Path,
+	from: &Path,
+	me: std::io::Result<Owner>,
+	safe: Option<&OsStr>,
+) -> Result<(), DiscoverError> {
+	let anchor = found.parent().unwrap_or(found).to_path_buf();
+	if listed_safe(found, &anchor, safe) {
+		return Ok(());
+	}
+	let unverifiable = |e: std::io::Error| DiscoverError::Unverifiable {
+		path: found.to_path_buf(),
+		anchor: anchor.clone(),
+		error: e.to_string(),
+	};
+	let me = me.map_err(unverifiable)?;
+	let owners = Owner::of(found).map_err(unverifiable)?;
+	// What the walk started in, as itself: a link is followed to where it put
+	// us, which is the directory whose owner chose to stand there.
+	let start = Owner::of(from).ok().and_then(|o| o.into_iter().last());
+	for o in owners {
+		if o != me && !o.is_admin() && Some(&o) != start.as_ref() {
+			return Err(DiscoverError::NotYours {
+				path: found.to_path_buf(),
+				anchor,
+				owner: o.describe(),
+			});
+		}
+	}
+	Ok(())
+}
+
+/// Whether [`SAFE_DIRECTORIES`] names `found`, or the project holding it.
+///
+/// An empty entry names nothing: in `PATH` it would mean the current directory,
+/// which is exactly the kind of trust this must not hand out by accident.
+fn listed_safe(found: &Path, anchor: &Path, safe: Option<&OsStr>) -> bool {
+	let Some(list) = safe else { return false };
+	let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+	let (found, anchor) = (canon(found), canon(anchor));
+	std::env::split_paths(list).any(|entry| {
+		if entry.as_os_str() == "*" {
+			return true;
+		}
+		!entry.as_os_str().is_empty() && {
+			let entry = canon(&entry);
+			entry == found || entry == anchor
+		}
+	})
 }
 
 fn find_upward(from: &Path) -> Option<PathBuf> {

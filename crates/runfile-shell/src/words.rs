@@ -2,7 +2,8 @@
 //! reading shell where a character means something different depending on what
 //! came before it.
 
-use crate::syntax::{End, Mode, Opener, P, Part, Pending, Quote, R, Redirect, Stop, Word, is_meta};
+use crate::syntax::{End, Mode, Nest, Opener, P, Part, Pending, Quote, R, Redirect, Stop, Word, is_meta};
+use runfile_lang::{Delimiter, Quoting};
 
 /// A quote, or the start of an expansion, with nothing to close it.
 fn never_closed(i: usize, len: usize, message: &str) -> Stop {
@@ -64,6 +65,7 @@ impl P<'_> {
 					hole,
 					quote: Quote::Bare,
 				});
+				self.mark(hole);
 				self.i += 1;
 				continue;
 			}
@@ -72,7 +74,9 @@ impl P<'_> {
 				'<' | '>' if mode == Mode::Normal && i == start && self.peek_at(1) == Some('(') => {
 					let what = if ch.c == '<' { "<(" } else { ">(" };
 					self.i += 2;
+					let depth = self.enter(Nest::Fresh);
 					let body = self.list(End::Paren, Some(Opener { i, what }))?;
+					self.leave(depth);
 					self.i += 1;
 					parts.push(Part::Subst { body: Some(body) });
 				}
@@ -126,6 +130,7 @@ impl P<'_> {
 	fn single(&mut self, parts: &mut Vec<Part>, quote: Quote) -> R<()> {
 		let open = self.i;
 		self.i += 1;
+		let depth = self.enter(Nest::Single);
 		loop {
 			let Some(ch) = self.s.get(self.i).copied() else {
 				return Err(never_closed(
@@ -137,8 +142,14 @@ impl P<'_> {
 			let i = self.i;
 			self.i += 1;
 			match ch.hole {
-				Some(hole) => parts.push(Part::Hole { hole, quote }),
-				None if ch.c == '\'' => return Ok(()),
+				Some(hole) => {
+					parts.push(Part::Hole { hole, quote });
+					self.mark(hole);
+				}
+				None if ch.c == '\'' => {
+					self.leave(depth);
+					return Ok(());
+				}
 				None => parts.push(Part::Char {
 					c: ch.c,
 					i,
@@ -153,6 +164,7 @@ impl P<'_> {
 	fn double(&mut self, parts: &mut Vec<Part>, quote: Quote) -> R<()> {
 		let open = self.i;
 		self.i += 1;
+		let depth = self.enter(Nest::Double);
 		loop {
 			let Some(ch) = self.s.get(self.i).copied() else {
 				return Err(never_closed(open, 1, "this `\"` is never closed"));
@@ -160,12 +172,14 @@ impl P<'_> {
 			let i = self.i;
 			if let Some(hole) = ch.hole {
 				parts.push(Part::Hole { hole, quote });
+				self.mark(hole);
 				self.i += 1;
 				continue;
 			}
 			match ch.c {
 				'"' => {
 					self.i += 1;
+					self.leave(depth);
 					return Ok(());
 				}
 				'\\' => match self.peek_at(1) {
@@ -208,6 +222,7 @@ impl P<'_> {
 	fn ansi(&mut self, parts: &mut Vec<Part>) -> R<()> {
 		let open = self.i;
 		self.i += 2;
+		let depth = self.enter(Nest::Ansi);
 		loop {
 			let Some(ch) = self.s.get(self.i).copied() else {
 				return Err(never_closed(open, 2, "this `$'` is never closed"));
@@ -218,12 +233,14 @@ impl P<'_> {
 					hole,
 					quote: Quote::Ansi,
 				});
+				self.mark(hole);
 				self.i += 1;
 				continue;
 			}
 			match ch.c {
 				'\'' => {
 					self.i += 1;
+					self.leave(depth);
 					return Ok(());
 				}
 				'\\' => {
@@ -317,7 +334,9 @@ impl P<'_> {
 	/// `$(…)`, with the cursor at its `(`.
 	fn substitution(&mut self, parts: &mut Vec<Part>, i: usize) -> R<()> {
 		self.i += 1;
+		let depth = self.enter(Nest::Fresh);
 		let body = self.list(End::Paren, Some(Opener { i, what: "$(" }))?;
+		self.leave(depth);
 		self.i += 1;
 		parts.push(Part::Subst { body: Some(body) });
 		Ok(())
@@ -327,12 +346,22 @@ impl P<'_> {
 	/// the last two close together, and a subshell inside a subshell -- or a
 	/// command substitution -- when they do not: `Ok(false)`.
 	pub(crate) fn arithmetic(&mut self, parts: &mut Vec<Part>) -> R<bool> {
+		// Both readings of a `((` are tried, so the level is left however this
+		// one ends -- an error included, which a caller takes as "not arithmetic".
+		let level = self.enter(Nest::Arith);
+		let read = self.arithmetic_body(parts);
+		self.leave(level);
+		read
+	}
+
+	fn arithmetic_body(&mut self, parts: &mut Vec<Part>) -> R<bool> {
 		let mut depth = 2usize;
 		loop {
 			let Some(ch) = self.s.get(self.i).copied() else {
 				return Ok(false);
 			};
-			if ch.hole.is_some() {
+			if let Some(hole) = ch.hole {
+				self.mark(hole);
 				self.i += 1;
 				continue;
 			}
@@ -361,6 +390,7 @@ impl P<'_> {
 	/// `${…}`, with the cursor past its `{`. The first `}` outside quotes closes
 	/// it: bash counts no braces inside, so `${x:-{a}` is `{a`.
 	fn parameter(&mut self, parts: &mut Vec<Part>, i: usize) -> R<()> {
+		let level = self.enter(Nest::Param);
 		let mut name = String::new();
 		// `${#name}` is a length, and reads the name all the same.
 		if self.at("#") && self.peek_at(1).is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
@@ -394,12 +424,14 @@ impl P<'_> {
 					hole,
 					quote: Quote::Opaque,
 				});
+				self.mark(hole);
 				self.i += 1;
 				continue;
 			}
 			match ch.c {
 				'}' => {
 					self.i += 1;
+					self.leave(level);
 					break;
 				}
 				'\\' => self.i += 2,
@@ -418,14 +450,21 @@ impl P<'_> {
 
 	/// `` `…` ``, with the cursor at its opening backtick. What it runs is not
 	/// read: inside, a backslash means something different again.
+	///
+	/// Where an interpolation inside sits is read all the same, from the text
+	/// bash reads again once it has taken its own backslashes off: `\\`, `` \` ``
+	/// and `\$`, and `\"` too inside double quotes.
 	fn backtick(&mut self, parts: &mut Vec<Part>) -> R<()> {
 		let i = self.i;
 		self.i += 1;
+		let in_double = self.quoting_here() == Quoting::Double;
+		let mut inner = Vec::new();
 		loop {
 			let Some(ch) = self.s.get(self.i).copied() else {
 				return Err(never_closed(i, 1, "this backtick is never closed"));
 			};
 			if ch.hole.is_some() {
+				inner.push(ch);
 				self.i += 1;
 				continue;
 			}
@@ -434,23 +473,43 @@ impl P<'_> {
 					self.i += 1;
 					break;
 				}
-				'\\' => self.i += 2,
-				_ => self.i += 1,
+				'\\' => {
+					match self.s.get(self.i + 1).copied() {
+						Some(next)
+							if next.hole.is_none()
+								&& (matches!(next.c, '\\' | '`' | '$') || in_double && next.c == '"') =>
+						{
+							inner.push(next)
+						}
+						Some(next) => inner.extend([ch, next]),
+						None => inner.push(ch),
+					}
+					self.i += 2;
+				}
+				_ => {
+					inner.push(ch);
+					self.i += 1;
+				}
 			}
 		}
+		let mut nest = self.nest.clone();
+		nest.extend([Nest::Backtick(in_double), Nest::Fresh]);
+		self.sandbox(&inner, nest, |p| p.list(End::Eof, None).map(drop));
 		parts.push(Part::Subst { body: None });
 		Ok(())
 	}
 
 	/// `$[…]`, with the cursor past its `[`.
 	fn brackets(&mut self) -> R<()> {
+		let level = self.enter(Nest::Arith);
 		let mut depth = 1usize;
 		loop {
 			let Some(ch) = self.s.get(self.i).copied() else {
 				return Err(Stop::Lost);
 			};
 			self.i += 1;
-			if ch.hole.is_some() {
+			if let Some(hole) = ch.hole {
+				self.mark(hole);
 				continue;
 			}
 			match ch.c {
@@ -458,6 +517,7 @@ impl P<'_> {
 				']' => {
 					depth -= 1;
 					if depth == 0 {
+						self.leave(level);
 						return Ok(());
 					}
 				}
@@ -479,6 +539,7 @@ impl P<'_> {
 					hole,
 					quote: Quote::Bare,
 				});
+				self.mark(hole);
 				self.i += 1;
 				continue;
 			}
@@ -599,6 +660,8 @@ impl P<'_> {
 			self.heredocs.push(Pending {
 				delimiter,
 				strip_tabs: op == "<<-",
+				// Any quoting at all in the delimiter makes the body literal.
+				expands: target.plain().is_some(),
 				i,
 				len,
 			});
@@ -609,6 +672,7 @@ impl P<'_> {
 	/// The bodies of the heredocs the line just ended opened, in order.
 	pub(crate) fn read_heredocs(&mut self) -> R<()> {
 		for h in std::mem::take(&mut self.heredocs) {
+			let body = self.i;
 			loop {
 				if self.eof() {
 					return Err(self.unterminated(&h));
@@ -629,8 +693,56 @@ impl P<'_> {
 					false => t,
 				});
 				if text.as_deref() == Some(h.delimiter.as_str()) {
+					self.heredoc_body(&h, body, start);
 					break;
 				}
+			}
+		}
+		Ok(())
+	}
+
+	/// Note where the interpolations in a heredoc's body, characters
+	/// `from..to`, sit.
+	fn heredoc_body(&mut self, h: &Pending, from: usize, to: usize) {
+		if self.spots.is_empty() {
+			return;
+		}
+		let mut nest = self.nest.clone();
+		nest.push(Nest::Heredoc(
+			Delimiter {
+				text: h.delimiter.clone(),
+				strip_tabs: h.strip_tabs,
+			},
+			h.expands,
+		));
+		let body = self.s[from..to].to_vec();
+		if h.expands {
+			self.sandbox(&body, nest, |p| p.heredoc_text());
+		} else {
+			let outer = std::mem::replace(&mut self.nest, nest);
+			for hole in body.iter().filter_map(|c| c.hole) {
+				self.mark(hole);
+			}
+			self.nest = outer;
+		}
+	}
+
+	/// An expanding heredoc's body, read the way bash expands it: `$`,
+	/// backticks and `\` mean what they do inside double quotes, and a `"` is a
+	/// character like any other.
+	pub(crate) fn heredoc_text(&mut self) -> R<()> {
+		let mut parts = Vec::new();
+		while let Some(ch) = self.s.get(self.i).copied() {
+			if let Some(hole) = ch.hole {
+				self.mark(hole);
+				self.i += 1;
+				continue;
+			}
+			match ch.c {
+				'\\' if self.s.get(self.i + 1).is_some_and(|n| n.hole.is_none()) => self.i += 2,
+				'$' => self.dollar(&mut parts, Quote::Opaque)?,
+				'`' => self.backtick(&mut parts)?,
+				_ => self.i += 1,
 			}
 		}
 		Ok(())

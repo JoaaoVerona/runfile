@@ -105,6 +105,64 @@ fn a_duplicate_target_names_both_files() {
 	}
 }
 
+// ---- whose `runfiles/` the walk may take
+
+#[test]
+fn a_runfiles_of_ones_own_is_trusted() {
+	// The everyday case, on every platform: what the account made is its own.
+	// On Windows it is also what proves the owner lookups work at all -- a
+	// lookup that failed would refuse every project there is.
+	let d = fixture();
+	let deep = d.path().join("web-admin/src");
+	std::fs::create_dir_all(&deep).unwrap();
+	trusted(&d.path().join("runfiles"), &deep).unwrap();
+	assert!(discover(&deep, None).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_runfiles_another_account_owns_is_refused_unless_the_walk_started_in_its_tree() {
+	use super::owner::Owner;
+	let d = TempDir::new().unwrap();
+	let found = d.path().join("runfiles");
+	std::fs::create_dir_all(&found).unwrap();
+	let made_it = Owner::of(&found).unwrap().remove(0);
+	if made_it.is_admin() {
+		// Running as root, whose directories everyone trusts: there is no
+		// stranger's directory to make here.
+		return;
+	}
+	// Someone who is neither the account that made `found` nor root, having
+	// started in `/`, which root owns: a walk from one's own directory up to a
+	// `runfiles/` another user planted in `/tmp`.
+	let stranger = || Ok(Owner::from_id(4_000_000_000));
+	let root = Path::new("/");
+	let e = trusted_as(&found, root, stranger(), None).unwrap_err();
+	assert!(matches!(e, DiscoverError::NotYours { .. }), "{e}");
+	let msg = e.to_string();
+	assert!(msg.contains(SAFE_DIRECTORIES), "the way out is named: {msg}");
+	assert!(
+		msg.contains(&d.path().display().to_string()),
+		"and the directory: {msg}"
+	);
+
+	// Its owner may use it ...
+	trusted_as(&found, root, Ok(made_it), None).unwrap();
+	// ... and so may anyone who started inside its owner's tree, which they
+	// chose, rather than having the walk carry them there.
+	trusted_as(&found, d.path(), stranger(), None).unwrap();
+	// Saying it is meant: the `runfiles/`, the project holding it, or everything.
+	for safe in [found.as_os_str(), d.path().as_os_str(), OsStr::new("*")] {
+		trusted_as(&found, root, stranger(), Some(safe)).unwrap();
+	}
+	// An empty entry is not the current directory, the way it is in `PATH`.
+	assert!(trusted_as(&found, root, stranger(), Some(OsStr::new(""))).is_err());
+	// A directory nobody can say the owner of is refused, not waved through.
+	let gone = d.path().join("missing/runfiles");
+	let e = trusted_as(&gone, root, stranger(), None).unwrap_err();
+	assert!(matches!(e, DiscoverError::Unverifiable { .. }), "{e}");
+}
+
 #[test]
 fn nothing_anywhere_is_an_error_that_names_the_directory() {
 	let d = TempDir::new().unwrap();

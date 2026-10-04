@@ -63,6 +63,9 @@ impl Project {
 			// that check both -- and they would pass.
 			.env_remove("RUNFILE_SKIP_PREPARE")
 			.env_remove("RUNFILE_PRIVATE_KEYS")
+			// A developer who trusts every directory would otherwise trust them
+			// for the tests too.
+			.env_remove("RUNFILE_SAFE_DIRECTORIES")
 			// A test's output is a pipe, so nothing is painted -- unless a
 			// developer has `FORCE_COLOR` set, which would put escape codes
 			// through every assertion about a branch's label. The one test that
@@ -1082,6 +1085,23 @@ fn the_bash_script_offers_names_after_a_leading_flag() {
 	let p = project(&[("runfiles/deploy.run", "$ true\n")]);
 	let got = complete_bash(&p, "run --dry-run dep");
 	assert_eq!(got, ["deploy"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_bash_script_offers_a_name_as_it_is_rather_than_expanding_it() {
+	// A name is a file name, which the repository picks. `{x,y}` is a brace
+	// expansion and `my target` two words to the shell; each has to come back
+	// as the one name it is, escaped for the command line it is typed into.
+	let p = project(&[
+		("runfiles/{x,y}.run", "$ true\n"),
+		("runfiles/my target.run", "$ true\n"),
+	]);
+	let mut got = complete_bash(&p, "run ");
+	got.retain(|w| !w.starts_with(':'));
+	got.sort();
+	assert_eq!(got, ["\\{x\\,y\\}", "my\\ target"]);
+	assert_eq!(complete_bash(&p, "run my"), ["my\\ target"]);
 }
 
 #[test]

@@ -89,7 +89,7 @@ pub use keywords::{KEYWORDS, Keyword};
 pub use resolve::Unresolved;
 pub use span::Span;
 pub use structured::Structured;
-pub use value::{TypeError, Value};
+pub use value::{Delimiter, Quoting, Spot, TypeError, Value};
 
 #[cfg(test)]
 mod tests;

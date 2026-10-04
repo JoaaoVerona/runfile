@@ -103,6 +103,121 @@ fn an_interpolation_outside_quotes_or_in_a_heredoc_is_fine() {
 	clean("$ echo \"$(basename {{ ARG.path }})\"\n");
 }
 
+// ---- where an interpolation sits, which the runner writes its value for
+
+/// Where each interpolation in `src`'s first `$` run or `exec` sits.
+fn spots_of(src: &str) -> Option<Vec<Option<runfile_lang::Spot>>> {
+	let t = parsed(src);
+	let Some(Statement::Exec { command, body, .. }) = t.body.statements.first() else {
+		panic!("no shell in {src}");
+	};
+	let program: Option<String> = command.as_ref().map(|c| {
+		c.iter()
+			.map(|p| match p {
+				runfile_lang::InterpPart::Literal(s) => s.as_str(),
+				runfile_lang::InterpPart::Expr(_) => "",
+			})
+			.collect()
+	});
+	crate::spots(program.as_deref(), body)
+}
+
+fn quoting(src: &str) -> Vec<runfile_lang::Quoting> {
+	spots_of(src)
+		.unwrap_or_else(|| panic!("not read: {src}"))
+		.into_iter()
+		.map(|s| {
+			s.unwrap_or_else(|| panic!("an interpolation was passed without being placed: {src}"))
+				.quoting
+		})
+		.collect()
+}
+
+#[test]
+fn an_interpolation_is_placed_inside_the_quotes_that_hold_it() {
+	use runfile_lang::Quoting::*;
+	assert_eq!(quoting("$ echo {{ v }}\n"), [Bare]);
+	assert_eq!(quoting("$ echo \"a {{ v }} b\"\n"), [Double]);
+	assert_eq!(quoting("$ echo 'a{{ v }}'\n"), [Single]);
+	assert_eq!(quoting("$ echo $'a{{ v }}'\n"), [Ansi]);
+	assert_eq!(quoting("$ X={{ v }} cmd\n"), [Bare]);
+	assert_eq!(quoting("$ ssh host \"cd {{ v }} && ./restart\"\n"), [Double]);
+	// Quoting starts over inside a command substitution, in double quotes or not.
+	assert_eq!(quoting("$ echo \"$(basename {{ v }})\"\n"), [Bare]);
+	assert_eq!(quoting("$ echo \"$(echo \"{{ v }}\")\"\n"), [Double]);
+	// A `case` inside one is not ended at its first `)`.
+	assert_eq!(quoting("$ echo \"$(case a in a) echo {{ v }};; esac)\"\n"), [Bare]);
+	// A `${…}` is quoted the way it is, and a `'…'` inside it is a quote only
+	// outside double quotes.
+	assert_eq!(quoting("$ echo ${x:-{{ v }}}\n"), [Bare]);
+	assert_eq!(quoting("$ echo \"${x:-{{ v }}}\"\n"), [Double]);
+	assert_eq!(quoting("$ echo ${x:-'{{ v }}'}\n"), [Single]);
+	assert_eq!(quoting("$ echo \"${x:-'{{ v }}'}\"\n"), [SingleExpanded]);
+	// Inside a heredoc a `${…}` is written for the way bash reads it too.
+	assert_eq!(quoting("$ cat <<EOF\n$ ${x:-{{ v }}}\n$ EOF\n"), [Double]);
+	// Arithmetic expands what is in it the way double quotes do.
+	assert_eq!(quoting("$ echo $(( {{ v }} + 1 ))\n"), [Double]);
+	assert_eq!(quoting("$ (( {{ v }} > 1 )) && echo big\n"), [Double]);
+	assert_eq!(quoting("$ echo hi # {{ v }}\n"), [Comment]);
+	// Every one of them, in order, across a run of lines.
+	assert_eq!(
+		quoting("$ echo {{ a }}\n$ echo \"{{ b }}\" '{{ c }}'\n"),
+		[Bare, Double, Single]
+	);
+}
+
+#[test]
+fn an_interpolation_in_a_heredoc_is_placed_with_the_line_that_ends_it() {
+	use runfile_lang::{Delimiter, Quoting, Spot};
+	let ends = |text: &str, strip_tabs| {
+		vec![Delimiter {
+			text: text.into(),
+			strip_tabs,
+		}]
+	};
+	let spot = |quoting, heredocs| Some(vec![Some(Spot { quoting, heredocs })]);
+	assert_eq!(
+		spots_of("$ cat <<EOF\n$ name={{ v }}\n$ EOF\n"),
+		spot(Quoting::Heredoc, ends("EOF", false))
+	);
+	// A quoted delimiter: nothing in the body expands.
+	assert_eq!(
+		spots_of("$ cat <<'EOF'\n$ name={{ v }}\n$ EOF\n"),
+		spot(Quoting::Literal, ends("EOF", false))
+	);
+	// Quoting starts over in a substitution inside the body, and the body still
+	// ends on its own line.
+	assert_eq!(
+		spots_of("exec bash\n\tcat <<-END\n\t$(basename {{ v }})\n\tEND\nend\n"),
+		spot(Quoting::Bare, ends("END", true))
+	);
+}
+
+#[test]
+fn an_interpolation_in_backticks_is_placed_inside_them() {
+	use runfile_lang::Quoting::*;
+	assert_eq!(
+		quoting("$ echo `basename {{ v }}`\n"),
+		[Backtick(Box::new(Bare), false)]
+	);
+	assert_eq!(
+		quoting("$ echo \"`basename {{ v }}`\"\n"),
+		[Backtick(Box::new(Bare), true)]
+	);
+	assert_eq!(
+		quoting("$ echo `echo \"{{ v }}\"`\n"),
+		[Backtick(Box::new(Double), false)]
+	);
+}
+
+#[test]
+fn a_body_this_reading_does_not_follow_places_nothing() {
+	// The runner then writes every value the one way it always has.
+	assert_eq!(spots_of("exec zsh\n\techo \"{{ v }}\"\nend\n"), None);
+	assert_eq!(spots_of("exec python3\n\tprint({{ v }})\nend\n"), None);
+	assert_eq!(spots_of("$ coproc cat {{ v }}\n"), None);
+}
+
 // ---- tilde-in-quotes
 
 #[test]
@@ -944,6 +1059,9 @@ fn corpus() {
 	let paths = std::fs::read_to_string(list).expect("the list");
 	let (mut files, mut reports) = (0, Vec::new());
 	let (mut read, mut lost) = (0, 0);
+	// Where each interpolation sits, which is what the runner writes values for.
+	// One left unplaced is written the old way, so each is worth a look.
+	let (mut placed, mut unplaced) = (0, 0);
 	for path in paths.lines().filter(|l| !l.is_empty()) {
 		let Ok(src) = std::fs::read_to_string(path) else {
 			continue;
@@ -958,6 +1076,20 @@ fn corpus() {
 					reports.push(format!("{path}: LOST: {}", text.lines().next().unwrap_or_default()));
 				}
 				_ => read += 1,
+			}
+			if let Some(spots) = crate::syntax::spots(&s.chars, s.holes.len(), s.bash) {
+				for (k, spot) in spots.iter().enumerate() {
+					if spot.is_some() {
+						placed += 1;
+					} else {
+						unplaced += 1;
+						let text: String = s.chars.iter().map(|c| c.c).collect();
+						reports.push(format!(
+							"{path}: UNPLACED: interpolation {k} in {}",
+							text.lines().next().unwrap_or_default()
+						));
+					}
+				}
 			}
 		}
 		let chain = shared_above(std::path::Path::new(path));
@@ -994,7 +1126,7 @@ fn corpus() {
 		}
 	}
 	println!(
-		"{files} files, {read} scripts read, {lost} given up on\n{}",
+		"{files} files, {read} scripts read, {lost} given up on, {placed} interpolations placed, {unplaced} not\n{}",
 		reports.join("\n")
 	);
 }

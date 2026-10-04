@@ -6,7 +6,7 @@
 
 use crate::ast::*;
 use crate::functions;
-use crate::value::{TypeError, Value};
+use crate::value::{Delimiter, Spot, TypeError, Value};
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -564,6 +564,59 @@ pub fn interpolate_shell(parts: &[InterpPart], sc: &mut Scope) -> Result<String,
 			InterpPart::Literal(t) => out.push_str(t),
 			InterpPart::Expr(e) => out.push_str(&eval_boundary(e, sc)?.to_shell()),
 		}
+	}
+	Ok(out)
+}
+
+/// A shell body's lines, each value written for the place it sits in.
+///
+/// `spots` has one entry per interpolation, in order, from the shell checker's
+/// reading of the body (see [`crate::value::Quoting`]). An interpolation it has
+/// no entry for -- and every one, when it is `None`, because the body is in a
+/// shell that reading does not follow -- is written the way
+/// [`interpolate_shell`] writes it.
+///
+/// A line inside a heredoc's body is checked once its values are in: one that
+/// came out as the heredoc's delimiter would end the body there, and whatever
+/// was written below it as text would run as commands.
+pub fn interpolate_script(
+	lines: &[Vec<InterpPart>],
+	spots: Option<&[Option<Spot>]>,
+	sc: &mut Scope,
+) -> Result<Vec<String>, EvalError> {
+	let mut out = Vec::with_capacity(lines.len());
+	let mut k = 0;
+	for parts in lines {
+		let mut text = String::new();
+		let mut ends: Vec<(&Delimiter, usize)> = Vec::new();
+		for p in parts {
+			match p {
+				InterpPart::Literal(t) => text.push_str(t),
+				InterpPart::Expr(e) => {
+					let v = eval_boundary(e, sc)?;
+					let line = e.span().line;
+					match spots.and_then(|s| s.get(k)).and_then(Option::as_ref) {
+						Some(spot) => {
+							text.push_str(&v.to_shell_at(spot).map_err(|msg| EvalError::Other { msg, line })?);
+							ends.extend(spot.heredocs.iter().map(|d| (d, line)));
+						}
+						None => text.push_str(&v.to_shell()),
+					}
+					k += 1;
+				}
+			}
+		}
+		if let Some((d, line)) = ends.iter().find(|(d, _)| text.split('\n').any(|l| d.ends(l))) {
+			return Err(EvalError::Other {
+				msg: format!(
+					"a value here makes the line `{}`, which ends the heredoc it is in: what follows it would run as \
+					 commands",
+					d.text
+				),
+				line: *line,
+			});
+		}
+		out.push(text);
 	}
 	Ok(out)
 }

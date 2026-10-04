@@ -262,6 +262,38 @@ pub fn of_capture(e: &Expr, src: &Source, dollar: Option<bool>, bash: bool) -> O
 	}
 }
 
+/// A body's characters as the runner joins them, with no source to place them
+/// in: for reading where its interpolations sit at run time, which needs the
+/// text and not the columns. Answers the characters and how many
+/// interpolations there are.
+pub fn chars_of(body: &[Vec<InterpPart>]) -> (Vec<Ch>, usize) {
+	let mut chars = Vec::new();
+	let mut holes = 0;
+	for (k, parts) in body.iter().enumerate() {
+		if k > 0 {
+			chars.push(Ch {
+				c: '\n',
+				at: 0,
+				hole: None,
+			});
+		}
+		for part in parts {
+			match part {
+				InterpPart::Literal(lit) => chars.extend(lit.chars().map(|c| Ch { c, at: 0, hole: None })),
+				InterpPart::Expr(_) => {
+					chars.push(Ch {
+						c: HOLE,
+						at: 0,
+						hole: Some(holes),
+					});
+					holes += 1;
+				}
+			}
+		}
+	}
+	(chars, holes)
+}
+
 fn blanks(s: &str) -> usize {
 	s.len() - s.trim_start().len()
 }

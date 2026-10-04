@@ -140,3 +140,23 @@ pub const RULES: &[Rule] = &[
 pub fn check(src: &str, file: &Target, chain: Option<&[Target]>) -> Vec<Finding> {
 	walk::check(src, file, chain)
 }
+
+/// Where each interpolation in a shell body sits, in order, for the runner to
+/// write its value for that place -- see [`runfile_lang::Quoting`].
+///
+/// `program` is what runs the body: an `exec`'s command, a `.shell`, or `None`
+/// for the default shell. The answer is `None` when that is not a shell this
+/// checker reads, or when the reading cannot follow the body, and the runner
+/// then writes every value the one way it always has. An entry is `None` for
+/// an interpolation the reading passed without learning where it was.
+pub fn spots(program: Option<&str>, body: &[Vec<runfile_lang::InterpPart>]) -> Option<Vec<Option<runfile_lang::Spot>>> {
+	let bash = match program {
+		None => true,
+		Some(cmd) => {
+			script::shell(cmd)?;
+			script::is_bash(cmd)
+		}
+	};
+	let (chars, holes) = script::chars_of(body);
+	syntax::spots(&chars, holes, bash)
+}

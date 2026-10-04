@@ -14,6 +14,7 @@
 //! reads the commands they make up.
 
 use crate::script::Ch;
+use runfile_lang::{Delimiter, Quoting, Spot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Quote {
@@ -164,13 +165,7 @@ pub type R<T> = Result<T, Stop>;
 /// Read a whole script, in bash when `bash` says so, and otherwise in a shell
 /// this checker reads whose `[[ … ]]` may not be bash's.
 pub fn parse(chars: &[Ch], bash: bool) -> R<List> {
-	let mut p = P {
-		s: chars,
-		i: 0,
-		heredocs: Vec::new(),
-		depth: 0,
-		bash,
-	};
+	let mut p = P::new(chars, bash, Vec::new());
 	let list = p.list(End::Eof, None)?;
 	match p.heredocs.first() {
 		Some(h) => Err(p.unterminated(h)),
@@ -178,11 +173,22 @@ pub fn parse(chars: &[Ch], bash: bool) -> R<List> {
 	}
 }
 
+/// Where each of a script's `holes` interpolations sits, read the way bash
+/// reads it -- `None` when this reading does not follow the script. An entry
+/// is `None` for an interpolation it passed without learning where it was.
+pub fn spots(chars: &[Ch], holes: usize, bash: bool) -> Option<Vec<Option<Spot>>> {
+	let mut p = P::new(chars, bash, vec![None; holes]);
+	p.list(End::Eof, None).ok()?;
+	p.heredocs.is_empty().then_some(p.spots)
+}
+
 /// A heredoc whose body starts at the next newline.
 #[derive(Clone)]
 pub(crate) struct Pending {
 	pub delimiter: String,
 	pub strip_tabs: bool,
+	/// Whether the body expands: its delimiter was written without quotes.
+	pub expands: bool,
 	/// Where its operator is, and how long.
 	pub i: usize,
 	pub len: usize,
@@ -195,6 +201,145 @@ pub(crate) struct P<'a> {
 	pub depth: usize,
 	/// Whether the shell is bash itself.
 	pub bash: bool,
+	/// The quoting the reader is inside, innermost last: what each
+	/// interpolation it passes is recorded under.
+	pub nest: Vec<Nest>,
+	/// Where each interpolation sits, by its index, once it has been passed.
+	/// Empty when nobody asked, which is the checker's own reading: then
+	/// nothing is recorded, and nothing is read a second time to record it.
+	pub spots: Vec<Option<Spot>>,
+}
+
+/// One level of what an interpolation can sit inside.
+#[derive(Debug, Clone)]
+pub(crate) enum Nest {
+	/// `$( … )`, `<( … )`, a backtick's body: read afresh, so quoting starts over.
+	Fresh,
+	Single,
+	Double,
+	Ansi,
+	/// A `${…}`'s operand, which is quoted the way the expansion is.
+	Param,
+	/// `$(( … ))`, `(( … ))`, `$[ … ]`.
+	Arith,
+	/// A heredoc's body, and whether it expands.
+	Heredoc(Delimiter, bool),
+	Comment,
+	/// `` `…` ``, and whether it is inside double quotes.
+	Backtick(bool),
+}
+
+/// The quoting a stack of [`Nest`] comes to, for a value written at its top.
+fn quoting_of(nest: &[Nest]) -> Quoting {
+	// A backtick's body is read again, after bash has taken one level of
+	// backslashes off it -- so whatever the value is written as in there, it is
+	// escaped once more for the backticks themselves.
+	if let Some(k) = nest.iter().position(|n| matches!(n, Nest::Backtick(_))) {
+		let Nest::Backtick(in_double) = nest[k] else {
+			unreachable!()
+		};
+		return Quoting::Backtick(Box::new(quoting_of(&nest[k + 1..])), in_double);
+	}
+	let Some((k, n)) = nest.iter().enumerate().rev().find(|(_, n)| !matches!(n, Nest::Param)) else {
+		return Quoting::Bare;
+	};
+	// Whether a `${…}` stands between that level and the value, which is where
+	// bash reads a `'` as a quote however the expansion treats it.
+	let braced = k + 1 < nest.len();
+	match n {
+		Nest::Fresh => Quoting::Bare,
+		Nest::Double | Nest::Arith => Quoting::Double,
+		Nest::Heredoc(_, true) if braced => Quoting::Double,
+		Nest::Heredoc(_, true) => Quoting::Heredoc,
+		Nest::Heredoc(_, false) => Quoting::Literal,
+		Nest::Ansi => Quoting::Ansi,
+		Nest::Comment => Quoting::Comment,
+		// A `'` inside a `${…}` that is itself inside double quotes or a
+		// heredoc, or in arithmetic, is read as a quote and kept as a character.
+		Nest::Single if expands(&nest[..k]) => Quoting::SingleExpanded,
+		Nest::Single => Quoting::Single,
+		Nest::Param | Nest::Backtick(_) => unreachable!(),
+	}
+}
+
+/// Whether the nearest level out expands what is inside it, with nothing that
+/// starts quoting over coming first.
+fn expands(outer: &[Nest]) -> bool {
+	matches!(
+		outer.iter().rev().find(|n| !matches!(n, Nest::Param)),
+		Some(Nest::Double | Nest::Arith | Nest::Heredoc(_, true))
+	)
+}
+
+impl<'a> P<'a> {
+	pub(crate) fn new(s: &'a [Ch], bash: bool, spots: Vec<Option<Spot>>) -> Self {
+		P {
+			s,
+			i: 0,
+			heredocs: Vec::new(),
+			depth: 0,
+			bash,
+			nest: Vec::new(),
+			spots,
+		}
+	}
+
+	/// Note where interpolation `hole` sits. A later reading of the same text
+	/// wins, which is what makes backtracking -- `$((` that turns out to be a
+	/// subshell -- record the reading that stood.
+	pub(crate) fn mark(&mut self, hole: usize) {
+		if hole < self.spots.len() {
+			let heredocs = self
+				.nest
+				.iter()
+				.filter_map(|n| match n {
+					Nest::Heredoc(d, _) => Some(d.clone()),
+					_ => None,
+				})
+				.collect();
+			self.spots[hole] = Some(Spot {
+				quoting: quoting_of(&self.nest),
+				heredocs,
+			});
+		}
+	}
+
+	/// Go one level in, answering the depth to come back out to.
+	pub(crate) fn enter(&mut self, n: Nest) -> usize {
+		self.nest.push(n);
+		self.nest.len() - 1
+	}
+
+	pub(crate) fn leave(&mut self, depth: usize) {
+		self.nest.truncate(depth);
+	}
+
+	/// The quoting at the reader's position, for deciding how a construct that
+	/// starts here is read.
+	pub(crate) fn quoting_here(&self) -> Quoting {
+		quoting_of(&self.nest)
+	}
+
+	/// Read `chars` -- text bash reads again on its own, a backtick's body or a
+	/// heredoc's -- only to learn where its interpolations sit, from `nest`
+	/// down. Nothing it finds wrong is reported: this reading has not been held
+	/// to bash's there, so it may add a place to write a value for, never a
+	/// refusal. A reading that does not get to the end adds nothing.
+	pub(crate) fn sandbox(&mut self, chars: &[Ch], nest: Vec<Nest>, read: impl FnOnce(&mut P<'_>) -> R<()>) {
+		if self.spots.is_empty() {
+			return;
+		}
+		let mut p = P::new(chars, self.bash, vec![None; self.spots.len()]);
+		p.depth = self.depth;
+		p.nest = nest;
+		if read(&mut p).is_ok() && p.heredocs.is_empty() {
+			for (k, spot) in p.spots.into_iter().enumerate() {
+				if spot.is_some() {
+					self.spots[k] = spot;
+				}
+			}
+		}
+	}
 }
 
 /// What ends the list being read.
@@ -314,9 +459,16 @@ impl<'a> P<'a> {
 	/// A `#` where a word would start opens a comment, to the end of the line.
 	pub fn comment(&mut self) {
 		if self.at("#") {
+			// An interpolation in a comment does nothing -- until its value holds
+			// a line break, which ends the comment early.
+			let depth = self.enter(Nest::Comment);
 			while !self.eof() && !self.at("\n") {
+				if let Some(hole) = self.s[self.i].hole {
+					self.mark(hole);
+				}
 				self.i += 1;
 			}
+			self.leave(depth);
 		}
 	}
 
