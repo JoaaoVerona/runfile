@@ -552,7 +552,7 @@ run deploy [--env=<value>] --token=<value> [--force]
   Deploy to an environment.
 
 Arguments
-  --env=<value>                 defaults to staging
+  --env=<value>                 defaults to staging; one of staging, production
   --token=<value>               required
   --force                       off unless passed
 
@@ -561,9 +561,21 @@ Environment
 ```
 
 Nothing is declared for that — a `?` chain is what makes a value optional, and the literal it ends in is the
-default. `run --stdin-args deploy` asks for the same list, in the same order, **before anything runs**. A name
-the target sets for itself with `.env.NAME` — above the read, or in a `_shared.run` — is not on the list at all,
-since nothing the caller passes would reach it.
+default. A `one_of` with its options written out, `one_of(ARG.env ? "staging", "staging", "production")`, is
+what lists the values a name takes. `run --stdin-args deploy` asks for the same list, in the same order,
+**before anything runs**, and shows the same options; the target's own `one_of` is still what refuses a wrong
+answer. A name the target sets for itself with `.env.NAME` — above the read, or in a `_shared.run` — is not on
+the list at all, since nothing the caller passes would reach it.
+
+A target that reads `ARGS` is asked for its positionals too, when none were given: one line, split the way a
+command line is, so `"two words"` stays one. Enter passes none, which is what a wrapper usually wants. A
+`confirm()` the target reaches is asked the same way. The answers come from stdin whether or not it is a
+terminal, so they can be piped in. In CI nothing is asked unless stdin is a terminal.
+
+```bash
+$ run --stdin-args release
+[runfile] ARGS (one of major, minor, patch): minor
+```
 
 That refusal has one exception, and it is the useful one: **a target that reads `ARGS`**. A wrapper can read
 any word, so it gets any word — a `--flag` it does not claim for itself joins the positionals where it was
@@ -726,7 +738,8 @@ forgives it. `confirm("…")` asks, and stops the whole run if the answer is no.
 target that ran this one.
 
 `confirm` is a function rather than a property, so the question can depend on what is about to happen — and is
-skipped by `-y`, in CI, and under `--dry-run`, where there is nothing to approve.
+skipped by `-y`, in CI, and under `--dry-run`, where there is nothing to approve. It is asked on a terminal, or
+under `--stdin-args` on whatever stdin is: that flag is what says somebody answers there.
 
 A line that is only a value — `exit`, `abc`, `35` — is a parse error, since it computes something and throws
 it away. Most often it is a call with the parentheses left off, and the message says so.
@@ -1048,7 +1061,7 @@ whose state is still worth keeping, so a `setup` run under it is still recorded.
 | Flag | |
 | --- | --- |
 | `-y`, `--yes` | Skip confirmation prompts |
-| `--stdin-args` | Prompt for every input the target reads, before it runs |
+| `--stdin-args` | Prompt for every input the target reads, positionals included, before it runs, and answer its `confirm()` on stdin too |
 | `--dry-run` | Print what would run, without running it — a preview reads no files outside the project, probes none, and never unlocks the credential store |
 | `--dir <path>` | Start discovery somewhere else |
 | `-h`, `--help` | Show the help for `run` or any of its commands |

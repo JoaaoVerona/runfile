@@ -51,7 +51,10 @@ const SECTIONS: &[Section] = &[
 		"Options",
 		&[
 			Row("-y, --yes", "skip confirmation prompts"),
-			Row("    --stdin-args", "prompt for inputs a target needs but was not given"),
+			Row(
+				"    --stdin-args",
+				"prompt on stdin for inputs a target was not given, and for its confirm()",
+			),
 			Row("    --dry-run", "print what would run, without running it"),
 			Row(
 				"    --dir <path>",
@@ -263,6 +266,9 @@ fn real_main() -> Result<ExitCode, String> {
 		// fatal.
 		stdin_args::collect(&cat, target, &mut args);
 		host.ask = Some(prompt::ask_value);
+		// The flag says somebody answers on stdin, so `confirm()` is asked there
+		// too, terminal or not -- the same rule as every other question.
+		host.confirm = Some(prompt::confirm_on_stdin);
 	}
 	host.dry_run = flags.dry_run;
 	host.keys = runfile_state::keyring_keys::all_private_keys;

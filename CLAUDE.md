@@ -176,12 +176,13 @@ target runs carries the `[runfile]` prefix, and a continuation line would not �
 `run <target> --help` rather than listing what the target does read. It quotes the word **as typed**, so a
 message about `--region=eu` does not name a `--region` nobody wrote.
 
-`Use` carries the other two things the tree knows: **whether a name can fail** (read bare, with no `?` chain
-or `try` around it) and **what it falls back to** (the literal a chain ends in). `a ? b ? c` is
+`Use` carries the other three things the tree knows: **whether a name can fail** (read bare, with no `?` chain
+or `try` around it), **what it falls back to** (the literal a chain ends in), and **what it may be** (the
+options of a `one_of` checking it, when all are written out -- see *runfile-runtime*). `a ? b ? c` is
 left-associative, so the outermost fallback is what is reached once everything before it is missing, and that
 is what is shown. One guarded use does not excuse a bare one. This is what `--help` prints and what
 `--stdin-args` asks from — **no declaration syntax was added, and none is needed**: a `?` chain already says
-"optional, and here is the default", in the place a reader is already looking.
+"optional, and here is the default", and a `one_of` "one of these", in the place a reader is already looking.
 
 **`run` statement arguments are values, not shell text.** A `{{ x }}` in `run w {{ x }}` arrives at `w` as one
 positional even with spaces, and a list expands to one positional per item — there is no shell in between to
@@ -947,9 +948,51 @@ terminal's width, and how wide text is on it).
   an `ARG.x` resolved to nothing — so it could only ask about inputs a run happened to *reach*, it asked after
   earlier statements had already done their work, and it never asked about anything with a fallback at all,
   because a chain that resolves raises no error to catch. A flag was never asked about either: an absent one
-  is `false`, not a failure. Answers for arguments and flags are appended to the command line, which is where
-  the runner reads them from; an environment answer is set in this process, which the target's environment is
-  built on top of. The lazy prompt stays as a backstop.
+  is `false`, not a failure. Answers for arguments and flags are added to the command line, which is where
+  the runner reads them from -- **ahead of** a `--` the caller wrote, since past one `--port=5000` was a
+  positional and `ARG.port` stayed missing; an environment answer is set in this process, which the target's
+  environment is built on top of. The lazy prompt stays as a backstop.
+- **`ARGS` is asked for too**, whenever a target reads it and the command line gave it nothing, after the flags
+  and before the environment -- the usage line's order. The rewrite had dropped it: the runner before it asked
+  (its test called `release` "the bump-target use case"), the up-front walk listed `positional` and nothing
+  read it, so `run release minor` and `run find-port 5000` could not be run from an editor at all. It is never
+  marked required, because the tree cannot say: `first(ARGS)` of an empty list is `""`, not a failure, so
+  whether none is a mistake is the target's to report -- and for a wrapper (`$ cargo build {{ ARGS }}`) it is
+  the usual case, so Enter passes none and the wrapper runs as it did. The line is split by
+  `exec::split_command`, the `exec` command line's splitter, so quotes keep a word whole, and the words go
+  **behind** a `--`: a `--release` typed there reaches `ARGS` as typed rather than being claimed by a flag the
+  target also reads, which had a question of its own. No inference of "required" from `ARGS[0]` or
+  `let a, b = ARGS` was added; the corpus reads positionals through `first(ARGS)` and `{{ ARGS }}` almost
+  exclusively, and neither can fail.
+- **`--stdin-args` reads its answers from stdin whatever stdin is**, outside CI (`prompt::answerable`). Every
+  prompt used to require a terminal, which asked the flag's main caller nothing: every task the VS Code
+  extension makes passes `--stdin-args`, and its interactive task terminal hands `run` a **pipe** and writes
+  each typed line into it -- the reason that terminal exists. The old runner read stdin either way. In CI only
+  a terminal is asked, which is all CI ever was: nobody is there, and a runner that leaves stdin open would
+  wait until the job timed out. End of input is nobody left to answer, so it ends the prompt's line and nothing
+  after it is asked -- the backstop included -- and the run fails the way it would without the flag.
+  **`confirm()` is asked by the same rule under the flag** (`prompt::confirm_on_stdin`, which `main` sets as
+  `host.confirm`): a target that asked before a restore was declined in the editor without a word reaching the
+  person at it. Without the flag it still needs a terminal (`prompt::confirm`), because nothing has said anyone
+  answers on stdin, and a pipe that happens to hold a `y` is not somebody agreeing -- `cli.rs` pipes one in to
+  hold that. End of input declines, so `yes` must be typed: nobody there is not consent.
+- **A `one_of` around an input lists what it takes** (`Use::choices`, `Inputs::positional_choices`), in
+  `--help` (`defaults to staging; one of staging, production`) and in the prompt (`--env (one of staging,
+  production) [staging]: `, `ARGS (one of major, minor, patch): `). It is the one place a file already says
+  which values a name accepts, so it needed no declaration either: every one of the 38 checks of an input in the
+  corpus is `one_of(first(ARGS), …)` or `one_of(ARG.x, …)` with the options written out. Only what can be listed
+  exactly is: options that are all string literals, one by one or as a single list (how `one_of` reads a list),
+  checked against the input **itself** -- the source, a `?` chain of them (whichever side the value comes from is
+  checked), or `first(ARGS)` / `ARGS[0]` for the prompt the positionals are typed at. A computed option, a
+  number (never equal to the string an input arrives as), `lower(ARG.x)` (the options describe the value worked
+  out, not the input), the whole of `ARGS` and any later word list nothing; so does an option list behind a
+  name, since following bindings is the type engine's business and the corpus has none. Two checks of one name
+  must agree as sets, or nothing is shown -- a value one accepts may be one the other refuses, and showing either
+  would be choosing. A use with no `one_of` says nothing either way. The list is **shown, not enforced**: the
+  target's `one_of` is what refuses a wrong answer, with its own message, and a check in a branch the run never
+  reaches refuses nothing. An option or a default is printed through `term::sanitize` (`target_help::one_of`,
+  `target_help::sanitize`, used by both readers), since `\e` is an escape the language has and `--help` is meant
+  to be safe in a repository nobody has read (SA-027) -- a default had been printed raw.
 - `Host::header_props` **probes**: it evaluates the declaration region only to read `.watch`, so it neither
   refuses an unread input -- a probe rejecting the command line would report the failure before the run that
   owns it -- nor lets a writing function write. Without the second half, `.env.X = temp_file(...)` made two

@@ -58,7 +58,11 @@ pub struct Spawn<'a> {
 
 /// Split a command line into program and arguments, respecting quotes so
 /// `exec docker run -i --rm python:3 python` reaches the right program.
-fn split_command(cmd: &str) -> Vec<String> {
+///
+/// Public because `--stdin-args` splits the line typed for `ARGS` with it: a
+/// person typing positionals is typing a command line, and one that no shell
+/// reads should be split one way wherever it is.
+pub fn split_command(cmd: &str) -> Vec<String> {
 	let (mut out, mut cur, mut quote) = (Vec::new(), String::new(), None::<char>);
 	for c in cmd.chars() {
 		match (quote, c) {

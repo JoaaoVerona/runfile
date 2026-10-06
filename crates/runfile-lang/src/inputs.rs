@@ -29,6 +29,12 @@ pub struct Use {
 	/// Whether some use of it has **no** fallback, so a run can fail on it.
 	/// One guarded use does not make a name optional while another is bare.
 	pub required: bool,
+	/// What a `one_of` checking it accepts, when every option is written out
+	/// as a string: `one_of(ARG.env, "staging", "production")` is the file
+	/// saying which values the name takes, so `--help` lists them and
+	/// `--stdin-args` offers them. Empty when two checks list different values,
+	/// since neither list is then the answer.
+	pub choices: Option<Vec<String>>,
 }
 
 /// The inputs a target reads, sorted and without repeats.
@@ -40,6 +46,9 @@ pub struct Inputs {
 	pub env: BTreeMap<String, Use>,
 	/// Whether the positional arguments are read at all.
 	pub positional: bool,
+	/// What a `one_of` around `first(ARGS)` or `ARGS[0]` accepts, as
+	/// [`Use::choices`] says -- the idiom `run release minor` is written in.
+	pub positional_choices: Option<Vec<String>>,
 }
 
 fn merge(into: &mut BTreeMap<String, Use>, name: &str, u: Use) {
@@ -47,6 +56,20 @@ fn merge(into: &mut BTreeMap<String, Use>, name: &str, u: Use) {
 	slot.required |= u.required;
 	if slot.default.is_none() {
 		slot.default = u.default;
+	}
+	narrow(&mut slot.choices, u.choices);
+}
+
+/// Add one check's options to what a name is known to accept. A use with no
+/// `one_of` around it says nothing either way; two that list different values
+/// leave no list to show, because a value one accepts may be one the other
+/// refuses -- and showing either would be choosing between them.
+fn narrow(known: &mut Option<Vec<String>>, with: Option<Vec<String>>) {
+	match (known.as_ref(), with) {
+		(_, None) => {}
+		(None, Some(c)) => *known = Some(c),
+		(Some(k), Some(c)) if k.len() != c.len() || !c.iter().all(|o| k.contains(o)) => *known = Some(Vec::new()),
+		(Some(_), Some(_)) => {}
 	}
 }
 
@@ -61,13 +84,17 @@ fn merge(into: &mut BTreeMap<String, Use>, name: &str, u: Use) {
 type Set = BTreeSet<String>;
 
 /// Where a source sits: whether a failure there is caught, what the chain
-/// around it falls back to, and which names are already set in the
-/// environment it reads.
+/// around it falls back to, which names are already set in the environment it
+/// reads, and what a `one_of` around it accepts.
 #[derive(Clone, Copy)]
 struct At<'a> {
 	guarded: bool,
 	default: Option<&'a str>,
 	set: &'a Set,
+	/// Only ever the `one_of`'s subject itself, or a `?` chain that is: a
+	/// value worked out *from* an input (`lower(ARG.x)`) is what the options
+	/// describe, not the input.
+	choices: Option<&'a [String]>,
 }
 
 impl<'a> At<'a> {
@@ -76,6 +103,7 @@ impl<'a> At<'a> {
 			guarded: false,
 			default: None,
 			set,
+			choices: None,
 		}
 	}
 
@@ -247,6 +275,9 @@ fn parts(ps: &[InterpPart], out: &mut Inputs, set: &Set) {
 }
 
 fn expr(e: &Expr, out: &mut Inputs, at: At<'_>) {
+	if first_positional(e) {
+		narrow(&mut out.positional_choices, at.choices.map(<[String]>::to_vec));
+	}
 	let plain = at.unguarded();
 	match e {
 		Expr::Number(..) | Expr::Bool(..) | Expr::Ident(..) => {}
@@ -256,6 +287,7 @@ fn expr(e: &Expr, out: &mut Inputs, at: At<'_>) {
 			let u = Use {
 				default: at.default.map(str::to_string),
 				required: !at.guarded,
+				choices: at.choices.map(<[String]>::to_vec),
 			};
 			match (kind, key) {
 				(SourceKind::Arg, Some(k)) => merge(&mut out.args, k, u),
@@ -265,7 +297,10 @@ fn expr(e: &Expr, out: &mut Inputs, at: At<'_>) {
 				(SourceKind::Flag, Some(k)) => {
 					out.flags.insert(k.clone());
 				}
-				// `ARGS` is the positional list, and carries no key.
+				// `ARGS` is the positional list, and carries no key. A `one_of`
+				// around the whole list compares a list with strings and never
+				// matches, so its options are not the list's; `first_positional`
+				// is where they are taken.
 				(SourceKind::Args, _) => out.positional = true,
 				_ => {}
 			}
@@ -281,6 +316,8 @@ fn expr(e: &Expr, out: &mut Inputs, at: At<'_>) {
 		// so does the expression.
 		Expr::Chain { lhs, rhs, .. } => {
 			let fallback = literal(rhs).or_else(|| at.default.map(str::to_string));
+			// Whichever side the value comes from is what a `one_of` around the
+			// chain checks, so both keep its options.
 			expr(
 				lhs,
 				out,
@@ -288,6 +325,7 @@ fn expr(e: &Expr, out: &mut Inputs, at: At<'_>) {
 					guarded: true,
 					default: fallback.as_deref(),
 					set: at.set,
+					choices: at.choices,
 				},
 			);
 			expr(rhs, out, at);
@@ -306,9 +344,24 @@ fn expr(e: &Expr, out: &mut Inputs, at: At<'_>) {
 						guarded: true,
 						default: at.default,
 						set: at.set,
+						choices: at.choices,
 					},
 				);
 			}
+		}
+		// The subject is checked against the options, which are read like any
+		// other argument. Nothing else hands its arguments anything.
+		Expr::Call { name, args, .. } if name == "one_of" && !args.is_empty() => {
+			let choices = options(&args[1..]);
+			expr(
+				&args[0],
+				out,
+				At {
+					choices: choices.as_deref(),
+					..plain
+				},
+			);
+			args[1..].iter().for_each(|a| expr(a, out, plain));
 		}
 		Expr::Call { args, .. } => args.iter().for_each(|a| expr(a, out, plain)),
 		Expr::Structured { body, .. } => body.lines.iter().for_each(|l| parts(l, out, at.set)),
@@ -331,6 +384,12 @@ fn literal(e: &Expr) -> Option<String> {
 	match e {
 		Expr::Number(n, _) => Some(crate::value::format_num(*n)),
 		Expr::Bool(b, _) => Some(b.to_string()),
+		_ => string_literal(e),
+	}
+}
+
+fn string_literal(e: &Expr) -> Option<String> {
+	match e {
 		Expr::Str(parts, _) => match parts.as_slice() {
 			[] => Some(String::new()),
 			[InterpPart::Literal(s)] => Some(s.clone()),
@@ -338,5 +397,36 @@ fn literal(e: &Expr) -> Option<String> {
 			_ => None,
 		},
 		_ => None,
+	}
+}
+
+/// A `one_of`'s options, when every one is a string written out -- one by one,
+/// or as a single list, which is how `one_of` reads a list. One computed option
+/// and there is no list to show; a number or a bool is never equal to the
+/// string an input arrives as, so it is not one a caller could pass.
+fn options(args: &[Expr]) -> Option<Vec<String>> {
+	let items = match args {
+		[Expr::List(items, _)] => items.as_slice(),
+		_ => args,
+	};
+	items.iter().map(string_literal).collect()
+}
+
+/// `first(ARGS)` or `ARGS[0]`: the first positional, the word a `one_of`
+/// around either one is checking.
+fn first_positional(e: &Expr) -> bool {
+	let args = |e: &Expr| {
+		matches!(
+			e,
+			Expr::Source {
+				kind: SourceKind::Args,
+				..
+			}
+		)
+	};
+	match e {
+		Expr::Call { name, args: a, .. } => name == "first" && matches!(a.as_slice(), [x] if args(x)),
+		Expr::Index { base, index, .. } => args(base) && matches!(**index, Expr::Number(n, _) if n == 0.0),
+		_ => false,
 	}
 }

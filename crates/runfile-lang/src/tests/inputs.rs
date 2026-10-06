@@ -155,6 +155,90 @@ fn every_kind_of_literal_can_be_a_default() {
 	);
 }
 
+// ---- what a `one_of` says an input takes
+
+fn strings(xs: &[&str]) -> Option<Vec<String>> {
+	Some(xs.iter().map(|x| x.to_string()).collect())
+}
+
+#[test]
+fn a_one_of_lists_what_the_input_it_checks_takes() {
+	// The 38 checks of an input in the corpus are all this shape: a source or
+	// the first positional, then the options written out.
+	let i = walk(
+		"let e = one_of(ARG.env, \"staging\", \"production\")\nlet m = one_of(ENV.MODE, [\"blue\", \"green\"])\nlet p = one_of(first(ARGS), \"major\", \"minor\")\n",
+	);
+	assert_eq!(i.args["env"].choices, strings(&["staging", "production"]));
+	assert_eq!(
+		i.env["MODE"].choices,
+		strings(&["blue", "green"]),
+		"a single list is the options"
+	);
+	assert_eq!(i.positional_choices, strings(&["major", "minor"]));
+	assert_eq!(
+		walk("let p = one_of(ARGS[0], \"a\")\n").positional_choices,
+		strings(&["a"])
+	);
+}
+
+#[test]
+fn a_one_of_reaches_through_a_chain_and_keeps_its_default() {
+	// Whichever side of the `?` the value comes from is what is checked.
+	let i = walk("let e = one_of(ARG.env ? ENV.ENV ? \"staging\", \"staging\", \"production\")\n");
+	for u in [&i.args["env"], &i.env["ENV"]] {
+		assert_eq!(u.choices, strings(&["staging", "production"]), "{u:?}");
+		assert_eq!(u.default.as_deref(), Some("staging"), "{u:?}");
+		assert!(!u.required, "{u:?}");
+	}
+}
+
+#[test]
+fn only_a_list_written_out_and_checked_against_the_input_itself_is_shown() {
+	// A computed option leaves no list to show; a number never equals the
+	// string an input arrives as; a value worked out from the input is what
+	// the options describe; and the whole of `ARGS`, or any word but the
+	// first, is not the word the prompt for it starts with.
+	for src in [
+		"let x = one_of(ARG.x, \"a\", concat(\"b\", \"c\"))\n",
+		"let x = one_of(ARG.x, \"a{{ ENV.B }}\", \"c\")\n",
+		"let x = one_of(ARG.x, 1, 2)\n",
+		"let x = one_of(lower(ARG.x), \"a\", \"b\")\n",
+	] {
+		assert_eq!(walk(src).args["x"].choices, None, "{src}");
+	}
+	for src in [
+		"let x = one_of(ARGS, \"a\")\n",
+		"let x = one_of(ARGS[1], \"a\")\n",
+		"let x = one_of(last(ARGS), \"a\")\n",
+	] {
+		let i = walk(src);
+		assert!(i.positional, "{src}");
+		assert_eq!(i.positional_choices, None, "{src}");
+	}
+}
+
+#[test]
+fn a_use_without_a_check_does_not_undo_one_and_two_checks_must_agree() {
+	let i = walk("print(ARG.x)\nlet a = one_of(ARG.x, \"a\", \"b\")\nlet b = one_of(ARG.x, \"b\", \"a\")\n");
+	assert_eq!(
+		i.args["x"].choices,
+		strings(&["a", "b"]),
+		"the same values, in any order"
+	);
+	// One accepts `a`, the other refuses it: neither list is the answer.
+	let i = walk("let a = one_of(ARG.x, \"a\", \"b\")\nlet b = one_of(ARG.x, \"b\", \"c\")\n");
+	assert_eq!(i.args["x"].choices, Some(Vec::new()));
+}
+
+#[test]
+fn the_options_are_read_like_any_other_argument() {
+	// They are inputs too when they read one, and are not checked by the call.
+	let i = walk("let x = one_of(ARG.x, ARG.allowed)\n");
+	assert!(i.args["allowed"].required);
+	assert_eq!(i.args["allowed"].choices, None);
+	assert_eq!(i.args["x"].choices, None, "a computed option");
+}
+
 // ---- a name a `.env` property sets is not an input
 
 /// The environment names a target reads under a `_shared.run` chain.

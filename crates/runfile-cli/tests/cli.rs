@@ -43,6 +43,11 @@ impl Project {
 		self.command(cwd, args).output().expect("run binary")
 	}
 
+	/// Run with `answers` on stdin; see [`with_answers`].
+	fn answering(&self, answers: &str, args: &[&str]) -> Output {
+		with_answers(self.command(self.dir.path(), args), answers)
+	}
+
 	fn command(&self, cwd: &Path, args: &[&str]) -> Command {
 		let mut c = Command::new(env!("CARGO_BIN_EXE_run"));
 		c.args(args)
@@ -170,6 +175,22 @@ fn settled(counter: &Path) -> usize {
 		}
 	}
 	panic!("the run counter never settled; it is at {last}");
+}
+
+/// Run with `answers` on stdin -- a pipe, which is what the VS Code
+/// extension's task terminal hands `run` -- closed once they are written.
+fn with_answers(mut c: Command, answers: &str) -> Output {
+	use std::io::Write;
+	let mut child = c
+		.stdin(Stdio::piped())
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped())
+		.spawn()
+		.expect("spawn run");
+	// A run that asks nothing may be gone before this is written, and the
+	// write then fails with a broken pipe; what it printed is still there.
+	let _ = child.stdin.take().expect("stdin").write_all(answers.as_bytes());
+	child.wait_with_output().expect("run binary")
 }
 
 fn out(o: &Output) -> String {
@@ -427,14 +448,39 @@ fn skip_prepare_bypasses_the_gate() {
 
 #[test]
 fn confirm_cancels_when_stdin_is_not_a_terminal() {
-	// A test harness has no terminal, so an unconsented target must not run.
+	// A test harness has no terminal, so an unconsented target must not run --
+	// and without `--stdin-args` nothing says anyone answers on stdin, so a
+	// pipe that happens to hold a `y` is not consent either.
 	let p = project(&[(
 		"runfiles/risky.run",
 		"# Risky.\nconfirm(\"proceed?\")\n$ printf x > out.txt\n",
 	)]);
-	let o = p.run(&["risky"]);
-	assert!(!o.status.success());
-	assert!(!p.dir.path().join("out.txt").exists());
+	for o in [p.run(&["risky"]), p.answering("y\n", &["risky"])] {
+		assert!(!o.status.success());
+		assert!(!err(&o).contains("proceed?"), "asked: {}", err(&o));
+		assert!(!p.dir.path().join("out.txt").exists());
+	}
+}
+
+#[test]
+fn stdin_args_asks_confirm_on_stdin_too() {
+	// The VS Code extension's task terminal is a pipe, and a person answers
+	// it: a `confirm()` there was declined without being asked. Under the flag
+	// it is asked where every other question is, and still only a yes runs.
+	let risky = "# Risky.\nconfirm(\"proceed?\")\n$ printf x > out.txt\n";
+	for (answer, runs) in [
+		("y\n", true),
+		("yes\n", true),
+		("n\n", false),
+		("\n", false),
+		("", false),
+	] {
+		let p = project(&[("runfiles/risky.run", risky)]);
+		let o = p.answering(answer, &["--stdin-args", "risky"]);
+		assert_eq!(o.status.success(), runs, "{answer:?}: {}", err(&o));
+		assert_eq!(p.dir.path().join("out.txt").exists(), runs, "{answer:?}");
+		assert!(err(&o).contains("proceed? [y/N] "), "{answer:?}: {}", err(&o));
+	}
 }
 
 #[test]
@@ -3849,13 +3895,170 @@ fn help_says_what_happens_without_each_input() {
 }
 
 #[test]
-fn stdin_args_without_a_terminal_asks_nothing_and_does_not_hang() {
-	// It cannot consent for you. The run fails the way it would without the
-	// flag, rather than waiting on a pipe that will never answer.
+fn stdin_args_at_the_end_of_input_fails_as_it_would_without_the_flag() {
+	// A closed stdin is nobody there to answer: asked once, the run fails the
+	// way it would without the flag rather than waiting -- and the backstop
+	// that would ask again when the target reads the value asks nothing.
 	let p = project(&[("runfiles/t.run", "# T.\nprint(ARG.token)\n")]);
 	let o = p.run(&["--stdin-args", "t"]);
 	assert!(!o.status.success());
-	assert!(err(&o).contains("--token"), "{}", err(&o));
+	assert!(err(&o).contains("no argument `--token` was given"), "{}", err(&o));
+	assert_eq!(err(&o).matches("(required)").count(), 1, "{}", err(&o));
+}
+
+#[test]
+fn stdin_args_reads_its_answers_from_a_pipe() {
+	// The VS Code extension's task terminal hands `run` a pipe and writes each
+	// line typed into it. A prompt that needed a terminal asked that terminal
+	// nothing at all, for every task the extension makes.
+	let p = project(&[("runfiles/t.run", "# T.\nprint(ARG.token)\n")]);
+	let o = p.answering("secret\n", &["--stdin-args", "t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "secret");
+	assert!(err(&o).contains("--token (required): "), "{}", err(&o));
+	assert!(!err(&o).contains("ARGS"), "it reads no positionals: {}", err(&o));
+}
+
+#[test]
+fn stdin_args_in_ci_asks_only_a_terminal() {
+	// Nobody is there to answer in CI, and a runner that leaves stdin open
+	// would wait on it until the job timed out -- so a pipe is not asked there,
+	// which is all CI ever was.
+	let p = project(&[("runfiles/t.run", "# T.\nprint(ARG.token)\n")]);
+	let mut c = p.command(p.dir.path(), &["--stdin-args", "t"]);
+	c.env("CI", "true");
+	let o = with_answers(c, "secret\n");
+	assert!(!o.status.success(), "the answer waiting on the pipe was taken");
+	assert!(!err(&o).contains("(required): "), "asked in CI: {}", err(&o));
+}
+
+#[test]
+fn stdin_args_asks_for_the_positionals_a_target_reads() {
+	// `run release minor` is how a target with one obvious input is called,
+	// and `ARGS` is what reads it -- so `--stdin-args`, which every task the
+	// VS Code extension makes passes, has to ask for it like any other input.
+	let p = project(&[(
+		"runfiles/release.run",
+		"# Bump.\nlet part = one_of(first(ARGS), \"major\", \"minor\", \"patch\")\nprint(part)\n",
+	)]);
+	let o = p.answering("minor\n", &["--stdin-args", "release"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "minor");
+	assert!(err(&o).contains("ARGS (one of major, minor, patch): "), "{}", err(&o));
+	assert!(!err(&o).contains("required"), "the tree cannot say it is: {}", err(&o));
+}
+
+#[test]
+fn stdin_args_offers_what_a_one_of_lets_an_input_take() {
+	// The prompt shows the options, the default Enter keeps, and whether one
+	// is needed, together -- and only shows them: the target's own `one_of`
+	// is what refuses an answer.
+	let p = project(&[(
+		"runfiles/deploy.run",
+		"# Deploy.\nlet env = one_of(ARG.env ? \"staging\", \"staging\", \"production\")\nlet tier = one_of(ARG.tier, [\"small\", \"large\"])\nprint(\"{{ env }} {{ tier }}\")\n",
+	)]);
+	let o = p.answering("\nlarge\n", &["--stdin-args", "deploy"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "staging large");
+	let e = err(&o);
+	assert!(e.contains("--env (one of staging, production) [staging]: "), "{e}");
+	assert!(e.contains("--tier (required; one of small, large): "), "{e}");
+
+	let o = p.answering("\nhuge\n", &["--stdin-args", "deploy"]);
+	assert!(!o.status.success());
+	assert!(err(&o).contains("huge"), "the target says what is wrong: {}", err(&o));
+}
+
+#[test]
+fn help_lists_what_a_one_of_lets_an_input_take() {
+	// `--help` and the prompt are read from one description, so they cannot
+	// offer different values.
+	let p = project(&[
+		(
+			"runfiles/release.run",
+			"# Bump.\nlet part = one_of(first(ARGS), \"major\", \"minor\", \"patch\")\nprint(part)\n",
+		),
+		(
+			"runfiles/deploy.run",
+			"# Deploy.\nlet env = one_of(ARG.env ? \"staging\", \"staging\", \"production\")\nprint(one_of(ENV.MODE, \"blue\", \"green\"))\nprint(env)\n",
+		),
+	]);
+	let release = out(&p.run(&["release", "--help"]));
+	assert!(
+		release.contains("read as `ARGS`; the first is one of major, minor, patch"),
+		"{release}"
+	);
+	let deploy = out(&p.run(&["deploy", "--help"]));
+	assert!(
+		deploy.contains("defaults to staging; one of staging, production"),
+		"{deploy}"
+	);
+	assert!(deploy.contains("required; one of blue, green"), "{deploy}");
+}
+
+#[test]
+fn an_option_or_a_default_is_sanitized_before_it_is_printed() {
+	// Both are strings the file wrote, `\e` is an escape the language has, and
+	// `--help` is safe to run in a repository nobody has read (audit SA-027).
+	let p = project(&[(
+		"runfiles/t.run",
+		"# T.\nprint(one_of(ARG.x ? \"\\e]0;d\\e\\\\\", \"\\e[31ma\", \"b\"))\n",
+	)]);
+	let help = out(&p.run(&["t", "--help"]));
+	assert!(!help.contains('\u{1b}'), "{help:?}");
+	assert!(help.contains("one of \u{FFFD}[31ma, b"), "{help:?}");
+	let o = p.answering("b\n", &["--stdin-args", "t"]);
+	assert!(!err(&o).contains('\u{1b}'), "{:?}", err(&o));
+}
+
+#[test]
+fn an_empty_answer_for_args_passes_none_and_a_wrapper_still_runs() {
+	// A wrapper's positionals are optional: `$ cargo build {{ ARGS }}` is run
+	// with none as often as with some, so Enter has to mean none.
+	let p = project(&[(
+		"runfiles/wrap.run",
+		"# Wrap.\nprint(length(ARGS))\n$ echo built {{ ARGS }}\n",
+	)]);
+	let o = p.answering("\n", &["--stdin-args", "wrap"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).lines().collect::<Vec<_>>(), ["0", "built"]);
+}
+
+#[test]
+fn the_line_typed_for_args_is_split_like_a_command_line_and_kept_as_typed() {
+	// Quotes keep a word whole. And a `--release` typed there is meant for the
+	// command the wrapper runs: it reaches `ARGS` as typed rather than being
+	// claimed by the flag the target also reads, which had its own question.
+	let p = project(&[(
+		"runfiles/wrap.run",
+		"# Wrap.\nprint(FLAG.release)\nprint(join(\"|\", ARGS))\n",
+	)]);
+	let o = p.answering("n\n--release \"two words\" three\n", &["--stdin-args", "wrap"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o).lines().collect::<Vec<_>>(),
+		["false", "--release|two words|three"]
+	);
+}
+
+#[test]
+fn stdin_args_asks_in_the_order_the_usage_line_gives() {
+	// Arguments, flags, positionals, then the environment -- one answer each,
+	// in that order, and each reaches the name it was asked for.
+	let p = project(&[(
+		"runfiles/t.run",
+		"# T.\nprint(ENV.STDIN_ARGS_TEST_ONLY)\nprint(join(\"|\", ARGS))\nprint(FLAG.b)\nprint(ARG.a)\n",
+	)]);
+	let mut c = p.command(p.dir.path(), &["--stdin-args", "t"]);
+	c.env_remove("STDIN_ARGS_TEST_ONLY");
+	let o = with_answers(c, "one\ny\npos\nenv\n");
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).lines().collect::<Vec<_>>(), ["env", "pos", "true", "one"]);
+	let e = err(&o);
+	let at = |s: &str| e.find(s).unwrap_or_else(|| panic!("no {s:?} in {e}"));
+	assert!(at("--a ") < at("pass --b?"), "{e}");
+	assert!(at("pass --b?") < at("ARGS: "), "{e}");
+	assert!(at("ARGS: ") < at("STDIN_ARGS_TEST_ONLY"), "{e}");
 }
 
 #[test]
@@ -3863,14 +4066,37 @@ fn stdin_args_does_not_ask_for_what_was_already_given() {
 	let p = project(&[("runfiles/t.run", "# T.\nprint(ARG.token)\n")]);
 	// Both spellings, because the prompt classifies the command line with the
 	// runner's own parser: if it read `--token given` as a flag and a
-	// positional, it would ask for a token that was already supplied and then
-	// there would be no terminal to answer on.
+	// positional, it would ask for a token that was already supplied -- and
+	// take the answer waiting on stdin over the one on the command line.
 	for given in [vec!["--token=given"], vec!["--token", "given"]] {
 		let argv: Vec<&str> = ["--stdin-args", "t"].into_iter().chain(given.iter().copied()).collect();
-		let o = p.run(&argv);
+		let o = p.answering("asked\n", &argv);
 		assert!(o.status.success(), "{argv:?}: {}", err(&o));
 		assert_eq!(out(&o).trim(), "given", "{argv:?}");
 	}
+}
+
+#[test]
+fn stdin_args_does_not_ask_for_positionals_that_were_given() {
+	// A `--x` no name reads counts: a target that reads `ARGS` is handed it
+	// there, so its list is not empty.
+	let p = project(&[("runfiles/wrap.run", "# Wrap.\nprint(join(\"|\", ARGS))\n")]);
+	for given in ["given", "--x"] {
+		let o = p.answering("asked\n", &["--stdin-args", "wrap", given]);
+		assert!(o.status.success(), "{given}: {}", err(&o));
+		assert_eq!(out(&o).trim(), given);
+		assert!(!err(&o).contains("ARGS"), "{given}: {}", err(&o));
+	}
+}
+
+#[test]
+fn an_answer_goes_ahead_of_a_double_dash_the_caller_wrote() {
+	// Past a `--` every word is a positional, so an answer appended after one
+	// reached `ARGS` and left the name it answered missing.
+	let p = project(&[("runfiles/t.run", "# T.\nprint(ARG.port)\nprint(join(\"|\", ARGS))\n")]);
+	let o = p.answering("5000\n", &["--stdin-args", "t", "--", "--port=9"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).lines().collect::<Vec<_>>(), ["5000", "--port=9"]);
 }
 
 #[test]

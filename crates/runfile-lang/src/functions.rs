@@ -1192,7 +1192,7 @@ pub const FUNCTIONS: &[Function] = &[
 	Function {
 		name: "confirm",
 		signature: "confirm(question)",
-		doc: "Ask before going on. Answering no stops the whole run — nothing catches it, not even a target that ran this one. Skipped by `-y` and in CI, and never asked under `--dry-run`. Call it anywhere, including inside an `if`, so the question can depend on what is about to happen.",
+		doc: "Ask before going on. Answering no stops the whole run — nothing catches it, not even a target that ran this one. Skipped by `-y` and in CI, and never asked under `--dry-run`. Asked on a terminal, or under `--stdin-args` on whatever stdin is. Call it anywhere, including inside an `if`, so the question can depend on what is about to happen.",
 		example: "if env == \"production\"\n\tconfirm(\"Deploy to production?\")\nend\n\n$ terraform apply -auto-approve",
 	},
 	Function {
@@ -1462,7 +1462,7 @@ pub const FUNCTIONS: &[Function] = &[
 	Function {
 		name: "one_of",
 		signature: "one_of(value, a, b, …)",
-		doc: "`value` if it is one of the options, else an error naming them.",
+		doc: "`value` if it is one of the options, else an error naming them. Around an input -- `ARG.x`, `ENV.X`, `first(ARGS)` -- with every option written out, it is also what `run <target> --help` lists and `--stdin-args` offers.",
 		example: "let part = one_of(first(ARGS), \"major\", \"minor\", \"patch\")",
 	},
 	Function {

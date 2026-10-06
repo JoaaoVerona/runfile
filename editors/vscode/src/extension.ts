@@ -310,9 +310,10 @@ function buildFileTargetTask(name: string, anchor: string): vscode.Task {
 /**
  * The one place a `vscode.Task` is built. Every task invokes `run --stdin-args <name>`
  * so `run` can prompt for any missing `{{ ARG.x }}` / `{{ FLAG.x }}` / `{{ ENV.X }}`
- * values. When the `interactive` setting is on those prompts are served by a
- * pseudoterminal we control (see [`RunfileInteractivePty`]); otherwise the task runs as
- * a plain shell task (matching VS Code's default, where stdin prompts fail).
+ * values, and for `ARGS` when none were given. When the `interactive` setting is on
+ * those prompts are served by a pseudoterminal we control (see [`RunfileInteractivePty`]);
+ * otherwise the task runs as a plain shell task (matching VS Code's default, where stdin
+ * prompts fail).
  */
 function buildTask(
 	name: string,

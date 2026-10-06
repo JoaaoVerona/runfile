@@ -105,7 +105,10 @@ pub(crate) fn render(cat: &Catalog, target: &Target) -> String {
 			out.push_str(&format!("  --{name:<28}off unless passed\n"));
 		}
 		if reads.positional {
-			out.push_str(&format!("  {:<30}read as `ARGS`\n", "<positional…>"));
+			let first = one_of(reads.positional_choices.as_deref())
+				.map(|c| format!("; the first is {c}"))
+				.unwrap_or_default();
+			out.push_str(&format!("  {:<30}read as `ARGS`{first}\n", "<positional…>"));
 		}
 	}
 
@@ -129,19 +132,45 @@ pub(crate) fn render(cat: &Catalog, target: &Target) -> String {
 	out
 }
 
-/// One input, with what happens when it is not supplied.
+/// One input, with what happens when it is not supplied, and what it may be.
 ///
-/// Both facts come from the tree: a `?` chain catches the failure, so a name
+/// Every fact comes from the tree: a `?` chain catches the failure, so a name
 /// with one is optional, and the literal the chain ends in is what it falls
-/// back to. A name read bare can fail, and says so.
+/// back to. A name read bare can fail, and says so. A `one_of` it is checked
+/// by lists what it takes.
 fn note(label: &str, u: &runfile_lang::inputs::Use) -> String {
-	let tail = match (u.default.as_deref(), u.required) {
+	let mut tail = match (u.default.as_deref(), u.required) {
 		(Some(""), _) => "defaults to empty".to_string(),
-		(Some(d), _) => format!("defaults to {d}"),
+		(Some(d), _) => format!("defaults to {}", sanitize(d)),
 		(None, true) => "required".to_string(),
 		(None, false) => "optional".to_string(),
 	};
+	if let Some(c) = one_of(u.choices.as_deref()) {
+		tail.push_str(&format!("; {c}"));
+	}
 	format!("{label:<30}{tail}")
+}
+
+/// The values a `one_of` lets an input take, as `--help` and the
+/// `--stdin-args` prompt both show them -- or `None` when there is no list.
+///
+/// An option is a string the file wrote, so it is sanitized like the file's
+/// description: `\e` is an escape this language has, and `--help` is safe to
+/// run in a repository nobody has read yet (audit SA-027). The empty string is
+/// shown as `""`, which would otherwise be a gap between two commas.
+pub(crate) fn one_of(choices: Option<&[String]>) -> Option<String> {
+	let c = choices.filter(|c| !c.is_empty())?;
+	let shown: Vec<String> = c
+		.iter()
+		.map(|o| if o.is_empty() { "\"\"".to_string() } else { sanitize(o) })
+		.collect();
+	Some(format!("one of {}", shown.join(", ")))
+}
+
+/// A value the file wrote, made safe to print: a default is a literal the
+/// file chose, the same as an option.
+pub(crate) fn sanitize(s: &str) -> String {
+	runfile_runtime::term::sanitize(s).into_owned()
 }
 
 /// Break a line on spaces at `width`, keeping its leading indentation on the
