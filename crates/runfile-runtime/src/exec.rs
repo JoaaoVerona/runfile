@@ -5,6 +5,7 @@
 //! by the same mechanism -- the command is arbitrary, not a fixed interpreter
 //! list.
 
+use runfile_lang::Value;
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::io::Write;
@@ -59,26 +60,96 @@ pub struct Spawn<'a> {
 /// Split a command line into program and arguments, respecting quotes so
 /// `exec docker run -i --rm python:3 python` reaches the right program.
 ///
+/// A word that had quotes is a word even when nothing is left of it, so `''`
+/// is an empty argument, the way a shell reads it, rather than none.
+///
 /// Public because `--stdin-args` splits the line typed for `ARGS` with it: a
 /// person typing positionals is typing a command line, and one that no shell
 /// reads should be split one way wherever it is.
 pub fn split_command(cmd: &str) -> Vec<String> {
-	let (mut out, mut cur, mut quote) = (Vec::new(), String::new(), None::<char>);
+	let (mut out, mut cur, mut quote, mut quoted) = (Vec::new(), String::new(), None::<char>, false);
 	for c in cmd.chars() {
-		match (quote, c) {
-			(Some(q), _) if c == q => quote = None,
-			(Some(_), _) => cur.push(c),
-			(None, '\'' | '"') => quote = Some(c),
-			(None, c) if c.is_whitespace() => {
-				if !cur.is_empty() {
-					out.push(std::mem::take(&mut cur));
-				}
+		let next = step(quote, c);
+		if next != quote {
+			quoted = true;
+		} else if quote.is_none() && c.is_whitespace() {
+			if !cur.is_empty() || quoted {
+				out.push(std::mem::take(&mut cur));
 			}
-			(None, _) => cur.push(c),
+			quoted = false;
+		} else {
+			cur.push(c);
+		}
+		quote = next;
+	}
+	if !cur.is_empty() || quoted {
+		out.push(cur);
+	}
+	out
+}
+
+/// Where a reader of [`split_command`] stands after `c`: outside quotes, or
+/// inside the `'…'` or `"…"` it opened. A quote ends only at its own kind, and
+/// nothing escapes anything, which is what keeps `exec C:\Tools\x.exe` a path.
+fn step(quote: Option<char>, c: char) -> Option<char> {
+	match (quote, c) {
+		(Some(q), c) if c == q => None,
+		(None, '\'' | '"') => Some(c),
+		(quote, _) => quote,
+	}
+}
+
+/// Where a reader of [`split_command`] stands after `text`, having stood at
+/// `quote` before it: what an `exec` line's literal text leaves open around
+/// the value that follows it.
+pub fn quote_after(quote: Option<char>, text: &str) -> Option<char> {
+	text.chars().fold(quote, step)
+}
+
+/// A value written into an `exec` line where `quote` is open, so that
+/// [`split_command`] reads back exactly the value.
+///
+/// No shell reads an `exec` line: the runner splits it itself, so its values
+/// are written for that reader rather than for a shell. Shell quoting wrote an
+/// apostrophe as `'\''`, which this reader took for a backslash and a quote
+/// pair -- `D'Ávila` arrived as `D\Ávila`, and every quote after it paired
+/// with the wrong one.
+///
+/// Outside quotes a value is one word, or one per item of a list, quoted only
+/// when something in it would split it or be read as a quote. Inside the
+/// author's `'…'` or `"…"` it is text that leaves the quote open: each of
+/// that quote's own kind is closed around, written in the other kind, and
+/// opened again. A list there is its items with a space between them, one
+/// word, as it is inside a shell's quotes.
+pub fn command_text(value: &Value, quote: Option<char>) -> String {
+	match value {
+		Value::List(items) => items
+			.iter()
+			.map(|item| command_text(item, quote))
+			.collect::<Vec<_>>()
+			.join(" "),
+		other => {
+			let text = other.to_string();
+			match quote {
+				Some(q) => reopened(&text, q),
+				None if !text.is_empty() && !text.contains(|c: char| c.is_whitespace() || c == '\'' || c == '"') => {
+					text
+				}
+				None => format!("'{}'", reopened(&text, '\'')),
+			}
 		}
 	}
-	if !cur.is_empty() {
-		out.push(cur);
+}
+
+fn reopened(text: &str, quote: char) -> String {
+	let other = if quote == '"' { '\'' } else { '"' };
+	let mut out = String::with_capacity(text.len());
+	for c in text.chars() {
+		if c == quote {
+			out.extend([quote, other, c, other, quote]);
+		} else {
+			out.push(c);
+		}
 	}
 	out
 }
@@ -674,8 +745,96 @@ fn announce(program: &str, body: &str) {
 
 #[cfg(test)]
 mod tests {
-	use super::{Spawn, is_shell, program_and_args, spawn_code, windows_quoted};
+	use super::{
+		Spawn, command_text, is_shell, program_and_args, quote_after, spawn_code, split_command, windows_quoted,
+	};
+	use runfile_lang::Value;
 	use std::path::Path;
+
+	#[test]
+	fn a_value_written_into_an_exec_line_is_read_back_as_itself() {
+		// The writer and the reader of an `exec` line are two halves of one
+		// dialect, so this holds them to each other for values chosen to break
+		// either: both quotes, the shell's own `'\''`, nothing at all, line
+		// breaks, a Windows path and a trailing backslash, which no escape may
+		// eat, and what a shell would run, which nothing here runs.
+		for value in [
+			"",
+			"plain",
+			"a b",
+			"it's",
+			"D'Ávila \"x\" $HOME",
+			"'",
+			"\"",
+			"''",
+			"'\\''",
+			"a\tb\nc",
+			"C:\\Tools\\x.exe",
+			"tail\\",
+			"$(touch pwned)",
+			"`id`",
+		] {
+			let v = Value::Str(value.to_owned());
+			let bare = command_text(&v, None);
+			let double = command_text(&v, Some('"'));
+			let single = command_text(&v, Some('\''));
+
+			assert_eq!(split_command(&format!("p {bare}")), ["p", value], "bare {value:?}");
+			assert_eq!(
+				split_command(&format!("p --v={bare} x")),
+				["p".to_owned(), format!("--v={value}"), "x".to_owned()],
+				"glued {value:?}"
+			);
+			assert_eq!(
+				split_command(&format!("p \"<{double}>\" x")),
+				["p".to_owned(), format!("<{value}>"), "x".to_owned()],
+				"inside double quotes {value:?}"
+			);
+			assert_eq!(
+				split_command(&format!("p '<{single}>' x")),
+				["p".to_owned(), format!("<{value}>"), "x".to_owned()],
+				"inside single quotes {value:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn a_list_on_an_exec_line_is_a_word_per_item_and_one_word_inside_quotes() {
+		let list = Value::List(vec![
+			Value::Str("a b".into()),
+			Value::Str(String::new()),
+			Value::Num(2.0),
+			Value::List(vec![Value::Str("it's".into())]),
+		]);
+
+		assert_eq!(
+			split_command(&format!("p {}", command_text(&list, None))),
+			["p", "a b", "", "2", "it's"]
+		);
+		assert_eq!(
+			split_command(&format!("p \"{}\"", command_text(&list, Some('"')))),
+			["p", "a b  2 it's"]
+		);
+		assert_eq!(
+			split_command(&format!("p {} x", command_text(&Value::List(Vec::new()), None))),
+			["p", "x"],
+			"an empty list is no words at all"
+		);
+	}
+
+	#[test]
+	fn a_quoted_empty_word_is_an_argument_and_nothing_escapes() {
+		// `''` is an argument a shell would pass, so it is one here; and a
+		// backslash is a character, which is what keeps a Windows path one.
+		assert_eq!(split_command("p '' \"\" x'' y"), ["p", "", "", "x", "y"]);
+		assert_eq!(
+			split_command("C:\\Tools\\x.exe a\\ b"),
+			["C:\\Tools\\x.exe", "a\\", "b"]
+		);
+		assert_eq!(quote_after(None, "a 'b"), Some('\''));
+		assert_eq!(quote_after(Some('\''), "c' \"d"), Some('"'));
+		assert_eq!(quote_after(Some('"'), "it's\""), None);
+	}
 
 	#[test]
 	fn a_script_is_quoted_the_way_windows_reads_one_back() {

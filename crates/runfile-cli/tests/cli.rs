@@ -3766,6 +3766,27 @@ fn an_interpolation_in_a_non_shell_exec_body_is_not_shell_quoted() {
 }
 
 #[test]
+fn a_value_on_an_exec_line_arrives_as_exactly_itself() {
+	// No shell reads an `exec` line: the runner splits it into the program and
+	// its arguments itself, so its values are written for that reader. Written
+	// for a shell, an apostrophe came out as `'\''`, which the runner read as a
+	// backslash and a quote pair -- `D'Ávila` arrived as `D\Ávila`, and every
+	// quote after it paired with the wrong one. Outside quotes a value is one
+	// argument, a list one per item and an empty string an empty one; inside the
+	// author's quotes it is text that leaves them open.
+	let p = project(&[(
+		"runfiles/t.run",
+		"# T.\nlet v = \"D'Ávila \\\"x\\\" $HOME\"\nlet n = [\"a b\", \"\"]\n\nexec printf '[%s]' {{ v }} --v={{ v }} \"<{{ v }}>\" '<{{ v }}>' {{ n }}\nend\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		out(&o),
+		"[D'Ávila \"x\" $HOME][--v=D'Ávila \"x\" $HOME][<D'Ávila \"x\" $HOME>][<D'Ávila \"x\" $HOME>][a b][]"
+	);
+}
+
+#[test]
 fn a_shell_exec_body_is_still_shell_quoted() {
 	// The rule that makes `$ cp {{ src }} {{ dst }}` safe has not moved.
 	let p = project(&[(

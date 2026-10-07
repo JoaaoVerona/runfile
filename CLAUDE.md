@@ -407,12 +407,23 @@ call with its arguments already evaluated), and `format::rhs` via `parser::is_ca
 from the `$` on is the shell's text and must not be re-spaced.
 
 **An interpolation in a non-shell `exec` body is not shell-quoted.** `exec::body_is_shell` decides, and
-`render` picks `interpolate_shell` or `interpolate_plain` accordingly. Shell quoting is the wrong quoting for
+`render` picks `interpolate_script` or `interpolate_plain` accordingly. Shell quoting is the wrong quoting for
 anybody else's language: it made `'it'\''s'` out of an apostrophe, flattened a list to bare words, and left a
 path unquoted because nothing in it needed quoting — so a Python body read `/tmp/x.json` as division. Left
 alone, the value arrives as itself and the author quotes it the way that language wants, which is the only
 thing that can be right for every language. A shell body still self-quotes, which is what keeps `$ cp
 {{ src }} {{ dst }}` safe.
+
+**An `exec` line is not shell text either.** No shell reads it: the runner splits it into the program and its
+arguments itself, with `exec::split_command` -- `'…'` and `"…"`, and no escapes, so `exec C:\Tools\x.exe` stays
+a path and a quoted empty word is an argument. Its values are written for that reader (`run::interpolate_command`,
+`exec::command_text`), each for the quotes the text before it leaves open: outside them one word, or one per
+item of a list, quoted only when something in it would split it or read as a quote; inside the author's `'…'`
+or `"…"`, text that closes that quote around each of its own kind and opens it again. Through 1.9.0 the line was
+shell-quoted, and the splitter read the `'\''` that writes an apostrophe as a backslash and a quote pair --
+`D'Ávila` arrived as `D\Ávila` and every quote after it paired with the wrong one, which turned a JSON argument
+to `psql -v` into something no parser would take. `exec::tests` holds the writer and the reader to each other
+over values chosen to break either.
 
 ### Comments
 
@@ -959,7 +970,8 @@ terminal's width, and how wide text is on it).
   marked required, because the tree cannot say: `first(ARGS)` of an empty list is `""`, not a failure, so
   whether none is a mistake is the target's to report -- and for a wrapper (`$ cargo build {{ ARGS }}`) it is
   the usual case, so Enter passes none and the wrapper runs as it did. The line is split by
-  `exec::split_command`, the `exec` command line's splitter, so quotes keep a word whole, and the words go
+  `exec::split_command`, the `exec` command line's splitter, so quotes keep a word whole and `''` is an empty
+  one, and the words go
   **behind** a `--`: a `--release` typed there reaches `ARGS` as typed rather than being claimed by a flag the
   target also reads, which had a question of its own. No inference of "required" from `ARGS[0]` or
   `let a, b = ARGS` was added; the corpus reads positionals through `first(ARGS)` and `{{ ARGS }}` almost

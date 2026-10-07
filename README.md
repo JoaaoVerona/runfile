@@ -628,6 +628,10 @@ A list becomes one argument per item, so give it a word of its own rather than g
 `{{ files }} suffix`, not `{{ files }}suffix`. An empty list is no words at all, so `rm -rf {{ dirs }}/cache`
 with an empty `dirs` is `rm -rf /cache`; `run :lint` flags that glued shape.
 
+An `exec` line is read by no shell: the runner splits it into the program and its arguments itself, and writes
+each value for that, so a value there arrives the same way — one argument, or one per item of a list, quotes
+and all.
+
 ### Asking whether a command worked
 
 A `$` run may stand as a condition or as a `match` subject. The condition is true when the command exits 0;

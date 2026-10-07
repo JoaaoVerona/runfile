@@ -5,7 +5,7 @@ use crate::props::{PropError, Props};
 use crate::term;
 use runfile_lang::Value;
 use runfile_lang::ast::*;
-use runfile_lang::eval::{EvalError, Scope, eval_boundary, interpolate_shell};
+use runfile_lang::eval::{EvalError, Scope, eval_boundary};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
@@ -866,10 +866,29 @@ fn run_args(words: &[Vec<InterpPart>], sc: &mut Scope) -> Result<Vec<String>, Ru
 	Ok(out)
 }
 
+/// An `exec` line with its values written in, each for the quotes the text
+/// before it leaves open, so that `exec::split_command` reads every value back
+/// as exactly itself.
+fn interpolate_command(parts: &[InterpPart], sc: &mut Scope) -> Result<String, EvalError> {
+	let (mut out, mut quote) = (String::new(), None);
+	for p in parts {
+		match p {
+			InterpPart::Literal(t) => {
+				quote = exec::quote_after(quote, t);
+				out.push_str(t);
+			}
+			InterpPart::Expr(e) => out.push_str(&exec::command_text(&eval_boundary(e, sc)?, quote)),
+		}
+	}
+	Ok(out)
+}
+
 /// Interpolate an `exec`'s command line and its body.
 ///
-/// The command line is always shell-quoted: it is split into arguments, so a
-/// value with a space in it has to stay one. **The body is quoted only when
+/// The command line is split into arguments by the runner, never by a shell,
+/// so its values are written for that reader (`exec::command_text`): a value
+/// with a space in it stays one argument, and one with a quote in it arrives
+/// with the quote. **The body is quoted only when
 /// the command is a shell.** Anybody else's body is their language, and shell
 /// quoting is the wrong quoting for it -- `'it'\''s'` is not Python, a list
 /// flattens to bare words, and a path comes through unquoted because nothing
@@ -902,7 +921,7 @@ fn render(
 	r: &mut Runner<'_>,
 ) -> Result<Rendered, RunError> {
 	let cmd = match command {
-		Some(c) => Some(interpolate_shell(c, &mut r.scope)?),
+		Some(c) => Some(interpolate_command(c, &mut r.scope)?),
 		None => None,
 	};
 	let lines = if exec::body_is_shell(cmd.as_deref()) {
