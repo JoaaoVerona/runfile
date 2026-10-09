@@ -1,3 +1,9 @@
-# Remove the extension from VS Code
+# Remove the extension from VSCodium (or VS Code if VSCodium is missing)
 
-$ code --uninstall-extension joaaoverona.runfile
+let cli = "code"
+
+if $ command -v codium >/dev/null
+	cli = "codium"
+end
+
+$ {{ cli }} --uninstall-extension joaaoverona.runfile

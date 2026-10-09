@@ -1,5 +1,12 @@
-# Package and (re)install the extension into VS Code, replacing any existing copy
+# Package and (re)install the extension into VSCodium (or VS Code if VSCodium is missing), replacing any existing copy
 
 run package
-$ code --install-extension runfile-vscode.vsix --force
-print("Installed — run \"Developer: Reload Window\" in VS Code to activate.")
+
+let cli, editor = ["code", "VS Code"]
+
+if $ command -v codium >/dev/null
+	cli, editor = ["codium", "VSCodium"]
+end
+
+$ {{ cli }} --install-extension runfile-vscode.vsix --force
+print("Installed — run \"Developer: Reload Window\" in {{ editor }} to activate.")
