@@ -1,4 +1,4 @@
-# CLAUDE.md — Project Reference for Runfile
+# AGENTS.md — Project Reference for Runfile
 
 ## What is Runfile
 
