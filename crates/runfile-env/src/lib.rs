@@ -94,20 +94,19 @@ pub struct EnvBuildParams<'a> {
 	/// Env vars to set (applied after env files).
 	pub env: Option<&'a HashMap<String, String>>,
 	/// Directories to prepend to PATH. Entries should already be absolute —
-	/// the runtime resolves relative `.add-path` entries against the anchor in
-	/// `runfile_runtime::env::build`. The `working_dir` fallback in
+	/// the runtime resolves a relative `.add-path` against the working
+	/// directory in effect where it was written. The `working_dir` fallback in
 	/// `apply_add_to_path` only kicks in for a stray relative entry that did
 	/// not go through it.
 	pub add_to_path: Option<&'a [String]>,
 	/// Working directory the spawned command will run in (= the resolved
 	/// `.workdir`). Used as a fallback for any relative `.add-path`
-	/// entry that wasn't baked at parse time; not used for `.env-file`.
+	/// entry that was not resolved before it got here; not used for `.env-file`.
 	pub working_dir: &'a Path,
-	/// Base directory for resolving relative `.env-file` paths. Always the
-	/// source Runfile's parent directory (`{{ RUN.parent }}`), regardless of
-	/// `.workdir` — env files are configuration files co-located with
-	/// the Runfile, so anchoring them to the Runfile dir is what users expect
-	/// when they tweak `.workdir` for command execution.
+	/// Base directory for a relative `.env-file` path that reaches this build
+	/// still relative. The runtime resolves each against the working directory
+	/// in effect where it was written -- one rule for every relative path in a
+	/// file -- so only an entry built without one falls back to this.
 	pub env_files_base_dir: &'a Path,
 	/// Available private keys for decrypting `encrypted:` prefixed values.
 	/// After merging, if encrypted values are detected, `RUNFILE_ENCRYPTION_PUBLIC_KEY`
@@ -243,10 +242,10 @@ pub fn build_env(
 	let mut env_map: HashMap<String, String> = params.defaults.cloned().unwrap_or_default();
 	env_map.extend(base.iter().map(|(k, v)| (k.clone(), v.clone())));
 
-	// Layer `.env-file`s (substitution sees the env_map built so far). Relative
-	// `.env-file` paths resolve against `env_files_base_dir` — the
-	// anchor: the parent of `runfiles/` — NOT the resolved `.workdir`. Env files are
-	// configuration co-located with the Runfile.
+	// Layer `.env-file`s (substitution sees the env_map built so far). The
+	// runtime hands them over resolved against the `.workdir` in effect where
+	// each was written; a relative one left over resolves against
+	// `env_files_base_dir`.
 	//
 	// **Only a `.env-file`'s own values are decrypted**, and here, before they
 	// are merged in. An `encrypted:` ciphertext is the author's own exactly when

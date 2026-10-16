@@ -7,7 +7,6 @@ use runfile_lang::Value;
 use runfile_lang::ast::*;
 use runfile_lang::eval::{EvalError, Scope, eval_boundary};
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -234,9 +233,6 @@ pub struct Runner<'a> {
 	/// Built once from the header properties, before the body is evaluated, so
 	/// `{{ ENV.x }}` can see what `.env-file` brought in.
 	pub env: Vec<(String, String)>,
-	/// The anchor: the directory containing `runfiles/`. Everything relative
-	/// resolves against it.
-	pub anchor: PathBuf,
 	pub dispatch: &'a dyn Dispatch,
 	/// Whether the run has been interrupted. Injected rather than read from a
 	/// global so the runtime reaches for no process state of its own, and so a
@@ -287,6 +283,7 @@ pub fn fold_shared(block: &Block, base: &Props, sc: &mut Scope) -> Result<Props,
 		}
 		if let Statement::Let { names, value, span } = st {
 			crate::props::keep_current(&props, Some(value), sc, &mut stale)?;
+			sc.workdir = props.workdir_in(&sc.anchor);
 			let v = eval_boundary(value, sc)?;
 			sc.bind_names(names, runfile_lang::eval::destructure(names, v, span.line)?);
 		}
@@ -373,6 +370,11 @@ fn apply_trailing(p: &Property, props: &mut Cow<'_, Props>, r: &mut Runner<'_>) 
 }
 
 fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
+	// What this line reads from disk it reads from where a command on it would
+	// run. Taken from the properties it is handed rather than saved and put back
+	// around each block: everything the walker evaluates is evaluated under the
+	// properties it is given, so a block's directory cannot outlive its `end`.
+	r.scope.workdir = props.workdir_in(&r.scope.anchor);
 	match st {
 		Statement::Let { names, value, span } | Statement::Assign { names, value, span } => {
 			let v = value_of(value, props, r)?;
@@ -525,7 +527,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			// the display form instead (SA-012).
 			r.trace.push(rendered.body.clone());
 			let env = merged_env(r);
-			let dir = cwd(props, &r.anchor);
+			let dir = props.workdir_in(&r.scope.anchor);
 			exec::spawn(Spawn {
 				command: command_for(rendered.cmd.as_deref(), props),
 				body: &rendered.body,
@@ -549,7 +551,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 /// the scope -- the second is what lets `{{ ENV.x }}` read what a `.env-file`
 /// brought in.
 fn build_env(props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let built = crate::env::for_props(props, &r.anchor, &r.scope.private_keys, r.dry_run)?;
+	let built = crate::env::for_props(props, &r.scope.anchor, &r.scope.private_keys, r.dry_run)?;
 	r.scope.env = built.clone();
 	r.env = built.into_iter().collect();
 	r.env.sort();
@@ -728,7 +730,7 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 	};
 	let rendered = render(command.as_deref(), body, props, r)?;
 	let env = merged_env(r);
-	let dir = cwd(props, &r.anchor);
+	let dir = props.workdir_in(&r.scope.anchor);
 	let out = exec::spawn(Spawn {
 		command: command_for(rendered.cmd.as_deref(), props),
 		body: &rendered.body,
@@ -779,7 +781,7 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 	};
 	let rendered = render(command.as_deref(), body, props, r)?;
 	let env = merged_env(r);
-	let dir = cwd(props, &r.anchor);
+	let dir = props.workdir_in(&r.scope.anchor);
 	Ok(exec::spawn_code(Spawn {
 		command: command_for(rendered.cmd.as_deref(), props),
 		body: &rendered.body,
@@ -828,6 +830,9 @@ fn dispatch_code(
 
 /// A condition, which may be a `$` run: `if $ cmd` is true when it succeeds.
 fn cond_of(cond: &Expr, props: &Props, r: &mut Runner<'_>, line: usize) -> Result<bool, RunError> {
+	// A loop asks its condition under the body's properties, after a pass of
+	// the body has set its own lines' directories.
+	r.scope.workdir = props.workdir_in(&r.scope.anchor);
 	if let Expr::Capture { .. } = cond {
 		return Ok(exit_code(cond, props, r)? == 0);
 	}
@@ -949,13 +954,6 @@ fn render(
 	})
 }
 
-fn cwd(props: &Props, anchor: &Path) -> PathBuf {
-	match &props.workdir {
-		Some(w) => anchor.join(w),
-		None => anchor.to_path_buf(),
-	}
-}
-
 /// The environment a command is spawned with: exactly what `ENV.X` reads.
 ///
 /// It used to lay the block's `.env` back on top of the built one, because a
@@ -1023,7 +1021,6 @@ impl<'a> Runner<'a> {
 			scope,
 			chain: self.chain.clone(),
 			env: self.env.clone(),
-			anchor: self.anchor.clone(),
 			dispatch: self.dispatch,
 			interrupted: self.interrupted,
 			label: Some(label),

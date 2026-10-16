@@ -463,7 +463,7 @@ fn sample(name: &str, at: usize, n: usize, kind: Kinds) -> Value {
 fn call_for_real(name: &str, args: Vec<Value>, dir: &std::path::Path) -> Result<Value, EvalError> {
 	let mut sc = Scope::new();
 	sc.assume_yes = true;
-	sc.base_dir = dir.to_path_buf();
+	sc.rooted_at(dir.to_path_buf());
 	let sp = Span::new(0, 0, 1);
 	let out = match name {
 		// Evaluated before the table is: it has to catch what its argument does.

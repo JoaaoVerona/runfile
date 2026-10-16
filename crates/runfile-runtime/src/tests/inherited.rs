@@ -35,11 +35,11 @@ fn walk_run_with(src: &str, inherited: Inherited, d: &Recorder) {
 	let target = runfile_lang::parse(src).expect("parse");
 	let mut scope = Scope::new();
 	scope.env = inherited.environment();
+	scope.rooted_at(std::env::temp_dir());
 	let mut r = Runner {
 		scope,
 		chain: Vec::new(),
 		env: Vec::new(),
-		anchor: std::env::temp_dir(),
 		dispatch: d,
 		interrupted: None,
 		label: None,

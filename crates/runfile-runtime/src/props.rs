@@ -9,6 +9,7 @@ use runfile_lang::Value;
 use runfile_lang::ast::{Block, Expr, Property};
 use runfile_lang::eval::{EvalError, Scope, eval_boundary};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default)]
 pub struct Props {
@@ -19,14 +20,20 @@ pub struct Props {
 	/// noise. `run --dry-run` prints the commands to stdout instead and never
 	/// announces.
 	pub logging: bool,
-	pub workdir: Option<String>,
+	/// Where commands run, as a whole path: the anchor with every `.workdir` so
+	/// far laid over it, each relative to the one before. `None` is the anchor.
+	pub workdir: Option<PathBuf>,
 	pub env: BTreeMap<String, String>,
 	/// Both append rather than replace, so a block adds to what it inherited
 	/// and a `_shared.run` entry is never lost by a target naming its own.
+	///
+	/// A relative entry is resolved when it is applied, against the working
+	/// directory in effect at its line, so a `.workdir` written below it does
+	/// not move it -- which is what "applied where it is written" means.
 	pub env_files: Vec<String>,
 	pub add_paths: Vec<String>,
 	// header-only
-	pub watch: Vec<String>,
+	pub watch: Vec<WatchPattern>,
 	/// Whether this target came from the machine-wide directory. Not a
 	/// property: it is a fact about where the file was found, and the one
 	/// thing that makes `.only-in-directories` mean anything.
@@ -37,6 +44,15 @@ pub struct Props {
 	/// called -- and like `machine_wide` it survives every `extend`, which
 	/// clones, so a block deep in the called target still builds on it.
 	pub inherited: Option<std::sync::Arc<crate::env::Inherited>>,
+}
+
+/// A `.watch` pattern and the directory it is matched beneath: the working
+/// directory in effect where it was written, as every other relative path is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WatchPattern {
+	pub dir: PathBuf,
+	/// As written, a leading `!` included.
+	pub pattern: String,
 }
 
 /// Every property name, whether it may appear inside a block, and whether it
@@ -82,7 +98,7 @@ pub const PROPERTIES: &[KnownProperty] = &[
 		block_scoped: true,
 		flag: false,
 		declaration_only: false,
-		doc: "Prepend a directory to `PATH`, relative to the runfiles parent.",
+		doc: "Prepend a directory to `PATH`, relative to the working directory.",
 		example: ".add-path = \"node_modules/.bin\"",
 	},
 	KnownProperty {
@@ -98,7 +114,7 @@ pub const PROPERTIES: &[KnownProperty] = &[
 		block_scoped: true,
 		flag: false,
 		declaration_only: false,
-		doc: "Load a `.env` file. Encrypted values are decrypted in memory.",
+		doc: "Load a `.env` file, relative to the working directory. Encrypted values are decrypted in memory.",
 		example: ".env-file = \".env.{{ one_of(ARG.env, \\\"dev\\\", \\\"prod\\\") }}\"",
 	},
 	KnownProperty {
@@ -138,7 +154,7 @@ pub const PROPERTIES: &[KnownProperty] = &[
 		block_scoped: false,
 		flag: false,
 		declaration_only: true,
-		doc: "Re-run whenever a matching file changes. A `!` prefix excludes.",
+		doc: "Re-run whenever a matching file changes, relative to the working directory. A `!` prefix excludes.",
 		example: ".watch = \"src/**/*.rs\"\n.watch = \"!src/generated/**\"",
 	},
 	KnownProperty {
@@ -146,7 +162,7 @@ pub const PROPERTIES: &[KnownProperty] = &[
 		block_scoped: true,
 		flag: false,
 		declaration_only: false,
-		doc: "Where commands run, relative to the runfiles parent.",
+		doc: "Where commands run, and what every relative path resolves against -- relative to the one in effect, which starts at the runfiles parent.",
 		example: ".workdir = \"web\"",
 	},
 ];
@@ -264,7 +280,7 @@ pub(crate) fn keep_current(
 	stale: &mut bool,
 ) -> Result<(), PropError> {
 	if *stale && value.is_some_and(Expr::reads_env) {
-		sc.env = crate::env::for_props(props, &sc.base_dir, &sc.private_keys, sc.preview)?;
+		sc.env = crate::env::for_props(props, &sc.anchor, &sc.private_keys, sc.preview)?;
 		*stale = false;
 	}
 	Ok(())
@@ -378,16 +394,28 @@ impl Props {
 		// built. The top of a target is not: the `_shared.run` chain has been
 		// folded into `self`, and the environment is only built after this.
 		let mut stale = !nested && self.touches_env();
+		// `apply` moves the working directory a value reads from as each
+		// `.workdir` lands; like the environment, it is the walker's to set for
+		// the block, so it is put back too.
+		let workdir = sc.workdir.clone();
 		let applied = region.iter().try_for_each(|p| {
 			keep_current(&out, p.value.as_ref(), sc, &mut stale)?;
 			out.apply(p, sc, nested)?;
 			stale |= changes_env(p);
 			Ok::<(), PropError>(())
 		});
+		sc.workdir = workdir;
 		if let Some(env) = saved {
 			sc.env = env;
 		}
 		applied.map(|()| out)
+	}
+
+	/// The working directory these properties describe, for a target anchored
+	/// at `anchor`: where a command runs, and what a relative path resolves
+	/// against.
+	pub fn workdir_in(&self, anchor: &Path) -> PathBuf {
+		self.workdir.clone().unwrap_or_else(|| anchor.to_path_buf())
 	}
 
 	/// Whether these properties contribute anything to the environment.
@@ -399,6 +427,10 @@ impl Props {
 		let head = p.path[0].as_str();
 		let line = p.span.line;
 		check(p, nested, false)?;
+		// The value is worked out where the line is, so a file it reads, and a
+		// relative path it names, are both relative to the working directory as
+		// it stands here: below a `.workdir`, and not below one written later.
+		sc.workdir = self.workdir_in(&sc.anchor);
 		let value = |p: &Property, sc: &mut Scope| -> Result<Value, PropError> {
 			match &p.value {
 				Some(e) => Ok(eval_boundary(e, sc)?),
@@ -431,7 +463,12 @@ impl Props {
 			}
 			"logging" => self.logging = flag(p, sc)?,
 			"ignore-errors" => self.ignore_errors = flag(p, sc)?,
-			"workdir" => self.workdir = Some(value(p, sc)?.to_string()),
+			// Relative to the one in effect, the way `cd` is: a block's `.workdir
+			// = "src"` under a header's `"web"` is `web/src`.
+			"workdir" => {
+				let v = value(p, sc)?.to_string();
+				self.workdir = Some(sc.workdir.join(v));
+			}
 			"env" => {
 				if p.path.len() != 2 {
 					return Err(PropError::Unknown {
@@ -442,9 +479,21 @@ impl Props {
 				self.env.insert(p.path[1].clone(), value(p, sc)?.to_string());
 			}
 			// Repeated keys append; these are list-valued by nature.
-			"env-file" => push_all(&mut self.env_files, value(p, sc)?),
-			"add-path" => push_all(&mut self.add_paths, value(p, sc)?),
-			"watch" => push_all(&mut self.watch, value(p, sc)?),
+			"env-file" => {
+				let v = value(p, sc)?;
+				self.env_files.extend(each(v).map(|f| at(&sc.workdir, &f)));
+			}
+			"add-path" => {
+				let v = value(p, sc)?;
+				self.add_paths.extend(each(v).map(|d| at(&sc.workdir, &d)));
+			}
+			"watch" => {
+				let v = value(p, sc)?;
+				self.watch.extend(each(v).map(|pattern| WatchPattern {
+					dir: sc.workdir.clone(),
+					pattern,
+				}));
+			}
 			// Read by discovery before anything runs, so there is nothing left
 			// to do with it here -- but a project file setting it does nothing
 			// at all, and saying so is the whole point: a scope that silently
@@ -469,9 +518,16 @@ impl Props {
 	}
 }
 
-fn push_all(dst: &mut Vec<String>, v: Value) {
+/// A value as the entries it lists: each item of a list, or itself.
+fn each(v: Value) -> impl Iterator<Item = String> {
 	match v {
-		Value::List(items) => dst.extend(items.iter().map(Value::to_string)),
-		other => dst.push(other.to_string()),
+		Value::List(items) => items.iter().map(Value::to_string).collect::<Vec<_>>(),
+		other => vec![other.to_string()],
 	}
+	.into_iter()
+}
+
+/// `path` resolved against `dir`; an absolute one is taken as written.
+fn at(dir: &Path, path: &str) -> String {
+	dir.join(path).to_string_lossy().into_owned()
 }

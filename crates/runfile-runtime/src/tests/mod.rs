@@ -13,6 +13,7 @@ mod names;
 mod parallel;
 mod term;
 mod walk;
+mod workdir;
 
 use crate::run::{Dispatch, RunError, Runner};
 use runfile_lang::Value;
@@ -70,11 +71,11 @@ pub fn run_src(src: &str, d: &dyn Dispatch) -> Result<Vec<String>, RunError> {
 	let dir = std::env::temp_dir();
 	let mut scope = scope;
 	scope.assume_yes = true;
+	scope.rooted_at(dir);
 	let mut r = Runner {
 		scope,
 		chain: Vec::new(),
 		env: Vec::new(),
-		anchor: dir,
 		dispatch: d,
 		interrupted: None,
 		label: None,

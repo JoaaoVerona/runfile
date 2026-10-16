@@ -657,13 +657,14 @@ quoting.
   it is not going to do is not a preview at all.
 - `Scope.preview` is a **real `--dry-run`**, as opposed to the header probe, which sets `dry_run` to suppress
   writes while it still reads. Under `preview` the file-reading functions (`read_file`, `glob`, `file_exists`,
-  `directory_exists`, `is_executable`) are confined to the anchor subtree by `escapes_base` -- an absolute path
+  `directory_exists`, `is_executable`) are confined to the anchor subtree by `escapes_anchor` -- an absolute path
   or a `..` escape returns a placeholder (`<contents of …>`, `false`, `[]`) rather than reading -- so previewing
   an untrusted repository cannot `read_file("/etc/passwd")` and `print` it, which it would do under the old
   `--dry-run` (documented safe, and it ran every read): audit SA-008. A read **inside** the project still
   happens, so a preview of your own project stays useful. `print`/`printf` keep running under a preview, now
-  over placeholders. `escapes_base` normalizes `.`/`..` lexically, with no disk access, so a path that does not
-  exist is judged all the same.
+  over placeholders. `escapes_anchor` normalizes `.`/`..` lexically, with no disk access, so a path that does not
+  exist is judged all the same. A path resolves against `Scope.workdir` and is bounded by `Scope.anchor`: the
+  repository writes `.workdir`, so a bound that moved with it is one `.workdir = "/"` would lift.
 - **A built-in given a number no type can hold is a clean error, not a panic.** `functions::duration_secs` is
   the one check for `sleep` and `retry … every`: `Duration::from_secs_f64` panics on a NaN, a negative or a
   value past ~1.8e19, and a delay is usually data (`sleep(number(ARG.delay))`). `slice`'s length saturates
@@ -831,8 +832,10 @@ second time as the global. This replaced `includes` entirely.
   `discover_with`. Tested with a stand-in identity on Unix -- refusing needs a directory another uid owns,
   which a test cannot make -- and on every platform for the case that has to work, so a Windows lookup that
   failed would fail there rather than refuse every project.
-- **The anchor rule**: the parent of `runfiles/` is the single anchor for cwd, `.env-file`, `.add-path`,
-  `glob`, `read_file` and `{{ RUN.parent }}`.
+- **The anchor**: the parent of `runfiles/` is `{{ RUN.parent }}`, and the working directory a target starts in.
+  It is not where every relative path resolves -- that is the working directory in effect where the path is
+  written, which a `.workdir` moves (see *Properties*). What stays anchored is what describes the project rather
+  than a line in it: `RUN.parent`, the trust and scope checks, and the subtree a preview is confined to.
 - **`_shared.run` layers by directory.** `Catalog::shared_chain` returns every one that applies, outermost
   first, so `runfiles/api/_shared.run` adds to `runfiles/_shared.run` rather than replacing it. Only the top
   one used to be registered at all, so a nested one was read by nothing. The walk stops at the **anchor**: a
@@ -935,6 +938,15 @@ terminal's width, and how wide text is on it).
   runner's, from the runner's PATH. A path is handed over as written. A shell found nowhere is refused -- *could
   not start `bash`: not on PATH* -- rather than left to the standard library, whose search would reach the
   launcher; and `$0` in `exec bash` is now the full path, as it always was for `$` lines.
+- **A working directory that is not one is named, not the program** (`ExecError::NoWorkdir`). Starting a
+  process reports a missing directory with the error a missing program gets -- `No such file or directory` on
+  Unix -- so `.workdir = "nope"` printed *could not start `/usr/bin/bash`* and sent the reader after a shell
+  that was there. `exec::spawn` asks `is_dir` before spawning, because the two cannot be told apart after,
+  and asks it at the line rather than where the `.workdir` was written, since an earlier command may be what
+  makes the directory. It is after the `--dry-run` return, so a preview of a target that creates its own
+  working directory is not refused, and after the shell lookup, so a shell that is missing is still named
+  first. One check covers every form, being the one place a process is started: `$`, `exec`, a capture, a
+  condition, `detach`.
 - `is_shell()` matches `sh|bash|dash|ash|zsh|ksh|busybox|brush` on the **first word only**, and adds `-e`
   **after** the rest of the words, in `program_and_args`. In front of them it went to the wrong thing:
   `busybox -e sh` asked for an applet called `-e`, and bash refuses `--posix` once it has read a short option.
@@ -1872,6 +1884,37 @@ the block's own environment is the walker's to build and to undo -- left in plac
 `with_block_env` would save, and it would outlive the block. A nested block starts current, since the one
 around it was built; the top of a target starts stale whenever the chain folded into it touches the
 environment.
+
+**Every relative path follows the working directory in effect where it is written** -- a command, the file
+functions (`glob`, `read_file`, `write_file`, `file_exists`, `directory_exists`, `is_executable`, `decrypt`),
+`.env-file`, `.add-path`, `.watch` and `.workdir` itself. They used to split: a command ran under `.workdir`
+while everything else resolved against the anchor, so `$ ls` and `glob("*")` on adjacent lines listed two
+directories, and the machine-wide `_shared.run`'s `.workdir = RUN.cwd` moved its targets' commands to the
+project in front of you while `read_file` and `.env-file` stayed in the home directory. `runfile-env` even
+documented the `.env-file` half as what users expect; it was one more rule to know, and the corpus had paid
+for it -- `lab-auth/server/runfiles/fuzz.run` wrote `fuzz/seeds/…` for the language and `seeds/…` for the
+shell, one line apart, about the same directory.
+
+- **Where it is written, not where the block ends.** A property's relative path is resolved by `Props::apply`
+  against the working directory at its line, and stored whole, so a `.workdir` below it does not move it:
+  `.add-path = "example/node_modules/.bin"` above `.workdir = "example"` (two files in `react-extended-maps`)
+  still names the subproject's tools. A `.watch` pattern keeps its directory beside it
+  (`props::WatchPattern`) rather than joined onto it, so a directory whose name holds `[` is not read as a
+  glob; the CLI watches each such directory and matches beneath it.
+- **`.workdir` is relative to the one in effect**, the way `cd` is: a block's `.workdir = "src"` under a
+  header's `"web"` is `web/src`, and an absolute one replaces it. `Props.workdir` is the whole path. No file in
+  the corpus nested one relative `.workdir` inside another, which is what made this safe to define.
+- **`Scope.workdir` is set from the properties an expression is evaluated under**, not saved and restored
+  around blocks: `statement` sets it at its top, `cond_of` for a loop's condition (asked under the body's
+  properties, like the environment), `Props::apply` before a value, and `fold_shared` before a shared `let`.
+  Everything the walker evaluates is evaluated under properties it was handed, so this is right by
+  construction and a block's directory cannot outlive its `end`. `extend` puts back what it moved, as it does
+  the environment. `Scope.anchor` is the only copy of the anchor: `Runner` no longer carries one, so the two
+  cannot disagree.
+- **What did not move**: `RUN.parent` is still the anchor and `RUN.cwd` still where `run` was typed; a
+  dispatched target starts at its own anchor, not its caller's working directory; and a preview's reads are
+  still bounded by the anchor (`escapes_anchor`). `tests/workdir.rs` holds each case, with a different
+  `marker` in each directory so a path resolved against the wrong one reads the wrong word.
 
 The environment is the part that has to be put back. A trailing `.env`, `.env-file`, `.add-path` or
 `.workdir` rebuilds it mid-walk, so `walk` saves the block's own environment and restores it on the way out

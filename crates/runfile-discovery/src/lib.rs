@@ -76,8 +76,9 @@ pub enum Origin {
 pub struct Target {
 	pub name: String,
 	pub path: PathBuf,
-	/// The parent of the `runfiles/` directory: the one anchor used for the
-	/// working directory, `.env-file`, `.add-path` and `{{ RUN.parent }}`.
+	/// The parent of the `runfiles/` directory, which is `{{ RUN.parent }}`:
+	/// where commands run until a `.workdir` says otherwise, and so what every
+	/// relative path resolves against until then.
 	pub anchor: PathBuf,
 	pub origin: Origin,
 }

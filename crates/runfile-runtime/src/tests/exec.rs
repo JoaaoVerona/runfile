@@ -90,11 +90,12 @@ fn an_env_file_is_loaded_before_the_body_is_evaluated() {
 	std::fs::write(dir.join("vals.env"), "FROM_FILE=loaded\n").unwrap();
 	let d = Recorder::default();
 	let target = runfile_lang::parse(".env-file = \"vals.env\"\n$ test {{ ENV.FROM_FILE }} = loaded\n").expect("parse");
+	let mut scope = runfile_lang::eval::Scope::new();
+	scope.rooted_at(dir.clone());
 	let mut r = crate::run::Runner {
 		chain: Vec::new(),
-		scope: runfile_lang::eval::Scope::new(),
+		scope,
 		env: Vec::new(),
-		anchor: dir.clone(),
 		dispatch: &d,
 		interrupted: None,
 		label: None,
@@ -110,11 +111,12 @@ fn an_env_file_is_loaded_before_the_body_is_evaluated() {
 fn confirm_cancels_when_there_is_nobody_to_ask() {
 	let target = runfile_lang::parse(".confirm = \"proceed?\"\n$ true\n").unwrap();
 	let d = Recorder::default();
+	let mut scope = runfile_lang::eval::Scope::new();
+	scope.rooted_at(std::env::temp_dir());
 	let mut r = crate::run::Runner {
 		chain: Vec::new(),
-		scope: runfile_lang::eval::Scope::new(),
+		scope,
 		env: Vec::new(),
-		anchor: std::env::temp_dir(),
 		dispatch: &d,
 		interrupted: None,
 		label: None,
@@ -143,11 +145,11 @@ fn confirm_asks_the_question_it_was_given() {
 	let mut scope = runfile_lang::eval::Scope::new();
 	scope.args.insert("env".into(), "production".into());
 	scope.confirm = Some(record);
+	scope.rooted_at(std::env::temp_dir());
 	let mut r = crate::run::Runner {
 		chain: Vec::new(),
 		scope,
 		env: Vec::new(),
-		anchor: std::env::temp_dir(),
 		dispatch: &d,
 		interrupted: None,
 		label: None,
@@ -175,11 +177,11 @@ fn declining_stops_the_run_and_nothing_catches_it() {
 		let d = Recorder::default();
 		let mut scope = runfile_lang::eval::Scope::new();
 		scope.confirm = Some(refuse);
+		scope.rooted_at(std::env::temp_dir());
 		let mut r = crate::run::Runner {
 			chain: Vec::new(),
 			scope,
 			env: Vec::new(),
-			anchor: std::env::temp_dir(),
 			dispatch: &d,
 			interrupted: None,
 			label: None,

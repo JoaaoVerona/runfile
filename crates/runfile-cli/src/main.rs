@@ -290,8 +290,7 @@ fn real_main() -> Result<ExitCode, String> {
 		}
 	};
 	if !watching.is_empty() {
-		let anchor = target.anchor.clone();
-		return watch::watch(&anchor, &watching, || {
+		return watch::watch(&watching, || {
 			// Cleans even if a run panics; the explicit call below is kept
 			// because cleanup is idempotent and the intent is clearer with it.
 			let _temps = host.temp_guard();

@@ -793,29 +793,66 @@ fn add_path_puts_a_relative_directory_on_path() {
 }
 
 #[test]
-fn add_path_anchors_to_the_runfiles_parent_not_the_workdir() {
-	// The anchor rule: `bin/` is resolved against the project root even though
-	// the target runs in `sub/`.
+fn add_path_resolves_against_the_workdir_in_effect_where_it_is_written() {
+	// Two `.add-path = "bin"` lines name two directories: the one above the
+	// `.workdir` is the project's `bin/`, the one below it is `sub/bin/`.
 	let p = project(&[
 		(
 			"runfiles/tool.run",
-			".add-path = \"bin\"\n.workdir = \"sub\"\n$ mytool > out.txt\n",
+			".add-path = \"bin\"\n.workdir = \"sub\"\n.add-path = \"bin\"\n$ mytool > out.txt\n$ subtool >> out.txt\n",
 		),
 		("bin/mytool", "#!/bin/sh\nprintf found\n"),
-		("sub/.keep", ""),
+		("sub/bin/subtool", "#!/bin/sh\nprintf -- -sub\n"),
 	]);
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::PermissionsExt;
-		let exe = p.dir.path().join("bin/mytool");
-		std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+		for exe in ["bin/mytool", "sub/bin/subtool"] {
+			let exe = p.dir.path().join(exe);
+			std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+		}
 	}
 	let o = p.run(&["tool"]);
 	assert!(o.status.success(), "{}", err(&o));
 	assert_eq!(
 		std::fs::read_to_string(p.dir.path().join("sub/out.txt")).unwrap(),
-		"found"
+		"found-sub"
 	);
+}
+
+#[test]
+fn a_workdir_that_does_not_exist_is_named_and_the_shell_is_not_blamed() {
+	let p = project(&[("runfiles/t.run", ".workdir = \"nope\"\n\n$ true\n")]);
+	let o = p.run(&["t"]);
+	assert!(!o.status.success());
+	let e = err(&o);
+	assert!(
+		e.contains("the working directory `") && e.contains("nope` does not exist"),
+		"{e}"
+	);
+	assert!(!e.contains("could not start"), "{e}");
+}
+
+#[test]
+fn a_machine_wide_target_moved_to_the_working_directory_reads_from_it_too() {
+	// The machine-wide directory's anchor is the home directory, so a
+	// `_shared.run` there says `.workdir = RUN.cwd` to act on the project in
+	// front of it. That moved the commands and nothing else: `read_file`, `glob`
+	// and `.env-file` still looked in the home directory.
+	let p = project(&[("work/marker", "here"), ("work/.env", "FROM=work\n")]);
+	let g = p.home.path().join(".runfiles");
+	std::fs::create_dir_all(&g).unwrap();
+	std::fs::write(g.join("_shared.run"), ".workdir = RUN.cwd\n").unwrap();
+	std::fs::write(
+		g.join("look.run"),
+		".env-file = \".env\"\n\nprint(read_file(\"marker\"), glob(\"mark*\"), ENV.FROM ? \"unset\")\n$ test \"$(cat marker)\" = here\n",
+	)
+	.unwrap();
+	std::fs::write(p.home.path().join("marker"), "home").unwrap();
+	std::fs::write(p.home.path().join(".env"), "FROM=home\n").unwrap();
+	let o = p.run_in(&p.dir.path().join("work"), &["look"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim(), "here marker work", "{}", out(&o));
 }
 
 // ------------------------------------------------------------ init and names

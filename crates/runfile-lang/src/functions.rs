@@ -669,7 +669,7 @@ pub fn call_with(name: &str, v: Vec<Value>, sc: &mut Scope, sp: Span) -> Result<
 			});
 		}
 		// Filesystem and regex functions live apart because they need the scope's
-		// anchor and key pool; everything else above is pure.
+		// working directory and key pool; everything else above is pure.
 		_ => match call_io(name, &v, sc, sp) {
 			Some(r) => return r,
 			None => {
@@ -710,8 +710,6 @@ fn path_part(p: &str, which: PathPart) -> String {
 use crate::value::Value as V;
 use std::path::{Path, PathBuf};
 
-/// Relative paths anchor to the target's directory, the same rule cwd and
-/// `.env-file` follow, so one anchor explains all of them.
 /// A count argument: a whole number, not negative.
 fn count(x: f64, name: &str, arg: &str, sp: Span) -> Result<usize, EvalError> {
 	if x < 0.0 || x.fract() != 0.0 || x > usize::MAX as f64 {
@@ -1073,6 +1071,9 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 	crate::atomic::write(path, bytes, crate::atomic::Mode::Private)
 }
 
+/// A relative path resolves against `base` -- the working directory in effect,
+/// the same rule a command, `.env-file` and `.add-path` follow, so one rule
+/// explains all of them.
 fn resolve(base: &Path, p: &str) -> PathBuf {
 	let path = Path::new(p);
 	if path.is_absolute() {
@@ -1098,16 +1099,20 @@ fn normalized(path: &Path) -> Option<Vec<std::ffi::OsString>> {
 	Some(out)
 }
 
-/// Whether `p`, resolved against `base`, points outside the `base` subtree -- an
-/// absolute path, or one that climbs out with `..`.
+/// Whether `p`, resolved against the working directory, points outside the
+/// anchor's subtree -- an absolute path, or one that climbs out with `..`.
 ///
 /// Under `--dry-run` the file-reading functions are confined to the anchor with
 /// this, so previewing an untrusted repository (documented as safe before you
 /// decide to run it) cannot read `/etc/passwd` or `~/.aws/credentials` and print
 /// them -- audit SA-008. A real run is unconfined, since a target that reads an
 /// absolute path is doing its job; only a preview is held back.
-fn escapes_base(base: &Path, p: &str) -> bool {
-	match (normalized(base), normalized(&resolve(base, p))) {
+///
+/// The bound is the anchor and not the working directory, though a path
+/// resolves against the second: the repository writes `.workdir`, so a bound
+/// that moved with it is one `.workdir = "/"` would lift.
+fn escapes_anchor(sc: &Scope, p: &str) -> bool {
+	match (normalized(&sc.anchor), normalized(&resolve(&sc.workdir, p))) {
 		(Some(b), Some(resolved)) => !resolved.starts_with(&b),
 		// `..` climbed above the root: outside by definition.
 		_ => true,
@@ -1246,13 +1251,13 @@ pub const FUNCTIONS: &[Function] = &[
 	Function {
 		name: "directory_exists",
 		signature: "directory_exists(path)",
-		doc: "Whether the path is a directory, relative to the runfiles parent.",
+		doc: "Whether the path is a directory, relative to the working directory.",
 		example: "if directory_exists(\".git\") || file_exists(\".git\")\n\t# a worktree keeps a *file* there\nend",
 	},
 	Function {
 		name: "file_exists",
 		signature: "file_exists(path)",
-		doc: "Whether the path is a file, relative to the runfiles parent.",
+		doc: "Whether the path is a file, relative to the working directory.",
 		example: "if !file_exists(\"Cargo.lock\")\n\t$ cargo generate-lockfile\nend",
 	},
 	Function {
@@ -1282,7 +1287,7 @@ pub const FUNCTIONS: &[Function] = &[
 	Function {
 		name: "glob",
 		signature: "glob(pattern)",
-		doc: "Matching paths as a list, relative to the runfiles parent unless the pattern is absolute. `*` does not cross a directory separator.",
+		doc: "Matching paths as a list, relative to the working directory unless the pattern is absolute. `*` does not cross a directory separator.",
 		example: "for compose in glob(\"**/docker-compose.yml\")\n\t$ docker compose -f {{ compose }} config -q\nend",
 	},
 	Function {
@@ -1493,7 +1498,7 @@ pub const FUNCTIONS: &[Function] = &[
 	Function {
 		name: "read_file",
 		signature: "read_file(path)",
-		doc: "The file's contents, relative to the runfiles parent.",
+		doc: "The file's contents, relative to the working directory.",
 		example: "let cargo = read_file(\"Cargo.toml\")",
 	},
 	Function {
@@ -1675,11 +1680,11 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		"glob" if n == 1 => (|| {
 			let pat = s(0)?;
 			let plan = glob_plan(pat).map_err(|e| other(format!("bad glob `{pat}`: {e}")))?;
-			// A preview does not walk outside the project: see `escapes_base`.
-			if sc.preview && escapes_base(&sc.base_dir, &plan.prefix) {
+			// A preview does not walk outside the project: see `escapes_anchor`.
+			if sc.preview && escapes_anchor(sc, &plan.prefix) {
 				return Ok(V::List(Vec::new()));
 			}
-			let root = sc.base_dir.join(&plan.prefix);
+			let root = sc.workdir.join(&plan.prefix);
 			let mut above: Vec<PathBuf> = std::fs::canonicalize(&root).into_iter().collect();
 			let mut hits = Vec::new();
 			walk(&root, &root, 0, &plan, &mut above, &mut hits);
@@ -1689,11 +1694,11 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		"read_file" if n == 1 => (|| {
 			// A preview reads only inside the project, and shows a placeholder for
 			// anything outside it rather than printing a file you did not mean to
-			// expose -- see `escapes_base`.
-			if sc.preview && escapes_base(&sc.base_dir, s(0)?) {
+			// expose -- see `escapes_anchor`.
+			if sc.preview && escapes_anchor(sc, s(0)?) {
 				return Ok(V::Str(format!("<contents of {}>", s(0)?)));
 			}
-			let p = resolve(&sc.base_dir, s(0)?);
+			let p = resolve(&sc.workdir, s(0)?);
 			std::fs::read_to_string(&p)
 				.map(V::Str)
 				.map_err(|e| other(format!("could not read {}: {e}", p.display())))
@@ -1746,7 +1751,7 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		"write_file" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would write {}>", s(0)?))))(),
 		"decrypt" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would decrypt to {}>", s(1)?))))(),
 		"write_file" if n == 2 => (|| {
-			let p = resolve(&sc.base_dir, s(0)?);
+			let p = resolve(&sc.workdir, s(0)?);
 			if let Some(d) = p.parent() {
 				let _ = std::fs::create_dir_all(d);
 			}
@@ -1759,17 +1764,17 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		// is the kind of thing that surfaces as a confusing error much later.
 		// Under `--dry-run` a path outside the project is not probed (`false`),
 		// so a preview cannot map the filesystem outside what it was given.
-		"file_exists" if n == 1 => s(0).map(|p| match sc.preview && escapes_base(&sc.base_dir, p) {
+		"file_exists" if n == 1 => s(0).map(|p| match sc.preview && escapes_anchor(sc, p) {
 			true => V::Bool(false),
-			false => V::Bool(resolve(&sc.base_dir, p).is_file()),
+			false => V::Bool(resolve(&sc.workdir, p).is_file()),
 		}),
-		"directory_exists" if n == 1 => s(0).map(|p| match sc.preview && escapes_base(&sc.base_dir, p) {
+		"directory_exists" if n == 1 => s(0).map(|p| match sc.preview && escapes_anchor(sc, p) {
 			true => V::Bool(false),
-			false => V::Bool(resolve(&sc.base_dir, p).is_dir()),
+			false => V::Bool(resolve(&sc.workdir, p).is_dir()),
 		}),
-		"is_executable" if n == 1 => s(0).map(|p| match sc.preview && escapes_base(&sc.base_dir, p) {
+		"is_executable" if n == 1 => s(0).map(|p| match sc.preview && escapes_anchor(sc, p) {
 			true => V::Bool(false),
-			false => V::Bool(is_executable(&resolve(&sc.base_dir, p))),
+			false => V::Bool(is_executable(&resolve(&sc.workdir, p))),
 		}),
 		// Joins with this platform's separator, and lets an absolute later
 		// segment replace what came before, the way `Path::join` does.
@@ -1868,8 +1873,8 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 			))
 		})(),
 		"decrypt" if n == 2 => (|| {
-			let src = resolve(&sc.base_dir, s(0)?);
-			let dst = resolve(&sc.base_dir, s(1)?);
+			let src = resolve(&sc.workdir, s(0)?);
+			let dst = resolve(&sc.workdir, s(1)?);
 			decrypt_file(&src, &dst, sc.private_keys.get())
 				.map(|()| V::Str(String::new()))
 				.map_err(other)

@@ -7,7 +7,7 @@ use std::path::Path;
 
 fn in_dir(dir: &Path, src: &str) -> Result<Value, String> {
 	let mut sc = Scope::new();
-	sc.base_dir = dir.to_path_buf();
+	sc.rooted_at(dir.to_path_buf());
 	let e = parse_expr(src, 0, 1).map_err(|x| x.to_string())?;
 	eval_boundary(&e, &mut sc).map_err(|x| x.to_string())
 }
@@ -41,7 +41,7 @@ fn glob_feeds_a_for_loop_directly() {
 }
 
 #[test]
-fn read_and_write_anchor_to_the_base_dir() {
+fn read_and_write_resolve_against_the_working_directory() {
 	let d = fixture();
 	in_dir(d.path(), r#"write_file("out/made.txt", "hello")"#).unwrap();
 	assert_eq!(std::fs::read_to_string(d.path().join("out/made.txt")).unwrap(), "hello");
@@ -49,6 +49,65 @@ fn read_and_write_anchor_to_the_base_dir() {
 		in_dir(d.path(), r#"read_file("out/made.txt")"#).unwrap(),
 		Value::Str("hello".into())
 	);
+}
+
+/// A scope anchored at `anchor` whose `.workdir` has moved to `workdir`.
+fn moved(anchor: &Path, workdir: &Path, preview: bool, src: &str) -> Result<Value, String> {
+	let mut sc = Scope::new();
+	sc.rooted_at(anchor.to_path_buf());
+	sc.workdir = workdir.to_path_buf();
+	sc.preview = preview;
+	sc.dry_run = preview;
+	let e = parse_expr(src, 0, 1).map_err(|x| x.to_string())?;
+	eval_boundary(&e, &mut sc).map_err(|x| x.to_string())
+}
+
+#[test]
+fn every_file_function_resolves_against_the_working_directory_not_the_anchor() {
+	// The anchor holds `a/one.yml`; the working directory is `a`. Each function
+	// is asked for a path that exists only from where a command would run, so
+	// one that still read from the anchor answers wrong rather than the same.
+	let d = fixture();
+	let a = d.path().join("a");
+	let ask = |src: &str| moved(d.path(), &a, false, src).unwrap();
+	assert_eq!(ask(r#"file_exists("one.yml")"#), Value::Bool(true));
+	assert_eq!(ask(r#"directory_exists("b")"#), Value::Bool(true));
+	assert_eq!(ask(r#"read_file("b/two.yml")"#), Value::Str("x".into()));
+	assert_eq!(
+		ask(r#"glob("*.yml")"#),
+		Value::List(vec![Value::Str("one.yml".into())]),
+		"answered as written, relative to where it looked"
+	);
+	ask(r#"write_file("made.txt", "hi")"#);
+	assert!(
+		a.join("made.txt").is_file(),
+		"written beside the command, not the anchor"
+	);
+	assert_eq!(ask(r#"file_exists("a/one.yml")"#), Value::Bool(false));
+}
+
+#[test]
+fn a_preview_still_confines_reads_to_the_anchor_wherever_the_working_directory_is() {
+	let d = fixture();
+	let outside = tempfile::TempDir::new().unwrap();
+	std::fs::write(outside.path().join("secret"), "s3cret").unwrap();
+	// Inside the anchor a moved working directory reads normally, `..` back into
+	// the anchor included.
+	let a = d.path().join("a");
+	assert_eq!(
+		moved(d.path(), &a, true, r#"read_file("b/two.yml")"#).unwrap(),
+		Value::Str("x".into())
+	);
+	assert_eq!(
+		moved(d.path(), &a, true, r#"file_exists("../node_modules/pkg/three.yml")"#).unwrap(),
+		Value::Bool(true)
+	);
+	// A `.workdir` is the repository's to write, so one pointing out of the
+	// project must not take a preview's reads with it (SA-008).
+	let ask = |src: &str| moved(d.path(), outside.path(), true, src).unwrap();
+	assert_eq!(ask(r#"read_file("secret")"#), Value::Str("<contents of secret>".into()));
+	assert_eq!(ask(r#"file_exists("secret")"#), Value::Bool(false));
+	assert_eq!(ask(r#"glob("*")"#), Value::List(Vec::new()));
 }
 
 #[test]

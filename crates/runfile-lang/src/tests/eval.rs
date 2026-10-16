@@ -247,7 +247,7 @@ fn every_exported_function_name_is_actually_dispatched() {
 			// are dispatch arms too.
 			let mut sc = sc();
 			sc.dry_run = true;
-			sc.base_dir = std::env::temp_dir();
+			sc.rooted_at(std::env::temp_dir());
 			!matches!(eval(&e, &mut sc), Err(crate::EvalError::UnknownFunction { .. }))
 		});
 		assert!(known, "`{name}` is exported for completion but not dispatched");
@@ -860,7 +860,7 @@ fn the_three_path_questions_are_told_apart() {
 
 	let at = |src: &str| {
 		let mut s = sc();
-		s.base_dir = d.clone();
+		s.rooted_at(d.clone());
 		let e = parse_expr(src, 0, 1).unwrap_or_else(|x| panic!("{src}: {x}"));
 		eval(&e, &mut s).unwrap_or_else(|x| panic!("{src}: {x}"))
 	};

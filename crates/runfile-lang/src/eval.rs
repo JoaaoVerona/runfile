@@ -116,9 +116,15 @@ pub struct Scope {
 	/// non-terminal reduces to; `assume_yes` is `-y` and CI, and skips it.
 	pub confirm: Option<fn(&str) -> bool>,
 	pub assume_yes: bool,
-	/// The anchor: relative paths in `glob`, `read_file` and friends resolve
-	/// against it, the same rule cwd and `.env-file` follow.
-	pub base_dir: std::path::PathBuf,
+	/// The anchor, the parent of `runfiles/`: what a target's first `.workdir`
+	/// is relative to, and the subtree a preview confines its reads to. It is
+	/// not where a path resolves -- see `workdir`.
+	pub anchor: std::path::PathBuf,
+	/// The working directory in effect at the line being evaluated: where a
+	/// command written there would run, and so what a relative path in `glob`,
+	/// `read_file` and friends resolves against. The runner keeps it current
+	/// as `.workdir` changes, the way it keeps `env` current as `.env` does.
+	pub workdir: std::path::PathBuf,
 	/// Private keys `decrypt` may try. Supplied by the host so the language
 	/// crate never has to know about credential stores.
 	pub private_keys: Keys,
@@ -227,13 +233,21 @@ impl Scope {
 			ask: None,
 			confirm: None,
 			assume_yes: false,
-			base_dir: std::path::PathBuf::from("."),
+			anchor: std::path::PathBuf::from("."),
+			workdir: std::path::PathBuf::from("."),
 			private_keys: Keys::default(),
 			dry_run: false,
 			preview: false,
 			temps: TempFiles::default(),
 			branch: None,
 		}
+	}
+
+	/// Anchor the scope at `dir`, with no `.workdir` yet: what a target starts
+	/// from before its first property.
+	pub fn rooted_at(&mut self, dir: std::path::PathBuf) {
+		self.workdir = dir.clone();
+		self.anchor = dir;
 	}
 
 	/// Bind a name, returning the previous value so a block can restore it on

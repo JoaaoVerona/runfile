@@ -18,6 +18,13 @@ pub enum ExecError {
 	NoShell,
 	#[error("could not start `{cmd}`: {source}")]
 	Spawn { cmd: String, source: std::io::Error },
+	/// The directory a command would run in is not one. Starting a process
+	/// reports a missing working directory exactly as it reports a missing
+	/// program -- `No such file or directory` on Unix -- so a `.workdir` naming
+	/// nothing read as `could not start `/usr/bin/bash``, sending the reader
+	/// after a shell that was there all along.
+	#[error("the working directory `{dir}` {why}, so nothing can run in it")]
+	NoWorkdir { dir: String, why: &'static str },
 	/// `cmd` carries its own quoting: it is a command someone wrote when the
 	/// runner knows which one, and a phrase when it does not.
 	#[error("{cmd} exited with status {code}")]
@@ -401,6 +408,20 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		cmd: label.clone(),
 		source,
 	})?;
+	// Asked before spawning rather than read off a failure: the error a missing
+	// directory produces is the one a missing program does, so it cannot be told
+	// apart afterwards. Asked at the line, not when the `.workdir` was written,
+	// because an earlier command may be what creates the directory.
+	if !s.cwd.is_dir() {
+		return Err(ExecError::NoWorkdir {
+			dir: crate::term::sanitize(&s.cwd.display().to_string()).into_owned(),
+			why: if s.cwd.exists() {
+				"is not a directory"
+			} else {
+				"does not exist"
+			},
+		});
+	}
 	// Announced from inside the script where that is safe, so each command is
 	// named as it runs rather than all of them before any of them do.
 	let script = if s.announce && shell {

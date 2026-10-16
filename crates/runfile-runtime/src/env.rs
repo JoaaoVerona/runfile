@@ -117,11 +117,13 @@ pub fn for_props(
 	keys: &runfile_lang::Keys,
 	preview: bool,
 ) -> Result<HashMap<String, String>, EnvError> {
-	let workdir = match &props.workdir {
-		Some(w) => anchor.join(w),
-		None => anchor.to_path_buf(),
-	};
-	build(props, anchor, &workdir, Some(&Provider(keys.clone())), preview)
+	build(
+		props,
+		anchor,
+		&props.workdir_in(anchor),
+		Some(&Provider(keys.clone())),
+		preview,
+	)
 }
 
 /// Merge the environment the target was run with -- the process's, unless
@@ -141,8 +143,10 @@ pub fn build(
 	preview: bool,
 ) -> Result<HashMap<String, String>, EnvError> {
 	let env: HashMap<String, String> = props.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-	// Relative `.add-path` entries anchor to the target's directory, the same
-	// rule cwd and `.env-file` use, so one anchor explains all three.
+	// `.add-path` and `.env-file` entries were resolved against the working
+	// directory where they were written, which is a whole path once the anchor
+	// is one. A relative entry left here was written under no anchor at all --
+	// a scope built by hand -- and is taken from the anchor.
 	let paths: Vec<String> = props
 		.add_paths
 		.iter()

@@ -453,7 +453,7 @@ pub const RUN_KEYS: &[(&str, &str, &str)] = &[
 	),
 	(
 		"cwd",
-		"The directory `run` was invoked from — which is not the anchor. A machine-wide target uses 		 it to act on the project in front of it.",
+		"The directory `run` was invoked from, which is not the anchor. A machine-wide target sets `.workdir` to it to act on the project in front of it, and every relative path follows.",
 		".workdir = RUN.cwd",
 	),
 	(
@@ -463,7 +463,7 @@ pub const RUN_KEYS: &[(&str, &str, &str)] = &[
 	),
 	(
 		"parent",
-		"The parent of `runfiles/`: the anchor every relative path resolves against — `glob`, 		 `read_file`, `.env-file`, `.add-path` and the working directory.",
+		"The parent of `runfiles/`, and the working directory until a `.workdir` moves it. Every relative path resolves against the working directory in effect where it is written.",
 		"$ ln -sfn {{ RUN.parent }}/extension ~/.local/share/gnome-shell/extensions/mine",
 	),
 	(

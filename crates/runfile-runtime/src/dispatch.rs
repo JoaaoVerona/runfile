@@ -292,7 +292,7 @@ impl<'a> Host<'a> {
 		scope.ask = self.ask;
 		scope.confirm = self.confirm;
 		scope.assume_yes = self.assume_yes;
-		scope.base_dir = target.anchor.clone();
+		scope.rooted_at(target.anchor.clone());
 		scope.dry_run = self.dry_run || !real;
 		// A real `--dry-run` confines reads and skips `.env-file`s/keyring; the
 		// probe (`!real`) sets `dry_run` to suppress writes but must still read.
@@ -413,7 +413,6 @@ impl<'a> Host<'a> {
 			scope,
 			chain,
 			env: Vec::new(),
-			anchor: target.anchor.clone(),
 			dispatch: &adapter,
 			dry_run: self.dry_run,
 

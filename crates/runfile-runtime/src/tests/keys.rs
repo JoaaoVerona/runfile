@@ -451,7 +451,8 @@ fn a_writing_function_in_a_property_runs_once_per_run() {
 
 	// Exactly what the CLI does before running a target that declares `.watch`.
 	let props = h.header_props(target, &[]).unwrap();
-	assert_eq!(props.watch, vec!["src/**".to_string()], "the probe still reads it");
+	let watched: Vec<&str> = props.watch.iter().map(|w| w.pattern.as_str()).collect();
+	assert_eq!(watched, vec!["src/**"], "the probe still reads it");
 	assert!(h.temps.take().is_empty(), "and creates nothing");
 
 	h.run("t", &[]).unwrap();

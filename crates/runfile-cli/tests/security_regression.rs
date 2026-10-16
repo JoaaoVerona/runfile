@@ -417,6 +417,19 @@ fn security_regression_dry_run_does_not_read_outside_the_project_or_touch_the_ke
 		"an in-project read should still work: {out}"
 	);
 
+	// A relative path follows `.workdir`, and the repository writes `.workdir`:
+	// pointing it out of the project must not take the preview's reads along.
+	let moved = project(&[(
+		"runfiles/t.run",
+		".workdir = ENV.HOME\n\nprint(\"rel:\", read_file(\"secret\"))\nprint(\"exists:\", file_exists(\"secret\"))\n",
+	)]);
+	std::fs::write(moved.home.path().join("secret"), "s3cret").unwrap();
+	let o = moved.run(&["--dry-run", "t"]);
+	let out = String::from_utf8_lossy(&o.stdout);
+	assert!(out.contains("rel: <contents of secret>"), "a moved read escaped: {out}");
+	assert!(out.contains("exists: false"), "a moved path was probed: {out}");
+	assert!(!out.contains("s3cret"), "{out}");
+
 	// An encrypted `.env-file` must not be read or decrypted during a preview:
 	// that would reach the keyring. With DBUS pointed nowhere a real decrypt
 	// would error or hang; the preview completes instead.

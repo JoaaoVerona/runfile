@@ -813,7 +813,7 @@ Set at the top of the file, or inside a block where marked.
 | --- | --- | :-: | :-: |
 | `.shell` | Which POSIX shell `$` lines use. | | |
 | `.env.NAME` | Set an environment variable. | ✅ | |
-| `.workdir` | Where commands run. | ✅ | |
+| `.workdir` | Where commands run, and what every relative path below it resolves against. | ✅ | |
 | `.ignore-errors` | Keep going when a command fails. | ✅ | ✅ |
 | `.logging` | Announce each command on stderr before it runs. Off unless set. | | ✅ |
 | `.env-file` | Load a `.env` file (encrypted values are decrypted in memory). Appends. | ✅ | |
@@ -1001,13 +1001,19 @@ directory than hide it, `$HOME/runfiles/` and `$HOME/Runfiles/` are read too —
 hold anything. `run :list` puts them first, under `global:`: they are the part of the listing you cannot see
 by looking at the project.
 
-A machine-wide target can say where it belongs, so one directory can hold work for several places at once:
+A machine-wide target's `runfiles/` parent is your home directory, so that is where its commands run. One that
+acts on the project in front of you says so with `.workdir = RUN.cwd` — and every relative path follows it, so
+`read_file("package.json")` and `.env-file = ".env"` read the project's files, not your home's. A `_shared.run`
+in the machine-wide directory can say it once for all of them.
+
+A machine-wide target can also say where it belongs, so one directory can hold work for several places at once:
 
 ```sh
 # ~/.runfiles/deploy.run
 # Ship the current branch
 
 .only-in-directories = ["~/work/acme", "~/work/zed"]
+.workdir = RUN.cwd
 
 $ ./scripts/ship
 ```
@@ -1025,9 +1031,16 @@ project's lint leaves the directory out otherwise.
 **Not in CI.** A runner's home directory is nobody's, so `run` reads none of the three there: what runs is
 what is checked in and reviewable. This is also why nothing has to be cleaned up after a job.
 
-Everything relative — `.env-file`, `.add-path`, `glob`, `read_file`, `{{ RUN.parent }}`, the working directory
-— resolves against **the parent of `runfiles/`**. One anchor, one rule. An absolute path is taken as written,
-and an absolute `glob` pattern answers with absolute paths.
+Everything relative — a command, `glob`, `read_file` and the other file functions, `.env-file`, `.add-path`,
+`.watch`, and `.workdir` itself — resolves against **the working directory in effect where it is written**. One
+rule, so a path names the same file to the language as it does to the shell on the next line. The working
+directory starts at the parent of `runfiles/`, which is `{{ RUN.parent }}`, and a `.workdir` moves it from its
+own line down to the end of its block. A nested one is relative to the one around it, the way `cd` is:
+`.workdir = "src"` inside a block under `.workdir = "web"` is `web/src`. A path written *above* a `.workdir`
+keeps the directory it was written in, so `.add-path = "web/node_modules/.bin"` above `.workdir = "web"` still
+names the subproject's tools. An absolute path is taken as written, and an absolute `glob` pattern answers with
+absolute paths. `RUN.parent` and `RUN.cwd` never move: the first is the project, the second is where you typed
+`run`.
 
 ## Setup targets
 
