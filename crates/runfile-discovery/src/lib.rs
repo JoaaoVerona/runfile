@@ -68,7 +68,7 @@ pub enum Origin {
 	Local,
 	/// A `*/runfiles/` found in a subdirectory.
 	Included,
-	/// `$HOME/.runfiles/`.
+	/// The machine-wide directory, whichever of [`GLOBAL_NAMES`] it goes by.
 	Global,
 }
 
@@ -110,8 +110,9 @@ pub struct Catalog {
 	/// `~/.runfiles` at all was enough for `run :lint` to skip a project's root
 	/// `_shared.run` -- the collision [`Catalog::shared_chain`] was already rid of.
 	pub shared: BTreeMap<PathBuf, Origin>,
-	/// The parent of the nearest `runfiles/`: where a project-level file such
-	/// as `.zed/tasks.json` belongs.
+	/// The parent of the nearest project `runfiles/`: where a project-level
+	/// file such as `.zed/tasks.json` belongs. Empty when there is none, which
+	/// the machine-wide directory never stands in for.
 	pub root: PathBuf,
 }
 
@@ -300,7 +301,8 @@ pub fn home_dir() -> Option<PathBuf> {
 		.map(PathBuf::from)
 }
 
-/// Walk up for the nearest `runfiles/`, then down for `*/runfiles/`.
+/// Walk up for the nearest project `runfiles/`, then down for `*/runfiles/`,
+/// and fold in the machine-wide directory.
 ///
 /// What is collected from the machine-wide directory is what is offered where
 /// `from` stands: a target whose `.only-in-directories` does not cover it is
@@ -329,7 +331,7 @@ pub fn discover_unscoped(from: &Path, home: Option<&Path>) -> Result<Catalog, Di
 
 fn discover_with(from: &Path, home: Option<&Path>, scoped: bool) -> Result<Catalog, DiscoverError> {
 	let mut cat = Catalog::default();
-	let local = find_upward(from);
+	let local = find_upward(from, home);
 	if let Some(dir) = &local {
 		trusted(dir, from)?;
 	}
@@ -337,43 +339,26 @@ fn discover_with(from: &Path, home: Option<&Path>, scoped: bool) -> Result<Catal
 		Some(h) => global_dir(h)?,
 		None => None,
 	};
-	// Scoping belongs to the machine-wide directory wherever it is reached
-	// from, so this is worked out once and handed to whichever walk collects
-	// it.
-	let reach = home.filter(|_| scoped).map(|h| Reach { home: h, cwd: from });
 
 	if let Some(dir) = &local {
 		let anchor = dir.parent().unwrap_or(dir).to_path_buf();
 		cat.root = anchor.clone();
-		// `$HOME/runfiles` reached by the upward walk *is* the machine-wide
-		// directory -- the names are what make one -- so its files still get
-		// to say where they belong. Collected as `Local` because it is also
-		// the nearest one, which is a different question and the one `Origin`
-		// answers.
-		let mine = global.as_ref() == Some(dir);
-		collect(
-			dir,
-			&anchor,
-			"",
-			Origin::Local,
-			reach.as_ref().filter(|_| mine),
-			&mut cat,
-		)?;
+		collect(dir, &anchor, "", Origin::Local, None, &mut cat)?;
 		// Sibling projects: a depth-1 `runfiles/` is a namespace, no declaration.
-		scan_subprojects(&anchor, 1, &mut cat)?;
+		scan_subprojects(&anchor, 1, home, &mut cat)?;
 	}
 
-	if let Some(h) = home {
-		// `$HOME/runfiles` is a legal spelling, so it can also be the *local*
-		// directory when the run started at or below the home directory.
-		// Collecting it twice would report every target as a duplicate.
-		if let Some(g) = global.filter(|g| local.as_ref() != Some(g)) {
-			// A machine-wide target can scope itself: registered everywhere,
-			// active only inside the directories it names. Judged per file as
-			// the tree is walked, so a directory, a namespace inside it and a
-			// single target each get to say where they belong.
-			collect(&g, h, "", Origin::Global, reach.as_ref(), &mut cat)?;
-		}
+	// The machine-wide directory is collected here and only here, whichever of
+	// its names it goes by: neither walk above takes `$HOME/runfiles` (see
+	// `is_home`), so it is never a project's root, scans no subprojects, and is
+	// `Global` to everything that asks `Origin` whose targets these are.
+	if let (Some(h), Some(g)) = (home, global) {
+		// A machine-wide target can scope itself: registered everywhere,
+		// active only inside the directories it names. Judged per file as
+		// the tree is walked, so a directory, a namespace inside it and a
+		// single target each get to say where they belong.
+		let reach = scoped.then_some(Reach { home: h, cwd: from });
+		collect(&g, h, "", Origin::Global, reach.as_ref(), &mut cat)?;
 	}
 
 	if cat.targets.is_empty() && local.is_none() {
@@ -492,11 +477,32 @@ fn listed_safe(found: &Path, anchor: &Path, safe: Option<&OsStr>) -> bool {
 	})
 }
 
-fn find_upward(from: &Path) -> Option<PathBuf> {
+/// Whether `dir` is the home directory, whose `runfiles/` is the machine-wide
+/// directory under one of its names -- the names are what make one -- and so
+/// never a project's.
+///
+/// Neither walk can find `$HOME/.runfiles`, since both look for `runfiles`,
+/// and `$HOME/runfiles` is passed over by both so that it is collected exactly
+/// as that one is. An empty one is passed over too: it is a leftover, and the
+/// home directory is no project's root either way. Compared as paths and then
+/// canonically, since `HOME` may spell through a symlink what the working
+/// directory spells as the real path.
+fn is_home(dir: &Path, home: Option<&Path>) -> bool {
+	home.is_some_and(|h| dir == h || same_dir(dir, h))
+}
+
+/// The nearest project `runfiles/` at or above `from`.
+///
+/// The home directory's is passed over and the walk goes on above it (see
+/// [`is_home`]). It was taken as the nearest one, so every directory under the
+/// home directory with no project of its own had the machine-wide targets
+/// listed as `local:`, and every `*/runfiles/` three levels under the home
+/// directory joined them as subprojects of a project nobody had.
+fn find_upward(from: &Path, home: Option<&Path>) -> Option<PathBuf> {
 	let mut dir = Some(from);
 	while let Some(d) = dir {
 		let c = d.join("runfiles");
-		if c.is_dir() {
+		if c.is_dir() && !is_home(d, home) {
 			return Some(c);
 		}
 		dir = d.parent();
@@ -504,7 +510,10 @@ fn find_upward(from: &Path) -> Option<PathBuf> {
 	None
 }
 
-fn scan_subprojects(root: &Path, depth: usize, cat: &mut Catalog) -> Result<(), DiscoverError> {
+/// Every `*/runfiles/` up to [`MAX_DEPTH`] below `root`, as namespaces -- the
+/// home directory's excepted, for a project the home directory sits inside
+/// (see [`is_home`]).
+fn scan_subprojects(root: &Path, depth: usize, home: Option<&Path>, cat: &mut Catalog) -> Result<(), DiscoverError> {
 	if depth > MAX_DEPTH {
 		return Ok(());
 	}
@@ -521,10 +530,10 @@ fn scan_subprojects(root: &Path, depth: usize, cat: &mut Catalog) -> Result<(), 
 			continue;
 		}
 		let candidate = p.join("runfiles");
-		if candidate.is_dir() {
+		if candidate.is_dir() && !is_home(&p, home) {
 			collect(&candidate, &p, name, Origin::Included, None, cat)?;
 		}
-		scan_subprojects(&p, depth + 1, cat)?;
+		scan_subprojects(&p, depth + 1, home, cat)?;
 	}
 	Ok(())
 }

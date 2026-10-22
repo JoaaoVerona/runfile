@@ -803,8 +803,24 @@ belongs to the machine's owner), so a target no reader of the repository can see
 shadow a checked-in one of the same name. It is also why nothing *cleans* `$HOME/.runfiles` on a runner: a
 directory that is never read is not a leak, and deleting a self-hosted runner's own would be pure destruction. **Exactly one of the three may hold anything**: two populated ones is `AmbiguousGlobal`
 naming both, since merging them would let one target shadow another invisibly. An *empty* one never clashes
-(a leftover `mkdir` must not stop a run), and `$HOME/runfiles/` found by the upward walk is not collected a
-second time as the global. This replaced `includes` entirely.
+(a leftover `mkdir` must not stop a run). This replaced `includes` entirely.
+
+- **`$HOME/runfiles` is never a project's, so it is collected exactly as `$HOME/.runfiles` is** (`is_home`).
+  Both walks look for `runfiles`, so neither can find the dotted spelling, and both pass over the home
+  directory's: the upward walk goes on above it, and a subproject scan from a project the home directory
+  sits inside skips it. It was taken as the nearest `runfiles/` from any directory under the home directory
+  with no project of its own -- collected as `Origin::Local` with `Catalog.root` the home directory, and
+  every `*/runfiles/` three levels under it joined as subprojects. Every reader of `Origin` takes it as whose
+  targets these are, not how they were reached, so `:list` put the person's global targets under `local:`,
+  `--json` said `"origin": "local"` (git-merlot, a desktop app listing targets, dropped them), and `:lint`
+  and `:generate` took them, and every unrelated project below, without `--include-global`. The machine-wide
+  directory is now collected once, as `Global`, scoped by `reach` the same way whichever spelling it has; an
+  empty `$HOME/runfiles` is passed over too, as the leftover it is. The home directory is compared as a path
+  and then canonically, since `HOME` may spell through a symlink what the working directory spells as the
+  real path -- compared as text, the two were collected as two directories and every target in them was
+  defined twice. With no project above, `Catalog.root` is empty and the catalog is the machine-wide
+  directory alone, which is what a run from a project-less directory with `.runfiles` always had. In CI no
+  home is passed, so nothing is passed over: a `$HOME/runfiles` the walk reaches there is taken as a project's.
 
 - **The walk does not follow symlinked directories, and every reader of a `.run` file goes through
   `read_runfile`.** `walk_runs` classifies entries with the `DirEntry`'s own `file_type` (which, unlike
@@ -879,14 +895,12 @@ second time as the global. This replaced `includes` entirely.
   repository, so hiding some by working directory recreates the invisibility the machine-wide rule exists to
   fix. `Props` carries `machine_wide` -- where the file was found, not a property -- because that is the one
   fact that makes the property mean anything, and it is `discovery::is_machine_wide` that answers, **not
-  `Origin`**. The two ask different questions: `Origin` says how discovery *reached* a file, and
-  `$HOME/runfiles` found by the upward walk is reached as `Local`, so standing at or below the home directory
-  made every machine-wide target refuse its own scope with *"this target is part of the project"*. It is also
-  the function the language server asks, and one question with two answers is how an editor and the runner
-  come to disagree. For the same reason the scope is now applied to that directory **whichever walk found
-  it**: the three names are what make a directory machine-wide, so a file in one gets to say where it belongs
-  even while it is also the nearest `runfiles/`. Being reached as `Local` still decides everything else --
-  `:list` grouping, and what `:lint` and `:generate` leave out without `--include-global`.
+  `Origin`**. The two once disagreed: `$HOME/runfiles` found by the upward walk was reached as `Local`, so
+  standing at or below the home directory made every machine-wide target refuse its own scope with *"this
+  target is part of the project"*. They agree now that the walk passes over it (above), and the path is still
+  what is asked, because it is also the function the language server asks -- it has a path and no catalog --
+  and one question with two answers is how an editor and the runner come to disagree. The scope applies to
+  the machine-wide directory whichever of the three names it has, since all three are collected one way.
 - **A scope says where a target is offered, so only what runs asks it.** `discover` collects what is offered
   where `from` stands; `discover_unscoped` collects every file, reading no scope and so refusing none, and is
   what `run :lint` and the language server use. Checking a file is not running it, and a scoped file is
@@ -1796,7 +1810,8 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   shape (command `run`, label `run <target>`), so a rerun replaces exactly those and keeps a person's own; a
   file is rewritten with the indentation it already uses. The 661-line `.editorconfig` reader did not come
   back. Global targets are left out unless `--include-global`, since a task file is committed and
-  the machine-wide directory is one person's. `Catalog.root` (the parent of the nearest `runfiles/`) is where the files go.
+  the machine-wide directory is one person's. `Catalog.root` (the parent of the nearest project `runfiles/`,
+  never the home directory) is where the files go.
   **A file that cannot be read is not a file that is not there** (audit SA-038), here and in `:completions
   install`: only `NotFound` means "nothing yet". A `tasks.json` it could not read -- a permission, or bytes that
   are not UTF-8 -- counted as absent and had the generated tasks written over it, an unreadable JetBrains

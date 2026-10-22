@@ -389,16 +389,100 @@ fn an_empty_global_directory_never_clashes() {
 }
 
 #[test]
-fn a_home_directory_project_is_not_also_its_own_global() {
-	// `$HOME/runfiles` is a legal global spelling *and* what `find_upward`
-	// finds when the run starts at home. Collecting it twice would report
-	// every target in it as defined twice.
+fn a_home_runfiles_is_the_machine_wide_directory_and_not_a_project() {
+	// `$HOME/runfiles` is a legal global spelling *and* sits where the upward
+	// walk looks when the run starts at home. Collecting it as both reported
+	// every target in it as defined twice; collecting it as the local one made
+	// the home directory a project's root. It is the machine-wide directory,
+	// once.
 	let home = TempDir::new().unwrap();
 	let g = home.path().join("runfiles");
 	std::fs::create_dir_all(&g).unwrap();
 	std::fs::write(g.join("deploy.run"), "$ true\n").unwrap();
 	let c = discover(home.path(), Some(home.path())).unwrap();
-	assert!(c.resolve("deploy").is_some());
+	assert_eq!(c.resolve("deploy").unwrap().origin, Origin::Global);
+	assert_eq!(c.root, PathBuf::new(), "the home directory is no project's root");
+}
+
+#[test]
+fn a_home_runfiles_reached_from_below_is_global_and_scans_no_subprojects() {
+	// The walk from a directory with no `runfiles/` of its own reached
+	// `$HOME/runfiles` first and took it as the project: `:list` called the
+	// machine-wide targets `local`, and every `*/runfiles/` three levels under
+	// the home directory joined them as subprojects of a project nobody had.
+	// `$HOME/.runfiles`, which that walk cannot find, was always this.
+	for name in GLOBAL_NAMES {
+		let home = TempDir::new().unwrap();
+		touch(&home.path().join(name).join("deploy.run"));
+		touch(&home.path().join("work/other/runfiles/build.run"));
+		let app = home.path().join("work/app");
+		std::fs::create_dir_all(&app).unwrap();
+
+		for c in [
+			discover(&app, Some(home.path())).unwrap(),
+			discover_unscoped(&app, Some(home.path())).unwrap(),
+		] {
+			assert_eq!(c.resolve("deploy").unwrap().origin, Origin::Global, "{name}");
+			assert!(c.resolve("other:build").is_none(), "{name}: {:?}", c.targets.keys());
+			assert_eq!(c.targets.len(), 1, "{name}: {:?}", c.targets.keys());
+			assert_eq!(c.root, PathBuf::new(), "{name}");
+		}
+	}
+}
+
+#[test]
+fn an_empty_home_runfiles_is_a_leftover_and_not_a_project() {
+	// Beside a populated `$HOME/.runfiles` it is not the machine-wide directory
+	// either, and it was what made the home directory a project's root.
+	let home = TempDir::new().unwrap();
+	touch(&home.path().join(".runfiles/deploy.run"));
+	std::fs::create_dir_all(home.path().join("runfiles")).unwrap();
+	touch(&home.path().join("work/other/runfiles/build.run"));
+	let app = home.path().join("work/app");
+	std::fs::create_dir_all(&app).unwrap();
+
+	let c = discover(&app, Some(home.path())).unwrap();
+	assert_eq!(c.resolve("deploy").unwrap().origin, Origin::Global);
+	assert_eq!(c.targets.len(), 1, "{:?}", c.targets.keys());
+}
+
+#[test]
+fn the_walk_goes_on_past_the_home_directory_and_a_project_above_it_skips_it() {
+	// Passed over, the machine-wide directory does not end the walk, so a
+	// project above the home directory is found as it would be under
+	// `.runfiles` -- and its subproject scan passes over the home directory's
+	// too, rather than naming the machine-wide targets after it.
+	let outer = TempDir::new().unwrap();
+	touch(&outer.path().join("runfiles/build.run"));
+	let home = outer.path().join("home");
+	touch(&home.join("runfiles/deploy.run"));
+	let app = home.join("work/app");
+	std::fs::create_dir_all(&app).unwrap();
+
+	let c = discover(&app, Some(&home)).unwrap();
+	assert_eq!(c.resolve("build").unwrap().origin, Origin::Local);
+	assert_eq!(c.root, outer.path());
+	assert_eq!(c.resolve("deploy").unwrap().origin, Origin::Global);
+	assert!(c.resolve("home:deploy").is_none(), "{:?}", c.targets.keys());
+}
+
+/// The home directory spelled through a symlink, the way `HOME=/home/me` reads
+/// where `/home` links elsewhere and the working directory is the real path.
+/// Compared as text the two were different directories, so `$HOME/runfiles`
+/// was collected as the nearest one *and* as the machine-wide one, and every
+/// target in it was defined twice.
+#[test]
+#[cfg(unix)]
+fn a_home_directory_reached_through_a_symlink_is_still_the_home_directory() {
+	let d = TempDir::new().unwrap();
+	let real = d.path().join("real");
+	touch(&real.join("runfiles/deploy.run"));
+	std::fs::create_dir_all(real.join("work")).unwrap();
+	let link = d.path().join("link");
+	std::os::unix::fs::symlink(&real, &link).unwrap();
+
+	let c = discover(&real.join("work"), Some(&link)).expect("one directory, reached two ways");
+	assert_eq!(c.resolve("deploy").unwrap().origin, Origin::Global);
 }
 
 #[test]
@@ -622,10 +706,11 @@ fn a_project_file_is_never_scoped_by_where_it_is_run_from() {
 }
 
 #[test]
-fn the_machine_wide_directory_scopes_itself_when_it_is_also_the_local_one() {
-	// `$HOME/runfiles` reached by the upward walk is still the machine-wide
-	// directory -- the names are what make one. It was collected with no scope
-	// at all, so standing in `$HOME` offered every target whatever it named.
+fn the_machine_wide_directory_scopes_itself_where_the_upward_walk_would_reach_it() {
+	// `$HOME/runfiles` sits where the upward walk looks, and is still the
+	// machine-wide directory -- the names are what make one. It was once
+	// collected with no scope at all, so standing in `$HOME` offered every
+	// target whatever it named.
 	let home = TempDir::new().unwrap();
 	let g = home.path().join("runfiles");
 	std::fs::create_dir_all(&g).unwrap();
@@ -635,16 +720,21 @@ fn the_machine_wide_directory_scopes_itself_when_it_is_also_the_local_one() {
 	std::fs::create_dir_all(&inside).unwrap();
 
 	let here = discover(home.path(), Some(home.path())).unwrap();
-	assert!(here.resolve("plain").is_some(), "an unscoped one is always offered");
-	assert!(
-		here.resolve("scoped").is_none(),
-		"`work/acme` is not `$HOME`, whichever walk found the directory"
+	assert_eq!(
+		here.resolve("plain").map(|t| t.origin),
+		Some(Origin::Global),
+		"an unscoped one is always offered"
 	);
 	assert!(
+		here.resolve("scoped").is_none(),
+		"`work/acme` is not `$HOME`, whichever walk would have found the directory"
+	);
+	assert_eq!(
 		discover(&inside, Some(home.path()))
 			.unwrap()
 			.resolve("scoped")
-			.is_some(),
+			.map(|t| t.origin),
+		Some(Origin::Global),
 		"and it is offered where it says"
 	);
 }

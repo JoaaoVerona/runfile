@@ -621,6 +621,47 @@ fn the_machine_wide_targets_are_listed_first() {
 }
 
 #[test]
+fn a_home_runfiles_is_listed_as_global_wherever_the_walk_would_reach_it() {
+	// `$HOME/runfiles` sits where the upward walk looks, so from a directory
+	// under the home directory with no project of its own it was taken as the
+	// project: listed as `local`, which made a desktop app reading `--json` drop
+	// the person's global targets, with every `*/runfiles/` under the home
+	// directory beside them as subprojects. `.runfiles` was never found that way.
+	let p = project(&[]);
+	let home = p.home.path();
+	for (path, body) in [
+		("runfiles/deploy.run", "# Ships it\n$ true\n"),
+		("work/other/runfiles/build.run", "# Builds another\n$ true\n"),
+	] {
+		std::fs::create_dir_all(home.join(path).parent().unwrap()).unwrap();
+		std::fs::write(home.join(path), body).unwrap();
+	}
+	let app = home.join("work/app");
+	std::fs::create_dir_all(&app).unwrap();
+
+	for here in [app.clone(), home.to_path_buf(), home.join("runfiles")] {
+		let o = p.run_in(&here, &[":list", "--json"]);
+		assert!(o.status.success(), "from {}: {}", here.display(), err(&o));
+		let text = out(&o);
+		assert!(
+			text.contains("\"origin\": \"global\""),
+			"from {}: {text}",
+			here.display()
+		);
+		assert!(
+			!text.contains("\"origin\": \"local\""),
+			"from {}: {text}",
+			here.display()
+		);
+		assert!(!text.contains("other"), "no subprojects of home: {text}");
+
+		let text = out(&p.run_in(&here, &[":list"]));
+		assert!(text.starts_with("global:\n"), "from {}: {text}", here.display());
+		assert!(p.run_in(&here, &["deploy"]).status.success());
+	}
+}
+
+#[test]
 fn a_project_with_no_global_targets_lists_exactly_as_before() {
 	// The local group is the unlabelled default while nothing comes before it,
 	// which is every project without a machine-wide directory.
@@ -2278,6 +2319,53 @@ fn lint_inside_the_machine_wide_directory_lints_all_of_it_unasked() {
 			err(&o)
 		);
 	}
+}
+
+#[test]
+fn lint_treats_a_home_runfiles_as_the_machine_wide_directory() {
+	// Taken as the nearest `runfiles/`, `$HOME/runfiles` was linted -- and
+	// rewritten -- from any directory under the home directory, with every
+	// project three levels below it as a subproject. It is one person's, as
+	// `.runfiles` is: left alone unless asked for, or unless standing in it.
+	let p = project(&[]);
+	let home = p.home.path();
+	let mine = home.join("runfiles/mine.run");
+	let theirs = home.join("work/other/runfiles/b.run");
+	for f in [&mine, &theirs] {
+		std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+		std::fs::write(f, "let y=1\n").unwrap();
+	}
+	let app = home.join("work/app");
+	std::fs::create_dir_all(&app).unwrap();
+
+	for here in [app.clone(), home.to_path_buf()] {
+		let o = p.run_in(&here, &[":lint"]);
+		assert!(o.status.success(), "from {}: {}{}", here.display(), out(&o), err(&o));
+		assert!(
+			out(&o).contains("0 files checked"),
+			"from {}: {}",
+			here.display(),
+			out(&o)
+		);
+	}
+	for f in [&mine, &theirs] {
+		assert_eq!(std::fs::read_to_string(f).unwrap(), "let y=1\n", "{}", f.display());
+	}
+
+	let o = p.run_in(&home.join("runfiles"), &[":lint", "--check"]);
+	assert!(
+		out(&o).contains("1 file checked: 1 needs formatting"),
+		"standing in it, it is the project: {}{}",
+		out(&o),
+		err(&o)
+	);
+	assert!(p.run_in(&app, &[":lint", "--include-global"]).status.success());
+	assert_eq!(std::fs::read_to_string(&mine).unwrap(), "let y = 1\n");
+	assert_eq!(
+		std::fs::read_to_string(&theirs).unwrap(),
+		"let y=1\n",
+		"another project is not the home directory's"
+	);
 }
 
 #[test]

@@ -325,14 +325,13 @@ impl<'a> Host<'a> {
 			// clones, so a `_shared.run` in the machine-wide directory may set
 			// it too.
 			//
-			// Asked of the path rather than of `Origin`, which answers a
-			// different question -- how discovery *reached* the file. The two
-			// part company whenever the machine-wide directory is also the
-			// nearest one: `$HOME/runfiles` found by the upward walk is
-			// collected once, as `Local`, so standing in `$HOME` made every
-			// machine-wide target refuse its own scope. It is also the
-			// function the language server asks, and one question with two
-			// answers is how an editor and the runner come to disagree.
+			// Asked of the path rather than of `Origin`. The two once parted
+			// company: `$HOME/runfiles` found by the upward walk was collected
+			// as `Local`, so standing in `$HOME` made every machine-wide
+			// target refuse its own scope. They agree now, but the path is
+			// what the language server has to ask with, and one question
+			// with two answers is how an editor and the runner come to
+			// disagree.
 			machine_wide: runfile_discovery::is_machine_wide(&target.path),
 			// What every environment built for this target starts from, which is
 			// carried the same way and for the same reason.

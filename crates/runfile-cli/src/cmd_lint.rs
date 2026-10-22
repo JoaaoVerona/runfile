@@ -88,10 +88,11 @@ pub fn catalog(from: &Path) -> Result<Catalog, runfile_discovery::DiscoverError>
 /// `0 files checked: no errors` about a directory full of runfiles.
 pub fn project_files(cat: &Catalog, from: &Path, include_global: bool) -> Vec<PathBuf> {
 	let global = include_global || runfile_discovery::is_machine_wide(from);
-	// Judged by how discovery reached each file, a target and a `_shared.run`
-	// alike. By path, `$HOME/runfiles` found as the nearest `runfiles/` had its
-	// targets linted and its `_shared.run` files left out. In CI there is nothing
-	// to leave out, since no machine-wide directory was read.
+	// Judged by `Origin`, a target and a `_shared.run` alike. Its targets judged
+	// one way and its `_shared.run` files another once had a directory's linted
+	// without them. `$HOME/runfiles` is `Global` however the walk reaches it, as
+	// `.runfiles` is. In CI there is nothing to leave out, since no machine-wide
+	// directory was read.
 	let wanted = |origin: Origin| global || origin != Origin::Global;
 	let mut out: Vec<PathBuf> = cat
 		.targets

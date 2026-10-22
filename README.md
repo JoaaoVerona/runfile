@@ -999,7 +999,9 @@ separated the way `PATH` separates them, or `*` for all.
 `$HOME/.runfiles/` holds machine-wide targets, available in every project. If you would rather see the
 directory than hide it, `$HOME/runfiles/` and `$HOME/Runfiles/` are read too — but only one of the three may
 hold anything. `run :list` puts them first, under `global:`: they are the part of the listing you cannot see
-by looking at the project.
+by looking at the project. That holds for `~/runfiles` too, though it sits where the walk up from anywhere in
+your home directory looks: it is never taken for a project, so from a directory with no `runfiles/` of its
+own you get your global targets — and not every project under your home as a subproject.
 
 A machine-wide target's `runfiles/` parent is your home directory, so that is where its commands run. One that
 acts on the project in front of you says so with `.workdir = RUN.cwd` — and every relative path follows it, so
