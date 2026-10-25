@@ -10,6 +10,8 @@
 //!
 //! None of it applies in CI -- see [`ci`].
 
+use std::collections::HashMap;
+
 use runfile_discovery::{Catalog, Origin, Target};
 use runfile_state::PrepareState;
 
@@ -50,8 +52,13 @@ fn ci() -> bool {
 	crate::ci_detect::is_ci()
 }
 
+/// The gate lets everything through: CI, or a developer bypassing it.
+fn off() -> bool {
+	ci() || std::env::var_os("RUNFILE_SKIP_PREPARE").is_some_and(|v| !v.is_empty())
+}
+
 pub fn enforce(cat: &Catalog, t: &Target) -> Result<(), String> {
-	if ci() || std::env::var_os("RUNFILE_SKIP_PREPARE").is_some_and(|v| !v.is_empty()) {
+	if off() {
 		return Ok(());
 	}
 	let Some(gate) = gate_for(cat, t) else { return Ok(()) };
@@ -65,6 +72,34 @@ pub fn enforce(cat: &Catalog, t: &Target) -> Result<(), String> {
 		)),
 		None => Err(format!("`{}` has never been run\n\n    run {}", gate.name, gate.name)),
 	}
+}
+
+/// Where each gate stands, by its name, as `:list --json` says it on the gate's
+/// own row: `never` run or `changed` since it last ran (the targets it gates
+/// refuse to run until it does), `done`, or `off` when the gate lets
+/// everything through. Tooling offers to run setup from this, so it is the
+/// same answer [`enforce`] would give. A `setup` that gates nothing (the only
+/// target in its directory) is no gate and is left out.
+pub fn standings(cat: &Catalog) -> HashMap<String, &'static str> {
+	let mut gates: Vec<&Target> = cat.targets.values().filter_map(|t| gate_for(cat, t)).collect();
+	gates.sort_by(|a, b| a.name.cmp(&b.name));
+	gates.dedup_by(|a, b| a.name == b.name);
+	let state = PrepareState::load().unwrap_or_default();
+	gates
+		.into_iter()
+		.map(|gate| {
+			let standing = match digest(gate).filter(|_| !off()) {
+				// An unreadable setup gates nothing either; see `enforce`.
+				None => "off",
+				Some(want) => match state.recorded_hash(&gate.path) {
+					Some(have) if have == want => "done",
+					Some(_) => "changed",
+					None => "never",
+				},
+			};
+			(gate.name.clone(), standing)
+		})
+		.collect()
 }
 
 /// Called after a gate target succeeds, so the next run passes.

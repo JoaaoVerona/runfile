@@ -45,7 +45,9 @@ pub(crate) fn facts(t: &Target) -> Facts {
 /// extension builds its tree, its tasks and its run buttons from this.
 ///
 /// Serialized by hand: the shape is four string fields, and a serde dependency
-/// in the CLI to emit them would not earn its keep.
+/// in the CLI to emit them would not earn its keep. A gate's row has a fifth,
+/// `setup`: where it stands (see [`crate::prepare::standings`]), so tooling can
+/// offer to run it before anything else refuses to.
 pub fn print_json(cat: &Catalog) {
 	println!("{{");
 	println!("  \"formatVersion\": {FORMAT_VERSION},");
@@ -56,10 +58,15 @@ pub fn print_json(cat: &Catalog) {
 		.map(|t| (t, facts(t)))
 		.filter(|(_, f)| !f.hidden)
 		.collect();
+	let standings = crate::prepare::standings(cat);
 	for (i, (t, f)) in rows.iter().enumerate() {
 		let comma = if i + 1 == rows.len() { "" } else { "," };
+		let setup = standings
+			.get(&t.name)
+			.map(|standing| format!(", \"setup\": {}", quote(standing)))
+			.unwrap_or_default();
 		println!(
-			"    {{\"name\": {}, \"description\": {}, \"origin\": {}, \"path\": {}}}{comma}",
+			"    {{\"name\": {}, \"description\": {}, \"origin\": {}, \"path\": {}{setup}}}{comma}",
 			quote(&t.name),
 			quote(&f.description),
 			quote(label(t.origin)),

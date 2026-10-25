@@ -1731,7 +1731,9 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   serialized by hand — four string fields do not justify a serde dependency in the CLI — and carries a
   `formatVersion` that CI checks against the extension's constant. **Version 2** dropped the `aliases` array
   with the property; the extension never read it, but a field removed is a shape change and the constant says
-  so rather than letting an old reader guess.
+  so rather than letting an old reader guess. A gate's row (a `setup` some target needs) adds a fifth field,
+  `setup`: `never`, `changed`, `done`, or `off` in CI and under `RUNFILE_SKIP_PREPARE` -- the answer the gate
+  itself gives, so an editor can offer `run setup` before a target refuses. An added field is not a shape change.
 - `--dry-run` is **not** gated by prepare: it changes nothing, and reading what a target would do is a
   reasonable thing to want before setting a project up.
 - Watch mode is entered automatically by any target declaring `.watch`; there is no flag, because the file

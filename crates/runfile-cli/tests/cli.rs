@@ -1330,6 +1330,48 @@ fn list_json_describes_every_visible_target() {
 }
 
 #[test]
+fn list_json_says_where_each_gate_stands() {
+	// Tooling offers `run setup` from this: the answer the gate itself would
+	// give, on the gate's own row only.
+	let p = project(&[
+		("runfiles/setup.run", "$ true\n"),
+		("runfiles/build.run", "$ true\n"),
+		("sub/runfiles/setup.run", "$ true\n"),
+		("sub/runfiles/test.run", "$ true\n"),
+	]);
+	let rows = |o: Output| -> serde_json::Value {
+		let v: serde_json::Value = serde_json::from_str(&out(&o)).expect("valid JSON");
+		v["targets"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|t| (t["name"].as_str().unwrap().to_owned(), t["setup"].clone()))
+			.collect::<serde_json::Map<_, _>>()
+			.into()
+	};
+	let listed = rows(p.run(&[":list", "--json"]));
+	assert_eq!(listed["setup"], "never", "{listed}");
+	assert_eq!(listed["sub:setup"], "never", "a subproject's gate: {listed}");
+	assert!(listed["build"].is_null(), "not a gate: {listed}");
+
+	assert!(p.run(&["setup"]).status.success());
+	let listed = rows(p.run(&[":list", "--json"]));
+	assert_eq!(listed["setup"], "done", "{listed}");
+	assert_eq!(listed["sub:setup"], "never", "{listed}");
+
+	std::fs::write(p.dir.path().join("runfiles/setup.run"), "$ true\n$ true\n").unwrap();
+	assert_eq!(rows(p.run(&[":list", "--json"]))["setup"], "changed");
+
+	// Nothing is gated in CI.
+	let ci = p
+		.command(p.dir.path(), &[":list", "--json"])
+		.env("CI", "1")
+		.output()
+		.unwrap();
+	assert_eq!(rows(ci)["setup"], "off");
+}
+
+#[test]
 fn list_json_escapes_text_that_would_break_the_document() {
 	// Descriptions are free text from a comment block; a quote or backslash in
 	// one must not produce unparseable JSON.
