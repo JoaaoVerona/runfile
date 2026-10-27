@@ -617,8 +617,8 @@ crates/
   runfile-shell/               # The shell checker: `$` lines and shell `exec` bodies, read the way bash reads them
   runfile-cli/                 # The `run` binary
   runfile-env/                 # .env parsing and env-map building
-  runfile-crypto/              # AES-256-GCM for encrypted env values
-  runfile-state/               # Prepare state, OS credential store access
+  runfile-crypto/              # AES-256-GCM for encrypted env values; replacing a file in one step
+  runfile-state/               # Prepare state, OS credential store access, the Linux key file
 ```
 
 ## Crate Responsibilities
@@ -700,9 +700,10 @@ quoting.
   would have made. A symlink is resolved and its target replaced, so a `~/.zshrc` linked into a dotfiles
   repository stays a link (`:lint` still refuses one, SA-021). Where a rename cannot do the job -- a target that
   is not a regular file (`/dev/null`), a directory that refuses a new file, a rename that fails -- it writes in
-  place, which is what everything did before. It lives in `runfile-lang` because the `decrypt()` builtin needs
-  it and every crate that writes files sits above that one. `tests/atomic.rs` holds each case, the new inode
-  included.
+  place, which is what everything did before. It lives in `runfile-crypto` and is re-exported as
+  `runfile_lang::atomic`: the `decrypt()` builtin needs it, and so does `runfile-state`, which writes the Linux
+  key file and depends on neither the language nor the environment crate -- `runfile-crypto` is the one crate
+  below both. `runfile-crypto`'s `tests/atomic.rs` holds each case, the new inode included.
 - Binding names are validated in both `let` and reassignment; a block closer (`end`/`else`/`case`/`default`)
   with nothing open is a parse error rather than an expression statement.
 - **`exit()` ends the target it is written in, with a status.** It leaves as `EvalError::Exit`, since an
@@ -1243,13 +1244,44 @@ terminal's width, and how wide text is on it).
   the header on line 1 went unseen -- which is how a file saved on Windows had plaintext set into it. And
   `--key` is a valued flag to `dispatch::positionals`: as two words, `set f K --key abc12345` had read
   `abc12345` as the value to store.
-- **A key kept only in kernel keyutils is volatile, and the `:env` commands say so** (`keyring_store::is_persistent`,
-  audit SA-017). On Linux with no usable Secret Service the backend falls back to keyutils, which a reboot (or
-  a few days logged out) clears. `:env init`, `:env secret-keys add` and `:env rotate` warn (`warn_if_volatile`)
-  when a freshly generated key lands there, `:env secret-keys list` labels such keys, and
-  `rotate --delete-current-key` refuses to delete the old key when the store is not persistent, so a reboot
-  cannot leave the only copy gone and every value encrypted under it unreadable. `is_persistent` is `true` on
-  Windows/macOS and whenever Secret Service is in use.
+- **A Linux machine with no Secret Service keeps its keys in an owner-only file** (`runfile-state`'s
+  `file_store`, replacing audit SA-017's warning). The fallback was kernel keyutils, which a reboot clears and
+  a few days logged out expire (`/proc/sys/kernel/keys/persistent_keyring_expiry`), so every headless server
+  -- Ubuntu Server has no keyring daemon -- held its keys until the next reboot, and SA-017 could only warn
+  about it. A server should need nothing installed, so the answer is what ssh and age keep on one:
+  `$XDG_DATA_HOME/runfile/keys.json`, else `~/.local/share/runfile/keys.json` -- the data directory, not
+  `~/.config`, which is the directory people commit to dotfiles -- holding the same JSON blob the credential
+  stores hold, made `0600` in a `0700` directory through `atomic::write` with `Mode::Private`. It is no weaker
+  than keyutils or an unlocked Secret Service against anyone but root, any process of the owner's reading all
+  three; what it gives up is encryption at rest, which the README says. **It is refused, as ssh refuses an
+  unprotected key**, when it is not a regular file, is owned by another uid, or has any group or other bit set
+  (`check_private`, whose message names `chmod 600`): a file someone else owns or can write is one where
+  someone else chose the keys. A symlink is judged by the file it names. Rejected along the way: systemd
+  credentials (`--user` needs systemd 256, Ubuntu 24.04 has 255, containers have none), TPM sealing (no vTPM
+  in many VMs), a passphrase (unattended servers are the case), and a key derived from `/etc/machine-id`
+  (world-readable).
+  - **`keyring_store::Place` says where keys are, and the CLI prints it**: `:env init`, `secret-keys add` and
+    `rotate` say where the new key went, and `secret-keys list` names each key's place. `is_persistent` and
+    `warn_if_volatile` are gone -- every store left survives a reboot -- and so is `rotate`'s refusal to delete
+    the old key.
+  - **Beside a Secret Service the file is still read when it exists** (`places`): a key stored where no
+    session bus reached one -- over SSH, from cron -- decrypts in the sessions where one does. New keys go to
+    the first place, `add` finds a duplicate in either, and `remove` takes a key out of every place it is in.
+    A place that cannot be read is warned about beside the keys the others held (`merge_key_sources`), and
+    refused by the commands that change keys, which must not act on part of them.
+  - **What an older runfile left in keyutils is moved, not copied** (`absorb_legacy`, asked by
+    `read_primary`): merged into the place new keys go to, keeping a value that place already has, and
+    keyutils is cleared only once that write succeeded, so a key is in one of the two at every moment. A copy
+    would linger and come back after `secret-keys remove`. Keyutils that cannot be reached at all -- Docker's
+    seccomp profile refuses `keyctl` -- is nothing to move.
+  - **No test may reach keyutils**, because a home directory cannot isolate it: the persistent keyring is the
+    user's, shared by every session, and a test run that loads keys would move a developer's keyutils keys into
+    a temporary home and clear them. `cli.rs`'s fixture installs a seccomp filter refusing `keyctl`, `add_key`
+    and `request_key` in every child (`without_keyutils`) -- the container case, made on purpose -- and
+    `the_fixture_takes_keyutils_away` asserts that a shell the binary starts carries one filter more than the
+    test does, since a filter that silently failed to install would undo the guarantee. The fixture also
+    leaves no session bus (`DBUS_SESSION_BUS_ADDRESS` stripped, `XDG_RUNTIME_DIR` the empty home), so a test
+    never writes to a developer's Secret Service either.
 - **The process environment is read with `vars_os`, not `vars`** (`runfile_env::process_env`, audit SA-023).
   `std::env::vars` panics on a value that is not valid UTF-8 -- bash exports a Latin-1 `OLDPWD`/`PWD` after a
   `cd` into such a directory -- which aborted every `run <target>` before anything ran. The three call sites
@@ -2316,8 +2348,10 @@ tests that assert the mechanism rather than the symptom.
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with
    `HOME`, `USERPROFILE`, `RUNFILE_CONFIG_DIR`, `XDG_*` and `APPDATA` pointed at an empty directory and
-   `RUNFILE_SKIP_PREPARE`, `RUNFILE_PRIVATE_KEYS`, `RUNFILE_SAFE_DIRECTORIES` and **every one of the ten
-   variables `ci_detect` looks at** stripped — not just `CI` and `GITHUB_ACTIONS`, because CI mode now decides whether the machine-wide
+   `RUNFILE_SKIP_PREPARE`, `RUNFILE_PRIVATE_KEYS`, `RUNFILE_SAFE_DIRECTORIES`, `XDG_DATA_HOME`,
+   `DBUS_SESSION_BUS_ADDRESS` and **every one of the ten variables `ci_detect` looks at** stripped, and keyutils
+   refused by a seccomp filter, so no key store of the developer's is reachable (see *runfile-runtime* on the
+   Linux key file) — not just `CI` and `GITHUB_ACTIONS`, because CI mode now decides whether the machine-wide
    directory is read and whether `state.json` is written, so a stray `BUILDKITE` in someone's shell would
    quietly turn off the tests that check both and they would pass. The first three
    matter on Windows, where the Known Folder API ignores `HOME` and `APPDATA`; the CLI reads `HOME` before

@@ -371,23 +371,11 @@ pub fn cmd_rotate(file: &str, delete_current_key: bool) {
 		process::exit(1);
 	}
 
-	// Optionally delete the old key -- but never when the new one is only in
-	// volatile keyutils, or a reboot would leave nothing that can decrypt the
-	// file just rotated (audit SA-017).
-	let persistent = runfile_state::keyring_store::is_persistent();
-	let removed = if delete_current_key && !persistent {
-		eprintln!(
-			"[runfile] warning: keeping the old key: the new one is held in kernel keyutils (cleared on reboot), \
-			 so deleting the old key could leave {file} unrecoverable. Save the new key and remove the old one \
-			 by hand once it is safe: run :env secret-keys remove {}",
-			&old_public_key[..old_public_key.len().min(8)]
-		);
-		false
-	} else if delete_current_key {
+	let removed = if delete_current_key {
 		match keyring_keys::remove(&old_public_key) {
 			Ok(true) => true,
 			Ok(false) => {
-				eprintln!("Warning: old key not found in credential store (already removed?).");
+				eprintln!("Warning: old key not found among the stored keys (already removed?).");
 				false
 			}
 			Err(e) => {
@@ -403,11 +391,11 @@ pub fn cmd_rotate(file: &str, delete_current_key: bool) {
 	println!();
 	println!("  Old public key: {old_public_key}");
 	println!("  New public key: {new_public_key}");
-	super::warn_if_volatile(&new_public_key);
+	println!("  Stored in:      {}", super::stored_in());
 
 	if removed {
 		println!();
-		println!("Old key has been removed from the OS credential store.");
+		println!("Old key has been removed.");
 	}
 
 	println!();

@@ -1133,8 +1133,14 @@ run :env rotate .env.production        # re-encrypt under a new key
 falls back to plaintext: for a file that records none, `--key <prefix>` names the key to use, and `--plain`
 stores the value as it is.
 
-Keys live in the OS credential store — Keychain, Credential Manager, or Secret Service with a keyutils
-fallback. In CI, pass them as `RUNFILE_PRIVATE_KEYS` (newline-separated) and no credential store is involved.
+Keys live in the OS credential store — Keychain, Credential Manager, or Secret Service. A Linux machine with no
+Secret Service, such as a server, keeps them in `~/.local/share/runfile/keys.json` (under `$XDG_DATA_HOME` when
+it is set) instead, so nothing has to be installed there and they survive a reboot. The file is created
+owner-only, and refused if anyone else owns it or can read or write it, the same rule ssh applies to a private
+key; it is not encrypted on disk, so a backup of the home directory holds the keys. Keys stored there are still
+read when a Secret Service is available. Keys an older version left in kernel keyutils, which a reboot clears,
+are moved into the store the first time they are read. `run :env secret-keys list` shows where each key is. In
+CI, pass them as `RUNFILE_PRIVATE_KEYS` (newline-separated) and no credential store is involved.
 
 Only a value a `.env` file holds is decrypted — the one place an `encrypted:` value is the author's own. A
 ciphertext arriving any other way (exported in the caller's shell, or copied into `.env.X = {{ ARG.x }}` from

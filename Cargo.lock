@@ -1292,6 +1292,7 @@ dependencies = [
  "hex",
  "sha2 0.11.0",
  "subtle",
+ "tempfile",
  "thiserror",
  "zeroize",
 ]
@@ -1375,6 +1376,7 @@ dependencies = [
  "dirs",
  "json5",
  "keyring-core",
+ "libc",
  "linux-keyutils-keyring-store",
  "runfile-crypto",
  "secret-service",

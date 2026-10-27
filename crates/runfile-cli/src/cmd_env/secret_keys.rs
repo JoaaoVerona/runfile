@@ -119,9 +119,8 @@ pub fn cmd_secret_keys_add(key_arg: Option<&str>) {
 
 	println!();
 	println!("Private key added.");
-	println!("  Stored in: OS credential store");
+	println!("  Stored in: {}", super::stored_in());
 	println!("  Public:    {public_key}");
-	super::warn_if_volatile(&public_key);
 	println!();
 	println!("Add this to your encrypted .env files:");
 	println!("  {}={public_key}", runfile_crypto::ENCRYPTION_PUBLIC_KEY_VAR);
@@ -129,26 +128,21 @@ pub fn cmd_secret_keys_add(key_arg: Option<&str>) {
 
 /// List all stored keys showing public key fingerprints.
 pub fn cmd_secret_keys_list() {
-	let fingerprints = match keyring_keys::list_fingerprints() {
-		Ok(fps) => fps,
+	let stored = match keyring_keys::list() {
+		Ok(stored) => stored,
 		Err(e) => {
-			eprintln!("Error reading keyring: {e}");
+			eprintln!("Error reading stored keys: {e}");
 			process::exit(1);
 		}
 	};
 
-	if fingerprints.is_empty() {
+	if stored.is_empty() {
 		println!("No secret keys configured.");
 		return;
 	}
 
-	let label = if runfile_state::keyring_store::is_persistent() {
-		"secure: OS credential store"
-	} else {
-		"volatile: kernel keyutils -- cleared on reboot"
-	};
-	for fingerprint in &fingerprints {
-		println!("  {fingerprint}  ({label})");
+	for (fingerprint, place) in &stored {
+		println!("  {fingerprint}  ({place})");
 	}
 }
 

@@ -75,13 +75,80 @@ impl Project {
 			// developer has `FORCE_COLOR` set, which would put escape codes
 			// through every assertion about a branch's label. The one test that
 			// wants colour sets it back.
-			.env_remove("FORCE_COLOR");
+			.env_remove("FORCE_COLOR")
+			// No key store of the developer's is reachable: no session bus to find
+			// a Secret Service on, so keys go to the file under the empty home --
+			// at its default path, which the tests then read -- and no keyutils
+			// (`without_keyutils`).
+			.env_remove("DBUS_SESSION_BUS_ADDRESS")
+			.env("XDG_RUNTIME_DIR", self.home.path())
+			.env_remove("XDG_DATA_HOME");
 		for v in CI_VARS {
 			c.env_remove(v);
 		}
+		without_keyutils(&mut c);
 		c
 	}
 }
+
+/// Take kernel keyutils away from a child, the way a container's seccomp
+/// profile does. The fixture's empty home isolates every other key store, and
+/// keyutils is not one a home can isolate: the user's persistent keyring is
+/// shared by every session, and a run that finds keys an older runfile left
+/// there moves them into its own key file and clears them -- which, under a
+/// test's home, would take a developer's keys into a directory about to be
+/// deleted. Best effort, so a machine that refuses a filter still runs the
+/// suite; `the_fixture_takes_keyutils_away` says whether it took.
+#[cfg(target_os = "linux")]
+fn without_keyutils(c: &mut Command) {
+	use std::os::unix::process::CommandExt;
+	// SAFETY: between fork and exec the closure only builds a filter on the
+	// stack and makes two `prctl` calls about the child's own state.
+	unsafe {
+		c.pre_exec(|| {
+			let op = |code: u32, k: u32| libc::sock_filter {
+				code: code as u16,
+				jt: 0,
+				jf: 0,
+				k,
+			};
+			// Skip `to` instructions ahead when the syscall number is `nr`.
+			let on = |nr: libc::c_long, to: u8| libc::sock_filter {
+				code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+				jt: to,
+				jf: 0,
+				k: nr as u32,
+			};
+			let mut filter = [
+				// The syscall number, `seccomp_data.nr`.
+				op(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0),
+				on(libc::SYS_add_key, 3),
+				on(libc::SYS_request_key, 2),
+				on(libc::SYS_keyctl, 1),
+				op(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW),
+				op(
+					libc::BPF_RET | libc::BPF_K,
+					libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32,
+				),
+			];
+			let prog = libc::sock_fprog {
+				len: filter.len() as u16,
+				filter: filter.as_mut_ptr(),
+			};
+			if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1 as libc::c_ulong, 0, 0, 0) == 0 {
+				libc::prctl(
+					libc::PR_SET_SECCOMP,
+					libc::SECCOMP_MODE_FILTER as libc::c_ulong,
+					&prog as *const libc::sock_fprog,
+				);
+			}
+			Ok(())
+		});
+	}
+}
+
+#[cfg(not(target_os = "linux"))]
+fn without_keyutils(_: &mut Command) {}
 
 /// Mirrors `ci_detect::CI_ENV_VARS`, which lives in a binary crate an
 /// integration test cannot import. `each_ci_variable_puts_the_binary_in_ci_mode`
@@ -4889,4 +4956,104 @@ fn env_set_never_falls_back_to_plaintext_and_sees_a_header_past_a_bom() {
 	let other_public = runfile_crypto::derive_public_key(&other).unwrap();
 	let o = set(&["bom.env", "X", "y", "--key", &other_public[..8]]);
 	assert!(!o.status.success(), "a value under another key was written");
+}
+
+// ------------------------------------------------ keys without a Secret Service
+
+/// The output of `o`, both streams, for an assertion's message.
+#[cfg(target_os = "linux")]
+fn said(o: &Output) -> String {
+	format!(
+		"{}{}",
+		String::from_utf8_lossy(&o.stdout),
+		String::from_utf8_lossy(&o.stderr)
+	)
+}
+
+/// With no Secret Service -- which the fixture guarantees, by leaving no session
+/// bus -- a key is kept in an owner-only file in the data directory, outlives
+/// the process that stored it, and decrypts a target's `.env-file` in the next
+/// one. On Linux it used to be kernel keyutils, which a reboot clears.
+#[cfg(target_os = "linux")]
+#[test]
+fn without_a_secret_service_keys_are_kept_in_an_owner_only_file() {
+	use std::os::unix::fs::PermissionsExt;
+	let key = "1f".repeat(32);
+	let public = runfile_crypto::derive_public_key(&key).unwrap();
+	let secret = runfile_crypto::encrypt("hunter2", &key).unwrap();
+	let p = project(&[
+		("runfiles/show.run", ".env-file = \".env\"\n\nprint(ENV.SECRET)\n"),
+		(
+			".env",
+			&format!("RUNFILE_ENCRYPTION_PUBLIC_KEY={public}\nSECRET={secret}\n"),
+		),
+	]);
+	let file = p.home.path().join(".local/share/runfile/keys.json");
+	let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+	let chmod = |m: u32| std::fs::set_permissions(&file, std::fs::Permissions::from_mode(m)).unwrap();
+
+	// `--key` is the non-interactive `add`, allowed in CI only.
+	let o = p
+		.command(p.dir.path(), &[":env", "secret-keys", "add", "--key", &key])
+		.env("CI", "true")
+		.output()
+		.unwrap();
+	assert!(o.status.success(), "{}", said(&o));
+	assert_eq!(mode(&file), 0o600);
+	assert_eq!(mode(file.parent().unwrap()), 0o700);
+	assert!(std::fs::read_to_string(&file).unwrap().contains(&public));
+
+	// `list` says where the key is, and a later run decrypts with it.
+	let o = p.run(&[":env", "secret-keys", "list"]);
+	assert!(
+		String::from_utf8_lossy(&o.stdout).contains(&format!("{public}  ({})", file.display())),
+		"{}",
+		said(&o)
+	);
+	let o = p.run(&["show"]);
+	assert!(o.status.success(), "{}", said(&o));
+	assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "hunter2");
+
+	// Opened to other users, the file is refused, naming the fix -- by the
+	// commands that manage keys, and by a run, which gets nothing from it.
+	chmod(0o644);
+	let o = p.run(&[":env", "secret-keys", "list"]);
+	assert!(!o.status.success(), "{}", said(&o));
+	assert!(said(&o).contains("chmod 600"), "{}", said(&o));
+	let o = p.run(&["show"]);
+	assert!(
+		!o.status.success(),
+		"decrypted with a key others can read: {}",
+		said(&o)
+	);
+	assert!(said(&o).contains("chmod 600"), "{}", said(&o));
+
+	// Removing the last key removes the file.
+	chmod(0o600);
+	let o = p.run(&[":env", "secret-keys", "remove", &public[..8]]);
+	assert!(o.status.success(), "{}", said(&o));
+	assert!(!file.exists());
+}
+
+/// The fixture's promise that no test reaches a developer's keyutils is a
+/// seccomp filter, and a filter that silently failed to install would leave
+/// every test that loads keys moving the developer's keys out of it. A shell
+/// the binary starts carries exactly one filter more than this process does.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_fixture_takes_keyutils_away() {
+	let filters = |status: &str| {
+		status
+			.lines()
+			.find_map(|l| l.strip_prefix("Seccomp_filters:"))
+			.map(|n| n.trim().parse::<u32>().unwrap())
+	};
+	// The field arrived in Linux 5.9; there is nothing to compare without it.
+	let Some(ours) = filters(&std::fs::read_to_string("/proc/self/status").unwrap()) else {
+		return;
+	};
+	let p = project(&[("runfiles/status.run", "$ cat /proc/self/status\n")]);
+	let o = p.run(&["status"]);
+	assert!(o.status.success(), "{}", said(&o));
+	assert_eq!(filters(&String::from_utf8_lossy(&o.stdout)), Some(ours + 1));
 }

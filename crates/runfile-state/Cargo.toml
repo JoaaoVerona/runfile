@@ -21,6 +21,7 @@ thiserror.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
 linux-keyutils-keyring-store.workspace = true
 secret-service.workspace = true
 

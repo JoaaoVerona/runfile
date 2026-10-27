@@ -8,7 +8,6 @@
 
 pub mod args;
 pub mod ast;
-pub mod atomic;
 pub mod check;
 pub mod eval;
 pub mod format;
@@ -28,6 +27,9 @@ pub use ast::{Block, Constant, Expr, InterpPart, Property, SourceKind, Statement
 pub use eval::{EvalError, Keys, Scope, TempFiles, eval};
 pub use format::format;
 pub use parser::{ParseError, parse};
+/// Replacing a file in one step. It lives in `runfile-crypto`, the one crate
+/// below both this one and `runfile-state`, which writes the key file with it.
+pub use runfile_crypto::atomic;
 
 /// A fingerprint of what a target *does*, ignoring where it says it.
 ///

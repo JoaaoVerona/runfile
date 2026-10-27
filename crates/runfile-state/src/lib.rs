@@ -3,6 +3,8 @@
 //! machine-wide directory is `$HOME/.runfiles/` (or `runfiles`/`Runfiles`),
 //! at a fixed set of names.
 
+#[cfg(target_os = "linux")]
+mod file_store;
 pub mod keyring_keys;
 pub mod keyring_store;
 mod paths;
