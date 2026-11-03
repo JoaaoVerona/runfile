@@ -13,7 +13,7 @@
 let missing = []
 
 $ cargo fmt --all -- --check
-$ cargo clippy --all-targets --all-features --locked -- -D warnings
+$ mbx clippy --all-targets --all-features --locked -- -D warnings
 
 if $ command -v rustup > /dev/null
 	let installed = lines($ rustup target list --installed)
@@ -28,7 +28,7 @@ if $ command -v rustup > /dev/null
 	]
 		if index_of(installed, target) != -1
 			print("checking {{ target }}")
-			$ cargo check --all-targets --all-features --locked --target {{ target }}
+			$ mbx check --all-targets --all-features --locked --target {{ target }}
 		else
 			missing = append(missing, target)
 		end

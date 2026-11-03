@@ -1,5 +1,7 @@
 # Non-mutating CI gate: format check + Clippy (deny warnings) + type check
 
+let cargo = ENV.RUNFILE_CI_CARGO ? "cargo"
+
 $ cargo fmt --all -- --check
-$ cargo clippy --all-targets --all-features --locked -- -D warnings
-$ cargo check --all-targets --all-features --locked
+$ {{ cargo }} clippy --all-targets --all-features --locked -- -D warnings
+$ {{ cargo }} check --all-targets --all-features --locked

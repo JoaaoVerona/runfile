@@ -1,3 +1,5 @@
 # Run all workspace tests
 
-$ cargo test --workspace --all-features --locked {{ ARGS }}
+let cargo = ENV.RUNFILE_CI_CARGO ? "cargo"
+
+$ {{ cargo }} test --workspace --all-features --locked {{ ARGS }}

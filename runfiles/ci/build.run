@@ -1,3 +1,5 @@
 # Release build for CI runners
 
-$ cargo build --locked --release
+let cargo = ENV.RUNFILE_CI_CARGO ? "cargo"
+
+$ {{ cargo }} build --locked --release

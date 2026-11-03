@@ -157,7 +157,7 @@ runs:
       if: inputs.from-source == 'true'
       shell: bash
       run: |
-        cargo build
+        "${RUNFILE_CI_CARGO:-cargo}" build
         bin_dir="$GITHUB_WORKSPACE/target/debug"
         # Case-insensitive for the same reason as the target resolution above.
         case "$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')" in

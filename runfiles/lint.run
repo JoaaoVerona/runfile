@@ -1,4 +1,4 @@
 # Mutating: format (write) + Clippy (deny warnings; also type/borrow-checks)
 
 $ cargo fmt --all
-$ cargo clippy --all-targets --all-features --locked -- -D warnings
+$ mbx clippy --all-targets --all-features --locked -- -D warnings

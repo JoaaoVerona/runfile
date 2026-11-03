@@ -57,6 +57,13 @@ on:
 permissions:
   contents: read
 
+# CI builds from a fresh checkout, so incremental state would only cost time. The build cache is mbx's
+# (`backend: mbx`): each job restores the compiler outputs its last run used, and saves its own with
+# rust-build-cache-save, its last step; nothing is kept on the runner.
+env:
+  CARGO_INCREMENTAL: "0"
+  RUNFILE_CI_CARGO: mbx
+
 jobs:
   build:
     name: Build (${{ matrix.platform.target }})
@@ -92,12 +99,14 @@ jobs:
         shell: bash
         run: echo "toolchain=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)-x86_64-pc-windows-msvc" >> "$GITEA_OUTPUT"
 
-      # Uncached, like every release build in the fleet: `--release` shares no
-      # artifact with CI, and a stale object in a release target/ would ship.
+      # Under a `job:` of its own per target: a release restores only what an
+      # earlier release of that target saved, never a CI job's entry, and mbx
+      # reuses an object only when every compiler input matches.
       - name: Rust toolchain
         uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
         with:
-          cache: false
+          backend: mbx
+          job: binaries-${{ matrix.platform.target }}
           target: ${{ matrix.platform.target }}
           toolchain: ${{ steps.host.outputs.toolchain }}
 
@@ -161,6 +170,10 @@ jobs:
             runfile-cli-*.tar.xz
             runfile-cli-*.zip
 
+      - name: Save the Rust build cache
+        if: always()
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-build-cache-save@v1
+
   extension:
     name: Package VS Code extension
     runs-on: ubuntu-24.04
@@ -190,7 +203,8 @@ jobs:
       - name: Rust toolchain
         uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
         with:
-          cache: false
+          backend: mbx
+          job: release-extension
 
       - name: Setup Runfile (from source)
         uses: ./.github/actions/setup
@@ -211,6 +225,10 @@ jobs:
           if-no-files-found: error
           name: vscode-extension
           path: editors/vscode/runfile-vscode-*.vsix
+
+      - name: Save the Rust build cache
+        if: always()
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-build-cache-save@v1
 
   release:
     name: Publish Gitea release

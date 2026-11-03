@@ -1,6 +1,7 @@
-# One-time setup: activate the committed git hooks
+# One-time setup, rerun whenever this file changes: activate the committed git hooks, and install the pinned mbx the build targets compile through
 #
 # Named `setup`, so it gates every other target in this directory until it has
 # been run -- and again whenever its own commands change.
 
 $ git config core.hooksPath .githooks
+$ cargo install mbx --version 1.27.0 --locked

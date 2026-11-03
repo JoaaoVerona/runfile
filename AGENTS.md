@@ -12,7 +12,7 @@ works on Linux, macOS and Windows.
 NEVER use `cargo` commands directly. ALWAYS use `run <target>`; read `runfiles/` to see what exists.
 
 ```
-run setup                  # One-time per clone: activates the committed git hooks. Gates everything else.
+run setup                  # Git hooks and the pinned mbx the targets compile through. Gates everything else.
 run build                  # Debug build
 run check                  # Non-mutating gate: fmt --check + clippy (deny warnings) + every release target compiles
 run lint                   # Formats, then lints
@@ -2156,11 +2156,11 @@ What each side publishes is decided by what it can do:
 
 What differs on Gitea's side is forced by the fleet (`gitea-easy-runners` documents it):
 
-- **The toolchain is `shared-actions/rust-toolchain-and-cache` with `cache: false`.** The cache exports
-  `CARGO_TARGET_DIR` to a path outside the workspace, and `runfiles/ci/_shared.run` pins its own -- a target's
-  `.env` beats the caller's shell, by design -- so turned on it would send the from-source build somewhere the
-  setup action does not look, and cache a directory the tests never build into. Making it work would mean
-  `_shared.run` honouring a caller's `CARGO_TARGET_DIR`, which changes local builds too.
+- **The toolchain is `shared-actions/rust-toolchain-and-cache` on its mbx backend**, and every job on it ends with
+  `rust-build-cache-save`. The `ci:` targets and the setup action's from-source build are shared with GitHub's
+  workflows, which have no mbx, so they take the command from `RUNFILE_CI_CARGO`, set by `.cicd/ci.yml` and
+  `.cicd/release.yml` only, and fall back to `cargo`. `runfiles/wsl/` stays plain cargo: mbx would have to be
+  installed inside the WSL distribution too.
 - **`macos-26` is an Intel Mac**, so `aarch64-apple-darwin` is cross-compiled there and nothing on Gitea runs
   aarch64 code; GitHub's `macos-15` is Apple Silicon and covers it. `ubuntu-24.04-arm` is qemu emulating the
   compiler, so `aarch64-unknown-linux-musl` builds on `ubuntu-24.04`, **linked by `rust-lld`**

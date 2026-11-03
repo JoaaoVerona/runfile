@@ -4,13 +4,11 @@
 # .github/workflows/ci.yml on the fleet's runners, and differs where the fleet
 # does:
 #
-# - The toolchain comes from shared-actions' rust-toolchain-and-cache, with the
-#   cache OFF. That cache works by exporting CARGO_TARGET_DIR to a path outside
-#   the workspace, and this repository's `ci:` targets pin their own in
-#   runfiles/ci/_shared.run -- a target's `.env` beats the caller's shell, by
-#   design. Turned on, it would send the from-source build somewhere the setup
-#   action does not look, and cache a directory the tests never build into.
-#   Its `rustflags` default is empty, which `.cargo/config.toml` needs.
+# - The toolchain comes from shared-actions' rust-toolchain-and-cache on its mbx
+#   backend, and every job on it ends with rust-build-cache-save. The `ci:`
+#   targets and the setup action are shared with GitHub's copy, which has no mbx,
+#   so they take the command from RUNFILE_CI_CARGO, set below and only here.
+#   The action's `rustflags` default is empty, which `.cargo/config.toml` needs.
 # - macos-26 here is an Intel Mac, so no job in this file runs aarch64 code.
 #   GitHub's macos-15 leg is Apple Silicon and still does.
 # - The Windows leg names its MSVC host, below.
@@ -31,6 +29,13 @@ on:
 permissions:
   contents: read
 
+# CI builds from a fresh checkout, so incremental state would only cost time. The build cache is mbx's
+# (`backend: mbx`): each job restores the compiler outputs its last run used, and saves its own with
+# rust-build-cache-save, its last step; nothing is kept on the runner.
+env:
+  CARGO_INCREMENTAL: "0"
+  RUNFILE_CI_CARGO: mbx
+
 jobs:
   check:
     name: Check
@@ -44,7 +49,7 @@ jobs:
       - name: Rust toolchain
         uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
         with:
-          cache: false
+          backend: mbx
 
       # From source, like every job here that runs a target: the released CLI
       # is a previous version of this repository's own task files, so it breaks
@@ -70,6 +75,10 @@ jobs:
           expected=$(sed -n 's/.*SUPPORTED_FORMAT_VERSION = \([0-9]*\).*/\1/p' editors/vscode/src/pure.ts | head -n1)
           echo "CLI emits formatVersion=$emitted; extension supports $expected"
           test -n "$emitted" && test -n "$expected" && test "$emitted" = "$expected"
+
+      - name: Save the Rust build cache
+        if: always()
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-build-cache-save@v1
 
   test:
     name: Test (${{ matrix.os }})
@@ -100,7 +109,7 @@ jobs:
       - name: Rust toolchain
         uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
         with:
-          cache: false
+          backend: mbx
           toolchain: ${{ steps.host.outputs.toolchain }}
 
       - name: Setup Runfile (from source)
@@ -110,6 +119,10 @@ jobs:
 
       - name: Test
         run: run ci:test
+
+      - name: Save the Rust build cache
+        if: always()
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-build-cache-save@v1
 
   extension:
     name: VS Code extension
@@ -130,7 +143,7 @@ jobs:
       - name: Rust toolchain
         uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
         with:
-          cache: false
+          backend: mbx
 
       - name: Setup Runfile (from source)
         uses: ./.github/actions/setup
@@ -160,6 +173,10 @@ jobs:
           if-no-files-found: error
           name: runfile-vscode-extension
           path: editors/vscode/*.vsix
+
+      - name: Save the Rust build cache
+        if: always()
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-build-cache-save@v1
 
   # The path every consumer on this instance takes. `JoaaoVerona/runfile/...`
   # resolves against DEFAULT_ACTIONS_URL, which is github.com here, so the
@@ -211,7 +228,7 @@ jobs:
       - name: Rust toolchain
         uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
         with:
-          cache: false
+          backend: mbx
 
       - name: Setup Runfile (from source)
         uses: ./.github/actions/setup
@@ -249,3 +266,7 @@ jobs:
             echo "::error::run :update failed for:$failed"
             exit 1
           fi
+
+      - name: Save the Rust build cache
+        if: always()
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-build-cache-save@v1
