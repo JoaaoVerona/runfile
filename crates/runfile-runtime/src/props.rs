@@ -1,49 +1,31 @@
 //! Property resolution.
 //!
-//! Behavioural properties scope to the block they appear in and inherit into
-//! nested blocks; descriptive ones are header-only and read once per target.
-//! `IfStep`, `ForStep` and `MatchStep` already carried their own `ignoreErrors`
-//! in the JSON model -- this makes that uniform.
+//! A property is a fact about a whole file -- the shell its `$` lines use,
+//! whether it announces its commands, what it watches, where a machine-wide
+//! target is offered -- so it is written at the top of the file, above its
+//! first statement, and the parser refuses one anywhere else. What a line does
+//! to the state the lines below it run in is not a property but a statement:
+//! `ENV.X = …`, `set_cwd()`, `add_path()`, `import_env_file()`,
+//! `ignore_errors()` (see `runfile_lang::state`).
 
 use runfile_lang::Value;
-use runfile_lang::ast::{Block, Expr, Property};
+use runfile_lang::ast::{Block, Property};
 use runfile_lang::eval::{EvalError, Scope, eval_boundary};
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default)]
 pub struct Props {
 	pub shell: Option<String>,
-	pub ignore_errors: bool,
 	/// Announce each command on stderr before it runs. Off unless asked for:
 	/// most targets are run for their output, and a runner talking over it is
 	/// noise. `run --dry-run` prints the commands to stdout instead and never
 	/// announces.
 	pub logging: bool,
-	/// Where commands run, as a whole path: the anchor with every `.workdir` so
-	/// far laid over it, each relative to the one before. `None` is the anchor.
-	pub workdir: Option<PathBuf>,
-	pub env: BTreeMap<String, String>,
-	/// Both append rather than replace, so a block adds to what it inherited
-	/// and a `_shared.run` entry is never lost by a target naming its own.
-	///
-	/// A relative entry is resolved when it is applied, against the working
-	/// directory in effect at its line, so a `.workdir` written below it does
-	/// not move it -- which is what "applied where it is written" means.
-	pub env_files: Vec<String>,
-	pub add_paths: Vec<String>,
-	// header-only
 	pub watch: Vec<WatchPattern>,
 	/// Whether this target came from the machine-wide directory. Not a
 	/// property: it is a fact about where the file was found, and the one
 	/// thing that makes `.only-in-directories` mean anything.
 	pub machine_wide: bool,
-	/// What another target ran this one with, when one did: the environment
-	/// every build from these properties starts from, in place of the
-	/// process's own. Not a property either -- a fact about how the target was
-	/// called -- and like `machine_wide` it survives every `extend`, which
-	/// clones, so a block deep in the called target still builds on it.
-	pub inherited: Option<std::sync::Arc<crate::env::Inherited>>,
 }
 
 /// A `.watch` pattern and the directory it is matched beneath: the working
@@ -55,36 +37,20 @@ pub struct WatchPattern {
 	pub pattern: String,
 }
 
-/// Every property name, whether it may appear inside a block, and whether it
-/// is a flag.
-///
-/// Exported so tooling offers exactly what exists, and so the three axes are
-/// described once: `apply` reads this list rather than carrying its own copy,
-/// and the language server reads the same one, which is what stops an editor
-/// accepting a line the runner refuses. A test walks it and rejects any name
-/// `extend` would call unknown.
 /// One property name, as editor tooling sees it. Named apart from the AST's
 /// `Property`, which is an occurrence of one in a file.
+///
+/// Exported so tooling offers exactly what exists: `apply` reads this list
+/// rather than carrying its own copy, and the language server reads the same
+/// one, which is what stops an editor accepting a line the runner refuses. A
+/// test walks it and rejects any name `apply` would call unknown.
 pub struct KnownProperty {
 	pub name: &'static str,
-	/// Whether it may appear inside an `if` / `for` / `match` block, rather
-	/// than only at the top of a file.
-	pub block_scoped: bool,
 	/// Whether it is a flag: written bare for `= true`, and otherwise taking a
 	/// bool. A constant that is not one is refused where it is written, and a
 	/// value worked out during the run has to resolve to a bool or to one of
 	/// the words a shell and an environment variable spell one with.
 	pub flag: bool,
-	/// Whether it has to be written above the block's first statement.
-	///
-	/// These describe the whole file rather than the environment of the
-	/// commands under them, so "from here down" is not a reading they have:
-	/// `.watch` is answered once, around the run, and `.shell` and `.logging`
-	/// are one fact about a file. Everything header-only is also this. It was a
-	/// column of its own because `.parallel` was the one block-scoped property
-	/// that was; that became `parallel do` and `parallel for`, and the two
-	/// columns now agree -- kept apart because they answer different questions.
-	pub declaration_only: bool,
 	pub doc: &'static str,
 	/// What it looks like in a file. A property is a line someone writes
 	/// rather than a value they compute, so the useful thing to show is the
@@ -94,76 +60,28 @@ pub struct KnownProperty {
 
 pub const PROPERTIES: &[KnownProperty] = &[
 	KnownProperty {
-		name: "add-path",
-		block_scoped: true,
-		flag: false,
-		declaration_only: false,
-		doc: "Prepend a directory to `PATH`, relative to the working directory.",
-		example: ".add-path = \"node_modules/.bin\"",
-	},
-	KnownProperty {
-		name: "env",
-		block_scoped: true,
-		flag: false,
-		declaration_only: false,
-		doc: "Set an environment variable, addressed by sub-key: `.env.NAME = \"value\"`.",
-		example: ".env.PORT = ARG.port ? \"3000\"\n.env.DATABASE_URL = \"postgres://localhost/app\"",
-	},
-	KnownProperty {
-		name: "env-file",
-		block_scoped: true,
-		flag: false,
-		declaration_only: false,
-		doc: "Load a `.env` file, relative to the working directory. Encrypted values are decrypted in memory.",
-		example: ".env-file = \".env.{{ one_of(ARG.env, \\\"dev\\\", \\\"prod\\\") }}\"",
-	},
-	KnownProperty {
-		name: "ignore-errors",
-		block_scoped: true,
-		flag: true,
-		declaration_only: false,
-		doc: "Keep going when a command fails.",
-		example: ".ignore-errors\n\n# Creating a volume that exists is an error worth ignoring.\n$ docker volume create app-data",
-	},
-	KnownProperty {
 		name: "logging",
-		block_scoped: false,
 		flag: true,
-		declaration_only: true,
 		doc: "Announce each command on stderr before it runs.",
 		example: ".logging = true\n\n# Each command announces itself on stderr as it runs.",
 	},
 	KnownProperty {
 		name: "only-in-directories",
-		block_scoped: false,
 		flag: false,
-		declaration_only: true,
 		doc: "For the machine-wide directory: offer this target only inside these directories.",
 		example: ".only-in-directories = [\"~/work/acme\", \"~/work/zed\"]",
 	},
 	KnownProperty {
 		name: "shell",
-		block_scoped: false,
 		flag: false,
-		declaration_only: true,
 		doc: "Which POSIX shell `$` lines use: sh, bash, dash, ash, zsh, ksh, busybox or brush.",
 		example: ".shell = \"sh\"\n\n# For any other interpreter, name it on the line: `exec pwsh`.",
 	},
 	KnownProperty {
 		name: "watch",
-		block_scoped: false,
 		flag: false,
-		declaration_only: true,
 		doc: "Re-run whenever a matching file changes, relative to the working directory. A `!` prefix excludes.",
 		example: ".watch = \"src/**/*.rs\"\n.watch = \"!src/generated/**\"",
-	},
-	KnownProperty {
-		name: "workdir",
-		block_scoped: true,
-		flag: false,
-		declaration_only: false,
-		doc: "Where commands run, and what every relative path resolves against -- relative to the one in effect, which starts at the runfiles parent.",
-		example: ".workdir = \"web\"",
 	},
 ];
 
@@ -173,7 +91,7 @@ pub const PROPERTIES: &[KnownProperty] = &[
 /// read from spell one with -- `ENV.CI`, an `ARG` typed on a command line, the
 /// output of a `$` capture. Nothing else is accepted, because the alternative
 /// is what this replaced: `matches!(v, Bool(true))` read every other value as
-/// `false`, so `.ignore-errors = "yes"` was off and said nothing.
+/// `false`, so `.logging = "yes"` was off and said nothing.
 fn as_bool(v: &Value) -> Option<bool> {
 	match v {
 		Value::Bool(b) => Some(*b),
@@ -190,8 +108,6 @@ fn as_bool(v: &Value) -> Option<bool> {
 pub enum PropError {
 	#[error("line {line}: unknown property `.{name}`")]
 	Unknown { name: String, line: usize },
-	#[error("line {line}: `.{name}` is header-only and cannot be set inside a block")]
-	NotBlockScoped { name: String, line: usize },
 	#[error("line {line}: `.{name}` needs a value")]
 	NeedsValue { name: String, line: usize },
 	#[error("line {line}: `.{name}` scopes the machine-wide directory; this target is part of the project")]
@@ -203,10 +119,6 @@ pub enum PropError {
 	NotABool { name: String, line: usize, kind: String },
 	#[error("line {line}: `.{name}` is a flag and needs `true` or `false`; this resolved to `{got}`")]
 	FlagValue { name: String, line: usize, got: String },
-	#[error(
-		"line {line}: `.{name}` describes the whole block, so it has to be written above the block's first statement"
-	)]
-	NotInDeclaration { name: String, line: usize },
 	/// `.shell` names which of the eight POSIX shells `$` uses, and nothing
 	/// else. Any other program reached the same spawn by a path that reads
 	/// nothing like a shell -- no `-e`, and the script on stdin rather than
@@ -218,11 +130,6 @@ pub enum PropError {
 	NotAShell { line: usize, got: String },
 	#[error(transparent)]
 	Eval(#[from] EvalError),
-	/// Building the environment part-way through a declaration region, for a
-	/// value about to read it: an `.env-file` above it that will not parse or
-	/// decrypt says so here rather than at the block's first statement.
-	#[error(transparent)]
-	Env(#[from] crate::env::EnvError),
 }
 
 /// How a constant that is not a bool reads in a message, with the hint that
@@ -241,62 +148,24 @@ pub fn describe_constant(c: &runfile_lang::Constant) -> String {
 	}
 }
 
-/// Whether applying this property changes the environment a value reads.
-pub(crate) fn changes_env(p: &Property) -> bool {
-	matches!(p.path[0].as_str(), "env" | "env-file" | "add-path")
-}
-
-/// Rebuild the environment `sc` reads from `props`, when something since the
-/// last build changed it (`stale`) and `value` is about to read it.
-///
-/// Shared by a declaration region and a `_shared.run` fold, the two places
-/// properties are applied without the walker rebuilding after each one.
-pub(crate) fn keep_current(
-	props: &Props,
-	value: Option<&Expr>,
-	sc: &mut Scope,
-	stale: &mut bool,
-) -> Result<(), PropError> {
-	if *stale && value.is_some_and(Expr::reads_env) {
-		sc.env = crate::env::for_props(props, &sc.anchor, &sc.private_keys, sc.preview)?;
-		*stale = false;
-	}
-	Ok(())
-}
-
 /// Everything about a property line that is answerable without running it.
 ///
-/// One function, so the three static rules are asked in one order and the
-/// language server can ask them the same way -- an editor accepting a line the
-/// runner refuses is how the two come to disagree about what a file means.
-pub fn check(p: &Property, nested: bool, trailing: bool) -> Result<&'static KnownProperty, PropError> {
-	let head = p.path[0].as_str();
+/// One function, so the static rules are asked in one order and the language
+/// server can ask them the same way -- an editor accepting a line the runner
+/// refuses is how the two come to disagree about what a file means. Where a
+/// property may sit is the parser's to say, being a question about the text.
+pub fn check(p: &Property) -> Result<&'static KnownProperty, PropError> {
 	let line = p.span.line;
-	// Whether it exists comes first: the other questions are about a name this
-	// list has, so asking any of them first told someone who typed
-	// `.ignore-error` inside a `for` that it was header-only -- sending them
-	// after a rule instead of a spelling mistake.
-	let Some(known) = PROPERTIES.iter().find(|k| k.name == head) else {
+	let known = match p.path.as_slice() {
+		[head] => PROPERTIES.iter().find(|k| k.name == head),
+		_ => None,
+	};
+	let Some(known) = known else {
 		return Err(PropError::Unknown {
 			name: p.path.join("."),
 			line,
 		});
 	};
-	// Where it may sit, from the outside in: what a block allows at all, then
-	// whereabouts in one. Header-only is the sharper answer of the two, and
-	// everything header-only is also declaration-only, so it is asked first.
-	if nested && !known.block_scoped {
-		return Err(PropError::NotBlockScoped {
-			name: p.path.join("."),
-			line,
-		});
-	}
-	if trailing && known.declaration_only {
-		return Err(PropError::NotInDeclaration {
-			name: p.path.join("."),
-			line,
-		});
-	}
 	// A flag written with a constant that can never be a bool is answered here
 	// rather than by evaluating it: `.logging = 23` has one reading and it is
 	// a mistake, so it is reported whether or not the line would have been
@@ -314,7 +183,7 @@ pub fn check(p: &Property, nested: bool, trailing: bool) -> Result<&'static Know
 	// The same shape for the one property whose *values* are a fixed set: a
 	// constant is answered here, and anything the run works out is answered by
 	// `apply`, against the same predicate.
-	if head == "shell"
+	if known.name == "shell"
 		&& let Some(e) = &p.value
 		&& let Some(runfile_lang::Constant::Str(s)) = e.constant_non_bool()
 		&& !crate::exec::body_is_shell(Some(&s))
@@ -325,83 +194,23 @@ pub fn check(p: &Property, nested: bool, trailing: bool) -> Result<&'static Know
 }
 
 impl Props {
-	/// Layer a block's declaration region over the inherited set.
+	/// Layer a file's properties over the ones it inherits from the
+	/// `_shared.run` files above it.
 	///
-	/// Only the region above the first statement: a property written below one
-	/// is applied by the walker where it sits, so that it can read the bindings
-	/// above it. The ones that could not mean that are refused here rather than
-	/// there -- this runs before the block does, so the message arrives whether
-	/// or not the line would have been reached.
-	///
-	/// **A value reads the environment as it stands at its own line.** The
-	/// region is applied one property at a time, and the walker builds the
-	/// environment only once it is done -- so `.env.B = ENV.A` below
-	/// `.env.A = "a"` read the caller's `A`, and a value composed from what an
-	/// `.env-file` above it had loaded found nothing there. `keep_current`
-	/// rebuilds before a value that is about to look, and only then: a header
-	/// that never reads `ENV` costs exactly what it did, which matters because
-	/// the watch probe evaluates every header a second time. Whatever was
-	/// rebuilt here is put back before returning, since the block's own
-	/// environment is the walker's to build and to undo -- left in place, it
-	/// would be what `with_block_env` saves, and outlive the block.
-	pub fn extend(&self, block: &Block, sc: &mut Scope, nested: bool) -> Result<Props, PropError> {
+	/// Each value is worked out against the scope as it stands: a file's own
+	/// properties are read before its first line runs, after every
+	/// `_shared.run` above it has, so a value reads what those set and bound.
+	pub fn extend(&self, block: &Block, sc: &mut Scope) -> Result<Props, PropError> {
 		let mut out = self.clone();
-		// A nested block inherits behaviour but never a parent's one-shot header
-		// state.
-		if nested {
-			out.watch.clear();
+		for p in &block.properties {
+			out.apply(p, sc)?;
 		}
-		for p in block.trailing() {
-			check(p, nested, true)?;
-		}
-		let region = block.declaration();
-		// Only a region where some value reads the environment can need it
-		// rebuilt part-way; every other one clones nothing.
-		let saved = region
-			.iter()
-			.any(|p| p.value.as_ref().is_some_and(Expr::reads_env))
-			.then(|| sc.env.clone());
-		// A nested block is entered with its enclosing environment already
-		// built. The top of a target is not: the `_shared.run` chain has been
-		// folded into `self`, and the environment is only built after this.
-		let mut stale = !nested && self.touches_env();
-		// `apply` moves the working directory a value reads from as each
-		// `.workdir` lands; like the environment, it is the walker's to set for
-		// the block, so it is put back too.
-		let workdir = sc.workdir.clone();
-		let applied = region.iter().try_for_each(|p| {
-			keep_current(&out, p.value.as_ref(), sc, &mut stale)?;
-			out.apply(p, sc, nested)?;
-			stale |= changes_env(p);
-			Ok::<(), PropError>(())
-		});
-		sc.workdir = workdir;
-		if let Some(env) = saved {
-			sc.env = env;
-		}
-		applied.map(|()| out)
+		Ok(out)
 	}
 
-	/// The working directory these properties describe, for a target anchored
-	/// at `anchor`: where a command runs, and what a relative path resolves
-	/// against.
-	pub fn workdir_in(&self, anchor: &Path) -> PathBuf {
-		self.workdir.clone().unwrap_or_else(|| anchor.to_path_buf())
-	}
-
-	/// Whether these properties contribute anything to the environment.
-	pub(crate) fn touches_env(&self) -> bool {
-		!self.env.is_empty() || !self.env_files.is_empty() || !self.add_paths.is_empty()
-	}
-
-	pub(crate) fn apply(&mut self, p: &Property, sc: &mut Scope, nested: bool) -> Result<(), PropError> {
-		let head = p.path[0].as_str();
+	pub(crate) fn apply(&mut self, p: &Property, sc: &mut Scope) -> Result<(), PropError> {
+		let known = check(p)?;
 		let line = p.span.line;
-		check(p, nested, false)?;
-		// The value is worked out where the line is, so a file it reads, and a
-		// relative path it names, are both relative to the working directory as
-		// it stands here: below a `.workdir`, and not below one written later.
-		sc.workdir = self.workdir_in(&sc.anchor);
 		let value = |p: &Property, sc: &mut Scope| -> Result<Value, PropError> {
 			match &p.value {
 				Some(e) => Ok(eval_boundary(e, sc)?),
@@ -424,7 +233,7 @@ impl Props {
 				}
 			}
 		};
-		match head {
+		match known.name {
 			"shell" => {
 				let v = value(p, sc)?.to_string();
 				if !crate::exec::body_is_shell(Some(&v)) {
@@ -433,31 +242,7 @@ impl Props {
 				self.shell = Some(v);
 			}
 			"logging" => self.logging = flag(p, sc)?,
-			"ignore-errors" => self.ignore_errors = flag(p, sc)?,
-			// Relative to the one in effect, the way `cd` is: a block's `.workdir
-			// = "src"` under a header's `"web"` is `web/src`.
-			"workdir" => {
-				let v = value(p, sc)?.to_string();
-				self.workdir = Some(sc.workdir.join(v));
-			}
-			"env" => {
-				if p.path.len() != 2 {
-					return Err(PropError::Unknown {
-						name: p.path.join("."),
-						line,
-					});
-				}
-				self.env.insert(p.path[1].clone(), value(p, sc)?.to_string());
-			}
-			// Repeated keys append; these are list-valued by nature.
-			"env-file" => {
-				let v = value(p, sc)?;
-				self.env_files.extend(each(v).map(|f| at(&sc.workdir, &f)));
-			}
-			"add-path" => {
-				let v = value(p, sc)?;
-				self.add_paths.extend(each(v).map(|d| at(&sc.workdir, &d)));
-			}
+			// Repeated keys append.
 			"watch" => {
 				let v = value(p, sc)?;
 				self.watch.extend(each(v).map(|pattern| WatchPattern {
@@ -478,12 +263,7 @@ impl Props {
 					});
 				}
 			}
-			_ => {
-				return Err(PropError::Unknown {
-					name: p.path.join("."),
-					line,
-				});
-			}
+			_ => unreachable!("`check` answered with a property `apply` does not know"),
 		}
 		Ok(())
 	}
@@ -496,9 +276,4 @@ fn each(v: Value) -> impl Iterator<Item = String> {
 		other => vec![other.to_string()],
 	}
 	.into_iter()
-}
-
-/// `path` resolved against `dir`; an absolute one is taken as written.
-fn at(dir: &Path, path: &str) -> String {
-	dir.join(path).to_string_lossy().into_owned()
 }

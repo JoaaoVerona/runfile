@@ -435,7 +435,7 @@ fn an_interpolated_secret_is_not_leaked_by_the_runner() {
 	// while interpolating the secret.
 	let fail = project(&[(
 		"runfiles/f.run",
-		".env.FAKE_TOKEN = \"tok_FAKE_0123456789\"\n$ false {{ ENV.FAKE_TOKEN }}\n",
+		"ENV.FAKE_TOKEN = \"tok_FAKE_0123456789\"\n$ false {{ ENV.FAKE_TOKEN }}\n",
 	)]);
 	let o = fail.run(&["f"]);
 	assert!(!o.status.success());
@@ -447,7 +447,7 @@ fn an_interpolated_secret_is_not_leaked_by_the_runner() {
 	// carry the value, and they must not.
 	let log = project(&[(
 		"runfiles/l.run",
-		".logging = true\n.env.FAKE_TOKEN = \"tok_FAKE_0123456789\"\n$ true {{ ENV.FAKE_TOKEN }}\n",
+		".logging = true\nENV.FAKE_TOKEN = \"tok_FAKE_0123456789\"\n$ true {{ ENV.FAKE_TOKEN }}\n",
 	)]);
 	let o = log.run(&["l"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -837,7 +837,7 @@ fn a_workdir_can_be_worked_out_by_the_lines_above_it() {
 	// statement whatever the order, so this was `d is not defined`.
 	let p = project(&[(
 		"runfiles/where.run",
-		"let d = concat(\"su\", \"b\")\n.workdir = d\n$ pwd > out.txt\n",
+		"let d = concat(\"su\", \"b\")\nset_cwd(d)\n$ pwd > out.txt\n",
 	)]);
 	std::fs::create_dir(p.dir.path().join("sub")).unwrap();
 	let o = p.run(&["where"]);
@@ -853,7 +853,7 @@ fn a_workdir_can_be_worked_out_by_the_lines_above_it() {
 fn a_property_below_a_statement_takes_effect_from_there_down() {
 	let p = project(&[(
 		"runfiles/half.run",
-		"$ pwd > before.txt\n.workdir = \"sub\"\n$ pwd > after.txt\n",
+		"$ pwd > before.txt\nset_cwd(\"sub\")\n$ pwd > after.txt\n",
 	)]);
 	std::fs::create_dir(p.dir.path().join("sub")).unwrap();
 	let o = p.run(&["half"]);
@@ -873,7 +873,7 @@ fn workdir_moves_the_target_without_moving_the_anchor() {
 	let p = project(&[
 		(
 			"runfiles/where.run",
-			".workdir = \"sub\"\n$ pwd > {{ RUN.parent }}/out.txt\n",
+			"set_cwd(\"sub\")\n$ pwd > {{ RUN.parent }}/out.txt\n",
 		),
 		("sub/.keep", ""),
 	]);
@@ -886,7 +886,7 @@ fn workdir_moves_the_target_without_moving_the_anchor() {
 #[test]
 fn add_path_puts_a_relative_directory_on_path() {
 	let p = project(&[
-		("runfiles/tool.run", ".add-path = \"bin\"\n$ mytool > out.txt\n"),
+		("runfiles/tool.run", "add_path(\"bin\")\n$ mytool > out.txt\n"),
 		("bin/mytool", "#!/bin/sh\nprintf found\n"),
 	]);
 	#[cfg(unix)]
@@ -902,12 +902,12 @@ fn add_path_puts_a_relative_directory_on_path() {
 
 #[test]
 fn add_path_resolves_against_the_workdir_in_effect_where_it_is_written() {
-	// Two `.add-path = "bin"` lines name two directories: the one above the
+	// Two `add_path("bin"` lines name two directories: the one above the)
 	// `.workdir` is the project's `bin/`, the one below it is `sub/bin/`.
 	let p = project(&[
 		(
 			"runfiles/tool.run",
-			".add-path = \"bin\"\n.workdir = \"sub\"\n.add-path = \"bin\"\n$ mytool > out.txt\n$ subtool >> out.txt\n",
+			"add_path(\"bin\")\nset_cwd(\"sub\")\nadd_path(\"bin\")\n$ mytool > out.txt\n$ subtool >> out.txt\n",
 		),
 		("bin/mytool", "#!/bin/sh\nprintf found\n"),
 		("sub/bin/subtool", "#!/bin/sh\nprintf -- -sub\n"),
@@ -930,7 +930,7 @@ fn add_path_resolves_against_the_workdir_in_effect_where_it_is_written() {
 
 #[test]
 fn a_workdir_that_does_not_exist_is_named_and_the_shell_is_not_blamed() {
-	let p = project(&[("runfiles/t.run", ".workdir = \"nope\"\n\n$ true\n")]);
+	let p = project(&[("runfiles/t.run", "set_cwd(\"nope\")\n\n$ true\n")]);
 	let o = p.run(&["t"]);
 	assert!(!o.status.success());
 	let e = err(&o);
@@ -944,16 +944,16 @@ fn a_workdir_that_does_not_exist_is_named_and_the_shell_is_not_blamed() {
 #[test]
 fn a_machine_wide_target_moved_to_the_working_directory_reads_from_it_too() {
 	// The machine-wide directory's anchor is the home directory, so a
-	// `_shared.run` there says `.workdir = RUN.cwd` to act on the project in
+	// `_shared.run` there says `set_cwd(RUN.cwd` to act on the project in)
 	// front of it. That moved the commands and nothing else: `read_file`, `glob`
 	// and `.env-file` still looked in the home directory.
 	let p = project(&[("work/marker", "here"), ("work/.env", "FROM=work\n")]);
 	let g = p.home.path().join(".runfiles");
 	std::fs::create_dir_all(&g).unwrap();
-	std::fs::write(g.join("_shared.run"), ".workdir = RUN.cwd\n").unwrap();
+	std::fs::write(g.join("_shared.run"), "set_cwd(RUN.cwd)\n").unwrap();
 	std::fs::write(
 		g.join("look.run"),
-		".env-file = \".env\"\n\nprint(read_file(\"marker\"), glob(\"mark*\"), ENV.FROM ? \"unset\")\n$ test \"$(cat marker)\" = here\n",
+		"import_env_file(\".env\")\n\nprint(read_file(\"marker\"), glob(\"mark*\"), ENV.FROM ? \"unset\")\n$ test \"$(cat marker)\" = here\n",
 	)
 	.unwrap();
 	std::fs::write(p.home.path().join("marker"), "home").unwrap();
@@ -2083,10 +2083,7 @@ fn exit_stops_the_statements_after_it() {
 fn ignore_errors_does_not_shrug_off_an_exit() {
 	// A target may forgive a command that failed. Being told to stop is not
 	// that -- same reason an interrupt is not ignorable.
-	let p = project(&[(
-		"runfiles/e.run",
-		".ignore-errors = true\n$ false\nexit(5)\n$ echo after\n",
-	)]);
+	let p = project(&[("runfiles/e.run", "ignore_errors()\n$ false\nexit(5)\n$ echo after\n")]);
 	let o = p.run(&["e"]);
 	assert_eq!(code_of(&o), 5);
 	assert!(!out(&o).contains("after"), "{}", out(&o));
@@ -2099,13 +2096,13 @@ const CALLED_EXITS: [(&str, &str, i32, &[&str]); 4] = [
 	("stops", "{run} _fails\nprint(\"after\")\n", 7, &["fails"]),
 	(
 		"forgives",
-		".ignore-errors\n\n{run} _fails\nprint(\"after\")\n",
+		"ignore_errors()\n\n{run} _fails\nprint(\"after\")\n",
 		0,
 		&["fails", "after"],
 	),
 	(
 		"retries",
-		".ignore-errors\n\nretry 2\n\t{run} _fails\nend\n\nprint(\"after\")\n",
+		"ignore_errors()\n\nretry 2\n\t{run} _fails\nend\n\nprint(\"after\")\n",
 		0,
 		&["fails", "fails", "after"],
 	),
@@ -2161,7 +2158,7 @@ fn an_exit_above_the_first_statement_ends_the_run_with_its_status() {
 			"let region = ENV.RUNFILE_T_REGION ? exit(3)\n",
 		),
 		("runfiles/sub/deploy.run", "print(\"unreached\")\n"),
-		("runfiles/header.run", ".env.X = exit(0)\n\nprint(\"unreached\")\n"),
+		("runfiles/header.run", "ENV.X = exit(0)\n\nprint(\"unreached\")\n"),
 	]);
 	for (target, code) in [("sub:deploy", 3), ("header", 0)] {
 		let o = p.run(&[target]);
@@ -2761,9 +2758,9 @@ fn a_nested_shared_file_layers_over_the_one_above_it() {
 	let p = project(&[
 		(
 			"runfiles/_shared.run",
-			".env.SHARED = \"root\"\n.env.ONLY_ROOT = \"yes\"\n",
+			"ENV.SHARED = \"root\"\nENV.ONLY_ROOT = \"yes\"\n",
 		),
-		("runfiles/api/_shared.run", ".env.SHARED = \"api\"\n"),
+		("runfiles/api/_shared.run", "ENV.SHARED = \"api\"\n"),
 		("runfiles/api/show.run", "$ echo {{ ENV.SHARED }} {{ ENV.ONLY_ROOT }}\n"),
 	]);
 	let o = p.run(&["api:show"]);
@@ -3744,7 +3741,7 @@ fn a_printf_that_does_not_match_its_values_stops_the_run() {
 // ------------------------------------------- block-scoped env-file / add-path
 
 /// A project with two `.env` files and an executable on a relative path, which
-/// is what the block-scoping tests below all need.
+/// is what the state tests below all need.
 fn env_project(files: &[(&str, &str)]) -> Project {
 	let mut all: Vec<(&str, &str)> = vec![
 		(".env.base", "BASE=from-base\nSHARED=base-wins\n"),
@@ -3763,10 +3760,10 @@ fn env_project(files: &[(&str, &str)]) -> Project {
 }
 
 #[test]
-fn a_blocks_env_file_applies_inside_it_and_nowhere_else() {
+fn a_file_a_do_block_imports_applies_inside_it_and_nowhere_else() {
 	let p = env_project(&[(
 		"runfiles/t.run",
-		"# T.\nprint(\"before:\", ENV.EXTRA ? \"unset\")\n\nif true\n\t.env-file = \".env.extra\"\n\n\tprint(\"inside:\", ENV.EXTRA)\nend\n\nprint(\"after:\", ENV.EXTRA ? \"unset\")\n",
+		"# T.\nprint(\"before:\", ENV.EXTRA ? \"unset\")\n\ndo\n\timport_env_file(\".env.extra\")\n\n\tprint(\"inside:\", ENV.EXTRA)\nend\n\nprint(\"after:\", ENV.EXTRA ? \"unset\")\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -3777,11 +3774,29 @@ fn a_blocks_env_file_applies_inside_it_and_nowhere_else() {
 }
 
 #[test]
-fn a_blocks_env_file_reaches_the_commands_in_it_too() {
+fn what_any_other_block_changes_lasts_for_the_lines_below_it() {
+	// The way a `let` inside an `if` outlives its `end`: `if RUN.os == "mac"`
+	// around an `add_path()` is how a target puts a directory on PATH for the
+	// rest of its lines. Only a `do` puts the state back.
+	let p = env_project(&[(
+		"runfiles/t.run",
+		"# T.\nif true\n\timport_env_file(\".env.extra\")\n\tadd_path(\"tools\")\n\tset_cwd(\"tools\")\nend\n\n\
+		 $ printf '%s|%s|%s' \"$EXTRA\" \"$(mytool)\" \"${PWD##*/}\" > ../after.txt\n",
+	)]);
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(
+		std::fs::read_to_string(p.dir.path().join("after.txt")).unwrap(),
+		"from-extra|tool-ran|tools"
+	);
+}
+
+#[test]
+fn a_file_a_do_block_imports_reaches_the_commands_in_it_too() {
 	// Not just `{{ ENV.x }}`: the child process gets it as a real variable.
 	let p = env_project(&[(
 		"runfiles/t.run",
-		"# T.\nif true\n\t.env-file = \".env.extra\"\n\n\t$ printf '%s' \"$EXTRA\" > inside.txt\nend\n\n$ printf '%s' \"${EXTRA:-unset}\" > after.txt\n",
+		"# T.\ndo\n\timport_env_file(\".env.extra\")\n\n\t$ printf '%s' \"$EXTRA\" > inside.txt\nend\n\n$ printf '%s' \"${EXTRA:-unset}\" > after.txt\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -3796,12 +3811,13 @@ fn a_blocks_env_file_reaches_the_commands_in_it_too() {
 }
 
 #[test]
-fn a_block_inherits_the_env_file_around_it_and_adds_to_it() {
-	// It appends rather than replaces, so the outer file is not lost -- and a
-	// key in both is the later file's.
+fn a_do_block_starts_from_the_file_around_it_and_adds_to_it() {
+	// A file adds to what is there rather than replacing it, so the outer file
+	// is not lost -- and a key in both is the later file's, until the block
+	// puts the earlier one back.
 	let p = env_project(&[(
 		"runfiles/t.run",
-		"# T.\n.env-file = \".env.base\"\n\nif true\n\t.env-file = \".env.extra\"\n\n\tprint(ENV.BASE, ENV.EXTRA, ENV.SHARED)\nend\n\nprint(ENV.BASE, ENV.SHARED)\n",
+		"# T.\nimport_env_file(\".env.base\")\n\ndo\n\timport_env_file(\".env.extra\")\n\n\tprint(ENV.BASE, ENV.EXTRA, ENV.SHARED)\nend\n\nprint(ENV.BASE, ENV.SHARED)\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -3812,10 +3828,10 @@ fn a_block_inherits_the_env_file_around_it_and_adds_to_it() {
 }
 
 #[test]
-fn a_blocks_add_path_applies_inside_it_and_nowhere_else() {
+fn an_add_path_in_a_do_block_applies_inside_it_and_nowhere_else() {
 	let p = env_project(&[(
 		"runfiles/t.run",
-		"# T.\nif true\n\t.add-path = \"tools\"\n\n\t$ mytool > inside.txt\nend\n\n$ mytool > after.txt 2>/dev/null || printf gone > after.txt\n",
+		"# T.\ndo\n\tadd_path(\"tools\")\n\n\t$ mytool > inside.txt\nend\n\n$ mytool > after.txt 2>/dev/null || printf gone > after.txt\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -3827,12 +3843,13 @@ fn a_blocks_add_path_applies_inside_it_and_nowhere_else() {
 }
 
 #[test]
-fn a_loop_does_not_accumulate_one_iterations_env_file_into_the_next() {
-	// The environment a block inherited comes back when it closes, so three
-	// iterations layer one file each rather than one, two, three.
+fn a_loop_that_imports_the_same_file_each_pass_ends_with_its_values() {
+	// A pass starts from where the one before left it, as any block but a
+	// `do` does -- and importing a file again over its own values changes
+	// nothing.
 	let p = env_project(&[(
 		"runfiles/t.run",
-		"# T.\nfor i in [1, 2, 3]\n\t.env-file = \".env.extra\"\n\n\tprint(i, ENV.SHARED, ENV.BASE ? \"no-base\")\nend\n",
+		"# T.\nfor i in [1, 2, 3]\n\timport_env_file(\".env.extra\")\n\n\tprint(i, ENV.SHARED, ENV.BASE ? \"no-base\")\nend\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -3843,23 +3860,23 @@ fn a_loop_does_not_accumulate_one_iterations_env_file_into_the_next() {
 }
 
 #[test]
-fn a_blocks_env_file_can_be_chosen_by_a_binding_the_body_computed() {
-	// This is what block scoping buys: a header property resolves before any
-	// statement runs, so it can only read sources. Inside a block, the file
-	// can be named by something the target worked out first.
+fn an_imported_file_can_be_chosen_by_a_binding_the_lines_above_computed() {
+	// A header property resolves before any statement runs, so it can only
+	// read sources. A line can be named by something the target worked out
+	// first.
 	let p = env_project(&[(
 		"runfiles/t.run",
-		"# T.\nlet which = ARG.which ? \"base\"\n\nif true\n\t.env-file = \".env.{{ which }}\"\n\n\tprint(ENV.SHARED)\nend\n",
+		"# T.\nlet which = ARG.which ? \"base\"\n\nif true\n\timport_env_file(\".env.{{ which }}\")\n\n\tprint(ENV.SHARED)\nend\n",
 	)]);
 	assert_eq!(out(&p.run(&["t"])).trim(), "base-wins");
 	assert_eq!(out(&p.run(&["t", "--which=extra"])).trim(), "extra-wins");
 }
 
 #[test]
-fn nested_blocks_layer_their_env_files() {
+fn nested_do_blocks_layer_their_files() {
 	let p = env_project(&[(
 		"runfiles/t.run",
-		"# T.\nif true\n\t.env-file = \".env.base\"\n\n\tif true\n\t\t.env-file = \".env.extra\"\n\n\t\tprint(\"deep:\", ENV.SHARED, ENV.BASE)\n\tend\n\n\tprint(\"mid:\", ENV.SHARED)\nend\n",
+		"# T.\ndo\n\timport_env_file(\".env.base\")\n\n\tdo\n\t\timport_env_file(\".env.extra\")\n\n\t\tprint(\"deep:\", ENV.SHARED, ENV.BASE)\n\tend\n\n\tprint(\"mid:\", ENV.SHARED)\nend\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -3870,18 +3887,17 @@ fn nested_blocks_layer_their_env_files() {
 }
 
 #[test]
-fn a_block_env_file_that_is_not_there_is_skipped_exactly_as_a_header_one_is() {
-	// A `.env-file` naming a file that is not there is tolerated -- a project
-	// whose `.env` is git-ignored still has to run. The block form does not
-	// get to disagree with the header form about that.
+fn an_imported_file_that_is_not_there_is_skipped_wherever_the_line_is() {
+	// A file that is not there is tolerated -- a project whose `.env` is
+	// git-ignored still has to run -- inside a block as at the top.
 	let p = env_project(&[
 		(
 			"runfiles/block.run",
-			"# Block.\nif true\n\t.env-file = \".env.missing\"\n\n\tprint(\"ran\")\nend\n",
+			"# Block.\nif true\n\timport_env_file(\".env.missing\")\n\n\tprint(\"ran\")\nend\n",
 		),
 		(
 			"runfiles/header.run",
-			"# Header.\n.env-file = \".env.missing\"\n\nprint(\"ran\")\n",
+			"# Header.\nimport_env_file(\".env.missing\")\n\nprint(\"ran\")\n",
 		),
 	]);
 	for target in ["block", "header"] {
@@ -3892,10 +3908,10 @@ fn a_block_env_file_that_is_not_there_is_skipped_exactly_as_a_header_one_is() {
 }
 
 #[test]
-fn a_blocks_env_key_and_env_file_both_reach_the_block() {
+fn an_assignment_and_an_imported_file_both_reach_the_block() {
 	let p = env_project(&[(
 		"runfiles/t.run",
-		"# T.\nif true\n\t.env-file = \".env.extra\"\n\t.env.DIRECT = \"set-here\"\n\n\t$ printf '%s %s' \"$EXTRA\" \"$DIRECT\" > out.txt\nend\n",
+		"# T.\nif true\n\timport_env_file(\".env.extra\")\n\tENV.DIRECT = \"set-here\"\n\n\t$ printf '%s %s' \"$EXTRA\" \"$DIRECT\" > out.txt\nend\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -3906,19 +3922,31 @@ fn a_blocks_env_key_and_env_file_both_reach_the_block() {
 }
 
 #[test]
-fn a_match_arm_and_a_retry_body_scope_them_too() {
-	// Every block form goes through the same entry point, so this is really a
-	// check that none of them takes a different path.
+fn a_match_arm_and_a_retry_body_leave_what_they_import_for_the_lines_below() {
+	// Each form reaches the state through its own arm of the walker, so each
+	// is asked. A `retry` keeps what the attempt that worked imported.
 	let p = env_project(&[(
 		"runfiles/t.run",
-		"# T.\nmatch \"a\"\n\tcase \"a\"\n\t\t.env-file = \".env.extra\"\n\n\t\tprint(\"match:\", ENV.EXTRA)\nend\n\nretry 1\n\t.env-file = \".env.base\"\n\n\tprint(\"retry:\", ENV.BASE, ENV.EXTRA ? \"no-extra\")\nend\n",
+		"# T.\nmatch \"a\"\n\tcase \"a\"\n\t\timport_env_file(\".env.extra\")\nend\n\nretry 1\n\timport_env_file(\".env.base\")\nend\n\nprint(ENV.EXTRA, ENV.BASE)\n",
 	)]);
 	let o = p.run(&["t"]);
 	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(
-		out(&o).lines().collect::<Vec<_>>(),
-		["match: from-extra", "retry: from-base no-extra"]
-	);
+	assert_eq!(out(&o).trim(), "from-extra from-base");
+}
+
+#[test]
+fn every_attempt_of_a_retry_starts_where_the_retry_did() {
+	// An attempt is the block run again, and again from wherever the last one
+	// gave up -- in `web`, so the next went to `web/web` -- is not what again
+	// means. The attempt that worked is kept.
+	let p = project(&[(
+		"runfiles/t.run",
+		"# T.\nlet n = 0\nretry 3\n\tn = n + 1\n\tset_cwd(\"web\")\n\tENV.TRIES = \"{{ ENV.TRIES ? \"\" }}x\"\n\tif n < 3\n\t\terror(\"again\")\n\tend\nend\n$ printf '%s|%s' \"${PWD##*/}\" \"$TRIES\" > ../seen.txt\n",
+	)]);
+	std::fs::create_dir(p.dir.path().join("web")).unwrap();
+	let o = p.run(&["t"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(std::fs::read_to_string(p.dir.path().join("seen.txt")).unwrap(), "web|x");
 }
 
 // ------------------------------------------------------------- target --help
@@ -4050,7 +4078,7 @@ fn a_bare_block_scopes_a_property_to_the_commands_in_it() {
 	let p = project(&[
 		(
 			"runfiles/t.run",
-			"# T.\n$ pwd > root.txt\n\ndo\n\t.workdir = \"web\"\n\n\t$ pwd > inside.txt\n\t$ printf second >> inside.txt\nend\n\n$ pwd >> root.txt\n",
+			"# T.\n$ pwd > root.txt\n\ndo\n\tset_cwd(\"web\")\n\n\t$ pwd > inside.txt\n\t$ printf second >> inside.txt\nend\n\n$ pwd >> root.txt\n",
 		),
 		("web/.keep", ""),
 	]);
@@ -4106,7 +4134,7 @@ fn help_lists_only_what_the_target_really_reads() {
 #[test]
 fn a_shared_files_inputs_count_for_every_target_under_it() {
 	let p = project(&[
-		("runfiles/_shared.run", "# Shared.\n.env.MODE = ARG.mode ? \"dev\"\n"),
+		("runfiles/_shared.run", "# Shared.\nENV.MODE = ARG.mode ? \"dev\"\n"),
 		("runfiles/t.run", "# T.\nprint(ENV.MODE)\n"),
 	]);
 	let o = p.run(&["t", "--mode=prod"]);
@@ -4391,10 +4419,10 @@ fn help_does_not_list_a_name_the_target_sets_itself() {
 	// input: telling someone to pass it is telling them to pass something that
 	// is then ignored. `--stdin-args` asks from the same list.
 	let p = project(&[
-		("runfiles/_shared.run", ".env.FROM_SHARED = \"x\"\n"),
+		("runfiles/_shared.run", "ENV.FROM_SHARED = \"x\"\n"),
 		(
 			"runfiles/serve.run",
-			"# Serve.\n\n.env.PORT = \"3000\"\n\nprint(ENV.PORT)\nprint(ENV.FROM_SHARED)\nprint(ENV.TOKEN)\n",
+			"# Serve.\n\nENV.PORT = \"3000\"\n\nprint(ENV.PORT)\nprint(ENV.FROM_SHARED)\nprint(ENV.TOKEN)\n",
 		),
 	]);
 	let text = out(&p.run(&["serve", "--help"]));
@@ -4410,7 +4438,7 @@ fn a_target_env_property_wins_over_the_callers_for_every_reader() {
 	// which is what commands had been receiving all along.
 	let p = project(&[(
 		"runfiles/t.run",
-		".env.PORT = \"3000\"\n\nprint(concat(\"env=\", ENV.PORT))\n\n$ echo \"sh=$PORT\"\n",
+		"ENV.PORT = \"3000\"\n\nprint(concat(\"env=\", ENV.PORT))\n\n$ echo \"sh=$PORT\"\n",
 	)]);
 	let o = p.command(p.dir.path(), &["t"]).env("PORT", "4000").output().unwrap();
 	assert!(o.status.success(), "{}", err(&o));
@@ -4418,12 +4446,13 @@ fn a_target_env_property_wins_over_the_callers_for_every_reader() {
 }
 
 #[test]
-fn a_blocks_env_reaches_env_reads_and_is_undone_when_it_closes() {
-	// A block that set only `.env` was never rebuilt, so a command saw the
-	// value -- laid back on top at spawn -- while `ENV.X` beside it did not.
+fn an_assignment_in_a_do_reaches_env_reads_and_is_undone_when_it_closes() {
+	// Once, a block that set only `.env` was never rebuilt, so a command saw
+	// the value -- laid back on top at spawn -- while `ENV.X` beside it did
+	// not. There is one environment now, the one both read.
 	let p = project(&[(
 		"runfiles/t.run",
-		"if true\n\t.env.X = \"inner\"\n\tprint(concat(\"in=\", ENV.X))\n\t$ echo \"sh=$X\"\nend\nprint(concat(\"out=\", ENV.X ? \"unset\"))\n",
+		"do\n\tENV.X = \"inner\"\n\tprint(concat(\"in=\", ENV.X))\n\t$ echo \"sh=$X\"\nend\nprint(concat(\"out=\", ENV.X ? \"unset\"))\n",
 	)]);
 	let o = p.command(p.dir.path(), &["t"]).env_remove("X").output().unwrap();
 	assert!(o.status.success(), "{}", err(&o));
@@ -4438,7 +4467,7 @@ fn an_env_file_is_a_default_the_caller_overrides() {
 	// The dotenv rule, kept: a checked-in `.env` must not clobber what someone
 	// exported. Only the target's own `.env` assignment beats the caller.
 	let p = project(&[
-		("runfiles/t.run", ".env-file = \".env\"\nprint(ENV.X)\n"),
+		("runfiles/t.run", "import_env_file(\".env\")\nprint(ENV.X)\n"),
 		(".env", "X=from-file\n"),
 	]);
 	let o = p.command(p.dir.path(), &["t"]).env("X", "caller").output().unwrap();
@@ -4453,7 +4482,7 @@ fn a_shared_property_below_a_let_applies() {
 	// region above its first `let` -- so this property was dropped without a
 	// word, where it used to be at least an error.
 	let p = project(&[
-		("runfiles/_shared.run", "let dir = \"from-shared\"\n.env.MARK = dir\n"),
+		("runfiles/_shared.run", "let dir = \"from-shared\"\nENV.MARK = dir\n"),
 		("runfiles/t.run", "print(ENV.MARK)\n"),
 	]);
 	let o = p.run(&["t"]);
@@ -4465,7 +4494,7 @@ fn a_shared_property_below_a_let_applies() {
 fn a_property_below_the_last_statement_is_still_evaluated() {
 	// Nothing below it for it to affect, but it is applied where it sits like
 	// any other, so a broken one says so rather than being skipped.
-	let p = project(&[("runfiles/t.run", "$ true\n.env.X = undefined_name\n")]);
+	let p = project(&[("runfiles/t.run", "$ true\nENV.X = undefined_name\n")]);
 	let o = p.run(&["t"]);
 	assert!(!o.status.success(), "it ran without complaint");
 	assert!(err(&o).contains("undefined_name"), "{}", err(&o));
@@ -4474,12 +4503,12 @@ fn a_property_below_the_last_statement_is_still_evaluated() {
 #[test]
 fn a_header_value_reads_the_environment_as_it_stands_at_its_line() {
 	// The header was applied as one step and the environment built after it,
-	// so `.env.B = ENV.A` read the caller's `A` rather than the `.env.A` above
+	// so `ENV.B = ENV.A` read the caller's `A` rather than the `.env.A` above
 	// it -- in a file that reads top to bottom, and while the same two lines
 	// below a statement already worked.
 	let p = project(&[(
 		"runfiles/t.run",
-		".env.A = \"a\"\n.env.B = concat(\"from-\", ENV.A)\n\n$ echo \"$B\"\n",
+		"ENV.A = \"a\"\nENV.B = concat(\"from-\", ENV.A)\n\n$ echo \"$B\"\n",
 	)]);
 	let o = p.command(p.dir.path(), &["t"]).env("A", "caller").output().unwrap();
 	assert!(o.status.success(), "{}", err(&o));
@@ -4491,7 +4520,7 @@ fn a_header_value_can_be_composed_from_an_env_file_above_it() {
 	let p = project(&[
 		(
 			"runfiles/t.run",
-			".env-file = \".env\"\n.env.URL = concat(\"postgres://\", ENV.DB_HOST, \"/app\")\n\n$ echo \"$URL\"\n",
+			"import_env_file(\".env\")\nENV.URL = concat(\"postgres://\", ENV.DB_HOST, \"/app\")\n\n$ echo \"$URL\"\n",
 		),
 		(".env", "DB_HOST=db.local\n"),
 	]);
@@ -4505,11 +4534,11 @@ fn what_a_shared_file_sets_reaches_its_own_lets_and_the_target_header() {
 	let p = project(&[
 		(
 			"runfiles/_shared.run",
-			".env.REGION = \"eu\"\nlet bucket = concat(\"logs-\", ENV.REGION)\n.env.BUCKET = bucket\n",
+			"ENV.REGION = \"eu\"\nlet bucket = concat(\"logs-\", ENV.REGION)\nENV.BUCKET = bucket\n",
 		),
 		(
 			"runfiles/t.run",
-			".env.WHERE = concat(ENV.BUCKET, \"@\", ENV.REGION)\n\n$ echo \"$WHERE\"\n",
+			"ENV.WHERE = concat(ENV.BUCKET, \"@\", ENV.REGION)\n\n$ echo \"$WHERE\"\n",
 		),
 	]);
 	let o = p
@@ -4533,8 +4562,8 @@ fn a_dispatched_target_starts_from_its_callers_environment() {
 		(".env", "RUNFILE_T_FROM_FILE=from-file\n"),
 		(
 			"runfiles/caller.run",
-			".env-file = \".env\"\n.env.RUNFILE_T_ASSIGNED = \"header\"\n\nrun _show\n\n\
-			 do\n\t.env.RUNFILE_T_ASSIGNED = \"block\"\n\n\trun _show\nend\n\n\
+			"import_env_file(\".env\")\nENV.RUNFILE_T_ASSIGNED = \"header\"\n\nrun _show\n\n\
+			 do\n\tENV.RUNFILE_T_ASSIGNED = \"block\"\n\n\trun _show\nend\n\n\
 			 let status = code_of(run _show)\n\nexit(status)\n",
 		),
 		(
@@ -4566,12 +4595,12 @@ fn what_a_caller_exported_beats_a_dispatched_targets_env_file_the_way_a_shell_do
 		(".env.show", "RUNFILE_T_P=from-file\n"),
 		(
 			"runfiles/_show.run",
-			".env-file = \".env.show\"\n\nprint(ENV.RUNFILE_T_P)\n",
+			"import_env_file(\".env.show\")\n\nprint(ENV.RUNFILE_T_P)\n",
 		),
 		("runfiles/plain.run", "run _show\n"),
 		(
 			"runfiles/assigns.run",
-			".env.RUNFILE_T_P = \"from-caller\"\n\nrun _show\n",
+			"ENV.RUNFILE_T_P = \"from-caller\"\n\nrun _show\n",
 		),
 	]);
 	let shown = |target: &str, shell: Option<&str>| {
@@ -4602,10 +4631,10 @@ fn a_ci_target_that_runs_test_leaves_test_its_own_env_file() {
 	let p = project(&[
 		(".env", "RUNFILE_T_DB=dev\n"),
 		(".env.test", "RUNFILE_T_DB=test\n"),
-		("runfiles/_shared.run", ".env-file = \".env\"\n"),
+		("runfiles/_shared.run", "import_env_file(\".env\")\n"),
 		(
 			"runfiles/test.run",
-			".env-file = \".env.test\"\n\nprint(ENV.RUNFILE_T_DB)\n",
+			"import_env_file(\".env.test\")\n\nprint(ENV.RUNFILE_T_DB)\n",
 		),
 		("runfiles/ci.run", "run test\n"),
 	]);
@@ -4632,11 +4661,11 @@ fn run_and_dollar_run_hand_over_the_same_environment_but_for_a_callers_file_valu
 		(".env.show", "RUNFILE_T_BOTH_FILES=own-file\n"),
 		(
 			"runfiles/caller.run",
-			".env-file = \".env\"\n.env.RUNFILE_T_ASSIGNED = \"assigned\"\n.add-path = \"bin\"\n\nrun _show\n$ run _show\n",
+			"import_env_file(\".env\")\nENV.RUNFILE_T_ASSIGNED = \"assigned\"\nadd_path(\"bin\")\n\nrun _show\n$ run _show\n",
 		),
 		(
 			"runfiles/_show.run",
-			".env-file = \".env.show\"\n\n\
+			"import_env_file(\".env.show\")\n\n\
 			 $ echo \"$RUNFILE_T_FILE|$RUNFILE_T_ASSIGNED|$(runfile-t-tool)|$RUNFILE_T_BOTH_FILES\"\n",
 		),
 		("bin/runfile-t-tool", "#!/bin/sh\nprintf tool\n"),
@@ -4670,7 +4699,7 @@ fn run_and_dollar_run_hand_over_the_same_environment_but_for_a_callers_file_valu
 fn a_machine_wide_target_starts_from_the_project_targets_environment() {
 	let p = project(&[(
 		"runfiles/deploy.run",
-		".env.RUNFILE_T_FROM_PROJECT = \"project\"\n\nrun _notify\n",
+		"ENV.RUNFILE_T_FROM_PROJECT = \"project\"\n\nrun _notify\n",
 	)]);
 	let g = p.home.path().join(".runfiles");
 	std::fs::create_dir_all(&g).unwrap();
@@ -4687,7 +4716,7 @@ fn a_machine_wide_target_starts_from_the_project_targets_environment() {
 #[test]
 fn nothing_a_dispatched_target_sets_reaches_the_target_that_ran_it() {
 	let p = project(&[
-		("runfiles/_sets.run", ".env.RUNFILE_T_BACK = \"leaked\"\n\n$ true\n"),
+		("runfiles/_sets.run", "ENV.RUNFILE_T_BACK = \"leaked\"\n\n$ true\n"),
 		(
 			"runfiles/caller.run",
 			"run _sets\n\nprint(ENV.RUNFILE_T_BACK ? \"unset\")\n\n$ echo \"${RUNFILE_T_BACK:-unset}\"\n",
@@ -4707,7 +4736,7 @@ fn each_parallel_branch_hands_its_own_environment_to_the_target_it_runs() {
 	let p = project(&[
 		(
 			"runfiles/all.run",
-			"parallel for name in [\"one\", \"two\"]\n\tdo\n\t\t.env.RUNFILE_T_NAME = name\n\n\t\trun _show\n\tend\nend\n",
+			"parallel for name in [\"one\", \"two\"]\n\tdo\n\t\tENV.RUNFILE_T_NAME = name\n\n\t\trun _show\n\tend\nend\n",
 		),
 		("runfiles/_show.run", "print(ENV.RUNFILE_T_NAME)\n"),
 	]);
@@ -4982,7 +5011,7 @@ fn without_a_secret_service_keys_are_kept_in_an_owner_only_file() {
 	let public = runfile_crypto::derive_public_key(&key).unwrap();
 	let secret = runfile_crypto::encrypt("hunter2", &key).unwrap();
 	let p = project(&[
-		("runfiles/show.run", ".env-file = \".env\"\n\nprint(ENV.SECRET)\n"),
+		("runfiles/show.run", "import_env_file(\".env\")\n\nprint(ENV.SECRET)\n"),
 		(
 			".env",
 			&format!("RUNFILE_ENCRYPTION_PUBLIC_KEY={public}\nSECRET={secret}\n"),

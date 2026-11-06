@@ -1,8 +1,9 @@
 //! The `.run` syntax tree.
 //!
 //! One file is one [`Target`]. Its body is a [`Block`]: a flat statement list
-//! whose block-forming statements nest further blocks. Properties are attached
-//! to the block they appear in, which is what gives them their scoping.
+//! whose block-forming statements nest further blocks. Properties describe the
+//! whole file, so only the file's own block has any: the parser refuses one
+//! anywhere else.
 
 use crate::span::Span;
 
@@ -14,41 +15,14 @@ pub struct Target {
 	pub body: Block,
 }
 
-/// A run of statements plus the properties set within it.
+/// A run of statements, and the properties written above the first of them.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Block {
-	/// In source order, which is what splits them into the two regions below.
+	/// In source order. Only a file's own block has any, and all of them sit
+	/// above its first statement: the parser refuses a property anywhere else,
+	/// since what one says is a fact about the whole file.
 	pub properties: Vec<Property>,
 	pub statements: Vec<Statement>,
-}
-
-impl Block {
-	/// How many properties are written above the block's first statement.
-	fn declared(&self) -> usize {
-		match self.statements.first() {
-			Some(first) => self.properties.partition_point(|p| p.span.line < first.span().line),
-			None => self.properties.len(),
-		}
-	}
-
-	/// The declaration region: properties written before the first statement.
-	///
-	/// These describe the block before it runs and are what `Props::extend`
-	/// applies, so they are also the only ones that can say something about the
-	/// shape of the whole block.
-	pub fn declaration(&self) -> &[Property] {
-		&self.properties[..self.declared()]
-	}
-
-	/// Properties written below a statement.
-	///
-	/// One of these is applied where it sits rather than at the top: it can
-	/// read a binding above it, and it takes effect from there down. Almost
-	/// always empty -- a property is usually written at the top of its block --
-	/// which is what lets the walker keep its cheap path.
-	pub fn trailing(&self) -> &[Property] {
-		&self.properties[self.declared()..]
-	}
 }
 
 /// `.name = value`, or bare `.name` for `= true`. Dotted names address a
@@ -115,13 +89,24 @@ pub enum Statement {
 		value: Expr,
 		span: Span,
 	},
-	/// A bare call evaluated for its effect, e.g. `decrypt(a, b)`.
-	Call { expr: Expr, span: Span },
-	/// `do … end`: a block with no condition.
+	/// `ENV.NAME = expr`: set an environment variable, for every line below it
+	/// and every command and target they start.
 	///
-	/// Properties are block-scoped, and every block form until now also asked
-	/// a question. Somewhere to put `.workdir` for two commands should not
-	/// require inventing an `if true`.
+	/// `ENV` is the one source a file may write. What it sets lasts past the
+	/// block it is written in, as a `let` does; a `do` block is what puts the
+	/// environment back.
+	SetEnv { name: String, value: Expr, span: Span },
+	/// A bare call evaluated for its effect, e.g. `decrypt(a, b)` -- or one of
+	/// [`crate::functions::EFFECTS`], which change the state every line below
+	/// them runs in.
+	Call { expr: Expr, span: Span },
+	/// `do … end`: a block with no condition, and the one block that **scopes**.
+	///
+	/// What changes inside it -- `ENV.X = …`, `add_path()`, `set_cwd()`,
+	/// `import_env_file()`, `ignore_errors()` -- is put back at its `end`,
+	/// however the block is left. Every other block leaves those changes in
+	/// place, the way a `let` inside an `if` outlives its `end`; bindings are
+	/// never put back, by a `do` or anything else.
 	Do {
 		body: Block,
 		/// `parallel do`: every statement directly inside is a branch of its
@@ -406,6 +391,7 @@ impl Statement {
 		match self {
 			Statement::Let { span, .. }
 			| Statement::Assign { span, .. }
+			| Statement::SetEnv { span, .. }
 			| Statement::Call { span, .. }
 			| Statement::Do { span, .. }
 			| Statement::If { span, .. }
@@ -420,10 +406,23 @@ impl Statement {
 		}
 	}
 
+	/// The effect function this statement is a call of, when it is one: the
+	/// name of one of [`crate::functions::EFFECTS`], and its arguments.
+	pub fn effect(&self) -> Option<(&str, &[Expr])> {
+		match self {
+			Statement::Call {
+				expr: Expr::Call { name, args, .. },
+				..
+			} if crate::functions::is_effect(name) => Some((name.as_str(), args.as_slice())),
+			_ => None,
+		}
+	}
+
 	pub(crate) fn span_mut(&mut self) -> &mut Span {
 		match self {
 			Statement::Let { span, .. }
 			| Statement::Assign { span, .. }
+			| Statement::SetEnv { span, .. }
 			| Statement::Call { span, .. }
 			| Statement::Do { span, .. }
 			| Statement::If { span, .. }

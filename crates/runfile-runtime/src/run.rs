@@ -6,7 +6,6 @@ use crate::term;
 use runfile_lang::Value;
 use runfile_lang::ast::*;
 use runfile_lang::eval::{EvalError, Scope, eval_boundary};
-use std::borrow::Cow;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -17,8 +16,6 @@ pub enum RunError {
 	Prop(PropError),
 	#[error(transparent)]
 	Exec(#[from] ExecError),
-	#[error(transparent)]
-	Env(#[from] crate::env::EnvError),
 	#[error("line {line}: `for` needs a list, got {actual}")]
 	ForNeedsList { actual: &'static str, line: usize },
 	/// A `--flag` or `--key=value` the target never reads, on a target that
@@ -185,8 +182,8 @@ pub trait Dispatch: Sync {
 	/// `env` is what the target is run with: the environment a command at the
 	/// calling line would be given, as `env::handed_over` splits it. Handed
 	/// over rather than left to the process, which is all a target had before,
-	/// so a caller's `.env`, `.env-file` and `.add-path` -- and a block's -- reach
-	/// the target it runs the way they reach its own commands.
+	/// so a caller's `ENV.X = …`, `import_env_file()` and `add_path()` reach the
+	/// target it runs the way they reach its own commands.
 	///
 	/// `label` prefixes everything the target prints, when it runs inside a
 	/// parallel branch. It is inherited by whatever the target dispatches in
@@ -230,9 +227,6 @@ pub struct Runner<'a> {
 	pub scope: Scope,
 	/// Targets already on this call path, for cycle detection.
 	pub chain: Vec<String>,
-	/// Built once from the header properties, before the body is evaluated, so
-	/// `{{ ENV.x }}` can see what `.env-file` brought in.
-	pub env: Vec<(String, String)>,
 	pub dispatch: &'a dyn Dispatch,
 	/// Whether the run has been interrupted. Injected rather than read from a
 	/// global so the runtime reaches for no process state of its own, and so a
@@ -251,130 +245,70 @@ pub struct Runner<'a> {
 }
 
 pub fn run_target(target: &Target, r: &mut Runner<'_>) -> Result<(), RunError> {
-	run_target_with(target, Props::default(), r)
+	run_chain(&[], target, Props::default(), r, |_| Ok(()))
 }
 
-/// Fold a `_shared.run` into a scope and a set of properties, in source order.
+/// Run a target under the `_shared.run` chain above it, outermost first.
 ///
-/// A shared file's statements never run -- it holds settings, not actions --
-/// but its `let`s are bound and its properties applied, interleaved the way
-/// they are written, so a property below a binding can read it. That is the
-/// rule a target follows too; a shared file is never walked, so it has to be
-/// spelled here or a property below a `let` is never applied at all. Unlike a
-/// walk, a property below the last binding still counts: in a shared file,
-/// after the value it is computed from is exactly where a setting sits.
-pub fn fold_shared(block: &Block, base: &Props, sc: &mut Scope) -> Result<Props, RunError> {
-	let mut props = base.extend(block, sc, false)?;
-	// Nothing here is walked, so nothing rebuilds the environment between one
-	// line and the next -- `keep_current` does it, for the lines that read it,
-	// the way it does inside a header. `extend` put back what it rebuilt, so
-	// everything folded so far is still to be brought in.
-	let mut stale = props.touches_env();
-	let apply = |p: &Property, props: &mut Props, sc: &mut Scope, stale: &mut bool| -> Result<(), RunError> {
-		crate::props::keep_current(props, p.value.as_ref(), sc, stale)?;
-		props.apply(p, sc, false)?;
-		*stale |= crate::props::changes_env(p);
-		Ok(())
-	};
-	let mut trailing = block.trailing().iter().peekable();
-	for st in &block.statements {
-		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
-			apply(p, &mut props, sc, &mut stale)?;
-		}
-		if let Statement::Let { names, value, span } = st {
-			crate::props::keep_current(&props, Some(value), sc, &mut stale)?;
-			sc.workdir = props.workdir_in(&sc.anchor);
-			let v = eval_boundary(value, sc)?;
-			sc.bind_names(names, runfile_lang::eval::destructure(names, v, span.line)?);
-		}
+/// A shared file runs ahead of the target, line for line the way the target
+/// does, and what it leaves behind -- its bindings, the environment, the
+/// working directory, `ignore_errors()` -- is what the next file and then the
+/// target start from. Its properties are layered over the ones above it, and a
+/// file's are worked out once those have run, so a value reads what they set.
+/// `header` is handed the target's own, before its first line runs: the watch
+/// loop learns what to watch from it.
+pub fn run_chain(
+	shared: &[Target],
+	target: &Target,
+	base: Props,
+	r: &mut Runner<'_>,
+	header: impl FnOnce(&Props) -> Result<(), RunError>,
+) -> Result<(), RunError> {
+	let mut props = base;
+	for s in shared {
+		props = props.extend(&s.body, &mut r.scope)?;
+		walk(&s.body, &props, r)?;
 	}
-	for p in trailing {
-		apply(p, &mut props, sc, &mut stale)?;
-	}
-	Ok(props)
-}
-
-pub fn run_target_with(target: &Target, base: Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let props = base.extend(&target.body, &mut r.scope, false)?;
-
-	// Env before the body: `.env-file` has to be readable by `{{ ENV.x }}`.
-	build_env(&props, r)?;
-
+	let props = props.extend(&target.body, &mut r.scope)?;
+	header(&props)?;
 	walk(&target.body, &props, r)
 }
 
+/// A block's statements, in order.
+///
+/// A failure stops the block unless `ignore_errors()` is in effect where it
+/// happened. It is read once the statement is over, which is the state that
+/// statement was run in: a `do` puts back what changed inside it before it
+/// returns, so one that turned it on and then failed is judged by the block
+/// around it.
 fn walk(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	// A block almost always writes its properties at the top, and those are
-	// already in `props`. Only when one is written below a statement is there
-	// anything to apply mid-walk -- and only then is there an environment to
-	// put back, which is why the whole walk is wrapped rather than each
-	// property: the block's own environment is what the block after it expects.
-	if block.trailing().is_empty() {
-		return walk_body(block, props, r);
-	}
-	let saved_env = r.env.clone();
-	let saved_scope_env = r.scope.env.clone();
-	let out = walk_body(block, props, r);
-	r.env = saved_env;
-	r.scope.env = saved_scope_env;
-	out
-}
-
-fn walk_body(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	// Borrowed until a trailing property makes it its own: a block without one
-	// walks on exactly the properties it was handed.
-	let mut props = Cow::Borrowed(props);
-	let mut trailing = block.trailing().iter().peekable();
 	for st in &block.statements {
-		// Properties written above this line but below the one before it. They
-		// read the scope as it stands here -- which is the whole point: the
-		// binding they name was made by a statement already run.
-		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
-			apply_trailing(p, &mut props, r)?;
-		}
 		// Between statements, not inside one: a child already took the same
 		// SIGINT and is gone, so there is nothing to wait for and nothing to
-		// kill. `.ignore-errors` does not apply -- an interrupt is not a
+		// kill. `ignore_errors()` does not apply -- an interrupt is not a
 		// failure the target gets to shrug off.
 		if r.interrupted.is_some_and(|f| f()) {
 			return Err(RunError::Interrupted);
 		}
-		if let Err(e) = statement(st, &props, r)
-			&& (!props.ignore_errors || e.is_stop())
+		if let Err(e) = statement(st, props, r)
+			&& (!r.scope.ignore_errors || e.is_stop())
 		{
 			return Err(e);
 		}
 	}
-	// Below the last statement there is nothing left for it to affect, but it
-	// is still applied where it sits: its value is evaluated, so a broken one
-	// says so rather than being skipped, and a `_shared.run` -- which is folded
-	// rather than walked -- treats one the same way.
-	for p in trailing {
-		apply_trailing(p, &mut props, r)?;
-	}
 	Ok(())
 }
 
-/// Apply a property written below a statement, and rebuild the environment when
-/// it is one the environment is made of.
-///
-/// `nested` is `false` because it cannot matter: `Props::extend` has already
-/// refused every declaration-only property here, and everything header-only is
-/// declaration-only, so what reaches this may sit in a block by definition.
-fn apply_trailing(p: &Property, props: &mut Cow<'_, Props>, r: &mut Runner<'_>) -> Result<(), RunError> {
-	props.to_mut().apply(p, &mut r.scope, false)?;
-	if matches!(p.path[0].as_str(), "env" | "env-file" | "add-path" | "workdir") {
-		build_env(props, r)?;
-	}
-	Ok(())
+/// Run `f`, putting back the state it started in however it ends: what a `do`
+/// block does at its `end`.
+fn scoped<T>(r: &mut Runner<'_>, f: impl FnOnce(&mut Runner<'_>) -> Result<T, RunError>) -> Result<T, RunError> {
+	let saved = r.scope.state();
+	let out = f(r);
+	r.scope.put_back(saved);
+	out
 }
 
 fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	// What this line reads from disk it reads from where a command on it would
-	// run. Taken from the properties it is handed rather than saved and put back
-	// around each block: everything the walker evaluates is evaluated under the
-	// properties it is given, so a block's directory cannot outlive its `end`.
-	r.scope.workdir = props.workdir_in(&r.scope.anchor);
 	match st {
 		Statement::Let { names, value, span } | Statement::Assign { names, value, span } => {
 			let v = value_of(value, props, r)?;
@@ -382,16 +316,22 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			r.scope.bind_names(names, parts);
 			Ok(())
 		}
+		Statement::SetEnv { name, value, span } => {
+			let v = value_of(value, props, r)?;
+			Ok(runfile_lang::state::assign_env(&mut r.scope, name, v, span.line)?)
+		}
 		Statement::Call { expr, .. } => {
 			// Through value_of, so a bare `code_of($ cmd)` runs the command
-			// rather than reaching the pure evaluator, which has no shell.
+			// rather than reaching the pure evaluator, which has no shell. An
+			// effect -- `set_cwd()` and the rest -- changes the scope it is
+			// handed, which is the state every line below runs in.
 			value_of(expr, props, r)?;
 			Ok(())
 		}
 		Statement::Do {
 			body, parallel: true, ..
 		} => parallel_do(body, props, r),
-		Statement::Do { body, .. } => nested(body, props, r),
+		Statement::Do { body, .. } => scoped(r, |r| walk(body, props, r)),
 		Statement::If {
 			cond,
 			then,
@@ -400,8 +340,8 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 		} => {
 			let taken = cond_of(cond, props, r, span.line)?;
 			match (taken, otherwise) {
-				(true, _) => nested(then, props, r),
-				(false, Some(b)) => nested(b, props, r),
+				(true, _) => walk(then, props, r),
+				(false, Some(b)) => walk(b, props, r),
 				(false, None) => Ok(()),
 			}
 		}
@@ -432,19 +372,28 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				}
 				None => 0.0,
 			};
-			// The body has to see its own failures: `.ignore-errors` around it
-			// would forgive them, and a retry that cannot tell would run once.
-			let mut inner = props.extend(body, &mut r.scope, true)?;
-			inner.ignore_errors = false;
-
-			// The `else` runs outside the body's environment: it is what to do
-			// when the block never worked, not part of it.
-			let last = with_block_env(props, &inner, r, |r| retry_attempts(body, &inner, n, secs, r))?;
-
-			match (last, otherwise) {
-				(None, _) => Ok(()),
-				(Some(_), Some(b)) => nested(b, props, r),
-				(Some(e), None) => Err(e),
+			let start = r.scope.state();
+			match retry_attempts(body, props, n, secs, &start, r) {
+				// The attempt that succeeded keeps what it changed. Failure was
+				// visible inside it whatever the block around it said, and is
+				// as forgiven as it was before once it is over.
+				Ok(None) => {
+					r.scope.ignore_errors = start.ignore_errors;
+					Ok(())
+				}
+				// The `else` runs from where the `retry` began: it is what to do
+				// when the block never worked, not part of it.
+				Ok(Some(e)) => {
+					r.scope.put_back(start);
+					match otherwise {
+						Some(b) => walk(b, props, r),
+						None => Err(e),
+					}
+				}
+				Err(e) => {
+					r.scope.ignore_errors = start.ignore_errors;
+					Err(e)
+				}
 			}
 		}
 		Statement::For {
@@ -474,15 +423,11 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				}
 			};
 			let priors: Vec<Option<Value>> = names.iter().map(|n| r.scope.vars.remove(n)).collect();
-			let inner = props.extend(body, &mut r.scope, true)?;
-			let out = with_block_env(props, &inner, r, |r| for_body(names, items, body, &inner, span.line, r));
+			let out = for_body(names, items, body, props, span.line, r);
 			restore_all(names, &priors, r);
 			out
 		}
-		Statement::Loop { test, body, span } => {
-			let inner = props.extend(body, &mut r.scope, true)?;
-			with_block_env(props, &inner, r, |r| loop_passes(test, body, &inner, span.line, r))
-		}
+		Statement::Loop { test, body, span } => loop_passes(test, body, props, span.line, r),
 		// Control flow, not a failure: it leaves as an error because that is
 		// the only way back out of a walk, and every catcher on the way lets
 		// it through -- see `is_stop`.
@@ -496,10 +441,10 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 		} => {
 			let v = subject_of(subject, props, r)?;
 			if let Some(c) = cases.iter().find(|c| c.label == v) {
-				return nested(&c.body, props, r);
+				return walk(&c.body, props, r);
 			}
 			match default {
-				Some(b) => nested(b, props, r),
+				Some(b) => walk(b, props, r),
 				None => Err(RunError::NoCase {
 					subject: v,
 					cases: cases.iter().map(|c| c.label.clone()).collect::<Vec<_>>().join(", "),
@@ -510,7 +455,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 		Statement::Run { target, args, .. } => {
 			let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
 			let a = run_args(args, &mut r.scope)?;
-			let env = crate::env::handed_over(props, &r.env);
+			let env = crate::env::handed_over(&r.scope);
 			// The dependency's trace lands where the call appeared. A target
 			// that ended with `exit(3)` fails this line, as `$ run` would have.
 			r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref(), &mut r.trace)
@@ -521,13 +466,13 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			let rendered = render(command.as_deref(), body, props, r)?;
 			// The preview shows the resolved body -- its documented contract, and
 			// what the argument-parsing tests read back. A `--dry-run` reads no
-			// `.env-file` and holds no key (SA-008), so a decrypted secret is
+			// `.env` file and holds no key (SA-008), so a decrypted secret is
 			// never in scope to be interpolated here; the auto-firing paths that
 			// *do* run for real -- failure messages and `.logging` -- redact via
 			// the display form instead (SA-012).
 			r.trace.push(rendered.body.clone());
-			let env = merged_env(r);
-			let dir = props.workdir_in(&r.scope.anchor);
+			let env = env_of(r);
+			let dir = r.scope.workdir.clone();
 			exec::spawn(Spawn {
 				command: command_for(rendered.cmd.as_deref(), props),
 				body: &rendered.body,
@@ -546,70 +491,34 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 	}
 }
 
-/// A nested block layers its own properties over the enclosing ones.
-/// Build the environment these properties describe, into the runner and into
-/// the scope -- the second is what lets `{{ ENV.x }}` read what a `.env-file`
-/// brought in.
-fn build_env(props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let built = crate::env::for_props(props, &r.scope.anchor, &r.scope.private_keys, r.dry_run)?;
-	r.scope.env = built.clone();
-	r.env = built.into_iter().collect();
-	r.env.sort();
-	Ok(())
-}
-
-/// Run `f` with the environment `inner` describes, putting back the one that
-/// was there when it returns.
-///
-/// `.env-file` and `.add-path` are block-scoped, and both append -- so a block
-/// that named one has a longer list than the block around it, which is how
-/// this tells. A block's own `.env` counts too: it was left out, and a command
-/// saw it only because `merged_env` laid it back on top, so `$X` inside the
-/// block was the property's while `{{ ENV.X }}` was the enclosing one. Rebuilt
-/// only when one of the three changed: reading and decrypting the files again
-/// for every `if` would be work nothing asked for. Restoring afterwards is what
-/// keeps a loop from carrying one iteration's files into the next, and is why
-/// every block form has to come through here rather than calling `walk`.
-fn with_block_env<T>(
-	props: &Props,
-	inner: &Props,
-	r: &mut Runner<'_>,
-	f: impl FnOnce(&mut Runner<'_>) -> Result<T, RunError>,
-) -> Result<T, RunError> {
-	if inner.env_files.len() == props.env_files.len()
-		&& inner.add_paths.len() == props.add_paths.len()
-		&& inner.env == props.env
-	{
-		return f(r);
-	}
-	let saved_env = std::mem::take(&mut r.env);
-	let saved_scope_env = std::mem::take(&mut r.scope.env);
-	let out = build_env(inner, r).and_then(|()| f(r));
-	r.env = saved_env;
-	r.scope.env = saved_scope_env;
-	out
-}
-
 /// The attempts of a `retry`. `Ok(None)` when one of them succeeded, and
 /// `Ok(Some(e))` when every one failed -- which is the question an `else`
 /// answers.
+///
+/// Every attempt starts from `start`, the state the `retry` began with: an
+/// attempt is the block run *again*, and again from wherever the last one gave
+/// up -- a `set_cwd("web")` already done, so the next one went to `web/web` --
+/// is not what again means. Failure is visible inside the block whatever the
+/// block around it said: a retry that could not see failure would run once.
 fn retry_attempts(
 	body: &Block,
-	inner: &Props,
+	props: &Props,
 	n: u64,
 	secs: f64,
+	start: &runfile_lang::state::State,
 	r: &mut Runner<'_>,
 ) -> Result<Option<RunError>, RunError> {
 	let mut last = None;
 	for attempt in 0..n {
+		if attempt > 0 {
+			r.scope.put_back(start.clone());
+		}
+		r.scope.ignore_errors = false;
 		if r.interrupted.is_some_and(|f| f()) {
 			return Err(RunError::Interrupted);
 		}
-		match walk(body, inner, r) {
-			Ok(()) => {
-				last = None;
-				break;
-			}
+		match walk(body, props, r) {
+			Ok(()) => return Ok(None),
 			// This target's own `exit` is an instruction to stop, not a failure
 			// to retry. A target it ran ending with one is a failure like any
 			// other (`Exited`), and gets another go.
@@ -625,24 +534,25 @@ fn retry_attempts(
 	Ok(last)
 }
 
-/// The iterations of a `for`. The loop variables are restored by the caller,
-/// which also owns the block's environment.
+/// The iterations of a `for`. The loop variables are restored by the caller.
+///
+/// What a pass changes is what the next one starts from, as it is for any
+/// block but a `do`: a body that wants each pass to start where the first did
+/// is written as one.
 fn for_body(
 	names: &[String],
 	items: Vec<Value>,
 	body: &Block,
-	inner: &Props,
+	props: &Props,
 	line: usize,
 	r: &mut Runner<'_>,
 ) -> Result<(), RunError> {
 	for item in items {
 		bind_item(names, item, line, r)?;
-		match walk(body, inner, r) {
-			Ok(()) => {}
+		match walk(body, props, r) {
+			Ok(()) | Err(RunError::Continue { .. }) => {}
 			Err(RunError::Break { .. }) => break,
-			Err(RunError::Continue { .. }) => {}
-			Err(e) if !inner.ignore_errors || e.is_stop() => return Err(e),
-			Err(_) => {}
+			Err(e) => return Err(e),
 		}
 	}
 	Ok(())
@@ -670,7 +580,7 @@ fn restore_all(names: &[String], priors: &[Option<Value>], r: &mut Runner<'_>) {
 /// and neither is what happened. One pass is the honest thing a preview has to
 /// say -- here is the body, once; how often is not knowable without running
 /// it.
-fn loop_passes(test: &LoopTest, body: &Block, inner: &Props, line: usize, r: &mut Runner<'_>) -> Result<(), RunError> {
+fn loop_passes(test: &LoopTest, body: &Block, props: &Props, line: usize, r: &mut Runner<'_>) -> Result<(), RunError> {
 	loop {
 		// Checked here as well as in `walk`, which looks *between* statements:
 		// a `loop` with an empty body has none, and would spin past every
@@ -680,28 +590,21 @@ fn loop_passes(test: &LoopTest, body: &Block, inner: &Props, line: usize, r: &mu
 		}
 		let again = match test {
 			LoopTest::Forever => true,
-			LoopTest::While(c) => cond_of(c, inner, r, line)?,
-			LoopTest::Until(c) => !cond_of(c, inner, r, line)?,
+			LoopTest::While(c) => cond_of(c, props, r, line)?,
+			LoopTest::Until(c) => !cond_of(c, props, r, line)?,
 		};
 		if !again {
 			return Ok(());
 		}
-		match walk(body, inner, r) {
-			Ok(()) => {}
+		match walk(body, props, r) {
+			Ok(()) | Err(RunError::Continue { .. }) => {}
 			Err(RunError::Break { .. }) => return Ok(()),
-			Err(RunError::Continue { .. }) => {}
-			Err(e) if !inner.ignore_errors || e.is_stop() => return Err(e),
-			Err(_) => {}
+			Err(e) => return Err(e),
 		}
 		if r.dry_run {
 			return Ok(());
 		}
 	}
-}
-
-fn nested(block: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let inner = props.extend(block, &mut r.scope, true)?;
-	with_block_env(props, &inner, r, |r| walk(block, &inner, r))
 }
 
 /// `$`/`exec` in value position runs and yields stdout; anything else is a
@@ -729,8 +632,8 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		return Ok(eval_boundary(e, &mut r.scope)?);
 	};
 	let rendered = render(command.as_deref(), body, props, r)?;
-	let env = merged_env(r);
-	let dir = props.workdir_in(&r.scope.anchor);
+	let env = env_of(r);
+	let dir = r.scope.workdir.clone();
 	let out = exec::spawn(Spawn {
 		command: command_for(rendered.cmd.as_deref(), props),
 		body: &rendered.body,
@@ -767,7 +670,7 @@ fn command_for<'a>(cmd: Option<&'a str>, props: &'a Props) -> Option<&'a str> {
 /// the one form whose whole purpose is to keep going afterwards.
 fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunError> {
 	if let Expr::Dispatch { target, args, .. } = e {
-		return dispatch_code(target, args, props, r);
+		return dispatch_code(target, args, r);
 	}
 	let Expr::Capture { command, body, .. } = e else {
 		// The parser used to guarantee this, back when `code_of` was the only
@@ -780,8 +683,8 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 		}));
 	};
 	let rendered = render(command.as_deref(), body, props, r)?;
-	let env = merged_env(r);
-	let dir = props.workdir_in(&r.scope.anchor);
+	let env = env_of(r);
+	let dir = r.scope.workdir.clone();
 	Ok(exec::spawn_code(Spawn {
 		command: command_for(rendered.cmd.as_deref(), props),
 		body: &rendered.body,
@@ -809,15 +712,10 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 ///
 /// A refusal is not a status and is passed on, which is also what a re-exec
 /// does: Ctrl+C reaches the whole process group.
-fn dispatch_code(
-	target: &[InterpPart],
-	args: &[Vec<InterpPart>],
-	props: &Props,
-	r: &mut Runner<'_>,
-) -> Result<i32, RunError> {
+fn dispatch_code(target: &[InterpPart], args: &[Vec<InterpPart>], r: &mut Runner<'_>) -> Result<i32, RunError> {
 	let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
 	let a = run_args(args, &mut r.scope)?;
-	let env = crate::env::handed_over(props, &r.env);
+	let env = crate::env::handed_over(&r.scope);
 	match r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref(), &mut r.trace) {
 		Ok(()) => Ok(0),
 		Err(e) if e.is_refusal() => Err(e),
@@ -830,9 +728,6 @@ fn dispatch_code(
 
 /// A condition, which may be a `$` run: `if $ cmd` is true when it succeeds.
 fn cond_of(cond: &Expr, props: &Props, r: &mut Runner<'_>, line: usize) -> Result<bool, RunError> {
-	// A loop asks its condition under the body's properties, after a pass of
-	// the body has set its own lines' directories.
-	r.scope.workdir = props.workdir_in(&r.scope.anchor);
 	if let Expr::Capture { .. } = cond {
 		return Ok(exit_code(cond, props, r)? == 0);
 	}
@@ -956,14 +851,13 @@ fn render(
 
 /// The environment a command is spawned with: exactly what `ENV.X` reads.
 ///
-/// It used to lay the block's `.env` back on top of the built one, because a
-/// block that set only `.env` was never rebuilt -- and that made it a second
-/// description of precedence, disagreeing with the first: the property won
-/// here and the caller's shell won in `build_env`, so one target gave two
-/// answers for one name. Every block that changes `.env` is rebuilt now, and
-/// `build_env` puts the property on top, so there is nothing left to overlay.
-fn merged_env(r: &Runner<'_>) -> Vec<(String, String)> {
-	r.env.clone()
+/// One map, the scope's, changed line by line. It used to be built twice -- a
+/// copy here and another for `ENV.X` -- from properties layered in a fixed
+/// order, and the two came to disagree about precedence more than once.
+fn env_of(r: &Runner<'_>) -> Vec<(String, String)> {
+	let mut env: Vec<(String, String)> = r.scope.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+	env.sort();
+	env
 }
 
 // ------------------------------------------------------------------ parallel
@@ -1020,7 +914,6 @@ impl<'a> Runner<'a> {
 		Runner {
 			scope,
 			chain: self.chain.clone(),
-			env: self.env.clone(),
 			dispatch: self.dispatch,
 			interrupted: self.interrupted,
 			label: Some(label),
@@ -1127,71 +1020,32 @@ where
 
 /// `parallel do`: every statement directly inside it is a branch.
 ///
-/// The block's own properties are every branch's, and one written between two
-/// branches is the ones below it: properties are applied where they are
-/// written, and the branches are set up in order before any of them starts.
+/// Each branch starts from a copy of the state the block opened in, and what
+/// it changes is its own -- which is why the parser refuses a change that is a
+/// whole branch: it would reach nothing. `ignore_errors()` in effect around the
+/// block forgives each branch, the way it forgives each statement of a block
+/// walked in order.
 fn parallel_do(body: &Block, props: &Props, r: &mut Runner<'_>) -> Result<(), RunError> {
-	let inner = props.extend(body, &mut r.scope, true)?;
-	with_block_env(props, &inner, r, |r| {
-		// A trailing property rebuilds the environment it applies to; the
-		// block's own is put back once the branches have their copies.
-		let saved = (!body.trailing().is_empty()).then(|| (r.env.clone(), r.scope.env.clone()));
-		let set_up = branches_of(body, &inner, r);
-		if let Some((env, scope_env)) = saved {
-			r.env = env;
-			r.scope.env = scope_env;
-		}
-		let (work, forks): (Vec<_>, Vec<_>) = set_up?.into_iter().unzip();
-		run_branches(
-			forks,
-			|i, b| {
-				let (st, props): &(&Statement, Props) = &work[i];
-				// `.ignore-errors` on the block forgives each branch, the way it
-				// forgives each statement of a block walked in order.
-				statement(st, props, b).or_else(|e| {
-					if props.ignore_errors && !e.is_stop() {
-						Ok(())
-					} else {
-						Err(e)
-					}
-				})
-			},
-			r,
-		)
-	})
-}
-
-/// Each statement of a `parallel do`, with the properties it runs under and
-/// the runner it runs in.
-#[allow(clippy::type_complexity)]
-fn branches_of<'b, 'a>(
-	body: &'b Block,
-	inner: &Props,
-	r: &mut Runner<'a>,
-) -> Result<Vec<((&'b Statement, Props), Runner<'a>)>, RunError> {
-	let mut props = Cow::Borrowed(inner);
-	let mut trailing = body.trailing().iter().peekable();
-	let mut out = Vec::with_capacity(body.statements.len());
 	let labels = branch_labels(&body.statements);
 	let width = pad_width(&labels);
-	for (nth, (st, label)) in body.statements.iter().zip(labels).enumerate() {
-		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
-			apply_trailing(p, &mut props, r)?;
-		}
-		let fork = r.fork(&label, nth, width);
-		out.push(((st, props.clone().into_owned()), fork));
-	}
-	// Below the last branch there is nothing left for it to affect, but it is
-	// still applied where it sits, as in any block.
-	for p in trailing {
-		apply_trailing(p, &mut props, r)?;
-	}
-	Ok(out)
+	let forks: Vec<Runner<'_>> = labels
+		.iter()
+		.enumerate()
+		.map(|(nth, label)| r.fork(label, nth, width))
+		.collect();
+	let forgive = r.scope.ignore_errors;
+	run_branches(
+		forks,
+		|i, b| {
+			statement(&body.statements[i], props, b).or_else(|e| if forgive && !e.is_stop() { Ok(()) } else { Err(e) })
+		},
+		r,
+	)
 }
 
 /// `parallel for`: every iteration is a branch, and its body runs in order
-/// within it. The list and the body's own properties are worked out once,
-/// before any iteration starts, as a sequential `for` does.
+/// within it, from a copy of the state the loop opened in. The list is worked
+/// out once, before any iteration starts, as a sequential `for`'s is.
 fn parallel_for(
 	names: &[String],
 	iter: &Expr,
@@ -1209,26 +1063,23 @@ fn parallel_for(
 			});
 		}
 	};
-	let inner = props.extend(body, &mut r.scope, true)?;
-	with_block_env(props, &inner, r, |r| {
-		let mut forks = Vec::with_capacity(items.len());
-		let labels: Vec<String> = items.iter().map(item_label).collect();
-		let width = pad_width(&labels);
-		for (nth, (item, label)) in items.into_iter().zip(labels).enumerate() {
-			let mut fork = r.fork(&label, nth, width);
-			bind_item(names, item, line, &mut fork)?;
-			forks.push(fork);
-		}
-		run_branches(
-			forks,
-			|_, b| match walk(body, &inner, b) {
-				// `continue` ends this iteration, and this iteration is the branch.
-				Err(RunError::Continue { .. }) => Ok(()),
-				other => other,
-			},
-			r,
-		)
-	})
+	let mut forks = Vec::with_capacity(items.len());
+	let labels: Vec<String> = items.iter().map(item_label).collect();
+	let width = pad_width(&labels);
+	for (nth, (item, label)) in items.into_iter().zip(labels).enumerate() {
+		let mut fork = r.fork(&label, nth, width);
+		bind_item(names, item, line, &mut fork)?;
+		forks.push(fork);
+	}
+	run_branches(
+		forks,
+		|_, b| match walk(body, props, b) {
+			// `continue` ends this iteration, and this iteration is the branch.
+			Err(RunError::Continue { .. }) => Ok(()),
+			other => other,
+		},
+		r,
+	)
 }
 
 /// What each branch of a `parallel do` prefixes its output with: what it
@@ -1296,9 +1147,11 @@ fn label_words(st: &Statement) -> Vec<String> {
 		Statement::Match { .. } => "match",
 		Statement::Retry { .. } => "retry",
 		// The parser keeps these out of a parallel block's own statements.
-		Statement::Let { .. } | Statement::Assign { .. } | Statement::Break { .. } | Statement::Continue { .. } => {
-			"branch"
-		}
+		Statement::Let { .. }
+		| Statement::Assign { .. }
+		| Statement::SetEnv { .. }
+		| Statement::Break { .. }
+		| Statement::Continue { .. } => "branch",
 	};
 	vec![format!("{keyword}:{}", st.span().line)]
 }

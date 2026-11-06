@@ -60,6 +60,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "env_assignment"
+        },
+        {
+          "type": "SYMBOL",
           "name": "do_statement"
         },
         {
@@ -775,6 +779,84 @@
                 }
               }
             ]
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "="
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "value",
+                  "content": {
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "SYMBOL",
+                        "name": "capture_call"
+                      },
+                      {
+                        "type": "SYMBOL",
+                        "name": "shell_capture"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "_newline"
+                }
+              ]
+            },
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "value",
+                  "content": {
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "SYMBOL",
+                        "name": "structured"
+                      },
+                      {
+                        "type": "SYMBOL",
+                        "name": "exec_capture"
+                      },
+                      {
+                        "type": "SYMBOL",
+                        "name": "_expression"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "_eol"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "env_assignment": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "source"
           }
         },
         {

@@ -16,7 +16,7 @@
 //! `--stdin-args` ask for them **before** anything runs rather than when a
 //! statement happens to reach one.
 
-use crate::ast::{Block, Expr, InterpPart, Property, SourceKind, Statement, Target};
+use crate::ast::{Block, Expr, InterpPart, SourceKind, Statement, Target};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// How one name is read.
@@ -73,15 +73,41 @@ fn narrow(known: &mut Option<Vec<String>>, with: Option<Vec<String>>) {
 	}
 }
 
-/// Environment names a `.env` property has already set where a read happens.
+/// Environment names set where a read happens, on **every** path to it.
 ///
-/// A read of one is not an input at all: the property beats whatever the
+/// A read of one is not an input at all: the assignment beats whatever the
 /// caller exports, so nothing they pass can reach it -- listing it would tell
-/// someone to supply a value that is then ignored. Matched exactly, as the
-/// property sets it: `ENV.X` looks the name up exactly before it tries any
-/// other case, so a caller's `PORT` still reaches a read of `ENV.PORT` under a
-/// `.env.port`, and that read stays an input.
+/// someone to supply a value that is then ignored. Matched exactly, as the line
+/// sets it: `ENV.X` looks the name up exactly before it tries any other case,
+/// so a caller's `PORT` still reaches a read of `ENV.PORT` under an
+/// `ENV.port = …`, and that read stays an input.
 type Set = BTreeSet<String>;
+
+/// What the walk knows at one point of a file.
+///
+/// Every name in `set` has been set on every path that reaches the point. That
+/// is the one direction this can afford to be wrong in: a name left out is
+/// listed as an input the caller need not pass, while a name wrongly in it
+/// would hide one they must.
+#[derive(Clone, Default)]
+struct Flow {
+	set: Set,
+	/// Whether `ignore_errors()` may be in effect. Under it, an `ENV.X = …`
+	/// whose value fails is forgiven and sets nothing, so only one that cannot
+	/// fail -- a value written out -- counts as setting its name.
+	forgiving: bool,
+}
+
+/// Where two paths meet: set on both, and forgiving on either.
+fn meet(a: Option<Flow>, b: Option<Flow>) -> Option<Flow> {
+	match (a, b) {
+		(None, x) | (x, None) => x,
+		(Some(a), Some(b)) => Some(Flow {
+			set: a.set.intersection(&b.set).cloned().collect(),
+			forgiving: a.forgiving || b.forgiving,
+		}),
+	}
+}
 
 /// Where a source sits: whether a failure there is caught, what the chain
 /// around it falls back to, which names are already set in the environment it
@@ -122,84 +148,137 @@ pub fn of(target: &Target) -> Inputs {
 /// first -- the one description of it, so `--help`, `--stdin-args` and the
 /// command line cannot disagree about what a target takes.
 ///
-/// A `.env` is in place for everything below it, in source order, straight
-/// through the chain and into the target: a shared file's `let`, the target's
-/// own header, its statements. That is the runner's rule too -- a value reads
-/// the environment as it stands at its own line -- and this walk follows it
-/// exactly, since `--help` saying a name is not needed when the runner then
+/// A `_shared.run` runs ahead of the target, so what it sets is set for the
+/// target too: the walk goes straight through the chain and into the file,
+/// following the runner's rules -- a change lasts past the block it is written
+/// in, a `do` puts the environment back at its `end`, and a branch changes a
+/// copy -- since `--help` saying a name is not needed when the runner then
 /// reads the caller's would be a lie.
 pub fn of_chain(target: &Target, shared: &[Target]) -> Inputs {
 	let mut out = Inputs::default();
-	let mut set = Set::new();
+	let mut flow = Flow::default();
 	for s in shared {
-		// Folded rather than walked, but every property in it applies, below a
-		// `let` or not -- which is what the walk hands back.
-		set = walk(&s.body, &mut out, &set);
+		flow = walk(&s.body, &mut out, flow.clone()).unwrap_or(flow);
 	}
-	walk(&target.body, &mut out, &set);
+	walk(&target.body, &mut out, flow);
 	out
 }
 
-/// The name a `.env.NAME` sets. `.env-file` sets names too, but which ones is
-/// in a file that is read at run time and may well not exist -- a project
-/// whose `.env` is git-ignored still has to run -- so a read it might answer
-/// stays an input.
-fn sets(p: &Property) -> Option<String> {
-	match p.path.as_slice() {
-		[head, name] if head == "env" => Some(name.clone()),
-		_ => None,
+/// Whether a value is written out, and so cannot fail.
+fn constant(e: &Expr) -> bool {
+	match e {
+		Expr::Number(..) | Expr::Bool(..) => true,
+		Expr::Str(ps, _) => ps.iter().all(|p| matches!(p, InterpPart::Literal(_))),
+		_ => false,
 	}
 }
 
-/// One block, the way the runner applies it: every property in source order,
-/// reading the names set above it and supplying them to what follows. Hands
-/// back what is set by the end of the block, which a nested block's caller
-/// drops -- a block's own `.env` is undone when it closes -- and a shared
-/// file's caller carries on into the next file.
-fn walk(b: &Block, out: &mut Inputs, set: &Set) -> Set {
-	let mut here = set.clone();
-	let property = |p: &Property, out: &mut Inputs, here: &mut Set| {
+/// Whether a statement ends the block it is in, every time: an `exit()` or
+/// `error()` of its own, a `break` or a `continue`. Only what is certain, since
+/// a path wrongly called a dead end is one whose names would be counted as set.
+fn leaves(s: &Statement) -> bool {
+	match s {
+		Statement::Break { .. } | Statement::Continue { .. } => true,
+		Statement::Call {
+			expr: Expr::Call { name, .. },
+			..
+		} => matches!(name.as_str(), "exit" | "error"),
+		_ => false,
+	}
+}
+
+/// One block, the way the runner walks it: its properties, then every
+/// statement in order, each reading what the lines above it set on every path.
+/// Hands back what is known as the block finishes, or `None` when it never
+/// does -- every path through it leaves first.
+fn walk(b: &Block, out: &mut Inputs, mut flow: Flow) -> Option<Flow> {
+	for p in &b.properties {
 		if let Some(e) = &p.value {
-			expr(e, out, At::plain(here));
+			expr(e, out, At::plain(&flow.set));
 		}
-		here.extend(sets(p));
-	};
-	for p in b.declaration() {
-		property(p, out, &mut here);
 	}
-	let mut trailing = b.trailing().iter().peekable();
 	for st in &b.statements {
-		while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
-			property(p, out, &mut here);
-		}
-		statement(st, out, &here);
+		flow = statement(st, out, flow)?;
 	}
-	for p in trailing {
-		property(p, out, &mut here);
-	}
-	here
+	Some(flow)
 }
 
-fn statement(s: &Statement, out: &mut Inputs, set: &Set) {
-	let plain = At::plain(set);
-	// A nested block is entered with the environment as it stands here; what
-	// it sets is its own, and gone when it closes.
-	let block = |b: &Block, out: &mut Inputs| {
-		walk(b, out, set);
-	};
+fn statement(s: &Statement, out: &mut Inputs, flow: Flow) -> Option<Flow> {
+	let plain = At::plain(&flow.set);
 	match s {
 		Statement::Let { value, .. } | Statement::Assign { value, .. } => expr(value, out, plain),
-		Statement::Call { expr: e, .. } => expr(e, out, plain),
-		Statement::Do { body, .. } => block(body, out),
+		Statement::SetEnv { name, value, .. } => {
+			expr(value, out, plain);
+			let mut flow = flow.clone();
+			if !flow.forgiving || constant(value) {
+				flow.set.insert(name.clone());
+			}
+			return Some(flow);
+		}
+		Statement::Call { expr: e, .. } => {
+			expr(e, out, plain);
+			if leaves(s) {
+				return None;
+			}
+			if let Some(("ignore_errors", _)) = s.effect() {
+				return Some(Flow {
+					forgiving: true,
+					..flow
+				});
+			}
+		}
+		// A `do` puts the environment back at its `end`, so what it sets is not
+		// set after it -- but a block every path through which leaves is one
+		// nothing after it is reached from.
+		Statement::Do {
+			body, parallel: false, ..
+		} => {
+			walk(body, out, flow.clone())?;
+		}
+		// Every branch works on a copy.
+		Statement::Do {
+			body, parallel: true, ..
+		} => {
+			for st in &body.statements {
+				statement(st, out, flow.clone());
+			}
+		}
 		Statement::If {
 			cond, then, otherwise, ..
 		} => {
 			expr(cond, out, plain);
-			block(then, out);
-			if let Some(b) = otherwise {
-				block(b, out);
-			}
+			let taken = walk(then, out, flow.clone());
+			let other = match otherwise {
+				Some(b) => walk(b, out, flow.clone()),
+				None => Some(flow.clone()),
+			};
+			return meet(taken, other);
 		}
+		Statement::Match {
+			subject,
+			cases,
+			default,
+			..
+		} => {
+			expr(subject, out, plain);
+			let mut after = None;
+			for c in cases {
+				after = meet(after, walk(&c.body, out, flow.clone()));
+			}
+			after = meet(
+				after,
+				match default {
+					Some(b) => walk(b, out, flow.clone()),
+					// No case matching fails the target, unless that is forgiven.
+					None => flow.forgiving.then(|| flow.clone()),
+				},
+			);
+			return after;
+		}
+		// Every attempt starts from the state the `retry` began with, and the one
+		// that succeeds is kept -- so the body is walked once, from here. When
+		// none does, the `else` runs from here too; without one the `retry`
+		// fails, unless that is forgiven.
 		Statement::Retry {
 			attempts,
 			delay,
@@ -211,57 +290,54 @@ fn statement(s: &Statement, out: &mut Inputs, set: &Set) {
 			if let Some(d) = delay {
 				expr(d, out, plain);
 			}
-			block(body, out);
-			if let Some(b) = otherwise {
-				block(b, out);
-			}
+			let attempt = walk(
+				body,
+				out,
+				Flow {
+					forgiving: false,
+					..flow.clone()
+				},
+			)
+			.map(|f| Flow {
+				forgiving: flow.forgiving,
+				..f
+			});
+			let failed = match otherwise {
+				Some(b) => walk(b, out, flow.clone()),
+				None => flow.forgiving.then(|| flow.clone()),
+			};
+			return meet(attempt, failed);
 		}
+		// A loop may run no passes at all, so nothing it sets is certain after
+		// it. Its first pass reads what was set before it, which is the pass a
+		// missing name fails on.
 		Statement::For { iter, body, .. } => {
 			expr(iter, out, plain);
-			block(body, out);
+			walk(body, out, flow.clone());
 		}
-		// The condition is read under the enclosing environment. The runner
-		// actually asks it inside the body's -- a `while ENV.X` sees a `.env.X`
-		// the loop body declares -- but reading it as the enclosing one can
-		// only list a name the caller need not pass, never hide one they must.
 		Statement::Loop { test, body, .. } => {
 			if let Some(c) = test.cond() {
 				expr(c, out, plain);
 			}
-			block(body, out);
+			walk(body, out, flow.clone());
 		}
-		// Neither reads anything; both are here so a new statement form cannot
-		// be added without this walk being asked about it.
-		Statement::Break { .. } | Statement::Continue { .. } => {}
-		Statement::Match {
-			subject,
-			cases,
-			default,
-			..
-		} => {
-			expr(subject, out, plain);
-			for c in cases {
-				block(&c.body, out);
-			}
-			if let Some(b) = default {
-				block(b, out);
-			}
-		}
+		Statement::Break { .. } | Statement::Continue { .. } => return None,
 		Statement::Run { target, args, .. } => {
-			parts(target, out, set);
+			parts(target, out, &flow.set);
 			for a in args {
-				parts(a, out, set);
+				parts(a, out, &flow.set);
 			}
 		}
 		Statement::Exec { command, body, .. } => {
 			if let Some(c) = command {
-				parts(c, out, set);
+				parts(c, out, &flow.set);
 			}
 			for line in body {
-				parts(line, out, set);
+				parts(line, out, &flow.set);
 			}
 		}
 	}
+	Some(flow)
 }
 
 /// The interpolations in a run of text. The literal halves are the shell's, or
@@ -291,7 +367,7 @@ fn expr(e: &Expr, out: &mut Inputs, at: At<'_>) {
 			};
 			match (kind, key) {
 				(SourceKind::Arg, Some(k)) => merge(&mut out.args, k, u),
-				// Set by a property above it, which the caller cannot reach.
+				// Set above it on every path, which the caller cannot reach.
 				(SourceKind::Env, Some(k)) if at.set.contains(k) => {}
 				(SourceKind::Env, Some(k)) => merge(&mut out.env, k, u),
 				(SourceKind::Flag, Some(k)) => {

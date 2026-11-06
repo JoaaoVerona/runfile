@@ -103,7 +103,15 @@ pub struct Scope {
 	pub args: HashMap<String, String>,
 	pub positional: Vec<String>,
 	pub flags: Vec<String>,
+	/// The environment a command at this line is handed, and what `ENV.X`
+	/// reads. Part of the run's [`crate::state::State`], with the three fields
+	/// marked so below.
 	pub env: HashMap<String, String>,
+	/// State: the names in `env` whose value a `.env` file supplied.
+	pub from_files: std::collections::BTreeSet<String>,
+	/// State: whether a failure is forgiven rather than stopping the target --
+	/// `ignore_errors()`, written above this line.
+	pub ignore_errors: bool,
 	pub run: HashMap<String, Value>,
 	/// Set while a `try(…)` is being evaluated so a failure can be caught.
 	pub(crate) in_try: bool,
@@ -116,14 +124,13 @@ pub struct Scope {
 	/// non-terminal reduces to; `assume_yes` is `-y` and CI, and skips it.
 	pub confirm: Option<fn(&str) -> bool>,
 	pub assume_yes: bool,
-	/// The anchor, the parent of `runfiles/`: what a target's first `.workdir`
-	/// is relative to, and the subtree a preview confines its reads to. It is
-	/// not where a path resolves -- see `workdir`.
+	/// The anchor, the parent of `runfiles/`: where a target starts, what its
+	/// first `set_cwd()` is relative to, and the subtree a preview confines its
+	/// reads to. It is not where a path resolves -- see `workdir`.
 	pub anchor: std::path::PathBuf,
-	/// The working directory in effect at the line being evaluated: where a
-	/// command written there would run, and so what a relative path in `glob`,
-	/// `read_file` and friends resolves against. The runner keeps it current
-	/// as `.workdir` changes, the way it keeps `env` current as `.env` does.
+	/// State: the working directory in effect at the line being evaluated --
+	/// where a command written there runs, and so what a relative path in
+	/// `glob`, `read_file` and friends resolves against. `set_cwd()` moves it.
 	pub workdir: std::path::PathBuf,
 	/// Private keys `decrypt` may try. Supplied by the host so the language
 	/// crate never has to know about credential stores.
@@ -211,6 +218,15 @@ impl Default for Keys {
 	}
 }
 
+/// What `import_env_file()` decrypts with: the same deferred pool `decrypt()`
+/// uses, so a file with no `encrypted:` value never touches the credential
+/// store, and one that has them asks it once however many files there are.
+impl runfile_env::PrivateKeyProvider for Keys {
+	fn keys(&self) -> &[String] {
+		self.get()
+	}
+}
+
 impl std::fmt::Debug for Keys {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		// Never print the pool itself.
@@ -240,11 +256,13 @@ impl Scope {
 			preview: false,
 			temps: TempFiles::default(),
 			branch: None,
+			from_files: std::collections::BTreeSet::new(),
+			ignore_errors: false,
 		}
 	}
 
-	/// Anchor the scope at `dir`, with no `.workdir` yet: what a target starts
-	/// from before its first property.
+	/// Anchor the scope at `dir`, with no `set_cwd()` yet: what a target starts
+	/// from before its first line.
 	pub fn rooted_at(&mut self, dir: std::path::PathBuf) {
 		self.workdir = dir.clone();
 		self.anchor = dir;

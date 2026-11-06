@@ -47,14 +47,15 @@ nobody keeps.
 ## The `.run` language
 
 One target is one file. `runfiles/build.run` is the target `build`; `runfiles/api/deploy.run` is `api:deploy`.
-`_shared.run` is not a target — it holds settings every file in its directory inherits.
+`_shared.run` is not a target — it runs ahead of every target in its directory, which starts from what it left.
 
 Line-oriented. Every line is one of:
 
 | Form | Meaning |
 | --- | --- |
 | `# text` | Comment, to end of line; it may follow code. The leading block is the target's description. |
-| `.name = value` | A property. |
+| `.name = value` | A property: a fact about the whole file, at its top. |
+| `ENV.NAME = expr` | Set an environment variable for every line below. |
 | `$ <line>` | Hand this line to a shell. |
 | `exec <cmd>` … `end` | Run `<cmd>`, with the block's body as its stdin. |
 | `json` … `end` | A block of structured text, as one value of that format. |
@@ -63,7 +64,7 @@ Line-oriented. Every line is one of:
 | `parallel do` … `end`, `parallel for x in …` … `end` | Run each statement inside, or each iteration, at once, and wait for all of them. |
 | `detach $ <line>`, `detach exec <cmd>` … `end` | Start one command and do not wait for it. |
 | `run <target> [args]` | Dispatch another target, in-process. |
-| `expr` | Evaluated for effect, e.g. `write_file(…)`. |
+| `expr` | Evaluated for effect, e.g. `write_file(…)` -- or `set_cwd()`, `add_path()`, `import_env_file()`, `ignore_errors()`, which change the state the lines below run in. |
 
 **The one rule: the language is the default, the shell is marked.** `exec`, `end` and `$ ` were chosen because
 they collide with none of the shell lines in the 1,897-line corpus this was designed against; a keyword-first
@@ -144,24 +145,26 @@ classified and evaluated afterwards -- two passes over one parse, because evalua
 description of the chain**: `prepare` and `target_help::inputs` each used to fold it by hand with
 `Inputs::extend`, and both ask it now, so the command line, `--help` and `--stdin-args` cannot disagree.
 
-**A name a `.env` property has already set where it is read is not an input.** `--help` said `PORT required`
-for `.env.PORT = "3000"` above a `print(ENV.PORT)`, and `--stdin-args` asked for it -- telling someone to
-pass a value that the property then overrides. The walk carries the set of names a `.env` has supplied (in
-`At`, beside the guard and the default, since it is another fact about where a read sits) and skips a read of
-one. It follows the runner exactly, which is the only way it can be trusted: a property covers what is below
-it and inside its block; its own value reads what was there before it, so `.env.P = concat(ENV.P, ":x")`
-still lists `P`; a `?`-guarded default like `.env.PORT = ENV.PORT ? "3000"` is listed as `defaults to 3000`,
-which is how a target says the caller may override. Since a value reads the environment as it stands at its
-own line (see *Properties*), the walk is one rule with no exceptions: the set runs forward through the
-`_shared.run` chain, into the target's header and down through its body, and a nested block adds to it only
-for itself -- `walk` hands back what is set by the end of a block, which `of_chain` carries from one shared
-file to the next. It had two regions that saw nothing, while the runner built the environment only after a
-header; they went when the runner stopped doing that. A `.env-file` supplies
-nothing here, since which names a file sets is only known once it is read and it may well not exist; and a
-name is matched exactly as the property sets it, because `ENV.X` tries the exact name before any other case,
-so a caller's `PORT` still reaches `ENV.PORT` under a `.env.port`. One place is deliberately loose: a loop's
-condition is read under the enclosing environment, though the runner asks it inside the body's, which can
-only list a name the caller need not pass, never hide one they must.
+**A name the file has set on every path to a read is not an input.** `--help` said `PORT required` for
+`ENV.PORT = "3000"` above a `print(ENV.PORT)`, and `--stdin-args` asked for it -- telling someone to pass a
+value the assignment then overrides. The walk carries the set of names set on **every** path to the line (a
+`Flow`, beside whether `ignore_errors()` may be in effect) and skips a read of one; `At` hands the set to each
+read. Must, not may, because this is the one direction the walk can afford to be wrong in: a name left out is
+listed as an input the caller need not pass, while a name wrongly in it hides one they must. It follows the
+runner exactly: an assignment covers what is below it, past the block it is written in; two branches meet on
+what both set (`meet`), and a branch that always leaves -- an `exit()`, an `error()`, a `break` -- does not
+count against the other; a `match` with no `default` fails when no case matches, so its cases are every path; a
+`do` puts the environment back, so what it sets is not set after it; a loop may run no passes, so nothing it sets
+is certain after it, while its first pass reads what was set before it, the pass a missing name fails on; a
+`retry` keeps what the attempt that worked set, and its `else` runs from where it began; a parallel branch sets a
+copy. Under `ignore_errors()` a failing assignment is forgiven and sets nothing, so only one whose value is
+written out counts there. Its own value reads what was there before it, so `ENV.P = concat(ENV.P, ":x")` still
+lists `P`; a `?`-guarded default like `ENV.PORT = ENV.PORT ? "3000"` is listed as `defaults to 3000`, which is how
+a target says the caller may override. The walk runs straight through the `_shared.run` chain into the target,
+since the chain runs ahead of it. An `import_env_file()` supplies nothing here, since which names a file sets is
+only known once it is read and it may well not exist; and a name is matched exactly as the line sets it, because
+`ENV.X` tries the exact name before any other case, so a caller's `PORT` still reaches `ENV.PORT` under an
+`ENV.port = …`.
 
 It scanned the **text** for `ARG.` until it did not. The keys have no dynamic form — `ARG[k]`, `ARG.{{ k }}`
 and `ARG."k"` are all refused by the parser — so every use is spelled out, which made scanning look exact. But
@@ -256,9 +259,10 @@ shell `until … do sleep … done`, three of them re-implementing an attempt co
 hand. The block is run with **`ignore_errors` forced off** — a retry that could not see failure would run
 exactly once, which is the least useful way for it to be wrong — and the target's own `exit()` is re-raised
 rather than retried (a target the body *runs* that ends with one is a failure, and is retried as a `$ run` of it
-would be). It may be a parallel branch or sit inside one: a branch is ordinary code walked in order, so its
-attempts are its own. (`.parallel` had to refuse it, having no way to collect what a body would run before
-it had run.)
+would be). **Every attempt starts from the state the `retry` began with**, and the one that succeeds keeps what
+it changed; see *The state every line runs in*. It may be a parallel branch or sit inside one: a branch is
+ordinary code walked in order, so its attempts are its own. (`.parallel` had to refuse it, having no way to
+collect what a body would run before it had run.)
 
 ### Loops
 
@@ -272,7 +276,7 @@ same rule an `if` follows, which is what makes `until $ curl -sf health` read as
 question about the text, so `P.loops` counts the enclosing loop bodies and an editor underlines a stray one
 rather than a run finding out half-way. They travel out as `RunError::Break` / `Continue` -- an error is the
 only path back out of a walk, the same reason `exit()` is one -- so **`is_stop` covers them**: a `retry` would
-otherwise read a `break` as a failed attempt and run the body again, and `.ignore-errors` would forgive it
+otherwise read a `break` as a failed attempt and run the body again, and `ignore_errors()` would forgive it
 into a statement that plainly did nothing. `retry` is *not* a loop for this purpose; a `break` inside one
 leaves the `for` around it.
 
@@ -324,7 +328,7 @@ there is no second description of anything left to drift.
 - **Every branch runs to completion before a failure is reported.** Stopping the others would leave a
   half-started set of services behind, and one failing says nothing about whether the rest should. A stop --
   Ctrl+C, `exit()` -- is reported ahead of any failure, since the first command to fail may be one the signal
-  killed; among equals the first in source order wins. `.ignore-errors` on the block forgives each branch, the
+  killed; among equals the first in source order wins. `ignore_errors()` in effect where the block opens forgives each branch, the
   way it forgives each statement of a block walked in order.
 - **`break` and `continue` cannot leave a parallel block**, whose branches run at once and so have no order to
   leave in. `P.fence` records the loop depth the innermost one opened at, and a `break` or `continue` may only
@@ -335,10 +339,11 @@ there is no second description of anything left to drift.
   a branch -- a missing input is an error rather than a prompt, since `fork` clears `Scope::ask`, and
   `confirm()` refuses unless `-y`, CI or `--dry-run` answers without asking. Two questions at once on one
   terminal cannot be answered. `Scope.branch` is how the pure library knows: it holds the branch's label.
-- **The block's properties are every branch's**, and one written between two branches is the ones below it:
-  `branches_of` sets the branches up in order before any starts, applying each trailing property where it
-  sits. A `parallel for`'s list and its body's properties are worked out once, before any iteration starts, as
-  a sequential `for`'s are.
+- **Each branch starts from a copy of the state the block opened in** -- environment, working directory,
+  `ignore_errors()` -- and what it changes is its own. A change that is a whole branch of a `parallel do` is
+  refused, as a `let` there is: it would reach nothing. (A property between two branches used to apply to the
+  ones below it; properties are a file's now.) A `parallel for`'s list is worked out once, before any
+  iteration starts, as a sequential `for`'s is.
 - **Concurrency is unbounded**: a branch is a thread, and so is every iteration of a `parallel for`. A limit is
   a question for later, with no syntax yet.
 - **Under `--dry-run` the branches run in turn**, in source order, so a preview reads the same way every time.
@@ -470,11 +475,10 @@ that runs or passes one that fails -- and `runfile-runtime/src/tests/names.rs` h
 check relies on. Bindings are flat: a `let` inside an `if` outlives its `end`, so a name bound on *any* path to
 a line counts. A loop's own names end with the loop. A pass of a loop, or an attempt of a `retry`, sees what the
 one before it bound, so a name bound anywhere in the body counts anywhere in it, a condition included. A
-parallel branch binds on a copy. A sequential `for` puts its names aside **before** its body's properties are
-worked out -- once, before the first item is bound -- so `.workdir = dir` at the top of `for dir in …` was
-always `dir is not defined` at run time, and is now said where it is written (a `parallel for` leaves an outer
-binding in place). A `_shared.run` binds with its top-level `let`s only: `of_shared` checks one the way
-`fold_shared` applies it, still checking what never runs, and letting nothing it binds out.
+parallel branch binds on a copy. A `_shared.run` runs ahead of the target, so whatever any path through it binds
+is bound for the target (`resolve::chained`), and `of_shared` checks one the way `of_chain` checks a target. (A
+nested block used to have properties, worked out once before a `for` bound its names, so `.workdir = dir` at the
+top of `for dir in …` was `dir is not defined`; what it did is a line now, which runs on every pass.)
 
 So a name is unresolved **where no binding of it can have run before it on any path** -- exact in the direction
 that matters, since a file whose every read can be reached bound is never refused. A read under `?` is checked
@@ -541,7 +545,7 @@ reports both in one sorted list, and one function turns either into a diagnostic
 **The rule is the shell checker's: report only what is wrong every time.** A value's type is what `types.rs` can be
 sure of: a literal's, a source's (`ARG` and `ENV` strings, `FLAG` a bool, `ARGS` a list of strings), an operator's,
 and a call's, from `SIGNATURES`. **A name holds the union of everything any line binds it to, anywhere** in the file
-and the `_shared.run` chain -- flow is ignored on purpose. A failure can leave a `let` undone under `.ignore-errors`,
+and the `_shared.run` chain -- flow is ignored on purpose. A failure can leave a `let` undone under `ignore_errors()`,
 in a `retry` that gave up, or in a loop that went round again, so a flow-sensitive answer has to model every place a
 run carries on after one, and a place it missed is a report about a value the name can hold. The union has nothing to
 miss; what it gives up is `let n = ARG.n` then `n = number(n)`, the file that already remembered to convert. Under
@@ -572,11 +576,18 @@ follows the real run: a file that dry-runs clean and fails for real is still ref
   `printf` format is read one way before a run and during one. The count message is `format_count`'s, which is why a static
   refusal still says `more substitutions`.
 - **`capture-position` is where `value_of` does not run.** The runner runs a capture as the whole value of a `let`,
-  a reassignment, a call statement or a `for` (and as the last argument of a call that is), and as the whole of an
-  `if`, `while`, `until` or `match`; everywhere else the pure evaluator meets it and fails with *"capture needs a
-  process host"*. That is a condition's call (`if contains("a", $ cmd)`, `if code_of($ cmd)`) and every
-  `_shared.run` `let`, which `fold_shared` evaluates with `eval_boundary`. A runtime test runs each and holds the
-  runner to the rule. `code_of` given anything but a capture or a dispatch is `wrong-type`.
+  a reassignment, an `ENV.X =`, a call statement or a `for` (and as the last argument of a call that is), and as
+  the whole of an `if`, `while`, `until` or `match`; everywhere else the pure evaluator meets it and fails with
+  *"capture needs a process host"*. That is a condition's call (`if contains("a", $ cmd)`, `if code_of($ cmd)`). A
+  `_shared.run` is walked like a target, so its `let`s are no exception any more. A runtime test runs each and
+  holds the runner to the rule. `code_of` given anything but a capture or a dispatch is `wrong-type`.
+- **`relative-cwd-in-loop` is the one place a loop's passes are a mistake every time.** A relative `set_cwd()`
+  written directly in the body of a sequential `for` over a list written out with two items or more, with no
+  `break` or `continue` in the body, moves every pass after the first on from where the last one left. Each of
+  those conditions is what makes it every time: a call under an `if` may not be reached, a `while` or a `for` over
+  a list worked out at run time may make one pass, and a path that may be absolute does not compound. The fix is a
+  `do` around the body. It was first written as "anywhere in any loop with no `do` between", and refused a
+  `while` whose body ran once -- which is how the narrowing was found.
 - **`glued-list` catches a list with a literal glued onto its end in a `$` line**: `rm -rf {{ dirs }}/cache`,
   which an empty `dirs` collapses to `rm -rf /cache` and several `dirs` split into words with `/cache` stuck to
   the last -- wrong whatever the list holds (audit SA-005). Reported only for a list that is **its own word**
@@ -616,7 +627,7 @@ crates/
   runfile-lsp/                 # Language server (a library; served by `run :lsp`)
   runfile-shell/               # The shell checker: `$` lines and shell `exec` bodies, read the way bash reads them
   runfile-cli/                 # The `run` binary
-  runfile-env/                 # .env parsing and env-map building
+  runfile-env/                 # .env parsing, and reading (and decrypting) one .env file
   runfile-crypto/              # AES-256-GCM for encrypted env values; replacing a file in one step
   runfile-state/               # Prepare state, OS credential store access, the Linux key file
 ```
@@ -628,8 +639,9 @@ crates/
 `ast.rs` carries `LoopTest` beside `Statement`. `eval.rs` holds `destructure`, the one description of what a
 comma-separated left-hand side means.
 `ast.rs` also holds `Constant` and `Expr::constant_non_bool` -- the one description of "a value the parser can
-read straight off the page", which the flag rule is about -- plus `Statement::span` and the
-`Block::declaration()` / `Block::trailing()` split that gives a block's two property regions.
+read straight off the page", which the flag rule is about -- plus `Statement::span` and `Statement::effect`, which
+says whether a line is one of `state::EFFECTS`. `state.rs` holds the `State` a `do` puts back, the scope's
+environment helpers (`set_env`, `prepend_path`, `env_key`), `assign_env`, and the four effects.
 `args.rs` classifies a command line against what the target reads — the one place the `--key value` rule is
 spelled, so the runner and the `--stdin-args` prompt cannot read the same words two ways.
 `format.rs` is the pretty-printer. `lexer.rs` is a hand-rolled scanner (`skip_interp`, `split_interp`, `scan_string`, `tokenize`). `parser.rs`
@@ -642,21 +654,21 @@ quoting.
   turned every `run <target>` into a hang. Memoized so a run that decrypts twice still prompts once — **across
   its targets, not only within one**. `Host::key_pool` makes one pool per run and hands a clone to every target
   the run dispatches, `fork` shares it with every parallel branch, and the clones share one cache. It used to
-  be a `Keys::new` per target in `Host::prepare`, so two targets reading one encrypted `.env-file` through the
+  be a `Keys::new` per target in `Host::prepare`, so two targets reading one encrypted `.env` file through the
   `_shared.run` above both unlocked the keyring twice in one run, and the test that said otherwise never saw
-  it: its pool could decrypt nothing, so the first target failed before it ran the second. The watch probe
-  takes the pool too, and the run after it has what the probe loaded. **`Host::run` drops the pool on the way
+  it: its pool could decrypt nothing, so the first target failed before it ran the second. **`Host::run` drops the pool on the way
   out, however the run ended**, so each watch iteration is a run of its own and asks again. That is the
   decision, and it is `watch.rs`'s own promise that the next save is the retry: a pool kept for the session
   would remember a keyring that was locked, or a key not yet added, until someone restarted it. The cost is
   one credential-store read for each iteration that decrypts, which an unlocked keyring answers without a
-  prompt. `tests/keys.rs` holds both halves -- one load across targets, branches and the probe, and a second
-  run on the same host that finds a key the first could not.
+  prompt. `tests/keys.rs` holds both halves -- one load across targets and branches, and a second run on the
+  same host that finds a key the first could not.
 - `Scope.dry_run` exists so `write_file` and `decrypt` can refuse to write, and so `confirm` does not ask. A
   preview that edits the working tree is worse than no preview, and one that stops to ask permission for what
   it is not going to do is not a preview at all.
-- `Scope.preview` is a **real `--dry-run`**, as opposed to the header probe, which sets `dry_run` to suppress
-  writes while it still reads. Under `preview` the file-reading functions (`read_file`, `glob`, `file_exists`,
+- `Scope.preview` is a **real `--dry-run`**. It and `dry_run` are set together now; they were two because a
+  header probe, gone with the watch loop's move to `Host::on_header`, suppressed writes while it still read. Under
+  `preview` the file-reading functions (`read_file`, `glob`, `file_exists`,
   `directory_exists`, `is_executable`) are confined to the anchor subtree by `escapes_anchor` -- an absolute path
   or a `..` escape returns a placeholder (`<contents of …>`, `false`, `[]`) rather than reading -- so previewing
   an untrusted repository cannot `read_file("/etc/passwd")` and `print` it, which it would do under the old
@@ -664,7 +676,7 @@ quoting.
   happens, so a preview of your own project stays useful. `print`/`printf` keep running under a preview, now
   over placeholders. `escapes_anchor` normalizes `.`/`..` lexically, with no disk access, so a path that does not
   exist is judged all the same. A path resolves against `Scope.workdir` and is bounded by `Scope.anchor`: the
-  repository writes `.workdir`, so a bound that moved with it is one `.workdir = "/"` would lift.
+  repository writes `set_cwd()`, so a bound that moved with it is one `set_cwd("/")` would lift.
 - **A built-in given a number no type can hold is a clean error, not a panic.** `functions::duration_secs` is
   the one check for `sleep` and `retry … every`: `Duration::from_secs_f64` panics on a NaN, a negative or a
   value past ~1.8e19, and a delay is usually data (`sleep(number(ARG.delay))`). `slice`'s length saturates
@@ -708,11 +720,11 @@ quoting.
   with nothing open is a parse error rather than an expression statement.
 - **`exit()` ends the target it is written in, with a status.** It leaves as `EvalError::Exit`, since an
   error is the only path out of an expression, and *every* catcher inside the target re-raises it: `try`, a
-  `?` chain, `.ignore-errors` and `retry` all let it through, the way an interrupt is not something a target
+  `?` chain, `ignore_errors()` and `retry` all let it through, the way an interrupt is not something a target
   gets to shrug off. **Where the target ends, it becomes how the target went** (`dispatch::ended`, asked of
   `run_inner` whole, so a `_shared.run` `let` counts too): 0 is `Ok`, and the line that ran the target carries
   on; anything else is `RunError::Exited`, a failure of that `run` line and *not* a stop -- a caller's
-  `.ignore-errors` forgives it, `retry` has another go and `code_of` scores it, exactly as at a `$ run` of the
+  `ignore_errors()` forgives it, `retry` has another go and `code_of` scores it, exactly as at a `$ run` of the
   same target. It used to be a stop all the way up, so a helper's early `exit()` ended the whole run and skipped
   the rest of its caller -- and `exit(0)` reported that run as a success, a build that never happened called
   done -- while `$ run` and `code_of(run …)` handed back: the in-process form, the normal one, was the one that
@@ -721,8 +733,8 @@ quoting.
   A status is a byte, as a process's is: `exit(-1)` is 255 and `exit(256)` is 0. `RunError::exit_code` answers
   for both forms, and is what the CLI reads to set its own status instead of printing an error. An `exit()` in a
   property's value is the same `exit()`: `From<PropError> for RunError` unwraps an evaluation error rather than
-  keeping it as the property's own, which had made one neither a stop nor a status -- `.ignore-errors` forgave
-  `.env.X = exit(3)` in a block while refusing to forgive `exit(3)` on the line below it. Ctrl+C and a
+  keeping it as the property's own, which had made one neither a stop nor a status -- the old `.ignore-errors`
+  forgave `.env.X = exit(3)` in a block while refusing to forgive `exit(3)` on the line below it. Ctrl+C and a
   declined `confirm()` are not statuses, and still stop everything (`is_refusal`). Of the 21 `exit()` calls in
   the author's 1,224 runfiles, three were already this early-return idiom, and none sat where the change moves an
   outcome: every caller that dispatched one in-process had nothing after the call, forgave nothing and retried
@@ -851,7 +863,7 @@ naming both, since merging them would let one target shadow another invisibly. A
   failed would fail there rather than refuse every project.
 - **The anchor**: the parent of `runfiles/` is `{{ RUN.parent }}`, and the working directory a target starts in.
   It is not where every relative path resolves -- that is the working directory in effect where the path is
-  written, which a `.workdir` moves (see *Properties*). What stays anchored is what describes the project rather
+  written, which a `set_cwd()` moves (see *The state every line runs in*). What stays anchored is what describes the project rather
   than a line in it: `RUN.parent`, the trust and scope checks, and the subtree a preview is confined to.
 - **`_shared.run` layers by directory.** `Catalog::shared_chain` returns every one that applies, outermost
   first, so `runfiles/api/_shared.run` adds to `runfiles/_shared.run` rather than replacing it. Only the top
@@ -860,16 +872,11 @@ naming both, since merging them would let one target shadow another invisibly. A
   the target's own **path**, never looked up by namespace — a namespace is not unique across trees, the
   machine-wide one has none, and `Catalog.shared` recorded a key whether or not the file was there, so keying
   by it meant that merely *having* a `~/.runfiles` silently disabled the root `_shared.run` of every project
-  on the machine -- and hid it from `:lint`, until that map was keyed by path too. Its properties *and* its
-  `let` bindings apply, which is what makes it the `globals` analog
-  -- **folded in source order** (`run::fold_shared`), so a property below a `let` reads it. Shared files are
-  never walked, so when properties became applied-where-written the fold had to learn it separately: it kept
-  applying only the region above the first statement, and `let d = "x"` then `.env.DIR = d` dropped the
-  property **without a word**, where it had at least been an error before. Unlike a walk, a property below the
-  last `let` still applies -- in a shared file, after the value it is computed from is exactly where a
-  setting sits. A `let` there reads the environment the lines above it set, through `keep_current`, the same
-  as a header value does. Its other statements never run: a `print` in a `_shared.run` is not an action taken
-  once per target, it is nothing.
+  on the machine -- and hid it from `:lint`, until that map was keyed by path too. **It runs, line for line,
+  ahead of every target below it** (`run::run_chain`), which is what makes it the `globals` analog: the target
+  starts from the bindings, environment and working directory it left. It used to be *folded* -- properties and
+  top-level `let`s applied, everything else skipped without a word -- and is walked by the ordinary walker
+  now; see *The state every line runs in*.
 - **`resolve` is one hash lookup, and a target is reached by its file name only.** `.alias` is gone: a target
   used to answer to a second name declared in its own file, found by scanning every *other* file's declaration
   region on a miss. The property was the last thing in the language read from the **text** rather than from a
@@ -923,7 +930,7 @@ naming both, since merging them would let one target shadow another invisibly. A
 
 ### runfile-runtime
 
-`props.rs` (property resolution), `env.rs` (env building), `exec.rs` (spawning), `run.rs` (the walker),
+`props.rs` (property resolution), `env.rs` (what a `run` hands over), `exec.rs` (spawning), `run.rs` (the walker),
 `dispatch.rs` (`Host`, target resolution, cycle detection), `shell.rs` (shell selection), `term.rs` (the
 terminal's width, and how wide text is on it).
 
@@ -931,9 +938,10 @@ terminal's width, and how wide text is on it).
   once its names resolve, in the order they are written. `os_named` and `arch_named` are what `RUN.os` and
   `RUN.arch` say, and a test holds them to `runfile_lang::eval::OS_NAMES` and `ARCH_NAMES`, which the checker takes
   to be every value there is.
-- **`PROPERTIES` carries the whole taxonomy, and is the only copy of it.** Three booleans per name --
-  `block_scoped`, `declaration_only`, `flag` -- each tested against `extend`'s actual behaviour the way
-  `FUNCTIONS` is, in both directions, so a mislabelled column fails rather than misinforming an editor. There
+- **`PROPERTIES` carries the whole taxonomy, and is the only copy of it.** One boolean per name -- `flag` --
+  tested against `extend`'s actual behaviour the way `FUNCTIONS` is, in both directions, so a mislabelled column
+  fails rather than misinforming an editor. (There were three while five properties could sit inside a block;
+  every property left describes the whole file, so where one may sit is the parser's single rule.) There
   used to be a second copy: a `BLOCK_SCOPED` const beside the list, and the language server describing the
   same rules again in `check_properties`, which is how the scope rule had already drifted once. `props::check`
   is the one function that answers everything about a property line without running it, and `analysis.rs`
@@ -949,15 +957,15 @@ terminal's width, and how wide text is on it).
   knows, written without a path -- go through `exec::executable` to `locate`. Handed to the standard library as a
   bare word, a named `bash` was simply the first on PATH, which on a default Windows install is the launcher,
   while a `$` line beside it ran Git Bash. It is looked up on the PATH the command runs with -- the standard
-  library's choice too, so `.add-path` still decides which shell runs -- while the default shell stays the
+  library's choice too, so `add_path()` still decides which shell runs -- while the default shell stays the
   runner's, from the runner's PATH. A path is handed over as written. A shell found nowhere is refused -- *could
   not start `bash`: not on PATH* -- rather than left to the standard library, whose search would reach the
   launcher; and `$0` in `exec bash` is now the full path, as it always was for `$` lines.
 - **A working directory that is not one is named, not the program** (`ExecError::NoWorkdir`). Starting a
   process reports a missing directory with the error a missing program gets -- `No such file or directory` on
-  Unix -- so `.workdir = "nope"` printed *could not start `/usr/bin/bash`* and sent the reader after a shell
-  that was there. `exec::spawn` asks `is_dir` before spawning, because the two cannot be told apart after,
-  and asks it at the line rather than where the `.workdir` was written, since an earlier command may be what
+  Unix -- so a working directory of `nope` printed *could not start `/usr/bin/bash`* and sent the reader after a
+  shell that was there. `exec::spawn` asks `is_dir` before spawning, because the two cannot be told apart after,
+  and asks it at the command rather than at the `set_cwd()`, since an earlier command may be what
   makes the directory. It is after the `--dry-run` return, so a preview of a target that creates its own
   working directory is not refused, and after the shell lookup, so a shell that is missing is still named
   first. One check covers every form, being the one place a process is started: `$`, `exec`, a capture, a
@@ -1032,16 +1040,15 @@ terminal's width, and how wide text is on it).
   reaches refuses nothing. An option or a default is printed through `term::sanitize` (`target_help::one_of`,
   `target_help::sanitize`, used by both readers), since `\e` is an escape the language has and `--help` is meant
   to be safe in a repository nobody has read (SA-027) -- a default had been printed raw.
-- `Host::header_props` **probes**: it evaluates the declaration region only to read `.watch`, so it neither
-  refuses an unread input -- a probe rejecting the command line would report the failure before the run that
-  owns it -- nor lets a writing function write. Without the second half, `.env.X = temp_file(...)` made two
-  files per run, one an orphan nothing referenced. An `exit()` it meets, in a header value or a `_shared.run`
-  `let`, is the run's to carry out too: the CLI reads one as "no `.watch`" and runs, where it used to report it
-  as `error: exit 0`, status 1.
+- **`Host::on_header` is handed the target's properties as its header is worked out**, before its first line
+  and only for the target the run was asked for; an error it answers with ends the run as `HostError::Header`.
+  It replaced `Host::header_props`, a probe that evaluated every header a second time before every run to read
+  `.watch` -- and so had to refuse no unread input, let no writing function write, and read an `exit()` as "no
+  `.watch`". See *The state every line runs in*.
 - **Ctrl+C** is caught so the run can stop between statements, delete its temp files, and exit 130. The flag
   is process-global because a signal handler has nowhere else to write, but the runtime reads an injected
   predicate (`Host::interrupted`), so it reaches for no process state of its own and one test cannot
-  interrupt another. `.ignore-errors` does not apply to it. **The same handler also catches the other ways a
+  interrupt another. `ignore_errors()` does not apply to it. **The same handler also catches the other ways a
   run is ended** (audit SA-011): SIGTERM (a CI cancellation, `timeout`), SIGHUP (a closed terminal or dropped
   SSH session) and SIGQUIT on Unix, and CTRL_CLOSE/LOGOFF/SHUTDOWN on Windows — each only sets the flag, so
   the walker still stops between statements and drains the temp registry rather than being killed with a
@@ -1061,8 +1068,7 @@ terminal's width, and how wide text is on it).
   chatter is not target execution and is left alone.
 - **`.logging` announces each command on stderr, and is off unless asked for** — the same default the old
   `logging` field had (`unwrap_or(false)`), and for the same reason: a target is run for its output, and a
-  runner talking over it is noise. Block-scoped, so a `_shared.run` covers a directory the way `globals` used
-  to. stderr, so a pipeline reading stdout is unaffected, and never under `--dry-run`, which already prints
+  runner talking over it is noise. A `_shared.run`'s covers a directory the way `globals` used to. stderr, so a pipeline reading stdout is unaffected, and never under `--dry-run`, which already prints
   the commands to stdout. **Each command announces itself as it runs**, from *inside* the script: a block of `$` lines is one process, so the runner cannot observe when
   each line starts and could only ever print all of them before any of them ran — which put a failure at the
   end, under nothing. `exec::traced` puts a `printf … >&2` before each line instead. It returns `None`, and
@@ -1085,7 +1091,7 @@ terminal's width, and how wide text is on it).
   failed-to-start error name a secret rather than printing it into scrollback and CI logs. The executed body
   still carries the real value, so nothing a command *receives* changes. `--dry-run` is the one place that
   keeps resolving values — its documented contract, and what the argument-classification tests read back —
-  and that stays safe because a preview already reads no `.env-file` and holds no key (audit SA-008), so a
+  and that stays safe because a preview already reads no `.env` file and holds no key (audit SA-008), so a
   decrypted secret is never in scope to be previewed. A value a command prints itself (`$ echo {{ x }}`) is
   the command's own output and still appears: the runner can only redact what *it* writes.
 - **On Windows that argument has to be quoted by hand when it holds no space.** The standard library quotes
@@ -1186,48 +1192,39 @@ terminal's width, and how wide text is on it).
   colour sets it back. A branch's label is keyed on **stdout**, the stream a pipeline reads: `run dev > log`
   keeps the escapes out of the file, and the cost is a terminal's stderr going unpainted when stdout alone is
   redirected.
-- **A `run` hands the target it runs its environment.** Whatever a command on that line would be given -- the
-  caller's `.env`, `.env-file` and `.add-path`, a block's and a trailing property's, its `_shared.run` chain's,
-  and what the caller was itself run with -- is where the called target starts, in place of the process's
-  environment. `Dispatch::run` carries it (`env::handed_over` works it out from the line's `props` and
-  `r.env`, for `run` and `code_of(run …)` alike), `Host::prepare` seeds `Scope.env` with it so a `_shared.run`
-  `let` or a header value reads it before anything has been built, and `Props.inherited` carries it into every
-  build after that -- like `machine_wide`, a fact about the target that survives every `extend`. Before this,
+- **A `run` hands the target it runs its environment.** Whatever a command on that line would be given -- what
+  the caller set, imported and added, what its `_shared.run` chain did, and what the caller was itself run with
+  -- is where the called target starts, in place of the process's environment. `Dispatch::run` carries it
+  (`env::handed_over(&r.scope)`, for `run` and `code_of(run …)` alike), and `Host::prepare` installs it in the
+  called target's scope (`Inherited::install`) before its first line, a `_shared.run`'s included. Before this,
   `Dispatch::run` carried no environment at all: every target started from the process's, so a helper like
   `_aws` that expected its caller's credentials got none, while `$ run _aws` got them.
-- **It is handed over in two halves, and that is the design.** A value only a `.env-file` supplied is a
-  *default*, laid beneath the called target's own files (`EnvBuildParams::defaults`); everything else is
-  *exported* and stands where a shell's variables stand, above its files and below its `.env`
-  (`EnvBuildParams::base_env`, which replaces the process's environment outright, overlay included). Handed
-  over whole -- all `$ run x` can do, since a new process is given only variables -- a caller's `.env` would
-  beat the called target's own `.env.test`: `ci` running `test` would test against the development database.
-  A value is a file's when neither layer that beats a file put it there: not what the caller was itself run
-  with, and not the caller's `.env`. PATH is always exported, so a called target's own `.add-path` goes in
-  front of its caller's -- a subproject's `node_modules/.bin` ahead of the root's that called it. An
-  `.add-path` entry already on PATH is moved to the front rather than added again (`apply_add_to_path`), or a
-  `_shared.run` both levels read would stack a copy per level; a PATH none of the entries is on comes back
-  byte for byte. Nothing flows back: what a called target sets is gone when it returns. The caller's values
-  were decrypted before they were handed over, so a called target never asks the key pool for them again, and
-  `tests/keys.rs` counts that. `RUN.user` and `RUN.cwd` stay the process's. `runfile-runtime/src/tests/inherited.rs`
-  holds each of these rules, `runfile-env/src/tests/called.rs` the layering beneath them, and `cli.rs` the
-  whole of it against `$ run`, which must agree about everything but a caller's file values.
-- **Only a `.env-file`'s own values are decrypted** (`build_env`, after `load_env_files`, before they are
-  merged in). A ciphertext arriving any other way -- exported in the caller's shell, inherited, or written
-  into the `.env` block from `.env.X = ARG.x` -- is passed through unchanged, never scanned for `encrypted:`.
-  Before, three passes decrypted the whole merged map (process environment included) and the `.env` block, so a
-  CI job that holds the key and echoes a variable an outsider controls (a PR title via `env:`, the shape
-  GitHub recommends against script injection) was a decryption **oracle** for every secret in the repository's
-  committed `.env` files -- audit SA-004. The public key is still resolved against the environment so far plus
-  the file's own values, so a file that sets `RUNFILE_ENCRYPTION_PUBLIC_KEY` keeps working. `tests/encryption.rs`
-  holds both halves: a file value decrypts; an env-block or exported ciphertext is handed through.
-- **A preview (`--dry-run`) reads no `.env-file` and asks for no key.** `env::for_props`/`build` take a
-  `preview` flag; under it `build` passes `env_files: None` and `available_private_keys: None`, so previewing an
-  untrusted repository neither reads an arbitrary `.env-file` path nor unlocks the credential store (which, on
-  a locked keyring, would hang the preview) -- audit SA-008. `ENV.X` from a file is then absent in the preview.
-  `preview` is **not** the probe's `dry_run`: the header probe sets `dry_run` to suppress writes while it still
-  reads `.env-file`s to work out `.watch`, so the two are distinct flags (see *runfile-lang* `Scope.preview`).
-- `env::build` receives the same deferred key pool the `decrypt` function uses. It was previously passed `None`,
-  which meant an encrypted `.env-file` value could never be decrypted at all.
+- **It is handed over in two halves, and that is the design.** A value a file supplied and nothing since has
+  replaced (`Scope.from_files`) is a *default*, which the called target's own `import_env_file()` still
+  replaces; everything else is *exported*, which no file of the called target's does. Handed over whole -- all
+  `$ run x` can do, since a new process is given only variables -- a caller's `.env` would beat the called
+  target's own `.env.test`: `ci` running `test` would test against the development database. PATH is always
+  exported, so a called target's own `add_path()` goes in front of its caller's -- a subproject's
+  `node_modules/.bin` ahead of the root's that called it. A directory already on PATH is moved to the front
+  rather than added again (`Scope::prepend_path`), or a `_shared.run` both levels read would stack a copy per
+  level; a PATH none of the entries is on keeps its own text after them. Nothing flows back: what a called
+  target sets is gone when it returns. The caller's values were decrypted before they were handed over, so a
+  called target never asks the key pool for them again, and `tests/keys.rs` counts that. `RUN.user` and
+  `RUN.cwd` stay the process's. `runfile-runtime/src/tests/inherited.rs` holds each of these rules, and
+  `cli.rs` the whole of it against `$ run`, which must agree about everything but a caller's file values.
+- **Only a file's own values are decrypted** (`runfile_env::read_env_file`, as `import_env_file()` reads it).
+  A ciphertext arriving any other way -- exported in the caller's shell, inherited, or set with `ENV.X = ARG.x`
+  -- is never scanned for `encrypted:`. Before, three passes decrypted the whole merged map (process
+  environment included) and the old `.env` block, so a CI job that holds the key and echoes a variable an
+  outsider controls (a PR title via `env:`, the shape GitHub recommends against script injection) was a
+  decryption **oracle** for every secret in the repository's committed `.env` files -- audit SA-004. The public
+  key is resolved against the environment so far plus the file's own values, so a file that sets
+  `RUNFILE_ENCRYPTION_PUBLIC_KEY` keeps working, and so does one that leaves it to a file imported before it.
+  `runfile-env`'s `tests/encryption.rs` holds both halves.
+- **A preview (`--dry-run`) reads no `.env` file and asks for no key.** Under `Scope.preview`,
+  `import_env_file()` does nothing, so previewing an untrusted repository neither reads an arbitrary file path
+  nor unlocks the credential store (which, on a locked keyring, would hang the preview) -- audit SA-008. `ENV.X`
+  from a file is then absent in the preview.
 - **`run :env encrypt` encrypts whole parsed values, and verifies the round-trip** (`cmd_env/crypt.rs`, audit
   SA-013). It used to split each line on the first `=` and encrypt the text after it, so a multi-line value (a
   PEM key, a certificate) had only its first line encrypted and the rest left as plaintext in the "encrypted"
@@ -1284,8 +1281,8 @@ terminal's width, and how wide text is on it).
     never writes to a developer's Secret Service either.
 - **The process environment is read with `vars_os`, not `vars`** (`runfile_env::process_env`, audit SA-023).
   `std::env::vars` panics on a value that is not valid UTF-8 -- bash exports a Latin-1 `OLDPWD`/`PWD` after a
-  `cd` into such a directory -- which aborted every `run <target>` before anything ran. The three call sites
-  (`dispatch.rs`, `env.rs`, `build_env`) use `process_env`, which skips a non-UTF-8 entry; it still reaches a
+  `cd` into such a directory -- which aborted every `run <target>` before anything ran. The call sites
+  (`dispatch.rs`, and the tests' own harness) use `process_env`, which skips a non-UTF-8 entry; it still reaches a
   child, since the runner overrides keys rather than clearing the environment.
 - **One serializer writes every `KEY=VALUE`** (`runfile_env::serialize_env_value`, audit SA-030). `:env
   decrypt`, `:env set` and the `decrypt()` builtin wrote the value raw, so a newline became a second variable
@@ -1294,21 +1291,16 @@ terminal's width, and how wide text is on it).
   a newline, a quote, a backslash, an inline-comment ` #`/` //`, or a leading/trailing blank -- and is the
   exact inverse of `parse.rs`'s unescape, pinned by a round-trip test. A `.env` parse error no longer echoes
   the offending line, only its number and what is wrong, so a secret on it does not reach a log (audit SA-026).
-- **Precedence is decided in one place, `runfile_env::build_env`: `.env-file` < the caller's shell < the
-  target's `.env`.** A file is a default -- the dotenv convention, so a checked-in `.env` does not clobber what
-  someone exported -- and the target's own assignment beats both, since it is the one way a target can force
-  a value; a default the caller may override is written `.env.PORT = ENV.PORT ? "3000"`. For a target another
-  target `run`s, "the caller's shell" is what that caller exported, and its file values sit below this
-  target's files: `defaults` < `.env-file` < `base_env` < `.env`. It used to be
-  described twice, with opposite answers: `build_env` put the shell on top, while `merged_env` laid the
-  block's `.env` back over the built environment at spawn. So `.env.PORT = "3000"` under `PORT=4000 run t`
-  printed `4000` for `{{ ENV.PORT }}` and `3000` for `$PORT`. The overlay existed because a block that set
-  only `.env` was never rebuilt; `with_block_env` now rebuilds when `.env` differs too, so `merged_env` is
-  `r.env` and nothing else. **What commands receive did not change** -- they always got the property; only
-  `ENV.X` moved to agree -- with one exception: an `.add-path` beside a `.env.PATH` used to vanish, because
-  the overlay replaced the whole value, and now it is prepended onto the assignment. That is also why three
-  `runfile-env` tests that pinned "the shell's PATH beats `.env.PATH`" were rewritten rather than kept: they
-  held for `build_env`'s output and for no command that ever ran.
+- **Precedence is one rule, `state::import`'s: a file value fills a name nothing has set, or replaces another
+  file's.** A file is a default -- the dotenv convention, so a checked-in `.env` does not clobber what someone
+  exported -- and an `ENV.X =` replaces whatever is there, file or caller, since it is the one way a target can
+  force a value; a default the caller may override is written `ENV.PORT = ENV.PORT ? "3000"`. For a target
+  another target `run`s, "the caller's shell" is what that caller exported, and the caller's file values arrive
+  still marked as a file's. It used to be described twice, with opposite answers -- a builder that put the shell
+  on top and an overlay at spawn that put the property there -- and then once, in a fixed layering
+  (`defaults` < `.env-file` < `base_env` < `.env` < `.add-path`) rebuilt from properties. There is one
+  environment now, changed line by line, and the order things happen in is the order they are written: an
+  `ENV.PATH =` after an `add_path()` replaces it, as it would in a shell.
 
 ### runfile-shell
 
@@ -1769,8 +1761,10 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
 - `--dry-run` is **not** gated by prepare: it changes nothing, and reading what a target would do is a
   reasonable thing to want before setting a project up.
 - Watch mode is entered automatically by any target declaring `.watch`; there is no flag, because the file
-  already said what it wants. Patterns interpolate, so they resolve through `Host::header_props` rather than
-  being read off the source text. A failing run is reported and watching continues.
+  already said what it wants. Patterns interpolate, so they come from the run itself, through `Host::on_header`:
+  the first run starts the watcher as its header is worked out (`watch::Watching::start`), is reported as the
+  first iteration, and `Watching::follow` runs it again on every debounced change. A failing run is reported
+  and watching continues.
 - Completion scripts are hand-written per shell, but carry no knowledge of their own: they ask the binary
   what may follow what (`run :complete <cword> <word>...`, hidden, absent from the help and from the tree it
   serves). `completions::ROOT` is the single description of the command tree, so a subcommand of a subcommand
@@ -1875,125 +1869,131 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   (`list::names`) also asks `is_hidden` directly rather than parsing every file, so Tab cannot be hung or
   crashed through that path (SA-022/SA-024).
 
+## The state every line runs in
+
+Four things a line inherits from the lines above it: the **environment** (`Scope.env`, what `ENV.X` reads and
+every command is handed), which of its values a `.env` **file** supplied (`Scope.from_files`), the **working
+directory** (`Scope.workdir`), and whether a failure is **forgiven** (`Scope.ignore_errors`). Together they are
+`runfile_lang::state::State`, and they live in the `Scope` -- the one copy there is, which is what `ENV.X` and
+the file functions already read, so a command and an expression cannot see two answers.
+
+Five lines change them, each a line of its own: `ENV.NAME = value` (`Statement::SetEnv`) and the four
+`state::EFFECTS` -- `set_cwd(dir)`, `add_path(dir)`, `import_env_file(path)`, `ignore_errors()` -- which are
+ordinary functions in `FUNCTIONS` and `SIGNATURES`, implemented in `state::apply` against the scope they are
+handed. **This replaced five block-scoped properties** (`.env.NAME`, `.workdir`, `.add-path`, `.env-file`,
+`.ignore-errors`) in 2.0. A property was applied at block entry and undone at the block's `end`, which needed a
+declaration/trailing split of every block, a lazy `keep_current` rebuild so a header value could read the
+environment, `with_block_env` comparing list lengths to know when to rebuild, a `Cow<Props>` to keep the common
+path free, and a second copy of the environment in the runner -- each of which had cost a paragraph here, and
+two of which had already disagreed about precedence. Now the state is changed in place, line by line.
+
+- **A change lasts past the block it is written in**, the way a `let` does -- bindings were already flat, and
+  properties were the one thing that reset at an `end`. It is what makes conditional setup writable: `if
+  RUN.os == "mac"` around an `add_path()` reaches every line below.
+- **`do … end` is the block that scopes** (`run::scoped`): it takes the `State` as it opens and puts it back
+  however it is left -- an error, `break`, `continue`, `exit()`, Ctrl+C. It puts back *everything*, including
+  what a line inside it changed that was not its first, because restoring only one change is ill-defined once
+  the body touches the same thing (what does taking an `add_path()` back mean after an `ENV.PATH =`?). Bindings
+  are not put back, by a `do` or anything else. Chosen over a `with <call> … end` form: one block, and every
+  change inside it, so nothing says which line a scope is about.
+- **Every attempt of a `retry` starts from the state the `retry` began with** (`retry_attempts`), and the
+  attempt that succeeds keeps what it changed. Again from wherever the last attempt gave up -- a `set_cwd("web")`
+  already done, so the next went to `web/web` -- is not what "again" means. Failure is visible inside the block
+  whatever was in effect around it, and `ignore_errors` goes back to its outer value once the `retry` is over.
+  An `else` runs from where the `retry` began.
+- **A loop's next pass starts where the last left**, as any block but a `do` does. That is the shell's `cd`
+  trap for a relative `set_cwd()`, and `relative-cwd-in-loop` refuses the one case it is a mistake every time;
+  see *What fails every time*.
+- **A parallel branch works on a copy** (`Runner::fork` clones the scope), so what it changes reaches its own
+  commands and nothing else. An `ENV.X =` or an effect that is a *whole* branch of a `parallel do` would change
+  a copy nobody reads, and the parser refuses it, as it refuses a `let` there. `ignore_errors()` in effect where
+  the block opens forgives each branch.
+- **`ignore_errors()` may only sit directly in the file's block or a plain `do`'s** (`parser::Here`). At the top
+  of a file it reaches the end of the target, in a `do` its `end`; anywhere else it would forgive every failure
+  for the rest of the target, which is the silent failure the runner refuses everywhere else. It takes no
+  argument and has no "off": a `do` is how it ends. A single command that may fail is `code_of($ …)` on a line of
+  its own.
+- **The effects are statements dressed as calls.** In value position -- `let x = set_cwd(…)`, `if
+  add_path(…)`, a `{{ … }}` -- each is a parse error (`parser::refuse_effects`), so an editor says so. They
+  answer `""` to keep the signature tests honest.
+- **`ENV` is the one source a file may write.** `ARG.x =`, `FLAG.x =`, `RUN.x =` and `ARGS =` are refused as
+  read-only at parse time, and `let ENV.X =` with a hint. The key is static, as a read's is, which keeps
+  `inputs::of` exact. A string, number or bool is written the way `{{ … }}` writes it; a list is refused
+  (`state::assign_env`, and `wrong-type` before the run), since no one way of joining one is right. There is no
+  unsetting a variable yet.
+- **Precedence is one sentence: a file value fills a name nothing has set, or replaces another file's**
+  (`state::import`). So a later file layers over an earlier one, and neither the caller's environment nor an
+  `ENV.X =` is ever replaced by a file, whichever line comes first -- the dotenv convention, kept. An assignment
+  and an `add_path()` replace whatever was there, so their order is what it looks like: `ENV.PATH = "/x"` after
+  an `add_path("a")` loses the `a`. `from_files` is the only bookkeeping this needs: a name an assignment or an
+  `add_path()` touches leaves it.
+- **Every relative path follows the working directory in effect where it is written** -- a command, the file
+  functions, `import_env_file()`, `add_path()`, `.watch`, and `set_cwd()` itself, which is relative to the one in
+  effect the way `cd` is. A path is resolved when its line runs and stored whole, so a `set_cwd()` after an
+  `add_path()` does not move it. `Scope.anchor` is where a target starts and what bounds a preview's reads;
+  `RUN.parent` and `RUN.cwd` never move. `tests/workdir.rs` holds each case, with a different `marker` in each
+  directory so a path resolved against the wrong one reads the wrong word.
+- **A `.env` file is read and decrypted as it is imported** (`runfile_env::read_env_file`). Only its own values
+  are decrypted (SA-004); the public key is looked up in the environment so far with the file's values over it;
+  the key pool is asked only when the file holds an `encrypted:` value; a file that is not there is skipped; and
+  under a preview nothing is read and no key asked for (SA-008). A parse error names the file and line, never
+  the text (SA-026).
+- **A `run` hands over `env::handed_over(&scope)`**, in two halves: what is in `from_files` (but PATH) is a
+  *default* the called target's own files may replace, and everything else is *exported*. `Inherited::install`
+  starts the called target's scope from it. Handed over whole, as `$ run test` must, a caller's `.env` would beat
+  `test`'s own `.env.test`. A called target starts at its own anchor with `ignore_errors` off; nothing it changes
+  comes back. `tests/inherited.rs` holds this against `$ run`, which must agree about everything but a caller's
+  file values.
+
+**A `_shared.run` runs, line for line, ahead of every target below it** (`run::run_chain`): outermost first,
+each one's properties layered over the ones above, then its statements walked by the ordinary walker, and the
+target starts from the scope it leaves. It used to be *folded* -- its properties and top-level `let`s applied,
+everything else silently skipped -- which made a `$` line there "nothing", a capture in a shared `let`
+unrunnable (a `capture-position` finding), and a `let` inside a shared `if` invisible. It runs once for each
+target, every time that target runs, a target another one `run`s included: that is the cost, and the model it
+buys is one sentence. `resolve::chained` binds what any path through the chain binds; `inputs::of_chain` walks
+it with the same rules as the target.
+
+**The watch loop learns `.watch` from the run itself** (`Host::on_header`), the moment the target's header is
+worked out and before its first line. It used to *probe*: evaluate every header a second time before every run,
+which is why a header could not run a writing function twice and why the keyring had to be loaded lazily in the
+probe. A `.watch` may now read what the chain set, and the chain is lines that run -- a probe would have had to
+run them. The hook is called before the first line, so the watcher starts in time to hear a change made while
+the first run is still going (`watch::Watching::start`, then `follow`).
+
+`tests/keys.rs` counts the credential-store loads to hold the laziness: none for a file with nothing encrypted
+in it, one per run however many targets, branches and files decrypt, and a fresh one per watch iteration.
+
 ## Properties
 
-Four axes, all of them `PROPERTIES` columns:
+**A property is a fact about the whole file, so it is written at its top, above its first statement** -- the
+parser refuses one inside a block or below a statement (*"a property describes the whole file"*), a question
+about the text. There are four, all in `PROPERTIES`: `.shell`, `.logging`, `.watch`, `.only-in-directories`.
+They are exactly the things read before a file runs -- the shell checker reads `.shell` statically, discovery
+reads `.only-in-directories`, the watch loop `.watch` -- which is the line that separates a property from a
+statement: a dot is a declaration about the file, a call is something done when its line runs. A property's
+value is worked out once the `_shared.run` chain has run, against the scope it left (`Props::extend`), so a
+`.watch` is relative to the directory the chain left and reads what it set. `.watch` and `.only-in-directories`
+append. `props::check` answers everything about a property line that needs no run, and the language server asks
+it; a name the list does not have is `PropError::Unknown`, with no memory of the names that became something
+else.
 
-| Axis | Yes | No |
-| --- | --- | --- |
-| Block-scoped (may sit inside `if` / `for` / `match`) | `ignore-errors`, `workdir`, `env`, `env-file`, `add-path` | `shell`, `logging`, `watch`, `only-in-directories` |
-| Declaration-only (must be above the block's first statement) | `shell`, `logging`, `watch`, `only-in-directories` | the rest |
-| Flag (bare means `= true`, takes a bool) | `ignore-errors`, `logging` | the rest |
-| Machine-wide files only | `only-in-directories` | the rest |
-
-`env` is addressed by sub-key, `.env.NAME = "value"`, and exactly two segments: `.env` and `.env.A.B` are
-both "unknown property". Every value is a full expression, so a `?` chain, a call or a `"{{ … }}"` string is
-legal in any of them -- `only-in-directories` is the one exception, read by discovery before any evaluator
-exists and so a literal string or a list of them, refused with `DiscoverError::UnreadableScope` otherwise.
-
-**`env-file` and `add-path` are block-scoped, and both append.** A block that names one has a longer list than
-the block around it, which is how `with_block_env` tells it has to rebuild -- reading and decrypting the files
-again for every `if` would be work nothing asked for. A block whose `.env` differs from the enclosing one is
-rebuilt too; it was not, and `ENV.X` inside it read the enclosing value while `$X` read the block's. The environment the block inherited is put back when it
-closes, which is what stops a loop carrying one iteration's files into the next, and is why **every** block
-form goes through that one function: `if` and `match` via `nested`, and `for` and `retry` via their own arms,
-whose bodies were extracted into `for_body` and `retry_attempts` so the wrapper has something to wrap. A
-`retry`'s `else` runs *outside* the body's environment -- it is what to do when the block never worked, not
-part of it. What this buys over the header form is that a block's file can be named by something the body
-computed. A `.env-file` naming a file that is not there is skipped, the same as a header one: a project whose
-`.env` is git-ignored still has to run.
-
-**A property is applied where it is written.** It used to be applied before every statement of its block
-whatever the order, because `ast::Block` keeps `properties` and `statements` in two lists and the walker read
-one and then the other -- so `let x = "sub"` followed by `.workdir = x` was `` `x` is not defined ``, in a
-file that reads top to bottom. `Block::declaration()` and `Block::trailing()` split the list at the first
-statement's line: the declaration region is what `Props::extend` applies at block entry, exactly as before,
-and anything below a statement is applied by `walk` when it reaches that line. So a property reads the
-bindings above it, and takes effect from there down -- including one below the last statement, which has
-nothing left to affect but is still evaluated, so a broken one says so. Nothing existing moved -- not one `.run` file in the
-repository or on the author's machine had a property below a statement -- which is what made the ordering
-safe to define rather than a break. `Cow<Props>` is what keeps the common path free: a block with no trailing
-property walks on the borrowed properties it was handed and clones nothing.
-
-**A value reads the environment as it stands at its own line, in a header too.** A declaration region is
-applied one property at a time, but the walker builds the environment only once it is done, so `.env.B =
-ENV.A` below `.env.A = "a"` read the caller's `A`, a value composed from what an `.env-file` above it had
-loaded found nothing, and neither a target's header nor a shared `let` saw anything the `_shared.run` chain
-set -- while the same lines below a statement, where each property rebuilds as it goes, worked. `extend`
-and `fold_shared` now call `props::keep_current` before each value: it rebuilds, through the walker's own
-`env::for_props`, **only when a property above has changed the environment and this value reads it**
-(`Expr::reads_env`). The laziness is the point rather than an optimisation. `Host::header_props` evaluates
-every header a second time, on every run that is not `--dry-run`, to learn whether it declares `.watch`, and
-a rebuild reads and decrypts every `.env-file` -- so rebuilding after every property would have unlocked the
-keyring in the probe as well as in the run for any target with an encrypted file. A header that never reads
-`ENV` costs exactly what it did, and `tests/keys.rs` counts the loads to hold it there: none in the probe for
-such a header, one for a header that does read -- and none more in the run after the probe, which shares its
-key pool. What `extend` rebuilt it puts back before returning, because
-the block's own environment is the walker's to build and to undo -- left in place, it is what
-`with_block_env` would save, and it would outlive the block. A nested block starts current, since the one
-around it was built; the top of a target starts stale whenever the chain folded into it touches the
-environment.
-
-**Every relative path follows the working directory in effect where it is written** -- a command, the file
-functions (`glob`, `read_file`, `write_file`, `file_exists`, `directory_exists`, `is_executable`, `decrypt`),
-`.env-file`, `.add-path`, `.watch` and `.workdir` itself. They used to split: a command ran under `.workdir`
-while everything else resolved against the anchor, so `$ ls` and `glob("*")` on adjacent lines listed two
-directories, and the machine-wide `_shared.run`'s `.workdir = RUN.cwd` moved its targets' commands to the
-project in front of you while `read_file` and `.env-file` stayed in the home directory. `runfile-env` even
-documented the `.env-file` half as what users expect; it was one more rule to know, and the corpus had paid
-for it -- `lab-auth/server/runfiles/fuzz.run` wrote `fuzz/seeds/…` for the language and `seeds/…` for the
-shell, one line apart, about the same directory.
-
-- **Where it is written, not where the block ends.** A property's relative path is resolved by `Props::apply`
-  against the working directory at its line, and stored whole, so a `.workdir` below it does not move it:
-  `.add-path = "example/node_modules/.bin"` above `.workdir = "example"` (two files in `react-extended-maps`)
-  still names the subproject's tools. A `.watch` pattern keeps its directory beside it
-  (`props::WatchPattern`) rather than joined onto it, so a directory whose name holds `[` is not read as a
-  glob; the CLI watches each such directory and matches beneath it.
-- **`.workdir` is relative to the one in effect**, the way `cd` is: a block's `.workdir = "src"` under a
-  header's `"web"` is `web/src`, and an absolute one replaces it. `Props.workdir` is the whole path. No file in
-  the corpus nested one relative `.workdir` inside another, which is what made this safe to define.
-- **`Scope.workdir` is set from the properties an expression is evaluated under**, not saved and restored
-  around blocks: `statement` sets it at its top, `cond_of` for a loop's condition (asked under the body's
-  properties, like the environment), `Props::apply` before a value, and `fold_shared` before a shared `let`.
-  Everything the walker evaluates is evaluated under properties it was handed, so this is right by
-  construction and a block's directory cannot outlive its `end`. `extend` puts back what it moved, as it does
-  the environment. `Scope.anchor` is the only copy of the anchor: `Runner` no longer carries one, so the two
-  cannot disagree.
-- **What did not move**: `RUN.parent` is still the anchor and `RUN.cwd` still where `run` was typed; a
-  dispatched target starts at its own anchor, not its caller's working directory; and a preview's reads are
-  still bounded by the anchor (`escapes_anchor`). `tests/workdir.rs` holds each case, with a different
-  `marker` in each directory so a path resolved against the wrong one reads the wrong word.
-
-The environment is the part that has to be put back. A trailing `.env`, `.env-file`, `.add-path` or
-`.workdir` rebuilds it mid-walk, so `walk` saves the block's own environment and restores it on the way out
--- `with_block_env` cannot, because it decides whether to save by comparing list *lengths* at block entry,
-before a trailing property has been applied.
-
-**Four properties describe the whole file and have to be written above its first statement**
-(`PropError::NotInDeclaration`): `shell`, `logging`, `watch`, `only-in-directories`. They are exactly the
-header-only ones now. `.parallel` was the one block-scoped property that was declaration-only too, and it is
-a keyword now, so the two columns agree -- and are kept apart all the same, because they answer different
-questions and the next property may split them again. Refused by `extend` at block entry
-rather than by `walk` where the line sits, so the message arrives whether or not the line would have been
-reached -- after a `break`, or in an `if` that went the other way.
-
-**A flag takes a bool, and a constant that can never be one is refused where it is written.**
-`.ignore-errors` and `.logging` are the two. `matches!(v, Value::Bool(true))` used to
-answer every other value with `false` and say nothing, so `.ignore-errors = "true"` was *off* -- in a language
-that refuses `"a" + 1` and `"1" == 1`. Now `Expr::constant_non_bool` answers whether the right-hand side is
-something the parser can read straight off the page and is not a bool -- a number, a list, or a string with no
-interpolation in it -- and `PropError::NotABool` names what it found, with the hint the near miss earns
-(*"a string -- write `true` without the quotes"*). Nothing is const-folded: `1 + 1` is left to the run,
-because a flag written as arithmetic is not the mistake this is looking for.
+**A flag takes a bool, and a constant that can never be one is refused where it is written.** `.logging` is the
+one flag left. `matches!(v, Value::Bool(true))` used to answer every other value with `false` and say nothing,
+so a flag set to `"true"` was *off* -- in a language that refuses `"a" + 1` and `"1" == 1`. Now
+`Expr::constant_non_bool` answers whether the right-hand side is something the parser can read straight off the
+page and is not a bool -- a number, a list, or a string with no interpolation in it -- and `PropError::NotABool`
+names what it found, with the hint the near miss earns (*"a string -- write `true` without the quotes"*).
+Nothing is const-folded: `1 + 1` is left to the run, because a flag written as arithmetic is not the mistake
+this is looking for.
 
 The rule is about **constants, not types**, because a flag decided from outside the file has no other shape to
-arrive in: `ENV.CI` is a string on every platform there is, and so is `ARG.p`. So `.ignore-errors = ENV.CI`,
-`.ignore-errors = "{{ ENV.CI }}"` and `.ignore-errors = ARG.p ? ENV.CI ? "false"` all pass the static check and are
-resolved at run time by `as_bool`, which takes a bool, or `true`/`1`/`false`/`0` case-insensitively and
-trimmed -- the words the places a flag is read from spell one with. Anything else is
-`PropError::FlagValue`, naming the value: silently off is the failure this replaced, and a run that stops is
-strictly better than a line that quietly did nothing.
+arrive in: `ENV.CI` is a string on every platform there is, and so is `ARG.p`. So `.logging = ENV.CI`,
+`.logging = "{{ ENV.CI }}"` and `.logging = ARG.p ? ENV.CI ? "false"` all pass the static check and are resolved
+at run time by `as_bool`, which takes a bool, or `true`/`1`/`false`/`0` case-insensitively and trimmed -- the
+words the places a flag is read from spell one with. Anything else is `PropError::FlagValue`, naming the value:
+silently off is the failure this replaced, and a run that stops is strictly better than a line that quietly did
+nothing.
 
 **`.shell` names one of the eight shells `is_shell` knows**, and `PropError::NotAShell` refuses the rest --
 statically for a constant, and at apply time for a value the run works out, against the same predicate
@@ -2003,17 +2003,12 @@ is asked of the resolved **program**, with no memory of whether that program cam
 `exec`. So `.shell = "pwsh"` and `exec pwsh` were already the same mechanism -- body on stdin, no `-e` -- and
 only the first of the two hid it: under `.shell = "pwsh"` a `$ ssh host` was broken exactly as it was before
 scripts moved to `-c`, and the line said nothing. The message is the fix, spelled with the value that was
-written: *"for another interpreter write `exec pwsh`"*.
-
-That is also why `.shell` is header-only now, and `.logging` with it. Block scope for `.shell` was redundant
-with `exec`, which says the same thing per block and names the program where a reader can see it; `.logging`
-is the runner narrating itself, and a trace with gaps is worse than none, since absence stops meaning
-anything. Both are declaration-only too -- header-only implies it, since a property describing the whole file
-cannot be applied part-way through one.
+written: *"for another interpreter write `exec pwsh`"*. A `_shared.run`'s `.shell` covers its own `$` lines and
+every target below it, unless one names its own.
 
 **`.detach` is gone; `detach` marks the command.** `detach $ npm run dev` and `detach exec node … end` start
 one process and do not wait. As a property it described a *file*, and got both halves wrong at once: every
-top-level command in the file was detached, so setup-then-serve was unwritable, while `extend(nested)` cleared
+top-level command in the file was detached, so setup-then-serve was unwritable, while a nested block cleared
 it, so the same command inside an `if` quietly waited -- 5ms, 2007ms and 5ms for three targets that all said
 `.detach = true`. A `_shared.run` setting it would have fire-and-forgotten every target in the directory.
 `Statement::Exec` carries `detach` instead, so the marker travels with the one process it is about and there
@@ -2030,7 +2025,7 @@ column 0; in TextMate it joins the optional left-hand side the `exec` rules alre
 `confirm(question)` is a function, so it can be called anywhere -- inside an `if`, after the value it asks
 about has been worked out. Declining raises `EvalError::Cancelled`, which travels like `Exit` inside a target
 -- every catcher re-raises it, because someone who said no has not asked to be second-guessed by a `?` fallback
-or by `.ignore-errors` -- and, unlike `Exit`, travels on past it: an `exit()` is a target reporting how it went,
+or by `ignore_errors()` -- and, unlike `Exit`, travels on past it: an `exit()` is a target reporting how it went,
 for its caller to act on, while a person who declined has decided for the whole run. `RunError::is_stop()` is what those catchers now consult -- `exit_code()` still answers only
 the status question, so a cancel keeps printing `cancelled` rather than exiting silently. The prompt reaches
 it as `Scope::confirm`, a plain `fn(&str) -> bool` like `Scope::ask`, which is why `prompt::confirmer()`
@@ -2041,13 +2036,6 @@ where there is nothing to approve -- previously a guarded target could not be pr
 segment so a namespace is not part of the question). Fifteen of the sixteen targets that set `.hide` were
 already named that way, and every `_`-prefixed target set it -- the property only let the two disagree. The
 sixteenth, `kico/runfiles/test.run`, is now visible.
-
-A nested block inherits behaviour but never a parent's one-shot header state.
-
-**`do … end` is a block with no condition** (`Statement::Do`, one arm in `walk`). Every
-block form until it asked a question, so a property covering two commands meant inventing an `if true` — or
-writing `cd web &&` on every line, which is what 35 sites in the corpus did. It takes nothing after the
-keyword, and says so: anything there would read as a condition it does not have.
 
 ## The GitHub Action
 
@@ -2220,21 +2208,25 @@ settings file: global registrations, path aliases and custom shell paths were al
 ## Removed, and not coming back
 
 MCP server, ShellCheck delegation (now `runfile-shell`), `.alias` (a target is its file name), `.detach` (now the `detach` marker), `.parallel` (now
-`parallel do` and `parallel for`), `:convert`, `:config` (all subcommands), `:format` (now `:lint`, which
+`parallel do` and `parallel for`), `.env.NAME` (now `ENV.NAME = …`), `.workdir`, `.add-path`, `.env-file` and
+`.ignore-errors` (now `set_cwd()`, `add_path()`, `import_env_file()` and `ignore_errors()`), `Host::header_props` (now
+`Host::on_header`), `:convert`, `:config` (all subcommands), `:format` (now `:lint`, which
 formats and also checks; the old name is refused with the new one), the user settings
 file, `-p` / target globs, `capture()`
-(now `$` in value position), `shell_quote()` (interpolation self-quotes), `set_cwd()` (now `.workdir`),
+(now `$` in value position), `shell_quote()` (interpolation self-quotes),
 `define()` (now `let`), `nth()` / `count_parts()` (now `split()` and indexing), the arithmetic and comparison
 functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKillOnSigInt`, the JSON schema,
 `VAR.` (replaced by `let`), and `RUNFILE_TARGET`. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
 `shlex`.
 
-**A property that became something else is an unknown property, and nothing remembers it was one.**
-`.parallel`, `.detach` and `.alias` were each refused for a while with what replaced them (a `REPLACED`
+**A property that became something else is an unknown property, and nothing remembers it was one** -- the
+five that became statements in 2.0 included. `.parallel`, `.detach` and `.alias` were each refused for a while with what replaced them (a `REPLACED`
 table in `props.rs`); that table is gone, so the list of properties is the only list there is.
 
 Every other function from the old surface is present. Seventeen were missing at one point, dropped by
-oversight rather than decision, and all are back. `try` is the one exception, replaced by `a ? b`.
+oversight rather than decision, and all are back. `try` is the one exception, replaced by `a ? b`. `set_cwd()`
+was once replaced by `.workdir`, and is back as what `.workdir` became: a property had a scope a function had
+not, and `do … end` is that scope now, for every change at once.
 
 **`run <target> --help`** prints the target's whole description, every input it reads — with what happens
 without each one — and its path (`target_help.rs`). Two things made it necessary: `--help` after a target name is the

@@ -1,39 +1,22 @@
-//! Building the environment a block's process sees.
+//! What a target `run` from another one is handed.
 //!
-//! `.env-file` is resolved *before* the body is evaluated, which is what lets
-//! `{{ ENV.x }}` and `--stdin-args` see those values. Decryption rides on the
-//! existing `runfile-env` path, so an `encrypted:` value is handled without the
-//! runtime knowing anything about keys.
+//! The environment itself lives in the scope, changed line by line -- by
+//! `ENV.X = …`, `add_path()` and `import_env_file()` -- and read by `ENV.X` and
+//! by every command; see `runfile_lang::state`. All that is left here is how it
+//! crosses a `run`.
 
-use crate::props::Props;
-use runfile_env::{EnvBuildParams, PrivateKeyProvider, build_env};
+use runfile_lang::Scope;
 use std::collections::HashMap;
-use std::path::Path;
-
-#[derive(Debug, thiserror::Error)]
-pub enum EnvError {
-	#[error("{0}")]
-	Build(String),
-}
-
-/// Adapts the language crate's deferred key pool to the env crate's provider
-/// trait. Neither crate depends on the other, so the bridge lives here.
-pub struct Provider(pub runfile_lang::Keys);
-
-impl PrivateKeyProvider for Provider {
-	fn keys(&self) -> &[String] {
-		self.0.get()
-	}
-}
 
 /// The environment a target is `run` with, as the target that ran it hands it
 /// over: what the caller's commands have at that line, in two halves.
 ///
-/// A value that only a `.env-file` supplied is a **default**, and goes beneath
-/// the called target's own files, so its own `.env-file` still replaces it.
-/// Everything else is **exported** -- the caller's shell, its `.env`, its
-/// `.add-path`, and whatever it was run with itself -- and stands where a
-/// shell's variables stand: above the called target's files, below its `.env`.
+/// A value that only a `.env` file supplied is a **default**, and stays one in
+/// the called target, so its own `import_env_file()` still replaces it.
+/// Everything else is **exported** -- the caller's shell, its `ENV.X = …`, its
+/// `add_path()`, and whatever it was run with itself -- and stands where a
+/// shell's variables stand: no file of the called target's replaces it, and
+/// its own `ENV.X = …` does.
 ///
 /// Handing the whole of it over as exported is what `$ run x` does, since a new
 /// process is given nothing but variables. It is what would let a caller's
@@ -47,11 +30,23 @@ pub struct Inherited {
 
 impl Inherited {
 	/// What a target run with this has before it sets anything itself, which
-	/// is what `ENV.X` reads until one of its properties changes it.
+	/// is what `ENV.X` reads until one of its lines changes it.
 	pub fn environment(&self) -> HashMap<String, String> {
 		let mut env = self.defaults.clone();
 		env.extend(self.exported.iter().map(|(k, v)| (k.clone(), v.clone())));
 		env
+	}
+
+	/// Start `sc` from this: its environment, and which of its values a file
+	/// supplied.
+	pub fn install(&self, sc: &mut Scope) {
+		sc.env = self.environment();
+		sc.from_files = self
+			.defaults
+			.keys()
+			.filter(|k| !self.exported.contains_key(*k))
+			.cloned()
+			.collect();
 	}
 }
 
@@ -70,109 +65,20 @@ impl std::fmt::Debug for Inherited {
 	}
 }
 
-/// What a `run` at this line hands the target it runs: `env`, the environment
-/// a command here would be given, split into its two halves.
+/// What a `run` at this line hands the target it runs: the environment a
+/// command here would be given, split into its two halves.
 ///
-/// A value is a file's when neither layer that beats a file put it there --
-/// the environment these properties were themselves run with (the process's,
-/// for a target run from the command line), and their `.env`. A value from
-/// either of those is exported, as is PATH always: most of what a target does
-/// to PATH is its `.add-path`, and a called target's own entries belong in
-/// front of that, not beneath its files.
-pub fn handed_over(props: &Props, env: &[(String, String)]) -> Inherited {
-	let process: HashMap<String, String>;
-	let run_with = match &props.inherited {
-		Some(inherited) => &inherited.exported,
-		None => {
-			// `vars_os`, so a non-UTF-8 variable does not panic the run (SA-023).
-			process = runfile_env::process_env();
-			&process
-		}
-	};
+/// A value is a default when a file supplied it and nothing since has replaced
+/// it. PATH is always exported: most of what a target does to PATH is its
+/// `add_path()`, and a called target's own entries belong in front of that.
+pub fn handed_over(sc: &Scope) -> Inherited {
 	let mut out = Inherited::default();
-	for (k, v) in env {
-		let from_a_file = !k.eq_ignore_ascii_case("PATH") && !run_with.contains_key(k) && !props.env.contains_key(k);
-		let half = if from_a_file {
-			&mut out.defaults
-		} else {
-			&mut out.exported
+	for (k, v) in &sc.env {
+		let half = match sc.from_files.contains(k) && !k.eq_ignore_ascii_case("PATH") {
+			true => &mut out.defaults,
+			false => &mut out.exported,
 		};
 		half.insert(k.clone(), v.clone());
 	}
 	out
-}
-
-/// The environment these properties describe, for a target anchored at
-/// `anchor`: what `ENV.X` reads and what a command is handed.
-///
-/// The one builder. The walker rebuilds through it at block boundaries, and a
-/// declaration region rebuilds through it part-way when a value is about to
-/// read the environment -- so the two cannot come to describe it differently.
-/// The same deferred pool the `decrypt` function uses, so an encrypted
-/// `.env-file` value resolves, and an unencrypted one never touches the
-/// credential store.
-pub fn for_props(
-	props: &Props,
-	anchor: &Path,
-	keys: &runfile_lang::Keys,
-	preview: bool,
-) -> Result<HashMap<String, String>, EnvError> {
-	build(
-		props,
-		anchor,
-		&props.workdir_in(anchor),
-		Some(&Provider(keys.clone())),
-		preview,
-	)
-}
-
-/// Merge the environment the target was run with -- the process's, unless
-/// another target ran it -- the declared env files and `.env` into one map,
-/// with `.add-path` entries prepended to PATH.
-///
-/// A preview (`dry_run`) reads no `.env-file` and asks for no key: both would be
-/// a side effect of a command documented as changing nothing, and reading an
-/// untrusted repository's `.env-file`s unlocks the credential store to decrypt
-/// its values with the user's keys -- audit SA-008. `ENV.X` from a file is then
-/// absent in the preview, and an `encrypted:` value is left as its ciphertext.
-pub fn build(
-	props: &Props,
-	anchor: &Path,
-	workdir: &Path,
-	keys: Option<&dyn PrivateKeyProvider>,
-	preview: bool,
-) -> Result<HashMap<String, String>, EnvError> {
-	let env: HashMap<String, String> = props.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-	// `.add-path` and `.env-file` entries were resolved against the working
-	// directory where they were written, which is a whole path once the anchor
-	// is one. A relative entry left here was written under no anchor at all --
-	// a scope built by hand -- and is taken from the anchor.
-	let paths: Vec<String> = props
-		.add_paths
-		.iter()
-		.map(|p| {
-			let path = Path::new(p);
-			if path.is_absolute() {
-				p.clone()
-			} else {
-				anchor.join(path).to_string_lossy().into_owned()
-			}
-		})
-		.collect();
-
-	// `.env-file` values arrive already evaluated -- properties are evaluated
-	// when applied -- so the substitution hook is the identity.
-	let inherited = props.inherited.as_deref();
-	let params = EnvBuildParams {
-		// A preview reads no files and holds no keys: see the note on `build`.
-		env_files: if preview { None } else { Some(&props.env_files) },
-		env: Some(&env),
-		add_to_path: Some(&paths),
-		working_dir: workdir,
-		env_files_base_dir: anchor,
-		available_private_keys: if preview { None } else { keys },
-		base_env: inherited.map(|i| &i.exported),
-		defaults: inherited.map(|i| &i.defaults),
-	};
-	build_env(&params, &|s, _| Ok(s.to_string())).map_err(|e| EnvError::Build(e.to_string()))
 }

@@ -65,7 +65,7 @@ fn every_example_does_what_the_document_says() {
 			let file = runfile_lang::parse(&src).unwrap_or_else(|e| panic!("`{id}`: does not parse: {e}\n{src}"));
 			let unresolved = runfile_lang::resolve::of_chain(&file, &[]);
 			assert!(unresolved.is_empty(), "`{id}`: {unresolved:#?}\n{src}");
-			let found = check(&src, &file, Some(&[]), false);
+			let found = check(&src, &file, Some(&[]));
 			match block.first().copied() {
 				Some("# flagged") => {
 					assert!(!found.is_empty(), "`{id}`: nothing found in\n{src}");

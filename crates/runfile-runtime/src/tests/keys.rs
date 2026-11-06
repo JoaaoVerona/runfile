@@ -44,7 +44,7 @@ fn a_plain_env_file_never_asks_for_keys() {
 	// Env building has a key provider wired in; it must stay deferred when the
 	// file holds nothing encrypted.
 	let files = &[
-		("runfiles/e.run", ".env-file = \".env\"\n$ true\n"),
+		("runfiles/e.run", "import_env_file(\".env\")\n$ true\n"),
 		(".env", "GREETING=hi\n"),
 	];
 	let (loads, out) = loads_during(files, "e");
@@ -57,7 +57,7 @@ fn an_encrypted_env_value_does_ask_for_keys() {
 	// The counterpart: deferral must not mean "never", or decryption silently
 	// stops working -- which is how this was wired before.
 	let files = &[
-		("runfiles/e.run", ".env-file = \".env\"\n$ true\n"),
+		("runfiles/e.run", "import_env_file(\".env\")\n$ true\n"),
 		(".env", "RUNFILE_ENCRYPTION_PUBLIC_KEY=aa\nSECRET=encrypted:Zm9vYmFy\n"),
 	];
 	let (loads, out) = loads_during(files, "e");
@@ -75,10 +75,10 @@ fn keys_are_loaded_once_per_run_however_many_targets_decrypt() {
 	let env = fixture_env();
 	let (loads, d) = fixture_loads_during(
 		&[
-			("runfiles/a.run", ".env-file = \".env\"\n\nrun b\n"),
+			("runfiles/a.run", "import_env_file(\".env\")\n\nrun b\n"),
 			(
 				"runfiles/b.run",
-				".env-file = \".env\"\n\n$ printf '%s' \"$RUNFILE_T_SECRET\" > b.txt\n",
+				"import_env_file(\".env\")\n\n$ printf '%s' \"$RUNFILE_T_SECRET\" > b.txt\n",
 			),
 			(".env", &env),
 		],
@@ -140,7 +140,7 @@ fn a_called_target_is_handed_its_callers_decrypted_values_without_asking_for_key
 	let env = fixture_env();
 	let (loads, d) = fixture_loads_during(
 		&[
-			("runfiles/caller.run", ".env-file = \".env\"\n\nrun _child\n"),
+			("runfiles/caller.run", "import_env_file(\".env\")\n\nrun _child\n"),
 			(
 				"runfiles/_child.run",
 				"$ printf '%s' \"$RUNFILE_T_SECRET\" > secret.txt\n",
@@ -160,7 +160,7 @@ fn a_shared_encrypted_env_file_asks_once_for_every_target_that_reads_it() {
 	let env = fixture_env();
 	let (loads, _d) = fixture_loads_during(
 		&[
-			("runfiles/_shared.run", ".env-file = \".env\"\n"),
+			("runfiles/_shared.run", "import_env_file(\".env\")\n"),
 			("runfiles/caller.run", "run _child\n"),
 			("runfiles/_child.run", "$ true\n"),
 			(".env", &env),
@@ -175,7 +175,7 @@ fn parallel_branches_that_run_decrypting_targets_ask_once_between_them() {
 	// Only the targets the branches run read the file, so all three reach for
 	// the pool at once: the first loads it, and the others wait for its answer.
 	let env = fixture_env();
-	let reads = ".env-file = \".env\"\n\n$ true\n";
+	let reads = "import_env_file(\".env\")\n\n$ true\n";
 	let (loads, _d) = fixture_loads_during(
 		&[
 			(
@@ -193,26 +193,23 @@ fn parallel_branches_that_run_decrypting_targets_ask_once_between_them() {
 }
 
 #[test]
-fn the_watch_probe_and_the_run_after_it_ask_for_keys_once() {
-	// The CLI reads a target's header before every run that is not `--dry-run`,
-	// to learn whether it declares `.watch`, and then runs it on the same host.
-	// A header value that reads what an encrypted file holds decrypts in the
-	// probe, and the run after it has what the probe loaded.
+fn a_run_whose_lines_read_an_encrypted_file_asks_for_keys_once() {
+	// A run used to be preceded by a probe of the target's header, to learn
+	// whether it declared `.watch`, and a value there that read an encrypted
+	// file decrypted twice. The run itself says what it watches now.
 	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	let env = fixture_env();
 	let d = project(&[
 		(
 			"runfiles/e.run",
-			".env-file = \".env\"\n.env.RUNFILE_T_COPY = ENV.RUNFILE_T_SECRET\n\n$ printf '%s' \"$RUNFILE_T_COPY\" > copy.txt\n",
+			"import_env_file(\".env\")\nENV.RUNFILE_T_COPY = ENV.RUNFILE_T_SECRET\n\n$ printf '%s' \"$RUNFILE_T_COPY\" > copy.txt\n",
 		),
 		(".env", &env),
 	]);
 	let cat = runfile_discovery::discover(d.path(), None).unwrap();
 	let h = fixture_host(&cat);
-	h.header_props(cat.resolve("e").expect("the target"), &[]).unwrap();
-	assert_eq!(LOADS.load(Ordering::SeqCst), 1, "the probe decrypted");
 	h.run("e", &[]).unwrap();
-	assert_eq!(LOADS.load(Ordering::SeqCst), 1, "and the run asked nothing more");
+	assert_eq!(LOADS.load(Ordering::SeqCst), 1, "one load for the run");
 	assert_eq!(read(&d, "copy.txt"), "the-secret");
 }
 
@@ -242,7 +239,7 @@ fn each_run_on_a_host_asks_again_so_the_next_run_finds_a_key_this_one_could_not(
 	let d = project(&[
 		(
 			"runfiles/e.run",
-			".env-file = \".env\"\n\n$ printf '%s' \"$RUNFILE_T_SECRET\" > secret.txt\n",
+			"import_env_file(\".env\")\n\n$ printf '%s' \"$RUNFILE_T_SECRET\" > secret.txt\n",
 		),
 		(".env", &env),
 	]);
@@ -258,51 +255,41 @@ fn each_run_on_a_host_asks_again_so_the_next_run_finds_a_key_this_one_could_not(
 	assert_eq!(read(&d, "secret.txt"), "the-secret");
 }
 
-/// Loads while the watch probe reads a target's header -- which the CLI does
-/// before **every** run that is not `--dry-run`, to learn whether it declares
-/// `.watch`. Anything a header costs, it costs twice.
-fn loads_probing(files: &[(&str, &str)], target: &str) -> usize {
+/// Loads during one run of `target`, however it ends.
+fn loads_running(files: &[(&str, &str)], target: &str) -> usize {
 	let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
 	let d = project(files);
 	let cat = runfile_discovery::discover(d.path(), None).unwrap();
 	let mut h = crate::dispatch::Host::new(&cat);
 	h.keys = counting_loader;
 	LOADS.store(0, Ordering::SeqCst);
-	let _ = h.header_props(cat.resolve(target).expect("the target"), &[]);
+	let _ = h.run(target, &[]);
 	LOADS.load(Ordering::SeqCst)
 }
 
 const ENCRYPTED: &str = "RUNFILE_ENCRYPTION_PUBLIC_KEY=aa\nSECRET=encrypted:Zm9vYmFy\n";
 
 #[test]
-fn the_watch_probe_builds_no_environment_for_a_header_that_never_reads_it() {
-	// A header value reads the environment as it stands at its own line, which
-	// can mean building it part-way -- reading and decrypting every file. Done
-	// eagerly, that would unlock the keyring in the probe as well as in the
-	// run, on every run of a target with an encrypted file. So it is built
-	// only for a value that is about to look.
+fn a_file_with_nothing_encrypted_in_it_asks_for_no_keys() {
 	let files = &[
 		(
 			"runfiles/e.run",
-			".env-file = \".env\"\n.env.MODE = \"dev\"\n.shell = \"sh\"\n$ true\n",
+			"import_env_file(\".env\")\nENV.COPY = ENV.PLAIN\n$ true\n",
 		),
-		(".env", ENCRYPTED),
+		(".env", "PLAIN=1\n"),
 	];
-	assert_eq!(loads_probing(files, "e"), 0, "nothing in the header reads `ENV`");
+	assert_eq!(loads_running(files, "e"), 0, "nothing to decrypt");
 }
 
 #[test]
-fn a_header_value_that_reads_the_environment_is_the_one_case_that_builds_it() {
-	// The counterpart: when a value below the file does read `ENV`, it has to
-	// see what the file loaded, and that is only knowable by reading it.
+fn a_file_with_an_encrypted_value_asks_once_whether_or_not_anything_reads_it() {
+	// A file is decrypted as it is imported, which is what keeps the rule one
+	// sentence: what a file holds is in the environment from that line down.
 	let files = &[
-		(
-			"runfiles/e.run",
-			".env-file = \".env\"\n.env.COPY = ENV.SECRET ? \"none\"\n$ true\n",
-		),
+		("runfiles/e.run", "import_env_file(\".env\")\n$ true\n"),
 		(".env", ENCRYPTED),
 	];
-	assert_eq!(loads_probing(files, "e"), 1, "the value reads what the file holds");
+	assert_eq!(loads_running(files, "e"), 1);
 }
 
 // ---- temp files
@@ -436,26 +423,25 @@ fn two_temp_files_in_one_run_are_different() {
 }
 
 #[test]
-fn a_writing_function_in_a_property_runs_once_per_run() {
-	// The declaration region is evaluated twice: once to read `.watch` before
-	// the run, once during it. A side effect there must not happen twice --
-	// the second file would be an orphan nothing referenced.
+fn a_writing_function_above_the_first_line_runs_once_per_run() {
+	// A header used to be evaluated twice: once by a probe to read `.watch`
+	// before the run, once during it, so a side effect there needed guarding
+	// against happening twice. The run itself says what it watches now.
 	let d = project(&[(
 		"runfiles/t.run",
-		".watch = \"src/**\"\n.env.CREDS = temp_file(\"secret\")\n$ true\n",
+		".watch = \"src/**\"\nENV.CREDS = temp_file(\"secret\")\n$ true\n",
 	)]);
 	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let seen = std::sync::Mutex::new(Vec::new());
+	let hook = |p: &crate::props::Props| -> Result<(), String> {
+		seen.lock().unwrap().extend(p.watch.iter().map(|w| w.pattern.clone()));
+		Ok(())
+	};
 	let mut h = crate::dispatch::Host::new(&cat);
 	h.assume_yes = true;
-	let target = cat.resolve("t").unwrap();
-
-	// Exactly what the CLI does before running a target that declares `.watch`.
-	let props = h.header_props(target, &[]).unwrap();
-	let watched: Vec<&str> = props.watch.iter().map(|w| w.pattern.as_str()).collect();
-	assert_eq!(watched, vec!["src/**"], "the probe still reads it");
-	assert!(h.temps.take().is_empty(), "and creates nothing");
-
+	h.on_header = Some(&hook);
 	h.run("t", &[]).unwrap();
+	assert_eq!(*seen.lock().unwrap(), vec!["src/**"], "the run says what it watches");
 	let made = h.temps.take();
 	assert_eq!(made.len(), 1, "one call, one file: {made:?}");
 	for p in made {

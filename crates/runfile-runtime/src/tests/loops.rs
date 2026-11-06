@@ -89,7 +89,7 @@ fn ignore_errors_does_not_forgive_a_break() {
 	// much later by whoever wondered why the loop kept going.
 	let d = Recorder::default();
 	run_src(
-		"for n in [\"a\", \"b\", \"c\"]\n\t.ignore-errors\n\n\trun {{ n }}\n\tbreak\nend\n",
+		"ignore_errors()\n\nfor n in [\"a\", \"b\", \"c\"]\n\trun {{ n }}\n\tbreak\nend\n",
 		&d,
 	)
 	.unwrap();

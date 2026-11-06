@@ -176,11 +176,11 @@ test("completion kinds map onto VS Code's enumeration", () => {
 })
 
 test("the completed word starts after the dot and takes hyphens and colons", () => {
-	// VS Code's own word ends at `-` and `:`, which would give `.env-env-file`
+	// VS Code's own word ends at `-` and `:`, which would give `.only-in-only-in-directories`
 	// and `run vscode:vscode:test`.
 	const at = (line: string) => completionPrefixStart(line, line.length)
 	assert.equal(at("."), 1, "the dot stays; the name is written after it")
-	assert.equal(at(".env-fi"), 1)
+	assert.equal(at(".only-in-dir"), 1)
 	assert.equal(at("\t.para"), 2)
 	assert.equal(at("run vscode:te"), 4)
 	assert.equal(at("RUN."), 4)

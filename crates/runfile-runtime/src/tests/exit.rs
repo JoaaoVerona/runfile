@@ -51,7 +51,7 @@ fn a_caller_forgives_and_retries_that_failure_as_it_would_any_other() {
 		("runfiles/_flaky.run", "$ echo x >> attempts\nexit(3)\n"),
 		(
 			"runfiles/forgives.run",
-			".ignore-errors\n\nrun _flaky\n$ touch went-on\n",
+			"ignore_errors()\n\nrun _flaky\n$ touch went-on\n",
 		),
 		("runfiles/retries.run", "retry 3\n\trun _flaky\nend\n"),
 	]);
@@ -111,16 +111,16 @@ fn an_exit_in_a_shared_let_ends_only_the_target_it_was_evaluated_for() {
 }
 
 #[test]
-fn an_exit_in_a_property_value_is_an_exit_like_any_other() {
-	// Evaluating the value raised it, and it used to be wrapped as the
-	// property's own error: not a stop, so `.ignore-errors` forgave it in a
-	// block, and not a status, so a header's was reported as an error.
+fn an_exit_in_an_assignment_is_an_exit_like_any_other() {
+	// Evaluating the value raises it. When this was a property, it was wrapped
+	// as the property's own error: not a stop, so `.ignore-errors` forgave it in
+	// a block, and not a status, so a header's was reported as an error.
 	let d = project(&[
 		(
 			"runfiles/nested.run",
-			".ignore-errors\n\nif true\n\t.env.X = exit(3)\n\n\t$ touch inside\nend\n\n$ touch after\n",
+			"ignore_errors()\n\nif true\n\tENV.X = exit(3)\n\n\t$ touch inside\nend\n\n$ touch after\n",
 		),
-		("runfiles/header.run", ".env.X = exit(0)\n\n$ touch unreached\n"),
+		("runfiles/header.run", "ENV.X = exit(0)\n\n$ touch unreached\n"),
 		("runfiles/top.run", "run header\n$ touch went-on\n"),
 	]);
 	let e = host_run(&d, "nested").expect_err("nothing inside the target forgives it");

@@ -3,8 +3,8 @@ Bare, valued, and nested properties
 ================================================================================
 .logging
 .shell = "bash"
-.env.PORT = ARG.port ? "3000"
-.env-file = ".env"
+.only.in = ARG.port ? "3000"
+.watch = "src/**"
 --------------------------------------------------------------------------------
 
 (source_file
@@ -30,6 +30,56 @@ Bare, valued, and nested properties
       (identifier))
     (string
       (string_content))))
+
+================================================================================
+Setting the environment, and the calls that change the rest
+================================================================================
+ENV.PORT = ARG.port ? "3000"
+ENV.SHA = $ git rev-parse HEAD
+import_env_file(".env")
+
+do
+	set_cwd("web")
+	ignore_errors()
+	$ npm test
+end
+--------------------------------------------------------------------------------
+
+(source_file
+  (env_assignment
+    (source
+      (identifier))
+    (chain_expression
+      (source
+        (identifier))
+      (string
+        (string_content))))
+  (env_assignment
+    (source
+      (identifier))
+    (shell_capture
+      (shell_text
+        (shell_content))))
+  (expression_statement
+    (call_expression
+      (identifier)
+      (arguments
+        (string
+          (string_content)))))
+  (do_statement
+    (expression_statement
+      (call_expression
+        (identifier)
+        (arguments
+          (string
+            (string_content)))))
+    (expression_statement
+      (call_expression
+        (identifier)
+        (arguments)))
+    (shell_line
+      (shell_text
+        (shell_content)))))
 
 ================================================================================
 A property inside a block

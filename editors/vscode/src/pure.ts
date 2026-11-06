@@ -145,7 +145,7 @@ export function completionKind(lsp: number | undefined): number {
  * Where the word being completed starts on its line.
  *
  * Given explicitly rather than left to VS Code, whose idea of a word stops at
- * a `-` and at a `:` -- so `.env-file` would come out as `.env-env-file` and
+ * a `-` and at a `:` -- so `.only-in-dir` would complete to `.only-in-only-in-directories` and
  * `run vscode:test` as `run vscode:vscode:test`. A `.` is *not* part of it:
  * the dot stays, and the property name is written after it.
  */

@@ -193,7 +193,7 @@ export class LanguageClient implements vscode.Disposable {
 	 * after a `.`, `RUN.` keys, target names after `run `.
 	 *
 	 * The range is given explicitly. VS Code's own idea of a word ends at a
-	 * `-` and a `:`, which would make `.env-file` complete to `.env-env-file`.
+	 * `-` and a `:`, which would make `.only-in-dir` complete to `.only-in-only-in-directories`.
 	 * The sort order is the server's: without it every list is alphabetical,
 	 * and `region` three lines up sorts below `read_file`.
 	 */

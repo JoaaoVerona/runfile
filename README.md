@@ -1,6 +1,6 @@
 # Runfile
 
-[Quick start](#quick-start) · [Examples](#what-a-runfile-looks-like) · [Language](#the-language) · [Properties](#properties) · [Commands](#commands) · [Editors](#editor-support)
+[Quick start](#quick-start) · [Examples](#what-a-runfile-looks-like) · [Language](#the-language) · [Environment](#the-environment-the-working-directory-and-failures) · [Properties](#properties) · [Commands](#commands) · [Editors](#editor-support)
 
 **One directory. One binary. Every OS.**
 
@@ -30,8 +30,8 @@ file to merge, so two people adding a task never conflict. `run :list` shows the
 # runfiles/dev.run
 # Start the dev server
 
-.env-file = ".env.local"
-.env.PORT = ARG.port ? "3000"
+import_env_file(".env.local")
+ENV.PORT = ARG.port ? "3000"
 
 $ vite
 ```
@@ -255,7 +255,7 @@ script, a SQL file — whatever is already on the machine. The body is that comm
 # runfiles/i18n/check.run
 # Check that every translation catalogue has the same keys as the reference
 
-.env.LOCALES = "src/locales"
+ENV.LOCALES = "src/locales"
 
 exec python3
 	import json, os, pathlib, sys
@@ -277,7 +277,7 @@ end
 # runfiles/deps/list.run
 # Print the first few runtime dependencies
 
-.env.LIMIT = ARG.limit ? "10"
+ENV.LIMIT = ARG.limit ? "10"
 
 exec node
 	const { readFileSync } = require("node:fs")
@@ -326,7 +326,7 @@ end
 ```
 
 One thing to know: the body **is** the command's stdin, so a script cannot also read data from stdin — give it
-what it needs through `.env`, a file, or the command's own arguments.
+what it needs through `ENV`, a file, or the command's own arguments.
 
 An interpolation inside the body arrives **as itself**, unquoted, when the command is not a shell — shell
 quoting is the wrong quoting for anybody else's language, so quote it the way that language wants. A shell
@@ -338,8 +338,8 @@ body still self-quotes, and `$ cp {{ src }} {{ dst }}` is as safe as it ever was
 # runfiles/deploy.run
 # Deploy to production
 
-.env-file = ".env.production"
-.env.GOOGLE_APPLICATION_CREDENTIALS = temp_file(base64_decode(ENV.SERVICE_ACCOUNT_B64), "json")
+import_env_file(".env.production")
+ENV.GOOGLE_APPLICATION_CREDENTIALS = temp_file(base64_decode(ENV.SERVICE_ACCOUNT_B64), "json")
 
 confirm("Deploy to production?")
 $ terraform apply -auto-approve
@@ -389,7 +389,8 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | Line | Meaning |
 | --- | --- |
 | `# text` | A comment, to the end of the line. It may follow code. The leading block is the target's description. |
-| `.name = value` | A property. |
+| `.name = value` | A property: a fact about the whole file, at its top. |
+| `ENV.NAME = value` | Set an environment variable for every line below. |
 | `$ echo hi` | Hand this line to a shell. |
 | `exec python3` … `end` | Run a command with the block as its stdin. |
 | `detach $ npm run dev` | Start this one command and do not wait for it. Also `detach exec …`. |
@@ -402,7 +403,7 @@ Line-oriented, with one rule: **the language is the default, the shell is marked
 | `break` / `continue` | Leave the innermost loop, or start its next pass. |
 | `match` / `case` / `default` / `end` | Dispatch on a value. A label is a quoted string: `case "linux"`. |
 | `retry n [every s]` … `end` | Run the block again while it fails, up to `n` times. |
-| `do` … `end` | A block with no condition, so a property can cover a few commands. |
+| `do` … `end` | A block with no condition, and the one that puts back the environment, working directory and `ignore_errors()` at its `end`. |
 | `run other-target` | Run another target, in this process, starting from this one's environment. |
 | `print(…)` | Anything else is an expression, evaluated for its effect. |
 
@@ -502,7 +503,10 @@ end
   after the block, so assigning a name bound outside the branch is a parse error — that value would be lost. A
   `let` directly inside `parallel do` binds nothing anyone can read, and is one too.
 - Every branch **runs to completion before a failure is reported**, so a set of services is never left half
-  started. `.ignore-errors` on the block forgives each branch.
+  started. `ignore_errors()` in effect around the block forgives each branch.
+- Each branch also changes **its own copy of the environment and working directory**: an `ENV.X =` or a
+  `set_cwd()` inside a branch reaches that branch's commands and nothing else. One that is a whole branch of its
+  own would reach nothing at all, and is a parse error.
 - Every line a branch prints carries its name, **in a colour of its own**: the target it runs, the iteration's
   value, or as many words of its command as tell it from its siblings — `cargo test` and `cargo clippy`.
   Siblings take consecutive colours, so the output you are reading side by side is the output guaranteed to
@@ -564,8 +568,9 @@ Nothing is declared for that — a `?` chain is what makes a value optional, and
 default. A `one_of` with its options written out, `one_of(ARG.env ? "staging", "staging", "production")`, is
 what lists the values a name takes. `run --stdin-args deploy` asks for the same list, in the same order,
 **before anything runs**, and shows the same options; the target's own `one_of` is still what refuses a wrong
-answer. A name the target sets for itself with `.env.NAME` — above the read, or in a `_shared.run` — is not on
-the list at all, since nothing the caller passes would reach it.
+answer. A name the target sets for itself with `ENV.NAME =` on every path to the read — above it, or in a
+`_shared.run` — is not on the list at all, since nothing the caller passes would reach it. One set on only some of
+the paths, or by a file, is still listed.
 
 A target that reads `ARGS` is asked for its positionals too, when none were given: one line, split the way a
 command line is, so `"two words"` stays one. Enter passes none, which is what a wrapper usually wants. A
@@ -717,7 +722,7 @@ end
 ### Stopping early
 
 `exit()` ends the target it is written in, with a status — 0 when none is given. Nothing inside that target
-catches it: not a `?` fallback, not `.ignore-errors`, not a `retry`. A target may forgive a command that failed,
+catches it: not a `?` fallback, not `ignore_errors()`, not a `retry`. A target may forgive a command that failed,
 but being told to stop is not that. It is also how a helper finishes early:
 
 ```sh
@@ -734,10 +739,10 @@ $ ./scripts/setup-toolchain.sh
 
 To a target that ran it, the status is how it went — exactly what `$ run _setup-build` would make of it. After a
 0, the `run _setup-build` line is done and the next line runs. Anything else fails that `run` line, like a
-command that failed: `.ignore-errors` forgives it, `retry` has another go, `code_of` scores it, and if nothing
+command that failed: `ignore_errors()` forgives it, `retry` has another go, `code_of` scores it, and if nothing
 handles it, the whole run ends with that status.
 
-`error("…")` fails with a message, the way a command fails, so a `?` falls back from it and `.ignore-errors`
+`error("…")` fails with a message, the way a command fails, so a `?` falls back from it and `ignore_errors()`
 forgives it. `confirm("…")` asks, and stops the whole run if the answer is no. Nothing catches that, not even a
 target that ran this one.
 
@@ -805,56 +810,167 @@ time, and never a line that could be right — no style, no guesses. Your editor
 underlines the same findings and `run :lint` reports them; [SHELL-CHECK-RULES.md](SHELL-CHECK-RULES.md) lists
 every rule, what it leaves alone, and why.
 
-## Properties
+## The environment, the working directory, and failures
 
-Set at the top of the file, or inside a block where marked.
+Every line runs in what the lines above it left: an **environment**, a **working directory**, and whether a
+failure **stops** the target. Five lines change them, each a line of its own:
 
-| Property | Effect | In a block? | Flag? |
-| --- | --- | :-: | :-: |
-| `.shell` | Which POSIX shell `$` lines use. | | |
-| `.env.NAME` | Set an environment variable. | ✅ | |
-| `.workdir` | Where commands run, and what every relative path below it resolves against. | ✅ | |
-| `.ignore-errors` | Keep going when a command fails. | ✅ | ✅ |
-| `.logging` | Announce each command on stderr before it runs. Off unless set. | | ✅ |
-| `.env-file` | Load a `.env` file (encrypted values are decrypted in memory). Appends. | ✅ | |
-| `.add-path` | Prepend a directory to `PATH`. Appends. | ✅ | |
-| `.watch` | Re-run when matching files change. A `!` prefix excludes. | | |
-| `.only-in-directories` | Machine-wide targets only: offer this one inside these directories. Appends. | | |
+| Line | Effect |
+| --- | --- |
+| `ENV.NAME = value` | Set an environment variable — for `ENV.NAME` below, and every command and target the lines below start. |
+| `set_cwd(dir)` | Change where commands run, and what every relative path resolves against. Relative to the one in effect, the way `cd` is. |
+| `add_path(dir)` | Put a directory, or a list of them, at the front of `PATH`. |
+| `import_env_file(path)` | Load a `.env` file, or a list of them. Encrypted values are decrypted in memory; a file that is not there is skipped. |
+| `ignore_errors()` | Keep going when a command fails. |
 
-A **flag** is written bare for `= true`, or given a bool. A constant that can never be one is refused where it
-is written — `.ignore-errors = 23` and `.ignore-errors = "true"` are both errors, and the second says to drop
-the quotes. A value the run works out is left to the run: `.ignore-errors = ENV.CI` and
-`.ignore-errors = ARG.p ? ENV.CI ? "false"` are how a flag is decided from outside the file, and there `true`,
-`false`, `1` and `0` are all understood. Anything else stops the run rather than reading as `false`, because
-a flag that quietly did not take effect is found out much later.
-
-A property is applied **where it is written**: it can read a binding above it, and it takes effect from there
-down. The environment works the same way — a value reads it as it stands at its own line, so a property can be
-built from what a `.env-file` above it loaded, or from another `.env` above it:
+A change **lasts past the block it is written in**, the way a `let` does — so a condition can decide something
+for the rest of the target:
 
 ```sh
 # runfiles/build.run
-# Build into a directory the command line picks
+# Build with whatever toolchain this machine has
 
-let out = concat("target-", ARG.profile ? "debug")
+if RUN.os == "mac"
+	add_path("/opt/homebrew/bin")
+	ENV.CC = "clang"
+end
 
-.workdir = out
+$ make
+```
 
-$ ls
+**`do … end` is the block that puts it all back.** What changes inside it — the environment, the working
+directory, `ignore_errors()` — ends at its `end`, however the block is left. That is what replaced writing
+`cd web &&` on every line:
+
+```sh
+# runfiles/setup.run
+# One-time per clone: hooks, then the web dependencies
+
+$ git config core.hooksPath .githooks
+
+do
+	set_cwd("web")
+
+	$ pnpm install
+	$ pnpm exec playwright install chromium
+end
+```
+
+A loop's next pass starts where the last one left, as any block but a `do` does — so a relative `set_cwd()` in a
+loop wants a `do` around it, and is refused without one where every pass would move on from the last
+(`relative-cwd-in-loop`). Each attempt of a `retry` starts from where the `retry` began, and the attempt that
+succeeds keeps what it changed. A branch of a `parallel` block changes a copy: what it sets reaches its own
+commands and nothing else.
+
+`ignore_errors()` goes at the top of a file or directly inside a `do`, where it is plain how far it reaches;
+anywhere else it would forgive every failure to the end of the target, and is refused. A single command that may
+fail is `code_of($ …)` on a line of its own.
+
+**What a target sets wins over the caller's environment; a file does not.** An assignment written in the file is
+the one way a target can force a value, so `PORT=4000 run serve` still serves on 3000 under `ENV.PORT = "3000"`.
+A file is a default, the dotenv convention: a value it holds fills a name nothing has set, or replaces an earlier
+file's — never what the caller exported, and never an `ENV.NAME =`, whichever line comes first. A default the
+caller *may* override is spelled out, and `--help` shows it as one:
+
+```sh
+# runfiles/serve.run
+# Serve locally
+
+ENV.PORT = ENV.PORT ? "3000"
+
+$ node server.js
+```
+
+Every value is an expression, read where its line is — so it can be built from what a file above it loaded, or
+named by something the target worked out first:
+
+```sh
+# runfiles/deploy.run
+# Deploy to an environment
+
+let env = one_of(first(ARGS), "staging", "production")
+
+import_env_file(".env.{{ env }}")
+ENV.DATABASE_URL = concat("postgres://", ENV.DB_HOST, "/app")
+
+if env == "production"
+	add_path("vendor/prod-tools")
+	confirm("Deploy to production?")
+end
+
+$ terraform apply -auto-approve
+```
+
+**A target whose file name starts with `_` is hidden** from `run :list`, from completion and from generated
+editor tasks — and still runs when something calls it. That is the whole of it; there is no property to
+disagree with the name.
+
+```
+runfiles/_aws.run       → run _aws     (a helper other targets call)
+runfiles/deploy.run     → run deploy
+```
+
+**A target that `run`s another hands it its environment.** Whatever a command on that line would be given — what
+the caller set, imported and added, and what the caller was run with itself — is where the target it runs starts.
+That target changes its own copy the way it would your shell's: its own `ENV.NAME =` wins, and its own
+`add_path()` goes in front. Nothing it changes comes back. So a helper needs no environment of its own:
+
+```sh
+# runfiles/_aws.run
+# The AWS CLI, with whatever credentials the calling target loaded
+
+$ docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY amazon/aws-cli {{ ARGS }}
 ```
 
 ```sh
-# runfiles/migrate.run
-# Migrate the database the local .env points at
+# runfiles/backups.run
+# List the production backups
 
-.env-file = ".env"
-.env.DATABASE_URL = concat("postgres://", ENV.DB_HOST, "/app")
+import_env_file(".env.production")
 
-$ sqlx migrate run
+run _aws s3 ls s3://example-backups
 ```
 
-Four of them describe the whole file rather than the commands under them — `.shell`, `.logging`, `.watch` and
-`.only-in-directories` — and those have to be written above its first statement.
+A value that only a file supplied is still a default when it arrives, so the target's own file replaces it: a `ci`
+target that loads `.env` and runs `test` does not push the development database over `test`'s own `.env.test`.
+`$ run test` is different. A new process can only be handed variables, so there the caller's file values arrive
+as if you had exported them, and they beat `test`'s own file.
+
+`_shared.run` runs ahead of every target in its directory, line for line the way the target does, and the target
+starts from what it left — its bindings, the environment, the working directory. A nested one runs after the
+directory above it, so `runfiles/api/_shared.run` adds to `runfiles/_shared.run`. Its commands run once for each
+target, every time it runs, including a target another one `run`s.
+
+```sh
+# runfiles/_shared.run
+# Settings every target here inherits
+
+add_path("node_modules/.bin")
+ENV.CARGO_TERM_COLOR = "always"
+
+let image = "ghcr.io/example/builder:v2"
+```
+
+## Properties
+
+A property is a fact about the whole file, written at its top, above the first statement.
+
+| Property | Effect | Flag? |
+| --- | --- | :-: |
+| `.shell` | Which POSIX shell `$` lines use. | |
+| `.logging` | Announce each command on stderr before it runs. Off unless set. | ✅ |
+| `.watch` | Re-run when matching files change. A `!` prefix excludes. | |
+| `.only-in-directories` | Machine-wide targets only: offer this one inside these directories. | |
+
+A **flag** is written bare for `= true`, or given a bool. A constant that can never be one is refused where it
+is written — `.logging = 23` and `.logging = "true"` are both errors, and the second says to drop the quotes. A
+value the run works out is left to the run: `.logging = ENV.CI` and `.logging = ARG.verbose ? "false"` are how a
+flag is decided from outside the file, and there `true`, `false`, `1` and `0` are all understood. Anything else
+stops the run rather than reading as `false`, because a flag that quietly did not take effect is found out much
+later.
+
+A property's value is worked out before the file's first line runs, after every `_shared.run` above it has — so a
+`.watch` is relative to the working directory those left, and reads what they set.
 
 `.shell` names one of the eight shells `$` knows how to drive: `sh`, `bash`, `dash`, `ash`, `zsh`, `ksh`,
 `busybox` or `brush`. Any other interpreter is named on the line instead, with `exec` — which is the same
@@ -871,108 +987,6 @@ if RUN.os == "windows"
 else
 	$ ls -la
 end
-```
-
-**The target's own `.env.NAME` wins over the caller's environment; a `.env-file` does not.** An assignment
-written in the file is the one way a target can force a value, so `PORT=4000 run serve` still serves on 3000
-under `.env.PORT = "3000"` — and `ENV.PORT` and a command's `$PORT` both say 3000. A file is a default, the
-dotenv convention: what the caller exported beats it. A default the caller *may* override is spelled out, and
-`--help` shows it as one:
-
-```sh
-# runfiles/serve.run
-# Serve locally
-
-.env.PORT = ENV.PORT ? "3000"
-
-$ node server.js
-```
-
-`.env-file` and `.add-path` **append**, so a block adds to what it inherited rather than replacing it, and a
-block's file can be named by something that block worked out:
-
-```sh
-# runfiles/deploy.run
-# Deploy to an environment
-
-let env = one_of(first(ARGS), "staging", "production")
-
-if env == "production"
-	.env-file = ".env.production"
-	.add-path = "vendor/prod-tools"
-
-	confirm("Deploy to production?")
-end
-
-$ terraform apply -auto-approve
-```
-
-**A target whose file name starts with `_` is hidden** from `run :list`, from completion and from generated
-editor tasks — and still runs when something calls it. That is the whole of it; there is no property to
-disagree with the name.
-
-```
-runfiles/_aws.run       → run _aws     (a helper other targets call)
-runfiles/deploy.run     → run deploy
-```
-
-**A target that `run`s another hands it its environment.** Whatever a command on that line would be given —
-the caller's `.env`, `.env-file` and `.add-path`, a block's as well as the header's, and what the caller was run
-with itself — is where the target it runs starts. That target layers its own settings over it the way it would
-over your shell: its own `.env` wins, and its own `.add-path` goes in front. So a helper needs no environment of
-its own:
-
-```sh
-# runfiles/_aws.run
-# The AWS CLI, with whatever credentials the calling target loaded
-
-$ docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY amazon/aws-cli {{ ARGS }}
-```
-
-```sh
-# runfiles/backups.run
-# List the production backups
-
-.env-file = ".env.production"
-
-run _aws s3 ls s3://example-backups
-```
-
-A value that only a `.env-file` supplied is still a default when it arrives, so the target's own `.env-file`
-replaces it: a `ci` target that loads `.env` and runs `test` does not push the development database over
-`test`'s own `.env.test`. `$ run test` is different. A new process can only be handed variables, so there the
-caller's `.env-file` values arrive as if you had exported them, and they beat `test`'s own file.
-
-`do … end` is a block with no condition — somewhere for a property to go when it should cover a few commands
-and not the whole target:
-
-```sh
-# runfiles/setup.run
-# One-time per clone: hooks, then the web dependencies
-
-$ git config core.hooksPath .githooks
-
-do
-	.workdir = "web"
-
-	$ pnpm install
-	$ pnpm exec playwright install chromium
-end
-```
-
-That is what replaced writing `cd web &&` on every line, which the shell would have needed once per command.
-
-`_shared.run` holds properties — and `let` bindings — that every target in its directory inherits. A nested
-one layers over the directory above it, so `runfiles/api/_shared.run` adds to `runfiles/_shared.run`.
-
-```sh
-# runfiles/_shared.run
-# Settings every target here inherits
-
-.add-path = "node_modules/.bin"
-.env.CARGO_TERM_COLOR = "always"
-
-let image = "ghcr.io/example/builder:v2"
 ```
 
 ## How targets are found
@@ -1004,8 +1018,8 @@ your home directory looks: it is never taken for a project, so from a directory 
 own you get your global targets — and not every project under your home as a subproject.
 
 A machine-wide target's `runfiles/` parent is your home directory, so that is where its commands run. One that
-acts on the project in front of you says so with `.workdir = RUN.cwd` — and every relative path follows it, so
-`read_file("package.json")` and `.env-file = ".env"` read the project's files, not your home's. A `_shared.run`
+acts on the project in front of you says so with `set_cwd(RUN.cwd)` — and every relative path follows it, so
+`read_file("package.json")` and `import_env_file(".env")` read the project's files, not your home's. A `_shared.run`
 in the machine-wide directory can say it once for all of them.
 
 A machine-wide target can also say where it belongs, so one directory can hold work for several places at once:
@@ -1015,7 +1029,8 @@ A machine-wide target can also say where it belongs, so one directory can hold w
 # Ship the current branch
 
 .only-in-directories = ["~/work/acme", "~/work/zed"]
-.workdir = RUN.cwd
+
+set_cwd(RUN.cwd)
 
 $ ./scripts/ship
 ```
@@ -1033,14 +1048,14 @@ project's lint leaves the directory out otherwise.
 **Not in CI.** A runner's home directory is nobody's, so `run` reads none of the three there: what runs is
 what is checked in and reviewable. This is also why nothing has to be cleaned up after a job.
 
-Everything relative — a command, `glob`, `read_file` and the other file functions, `.env-file`, `.add-path`,
-`.watch`, and `.workdir` itself — resolves against **the working directory in effect where it is written**. One
-rule, so a path names the same file to the language as it does to the shell on the next line. The working
-directory starts at the parent of `runfiles/`, which is `{{ RUN.parent }}`, and a `.workdir` moves it from its
-own line down to the end of its block. A nested one is relative to the one around it, the way `cd` is:
-`.workdir = "src"` inside a block under `.workdir = "web"` is `web/src`. A path written *above* a `.workdir`
-keeps the directory it was written in, so `.add-path = "web/node_modules/.bin"` above `.workdir = "web"` still
-names the subproject's tools. An absolute path is taken as written, and an absolute `glob` pattern answers with
+Everything relative — a command, `glob`, `read_file` and the other file functions, `import_env_file()`,
+`add_path()`, `.watch`, and `set_cwd()` itself — resolves against **the working directory in effect where it is
+written**. One rule, so a path names the same file to the language as it does to the shell on the next line. The
+working directory starts at the parent of `runfiles/`, which is `{{ RUN.parent }}`, and a `set_cwd()` moves it
+for every line below, to the end of the `do` block it is in, if any. It is relative to the one in effect, the way
+`cd` is: `set_cwd("src")` after `set_cwd("web")` is `web/src`. A path given *before* a `set_cwd()` keeps the
+directory it was given in, so `add_path("web/node_modules/.bin")` above `set_cwd("web")` still names the
+subproject's tools. An absolute path is taken as written, and an absolute `glob` pattern answers with
 absolute paths. `RUN.parent` and `RUN.cwd` never move: the first is the project, the second is where you typed
 `run`.
 
@@ -1143,7 +1158,7 @@ are moved into the store the first time they are read. `run :env secret-keys lis
 CI, pass them as `RUNFILE_PRIVATE_KEYS` (newline-separated) and no credential store is involved.
 
 Only a value a `.env` file holds is decrypted — the one place an `encrypted:` value is the author's own. A
-ciphertext arriving any other way (exported in the caller's shell, or copied into `.env.X = {{ ARG.x }}` from
+ciphertext arriving any other way (exported in the caller's shell, or set with `ENV.X = ARG.x` from
 data an outsider controls) is passed through unchanged, never decrypted with the run's keys, so it cannot be
 turned back into plaintext by a target that merely echoes a variable.
 
@@ -1164,7 +1179,7 @@ where it is written, with the name you probably meant. It is the check that stop
 knows what the `_shared.run` above the file binds.
 
 Hover anything: a function shows its signature, what it does and a worked example; a property adds whether it
-may sit inside a block; `$`, `exec`, `run`, `retry`, `match` and the rest explain the line form itself.
+is a flag; `$`, `exec`, `run`, `retry`, `match` and the rest explain the line form itself.
 
 Completion knows where it is. At the start of a line it offers the keywords that fit there — `break` inside a
 loop, `case` inside a `match`, `end` only when something is open — and everywhere a value goes, the variables in

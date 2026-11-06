@@ -1131,8 +1131,7 @@ fn corpus() {
 			}
 		}
 		let chain = shared_above(std::path::Path::new(path));
-		let shared = path.ends_with("_shared.run");
-		let language = runfile_lang::check::check(&src, &file, chain.as_deref(), shared);
+		let language = runfile_lang::check::check(&src, &file, chain.as_deref());
 		for f in check(&src, &file, chain.as_deref()).into_iter().chain(language) {
 			reports.push(format!(
 				"{path}:{}: [{}] {}{}",

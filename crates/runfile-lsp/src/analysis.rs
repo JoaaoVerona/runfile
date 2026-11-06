@@ -100,7 +100,7 @@ pub fn diagnose(src: &str, known_targets: &[String], machine_wide: bool, chain: 
 	};
 
 	let mut out = Vec::new();
-	check_properties(&ast.body, false, machine_wide, &mut out, src);
+	check_properties(&ast.body, machine_wide, &mut out, src);
 	if !known_targets.is_empty() {
 		check_target_calls(&ast.body, known_targets, &mut out, src);
 	}
@@ -119,13 +119,12 @@ pub fn diagnose(src: &str, known_targets: &[String], machine_wide: bool, chain: 
 	// What fails every time it runs, and the shell in the file, checked as a
 	// run checks them -- which is also what knows whether a `_shared.run` above
 	// names the shell `$` lines use, and what it binds.
-	let (above, shared) = match chain {
-		Chain::Target(files) => (Some(files), false),
-		Chain::Shared(files) => (Some(files), true),
-		Chain::Unknown => (None, false),
+	let above = match chain {
+		Chain::Target(files) | Chain::Shared(files) => Some(files),
+		Chain::Unknown => None,
 	};
 	out.extend(
-		runfile_lang::check::check(src, &ast, above, shared)
+		runfile_lang::check::check(src, &ast, above)
 			.iter()
 			.chain(&runfile_shell::check(src, &ast, above))
 			.map(|f| finding_diagnostic(src, f)),
@@ -202,25 +201,16 @@ fn word_in(line: &str, word: &str) -> Option<usize> {
 	})
 }
 
-fn check_properties(
-	block: &runfile_lang::Block,
-	nested: bool,
-	machine_wide: bool,
-	out: &mut Vec<Diagnostic>,
-	src: &str,
-) {
+/// The file's properties, which are all at its top: the parser refuses one
+/// anywhere else.
+fn check_properties(block: &runfile_lang::Block, machine_wide: bool, out: &mut Vec<Diagnostic>, src: &str) {
 	// Asked of the runner's own `check`, rather than described a second time
 	// here: an editor that accepts a line the runner refuses is how the two
 	// come to disagree about what a file means, and this file used to hold its
 	// own copy of the scope rule for exactly that reason.
-	let regions = block
-		.declaration()
-		.iter()
-		.map(|p| (p, false))
-		.chain(block.trailing().iter().map(|p| (p, true)));
-	for (p, trailing) in regions {
+	for p in &block.properties {
 		let Some(head) = p.path.first() else { continue };
-		match runfile_runtime::props::check(p, nested, trailing) {
+		match runfile_runtime::props::check(p) {
 			Ok(_) => {}
 			Err(runfile_runtime::props::PropError::Unknown { .. }) => {
 				out.push(Diagnostic {
@@ -262,11 +252,6 @@ fn check_properties(
 					severity: Severity::Error,
 				});
 			}
-		}
-	}
-	for st in &block.statements {
-		for inner in sub_blocks(st) {
-			check_properties(inner, true, machine_wide, out, src);
 		}
 	}
 }
@@ -453,8 +438,8 @@ pub const RUN_KEYS: &[(&str, &str, &str)] = &[
 	),
 	(
 		"cwd",
-		"The directory `run` was invoked from, which is not the anchor. A machine-wide target sets `.workdir` to it to act on the project in front of it, and every relative path follows.",
-		".workdir = RUN.cwd",
+		"The directory `run` was invoked from, which is not the anchor. A machine-wide target hands it to `set_cwd()` to act on the project in front of it, and every relative path follows.",
+		"set_cwd(RUN.cwd)",
 	),
 	(
 		"file",
@@ -463,7 +448,7 @@ pub const RUN_KEYS: &[(&str, &str, &str)] = &[
 	),
 	(
 		"parent",
-		"The parent of `runfiles/`, and the working directory until a `.workdir` moves it. Every relative path resolves against the working directory in effect where it is written.",
+		"The parent of `runfiles/`, and the working directory until a `set_cwd()` moves it. Every relative path resolves against the working directory in effect where it is written.",
 		"$ ln -sfn {{ RUN.parent }}/extension ~/.local/share/gnome-shell/extensions/mine",
 	),
 	(
@@ -487,8 +472,8 @@ pub const SOURCES: &[(&str, &str, &str)] = &[
 	),
 	(
 		"ENV",
-		"An environment variable, including anything an `.env-file` or `.env.NAME` put there.",
-		"let home = ENV.HOME\n\n.env-file = \".env.production\"\n$ deploy --token {{ ENV.API_TOKEN }}",
+		"An environment variable -- and the one source a file may set: `ENV.NAME = value` sets it for every line below, and every command and target they start. A `do` block puts it back at its `end`.",
+		"let home = ENV.HOME\nENV.NODE_ENV = \"production\"\n\nimport_env_file(\".env.production\")\n$ deploy --token {{ ENV.API_TOKEN }}",
 	),
 	(
 		"FLAG",
@@ -652,13 +637,7 @@ fn expression(text: &str, here: Option<&Place>, shared: impl FnOnce() -> Vec<Bin
 fn properties() -> Vec<Item> {
 	PROPERTIES
 		.iter()
-		.map(|p| {
-			let detail = match p.block_scoped {
-				true => "property",
-				false => "property, header-only",
-			};
-			Item::new(p.name, detail, &with_example(p.doc, p.example), Kind::Property, 0)
-		})
+		.map(|p| Item::new(p.name, "property", &with_example(p.doc, p.example), Kind::Property, 0))
 		.collect()
 }
 
@@ -1341,16 +1320,7 @@ pub fn hover(line: &str, col: usize) -> Option<String> {
 	if let Some(rest) = word.strip_prefix('.') {
 		let head = rest.split('.').next().unwrap_or(rest);
 		let p = PROPERTIES.iter().find(|p| p.name == head)?;
-		let mut notes = vec![if p.block_scoped {
-			"Block-scoped: it may also be set inside an `if` / `for` / `match` block, and applies to that block."
-		} else {
-			"Header-only: it belongs at the top of the file, before any statement."
-		}];
-		// Only worth saying of a block-scoped one: for a header-only property
-		// the line above has already said it.
-		if p.declaration_only && p.block_scoped {
-			notes.push("It describes the whole block, so it has to be written above the block's first statement.");
-		}
+		let mut notes = vec!["It describes the whole file, so it belongs at the top of it, above the first statement."];
 		if p.flag {
 			notes.push(
 				"A flag: write it bare for `= true`, or give it a bool -- or an expression that resolves to one.",
@@ -1466,27 +1436,25 @@ mod tests {
 	fn a_flag_given_a_constant_that_is_not_a_bool_is_underlined() {
 		// The runner's own rule, asked of the runner: these two used to be
 		// described in two places, and the scope rule had already drifted once.
-		for src in [".ignore-errors = 23\n$ true\n", ".logging = \"abc\"\n$ true\n"] {
+		for src in [".logging = 23\n$ true\n", ".logging = \"abc\"\n$ true\n"] {
 			let m = messages(src);
 			assert_eq!(m.len(), 1, "{src}: {m:?}");
 			assert!(m[0].contains("is a flag and takes a bool"), "{}", m[0]);
 		}
 		assert!(
-			messages(".ignore-errors = \"true\"\n$ true\n")[0].contains("without the quotes"),
+			messages(".logging = \"true\"\n$ true\n")[0].contains("without the quotes"),
 			"the near miss is named"
 		);
 		// A value the run works out is not the parser's business.
-		assert!(messages(".ignore-errors = ENV.CI\n$ true\n").is_empty());
-		assert!(messages(".ignore-errors = \"{{ ENV.CI }}\"\n$ true\n").is_empty());
+		assert!(messages(".logging = ENV.CI\n$ true\n").is_empty());
+		assert!(messages(".logging = \"{{ ENV.CI }}\"\n$ true\n").is_empty());
 	}
 
 	#[test]
-	fn a_property_that_describes_the_block_is_underlined_below_the_first_statement() {
+	fn a_property_below_the_first_statement_is_underlined() {
 		let m = messages("$ true\n.watch = \"src/**\"\n$ true\n");
 		assert_eq!(m.len(), 1, "{m:?}");
-		assert!(m[0].contains("above the block's first statement"), "{}", m[0]);
-		// One that takes effect from where it sits is fine there.
-		assert!(messages("$ true\n.workdir = \"web\"\n$ true\n").is_empty());
+		assert!(m[0].contains("above the first statement"), "{}", m[0]);
 	}
 
 	#[test]
@@ -1556,15 +1524,15 @@ mod tests {
 	}
 
 	#[test]
-	fn a_header_only_property_inside_a_block_is_reported() {
+	fn a_property_inside_a_block_is_reported() {
 		let m = messages("if FLAG.x\n\t.watch = \"src/**\"\n\t$ true\nend\n");
 		assert_eq!(m.len(), 1, "{m:?}");
-		assert!(m[0].contains("header-only"), "{}", m[0]);
+		assert!(m[0].contains("describes the whole file"), "{}", m[0]);
 	}
 
 	#[test]
-	fn a_block_scoped_property_inside_a_block_is_fine() {
-		assert!(messages("if FLAG.x\n\t.workdir = \"web\"\n\t$ true\nend\n").is_empty());
+	fn what_a_block_changes_for_the_lines_below_it_is_fine() {
+		assert!(messages("if FLAG.x\n\tset_cwd(\"web\")\n\tENV.X = \"1\"\n\t$ true\nend\n").is_empty());
 	}
 
 	#[test]
@@ -1691,12 +1659,11 @@ mod tests {
 	}
 
 	#[test]
-	fn a_let_that_runs_a_command_is_underlined_in_a_shared_file_and_nowhere_else() {
+	fn a_let_that_runs_a_command_is_fine_in_a_shared_file_too() {
+		// A shared file runs line for line ahead of its targets, so it has a
+		// process to run one in.
 		let src = "let branch = $ git branch\n";
-		let d = diagnose(src, &[], false, Chain::Shared(&[]));
-		assert_eq!(d.len(), 1, "{d:?}");
-		assert_eq!(d[0].range, range(0, 13, 25));
-		assert!(d[0].message.contains("[capture-position]"), "{}", d[0].message);
+		assert!(diagnose(src, &[], false, Chain::Shared(&[])).is_empty());
 		assert!(plain(src).is_empty());
 	}
 
@@ -1716,13 +1683,11 @@ mod tests {
 	}
 
 	#[test]
-	fn a_shared_file_is_checked_the_way_the_runner_folds_it() {
-		// Its `if` never runs, so nothing inside binds anything for the lines below.
+	fn a_shared_file_is_checked_the_way_a_target_is() {
+		// It runs, so a `let` inside its `if` binds for the lines below.
 		let src = "if FLAG.x\n\tlet a = 1\nend\nlet b = a ? \"x\"\n";
-		let d = diagnose(src, &[], false, Chain::Shared(&[]));
-		assert_eq!(d.len(), 1, "{d:?}");
-		assert_eq!(d[0].range, range(3, 8, 9));
-		assert!(plain(src).is_empty(), "in a target, it would have run");
+		assert!(diagnose(src, &[], false, Chain::Shared(&[])).is_empty());
+		assert!(plain(src).is_empty());
 	}
 
 	/// Completion at the end of a one-line document.
@@ -1774,7 +1739,7 @@ mod tests {
 	fn a_leading_dot_completes_properties() {
 		let p = items(complete_line("  .wa"));
 		let watch = p.iter().find(|i| i.label == "watch").expect("watch is offered");
-		assert_eq!(watch.detail, "property, header-only");
+		assert_eq!(watch.detail, "property");
 		assert_eq!(watch.kind, Kind::Property);
 		assert!(!watch.doc.is_empty(), "and says what it does");
 	}
@@ -1787,7 +1752,7 @@ mod tests {
 	#[test]
 	fn a_property_value_is_an_expression_and_a_sub_key_is_the_environments() {
 		has(
-			complete_at("let dir = \"web\"\n.workdir = d‸\n"),
+			complete_at("let dir = \"web\"\nset_cwd(d‸)\n"),
 			&["dir", "to_upper", "ENV"],
 			&["watch", "json"],
 		);
@@ -2276,16 +2241,14 @@ mod tests {
 	fn hover_explains_a_property_and_says_where_it_may_go() {
 		let h = hover(".watch = \"src/**\"", 3).expect("hovers");
 		assert!(h.contains(".watch"), "{h}");
-		assert!(h.contains("Header-only"), "{h}");
-		let h = hover(".workdir = \"web\"", 3).expect("hovers");
-		assert!(h.contains("Block-scoped"), "{h}");
+		assert!(h.contains("above the first statement"), "{h}");
 	}
 
 	#[test]
-	fn hover_reads_a_dotted_property_as_its_head() {
-		// `.env.PORT` is the `env` property with a sub-key.
-		let h = hover(".env.PORT = \"3000\"", 6).expect("hovers");
-		assert!(h.contains(".env"), "{h}");
+	fn hover_explains_an_environment_assignment_as_env() {
+		// `ENV.PORT = …` sets what `ENV.PORT` reads, so it is the same source.
+		let h = hover("ENV.PORT = \"3000\"", 1).expect("hovers");
+		assert!(h.contains("ENV"), "{h}");
 	}
 
 	#[test]
@@ -2311,8 +2274,8 @@ mod tests {
 		let up = fns.iter().find(|i| i.label == "to_upper").expect("to_upper");
 		assert_eq!(up.detail, "to_upper(s)");
 		assert!(up.doc.contains("```runfile"), "{}", up.doc);
-		let props = items(complete_line(".work"));
-		let wd = props.iter().find(|i| i.label == "workdir").expect("workdir");
+		let props = items(complete_line(".wat"));
+		let wd = props.iter().find(|i| i.label == "watch").expect("watch");
 		assert!(wd.doc.contains("```runfile"), "{}", wd.doc);
 	}
 

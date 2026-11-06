@@ -51,19 +51,67 @@ fn backslash_continues_a_shell_line() {
 }
 
 #[test]
-fn properties_attach_to_their_block() {
-	let x = t(".logging\nfor c in glob(\"*\")\n\t.ignore-errors\n\t$ echo {{ c }}\nend\n");
-	assert_eq!(x.body.properties.len(), 1);
-	let Statement::For { body, .. } = &x.body.statements[0] else {
-		panic!()
-	};
-	assert_eq!(body.properties.len(), 1, "block-scoped, not hoisted");
+fn a_property_goes_at_the_top_of_the_file_and_nowhere_else() {
+	// It describes the whole file, so there is one place a reader looks for it.
+	let x = t(".logging\n.shell = \"sh\"\n\nfor c in glob(\"*\")\n\t$ echo {{ c }}\nend\n");
+	assert_eq!(x.body.properties.len(), 2);
+	for src in [
+		"for c in glob(\"*\")\n\t.logging\n\t$ echo {{ c }}\nend\n",
+		"$ true\n.logging\n",
+		"do\n\t.shell = \"sh\"\nend\n",
+	] {
+		let e = crate::parse(src).expect_err(src).to_string();
+		assert!(e.contains("describes the whole file"), "{src}: {e}");
+	}
 }
 
 #[test]
-fn dotted_property_names_address_a_namespace() {
-	let x = t(".env.MSYS_NO_PATHCONV = \"1\"\n$ echo hi\n");
-	assert_eq!(x.body.properties[0].path, vec!["env", "MSYS_NO_PATHCONV"]);
+fn an_environment_variable_is_set_with_env_and_a_dot() {
+	let x = t("ENV.MSYS_NO_PATHCONV = \"1\"\n$ echo hi\n");
+	let Statement::SetEnv { name, .. } = &x.body.statements[0] else {
+		panic!("{:?}", x.body.statements[0])
+	};
+	assert_eq!(name, "MSYS_NO_PATHCONV");
+	// A dotted property is a name the list does not have, so a property line
+	// still parses -- whether it is known is the runner's to say.
+	assert_eq!(t(".env.X = \"1\"\n").body.properties[0].path, vec!["env", "X"]);
+}
+
+#[test]
+fn every_other_source_is_read_only() {
+	for src in [
+		"ARG.x = \"1\"\n",
+		"FLAG.v = true\n",
+		"RUN.os = \"mac\"\n",
+		"ARGS = []\n",
+	] {
+		let e = crate::parse(src).expect_err(src).to_string();
+		assert!(e.contains("read-only"), "{src}: {e}");
+	}
+	let e = crate::parse("let ENV.X = 1\n").unwrap_err().to_string();
+	assert!(e.contains("without it, as `ENV.X = …`"), "{e}");
+}
+
+#[test]
+fn an_effect_is_a_line_of_its_own() {
+	for src in [
+		"let x = set_cwd(\"web\")\n",
+		"if add_path(\"bin\") == \"\"\n\tprint(1)\nend\n",
+		"print(ignore_errors())\n",
+		"$ echo {{ import_env_file(\".env\") }}\n",
+		"ENV.X = set_cwd(\"web\")\n",
+		".watch = add_path(\"x\")\n",
+	] {
+		let e = crate::parse(src).expect_err(src).to_string();
+		assert!(e.contains("a line of its own"), "{src}: {e}");
+	}
+	for src in [
+		"set_cwd(\"web\")\n",
+		"add_path([\"a\", \"b\"])\n",
+		"import_env_file(\".env\")\n",
+	] {
+		crate::parse(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+	}
 }
 
 #[test]
@@ -171,12 +219,12 @@ fn a_bracket_inside_an_interpolation_is_not_the_lists_either() {
 
 #[test]
 fn a_bare_block_is_a_block_and_nothing_else() {
-	let x = t("do\n\t.workdir = \"web\"\n\n\t$ pnpm install\nend\n");
+	let x = t("do\n\tset_cwd(\"web\")\n\n\t$ pnpm install\nend\n");
 	let Statement::Do { body, .. } = &x.body.statements[0] else {
 		panic!("{:?}", x.body.statements[0])
 	};
-	assert_eq!(body.properties.len(), 1);
-	assert_eq!(body.statements.len(), 1);
+	assert!(body.properties.is_empty());
+	assert_eq!(body.statements.len(), 2);
 }
 
 #[test]

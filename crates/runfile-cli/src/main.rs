@@ -24,6 +24,7 @@ use runfile_discovery::{Catalog, discover};
 use runfile_runtime::dispatch::Host;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Mutex;
 
 use help::{Row, Section};
 
@@ -252,6 +253,19 @@ fn real_main() -> Result<ExitCode, String> {
 	}
 
 	let interrupted = || runfile_runtime::interrupt::interrupted();
+	// A target that declares `.watch` enters watch mode with no flag: the file
+	// already said what it wants. The run says what it watches as its header is
+	// worked out, before its first line, and the watcher starts there.
+	// `--dry-run` opts out, since printing the same commands forever is not a
+	// preview.
+	let watching: Mutex<Option<watch::Watching>> = Mutex::new(None);
+	let start_watching = |props: &runfile_runtime::props::Props| -> Result<(), String> {
+		let mut w = watching.lock().expect("watch lock");
+		if w.is_none() && !props.watch.is_empty() {
+			*w = Some(watch::Watching::start(&props.watch)?);
+		}
+		Ok(())
+	};
 	let mut host = Host::new(&cat);
 	host.interrupted = Some(&interrupted);
 	host.assume_yes = flags.assume_yes || ci_detect::is_ci();
@@ -273,39 +287,8 @@ fn real_main() -> Result<ExitCode, String> {
 	host.dry_run = flags.dry_run;
 	host.keys = runfile_state::keyring_keys::all_private_keys;
 
-	// A target that declares `.watch` enters watch mode with no flag: the file
-	// already said what it wants. `--dry-run` opts out, since printing the same
-	// commands forever is not a preview.
-	let watching = if flags.dry_run {
-		Vec::new()
-	} else {
-		match host.header_props(target, &args) {
-			Ok(props) => props.watch,
-			// An `exit()` in the header, or in a `_shared.run` `let`, ends the
-			// target before anything it declares applies. The run meets it too,
-			// and ends the way it says; reported from here it was `error: exit
-			// 0`, status 1.
-			Err(e) if e.exit_code().is_some() => Vec::new(),
-			Err(e) => return Err(e.to_string()),
-		}
-	};
-	if !watching.is_empty() {
-		return watch::watch(&watching, || {
-			// Cleans even if a run panics; the explicit call below is kept
-			// because cleanup is idempotent and the intent is clearer with it.
-			let _temps = host.temp_guard();
-			match host.run(&first, &args) {
-				Ok(()) => prepare::record(&cat, target),
-				Err(e) => eprintln!("{} {e}", runfile_runtime::exec::tag()),
-			}
-			// Each iteration starts clean; Ctrl+C ends the session rather than
-			// poisoning every run after it.
-			runfile_runtime::interrupt::clear();
-			// Between iterations, not just at the end: watch mode never reaches
-			// one, and each run makes its own temp files.
-			host.cleanup_temps();
-		})
-		.map(|()| ExitCode::SUCCESS);
+	if !flags.dry_run {
+		host.on_header = Some(&start_watching);
 	}
 
 	// The guard is what cleans up if the run panics -- an unwind would skip the
@@ -315,6 +298,32 @@ fn real_main() -> Result<ExitCode, String> {
 	// However it ended. A target that fails half-way is exactly when a decoded
 	// credential must not be left in the temp directory.
 	drop(temps);
+	let watcher = watching.lock().expect("watch lock").take();
+	if let Some(w) = watcher {
+		// The first run was the first iteration, and is reported as every other
+		// one is. Nothing starts a second watcher after this one.
+		host.on_header = None;
+		let report = |outcome: Result<(), runfile_runtime::run::RunError>| {
+			match outcome {
+				Ok(()) => prepare::record(&cat, target),
+				Err(e) => eprintln!("{} {e}", runfile_runtime::exec::tag()),
+			}
+			// Each iteration starts clean; Ctrl+C ends the session rather than
+			// poisoning every run after it.
+			runfile_runtime::interrupt::clear();
+			// Between iterations, not just at the end: watch mode never reaches
+			// one, and each run makes its own temp files.
+			host.cleanup_temps();
+		};
+		report(outcome);
+		w.follow(|| {
+			// Cleans even if a run panics; `report` cleans too, which is
+			// idempotent, and the intent is clearer with both.
+			let _temps = host.temp_guard();
+			report(host.run(&first, &args));
+		});
+		return Ok(ExitCode::SUCCESS);
+	}
 	if flags.dry_run {
 		// However it ended, too. A preview that stopped part-way -- at an
 		// `exit()`, or at a failure -- would still have run everything above

@@ -41,7 +41,8 @@ fn a_call_to_a_function_that_does_not_exist_is_found_wherever_it_sits() {
 		("if FLAG.never\n\tif FLAG.twice\n\t\texists(\"a\")\n\tend\nend\n", 3),
 		("$ echo {{ exists(\"a\") }}\n", 1),
 		("print(\"{{ exists(\"a\") }}\")\n", 1),
-		(".env.X = exists(\"a\")\n$ true\n", 1),
+		("ENV.X = exists(\"a\")\n$ true\n", 1),
+		(".watch = exists(\"a\")\n$ true\n", 1),
 		("let doc = json\n\t{\"a\": {{ exists(\"a\") }}}\nend\n", 2),
 		("exec python3\n\tprint({{ exists(\"a\") }})\nend\n", 2),
 		("run deploy --to={{ exists(\"a\") }}\n", 1),
@@ -130,7 +131,9 @@ fn a_name_is_found_in_every_position_one_can_sit_in() {
 	for src in [
 		"$ echo {{ ghost }}\n",
 		"print(\"{{ ghost }}\")\n",
-		".workdir = ghost\n$ true\n",
+		".watch = ghost\n$ true\n",
+		"set_cwd(ghost)\n",
+		"ENV.X = ghost\n",
 		"if ghost\nend\n",
 		"while ghost\nend\n",
 		"match ghost\ndefault\n\t$ true\nend\n",
@@ -222,25 +225,12 @@ fn a_pass_reads_what_an_earlier_pass_bound() {
 }
 
 #[test]
-fn a_property_at_the_top_of_a_loop_s_body_cannot_read_the_loop_s_names() {
-	// The runner works the body's properties out once, before the first item is
-	// bound -- so this is `dir is not defined` the moment it runs.
-	let u = only("for dir in [\"web\"]\n\t.workdir = dir\n\t$ make\nend\n");
-	assert_eq!((u.name.as_str(), u.span.line), ("dir", 2));
-	assert!(u.to_string().contains("below the body's first statement"), "{u}");
-	// Not even a binding of the name from above the loop: a `for` puts it aside.
-	assert_eq!(
-		found("let dir = \"x\"\nfor dir in [\"web\"]\n\t.workdir = dir\n\t$ make\nend\n"),
-		["dir@3"]
-	);
-	// Below a statement, it is applied where it sits.
-	clean("for dir in [\"web\"]\n\t$ true\n\t.workdir = dir\n\t$ make\nend\n");
-	// A `parallel for` does not put an outer binding aside.
-	assert_eq!(
-		found("parallel for dir in [\"web\"]\n\t.workdir = dir\n\t$ make\nend\n"),
-		["dir@2"]
-	);
-	clean("let dir = \"x\"\nparallel for dir in [\"web\"]\n\t.workdir = dir\n\t$ make\nend\n");
+fn a_loop_s_names_reach_the_first_line_of_its_body() {
+	// A property at the top of a body used to be worked out once, before the
+	// first item was bound, so `.workdir = dir` there was `dir is not defined`.
+	// What it did is a line now, and a line runs on every pass.
+	clean("for dir in [\"web\"]\n\tdo\n\t\tset_cwd(dir)\n\t\t$ make\n\tend\nend\n");
+	clean("parallel for dir in [\"web\"]\n\tset_cwd(dir)\n\t$ make\nend\n");
 }
 
 #[test]
@@ -272,14 +262,18 @@ fn a_reassignment_of_a_name_nothing_bound_is_found() {
 // ---- the shared chain
 
 #[test]
-fn a_shared_file_binds_its_top_level_lets_for_the_files_below_it() {
-	let shared = [tree("let region = \"eu\"\nif FLAG.x\n\tlet hidden = 1\nend\n")];
-	let target = tree("print(region)\nprint(hidden)\n");
+fn a_shared_file_binds_for_the_files_below_it_whatever_any_path_through_it_binds() {
+	// It runs ahead of them, so a `let` inside one of its blocks is bound as one
+	// above in the target would be.
+	let shared = [tree(
+		"let region = \"eu\"\nif FLAG.x\n\tlet nested = 1\nend\nfor i in [1]\n\tlet in_loop = i\nend\n",
+	)];
+	let target = tree("print(region)\nprint(nested)\nprint(in_loop)\nprint(i)\n");
 	let f: Vec<String> = resolve::of_chain(&target, &shared)
 		.iter()
 		.map(|u| u.name.clone())
 		.collect();
-	assert_eq!(f, ["hidden"], "a `let` inside a block in a shared file never runs");
+	assert_eq!(f, ["i"], "a loop's own names end with the loop, in a shared file too");
 	// And a nested shared file sees the one above it.
 	let inner = tree("let zone = concat(region, \"-1\")\n");
 	assert!(resolve::of_shared(&inner, &shared[..]).is_empty());
@@ -287,15 +281,13 @@ fn a_shared_file_binds_its_top_level_lets_for_the_files_below_it() {
 }
 
 #[test]
-fn a_shared_file_is_checked_the_way_it_is_folded() {
-	let file = tree("if FLAG.x\n\tlet a = 1\n\tprint(a)\nend\nlet b = a ? \"x\"\nprint(nope)\n.env.B = b\n");
+fn a_shared_file_is_checked_the_way_a_target_is() {
+	let file = tree("if FLAG.x\n\tlet a = 1\n\tprint(a)\nend\nlet b = a ? \"x\"\nprint(nope)\nENV.B = b\n");
 	let f: Vec<String> = resolve::of_shared(&file, &[])
 		.iter()
 		.map(|u| format!("{}@{}", u.name, u.span.line))
 		.collect();
-	// Inside the `if` its own `let` counts; after it, nothing the `if` bound
-	// does, since it never runs. What never runs is still checked.
-	assert_eq!(f, ["a@5", "nope@6"]);
+	assert_eq!(f, ["nope@6"]);
 }
 
 #[test]

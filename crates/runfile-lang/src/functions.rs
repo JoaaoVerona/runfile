@@ -10,6 +10,8 @@ use crate::eval::{EvalError, Scope, eval};
 use crate::span::Span;
 use crate::value::{TypeError, Value, parse_number};
 
+pub use crate::state::{EFFECTS, is_effect};
+
 fn ty(sp: Span, e: TypeError) -> EvalError {
 	EvalError::ty(sp.line, e)
 }
@@ -83,6 +85,12 @@ pub fn call_with(name: &str, v: Vec<Value>, sc: &mut Scope, sp: Span) -> Result<
 			_ => return Err(arity("exit", "0 or 1 arguments", n, sp)),
 		};
 		return Err(EvalError::Exit { code, line: sp.line });
+	}
+	// The four that change the state the lines below run in. They answer with
+	// nothing, and the parser keeps them out of every place a value is read.
+	if is_effect(name) {
+		crate::state::apply(name, &v, sc, sp)?;
+		return Ok(Value::Str(String::new()));
 	}
 
 	macro_rules! want {
@@ -1668,6 +1676,31 @@ pub const FUNCTIONS: &[Function] = &[
 		signature: "write_file(path, content)",
 		doc: "Write a file. Does nothing under `--dry-run`.",
 		example: "write_file(\"Cargo.toml\", regex_replace(cargo, pattern, line))",
+	},
+	// ---- the state every line below runs in, each a line of its own
+	Function {
+		name: "add_path",
+		signature: "add_path(dir)",
+		doc: "Put a directory, or a list of them, at the front of `PATH` for every line below, relative to the working directory. Inside `do … end` it ends with the block.",
+		example: "add_path(\"node_modules/.bin\")\n$ eslint .",
+	},
+	Function {
+		name: "set_cwd",
+		signature: "set_cwd(dir)",
+		doc: "Change the working directory for every line below -- where commands run and what a relative path resolves against -- relative to the one in effect. Inside `do … end` it ends with the block.",
+		example: "do\n\tset_cwd(\"web\")\n\t$ npm ci\nend\n$ cargo build    # back where the target started",
+	},
+	Function {
+		name: "ignore_errors",
+		signature: "ignore_errors()",
+		doc: "Keep going when a command fails, to the end of the file or of the `do` block it is written in -- the only two places it may go.",
+		example: "do\n\tignore_errors()\n\t$ docker volume create app-data\nend",
+	},
+	Function {
+		name: "import_env_file",
+		signature: "import_env_file(path)",
+		doc: "Load a `.env` file, or a list of them, into the environment. A value fills a name nothing has set, or replaces an earlier file's; a missing file is skipped, and encrypted values are decrypted in memory.",
+		example: "import_env_file(\".env\")\nimport_env_file(\".env.{{ one_of(ARG.env ? \"dev\", \"dev\", \"prod\") }}\")",
 	},
 ];
 

@@ -10,14 +10,15 @@
 ; Only a function the language has -- see `call_expression` below.
 ((capture_call name: (identifier) @function)
  (#any-of? @function
-  "abs" "append" "base64_decode" "base64_encode" "basename" "capitalize" "ceil" "code_of" "concat"
+  "abs" "add_path" "append" "base64_decode" "base64_encode" "basename" "capitalize" "ceil" "code_of" "concat"
   "concat_lists" "confirm" "contains" "decrypt" "directory_exists" "dirname" "ends_with" "error"
-  "escape" "exit" "extname" "file_exists" "first" "flatten" "floor" "glob" "index_of"
+  "escape" "exit" "extname" "file_exists" "first" "flatten" "floor" "glob" "ignore_errors"
+  "import_env_file" "index_of"
   "is_executable" "is_number" "join" "join_path" "json_encode" "json_format" "json_get" "json_keys"
   "json_query" "json_set" "json_type" "last" "length" "lines" "max" "md5" "min" "now" "number"
   "one_of" "power" "prepend" "print" "printf" "range" "read_file" "regex_capture"
   "regex_capture_all" "regex_matches" "regex_remove" "regex_replace" "remove_all" "remove_prefix"
-  "remove_suffix" "repeat" "replace_all" "reverse" "round" "sha256" "sleep" "slice" "sort" "split"
+  "remove_suffix" "repeat" "replace_all" "reverse" "round" "set_cwd" "sha256" "sleep" "slice" "sort" "split"
   "starts_with" "stem" "substring" "temp_dir" "temp_file" "to_lower" "to_upper" "trim" "trim_end"
   "trim_start" "try" "unique" "url_decode" "url_encode" "uuid" "without" "write_file" "zip"))
 
@@ -48,14 +49,15 @@
 ; `code_of` and `try`, and a test in `runfile-lang` holds the two together.
 ((call_expression function: (identifier) @function.call)
  (#any-of? @function.call
-  "abs" "append" "base64_decode" "base64_encode" "basename" "capitalize" "ceil" "code_of" "concat"
+  "abs" "add_path" "append" "base64_decode" "base64_encode" "basename" "capitalize" "ceil" "code_of" "concat"
   "concat_lists" "confirm" "contains" "decrypt" "directory_exists" "dirname" "ends_with" "error"
-  "escape" "exit" "extname" "file_exists" "first" "flatten" "floor" "glob" "index_of"
+  "escape" "exit" "extname" "file_exists" "first" "flatten" "floor" "glob" "ignore_errors"
+  "import_env_file" "index_of"
   "is_executable" "is_number" "join" "join_path" "json_encode" "json_format" "json_get" "json_keys"
   "json_query" "json_set" "json_type" "last" "length" "lines" "max" "md5" "min" "now" "number"
   "one_of" "power" "prepend" "print" "printf" "range" "read_file" "regex_capture"
   "regex_capture_all" "regex_matches" "regex_remove" "regex_replace" "remove_all" "remove_prefix"
-  "remove_suffix" "repeat" "replace_all" "reverse" "round" "sha256" "sleep" "slice" "sort" "split"
+  "remove_suffix" "repeat" "replace_all" "reverse" "round" "set_cwd" "sha256" "sleep" "slice" "sort" "split"
   "starts_with" "stem" "substring" "temp_dir" "temp_file" "to_lower" "to_upper" "trim" "trim_end"
   "trim_start" "try" "unique" "url_decode" "url_encode" "uuid" "without" "write_file" "zip"))
 

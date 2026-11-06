@@ -24,7 +24,7 @@ fn nested(target: &str) -> tempfile::TempDir {
 #[test]
 fn the_file_functions_read_and_write_where_the_commands_run() {
 	let d = nested(
-		".workdir = \"sub\"\n\n\
+		"set_cwd(\"sub\")\n\n\
 		 $ test {{ read_file(\"marker\") }} = sub\n\
 		 $ test {{ file_exists(\"deeper/marker\") }} = true\n\
 		 $ test {{ directory_exists(\"deeper\") }} = true\n\
@@ -40,9 +40,9 @@ fn the_file_functions_read_and_write_where_the_commands_run() {
 #[test]
 fn a_header_value_reads_from_the_workdir_above_it_and_not_one_below() {
 	let d = nested(
-		".env.BEFORE = read_file(\"marker\")\n\
-		 .workdir = \"sub\"\n\
-		 .env.AFTER = read_file(\"marker\")\n\n\
+		"ENV.BEFORE = read_file(\"marker\")\n\
+		 set_cwd(\"sub\")\n\
+		 ENV.AFTER = read_file(\"marker\")\n\n\
 		 $ test \"$BEFORE\" = anchor\n\
 		 $ test \"$AFTER\" = sub\n",
 	);
@@ -53,7 +53,7 @@ fn a_header_value_reads_from_the_workdir_above_it_and_not_one_below() {
 fn a_property_below_a_statement_moves_reads_from_its_line_down() {
 	let d = nested(
 		"$ test {{ read_file(\"marker\") }} = anchor\n\
-		 .workdir = \"sub\"\n\
+		 set_cwd(\"sub\")\n\
 		 $ test {{ read_file(\"marker\") }} = sub\n\
 		 $ test \"$(cat marker)\" = sub\n",
 	);
@@ -63,15 +63,15 @@ fn a_property_below_a_statement_moves_reads_from_its_line_down() {
 #[test]
 fn a_nested_workdir_is_relative_to_the_one_around_it_and_ends_with_its_block() {
 	let d = nested(
-		".workdir = \"sub\"\n\n\
+		"set_cwd(\"sub\")\n\n\
 		 do\n\
-		 \t.workdir = \"deeper\"\n\n\
+		 \tset_cwd(\"deeper\")\n\n\
 		 \t$ test {{ read_file(\"marker\") }} = deeper\n\
 		 \t$ test \"$(cat marker)\" = deeper\n\
 		 end\n\n\
 		 $ test {{ read_file(\"marker\") }} = sub\n\n\
 		 do\n\
-		 \t.workdir = RUN.parent\n\n\
+		 \tset_cwd(RUN.parent)\n\n\
 		 \t$ test {{ read_file(\"marker\") }} = anchor\n\
 		 end\n",
 	);
@@ -79,19 +79,19 @@ fn a_nested_workdir_is_relative_to_the_one_around_it_and_ends_with_its_block() {
 }
 
 #[test]
-fn a_loop_asks_its_condition_where_its_body_runs() {
-	// The runner asks a loop's condition under the body's properties, as it
-	// does for the environment. Only `sub` holds `deeper/marker`, so a
-	// condition read from the anchor would never let the body run.
+fn a_loop_asks_its_condition_where_the_pass_before_left_it() {
+	// A change lasts past the block it is written in, a loop's body included,
+	// so the condition after a pass is read in the directory that pass moved
+	// to. The anchor's `marker` says `anchor` and `sub`'s says `sub`.
 	let d = nested(
 		"let passes = 0\n\n\
-		 while file_exists(\"deeper/marker\") && passes == 0\n\
-		 \t.workdir = \"sub\"\n\n\
+		 until read_file(\"marker\") == \"sub\"\n\
+		 \tset_cwd(\"sub\")\n\
 		 \tpasses = passes + 1\n\
 		 end\n\n\
 		 $ test {{ passes }} = 1\n",
 	);
-	host_run(&d, "t").expect("the condition looked in `sub`");
+	host_run(&d, "t").expect("the second question was asked in `sub`");
 }
 
 #[test]
@@ -99,14 +99,14 @@ fn env_files_resolve_where_they_are_written() {
 	// Two `.env-file = ".env"` lines name two files: one above the `.workdir`,
 	// one below it.
 	let d = nested(
-		".env-file = \".env\"\n\
-		 .workdir = \"sub\"\n\
-		 .env-file = \".env\"\n\n\
+		"import_env_file(\".env\")\n\
+		 set_cwd(\"sub\")\n\
+		 import_env_file(\".env\")\n\n\
 		 $ test \"$FROM_ANCHOR\" = yes\n\
 		 $ test \"$FROM_SUB\" = yes\n\n\
 		 do\n\
-		 \t.workdir = \"deeper\"\n\
-		 \t.env-file = \".env\"\n\n\
+		 \tset_cwd(\"deeper\")\n\
+		 \timport_env_file(\".env\")\n\n\
 		 \t$ test \"$FROM_DEEPER\" = yes\n\
 		 end\n",
 	);
@@ -123,9 +123,9 @@ fn add_paths_resolve_where_they_are_written() {
 	// The shape `react-extended-maps` uses: `.add-path` above `.workdir`, so the
 	// path names the subproject from the anchor and must not be moved under it.
 	let d = nested(
-		".add-path = \"sub/bin\"\n\
-		 .workdir = \"sub\"\n\
-		 .add-path = \"deeper/bin\"\n\n\
+		"add_path(\"sub/bin\")\n\
+		 set_cwd(\"sub\")\n\
+		 add_path(\"deeper/bin\")\n\n\
 		 $ from-sub\n\
 		 $ from-deeper\n",
 	);
@@ -145,32 +145,34 @@ fn a_shared_workdir_is_where_its_targets_read_from() {
 	let d = nested("$ test {{ read_file(\"marker\") }} = sub\n$ test {{ shared }} = sub\n");
 	std::fs::write(
 		d.path().join("runfiles/_shared.run"),
-		".workdir = \"sub\"\n\nlet shared = read_file(\"marker\")\n",
+		"set_cwd(\"sub\")\n\nlet shared = read_file(\"marker\")\n",
 	)
 	.unwrap();
 	host_run(&d, "t").expect("the target and the shared `let` both read from `sub`");
 }
 
 #[test]
-fn a_watch_pattern_is_matched_beneath_the_workdir_it_was_written_under() {
-	let d = nested(
-		".watch = \"top/**\"\n\
-		 .workdir = \"sub\"\n\
-		 .watch = \"src/**\"\n\n\
-		 $ true\n",
-	);
-	let cat = runfile_discovery::discover(d.path(), None).unwrap();
-	let host = crate::dispatch::Host::new(&cat);
-	let props = host.header_props(cat.resolve("t").unwrap(), &[]).unwrap();
-	let got: Vec<(std::path::PathBuf, String)> = props.watch.into_iter().map(|w| (w.dir, w.pattern)).collect();
-	let anchor = cat.resolve("t").unwrap().anchor.clone();
-	assert_eq!(
-		got,
-		vec![
-			(anchor.clone(), "top/**".to_string()),
-			(anchor.join("sub"), "src/**".to_string()),
-		]
-	);
+fn a_watch_pattern_is_matched_beneath_the_workdir_its_shared_files_left() {
+	// A property is read before the file's first line, after every
+	// `_shared.run` above it has run -- so a `.watch` there is relative to the
+	// working directory those left, and nothing in its own file can move it.
+	let d = nested(".watch = \"src/**\"\n\n$ true\n");
+	let anchor = runfile_discovery::discover(d.path(), None)
+		.unwrap()
+		.resolve("t")
+		.unwrap()
+		.anchor
+		.clone();
+	let watched = |d| -> Vec<(std::path::PathBuf, String)> {
+		super::header_of(d, "t")
+			.watch
+			.into_iter()
+			.map(|w| (w.dir, w.pattern))
+			.collect()
+	};
+	assert_eq!(watched(&d), vec![(anchor.clone(), "src/**".to_string())]);
+	std::fs::write(d.path().join("runfiles/_shared.run"), "set_cwd(\"sub\")\n").unwrap();
+	assert_eq!(watched(&d), vec![(anchor.join("sub"), "src/**".to_string())]);
 }
 
 #[test]
@@ -185,7 +187,7 @@ fn a_working_directory_that_is_not_there_is_named_rather_than_the_shell() {
 		"if $ true\n\tprint(\"ran\")\nend",
 		"$ true\n$ true",
 	] {
-		let d = nested(&format!(".workdir = \"nope\"\n\n{line}\n"));
+		let d = nested(&format!("set_cwd(\"nope\")\n\n{line}\n"));
 		let e = host_run(&d, "t").expect_err(line).to_string();
 		assert!(
 			e.contains("working directory") && e.contains("nope") && e.contains("does not exist"),
@@ -193,7 +195,7 @@ fn a_working_directory_that_is_not_there_is_named_rather_than_the_shell() {
 		);
 		assert!(!e.contains("could not start"), "{line:?} blamed the program: {e}");
 	}
-	let d = nested(".workdir = \"marker\"\n\n$ true\n");
+	let d = nested("set_cwd(\"marker\")\n\n$ true\n");
 	let e = host_run(&d, "t").unwrap_err().to_string();
 	assert!(e.contains("is not a directory"), "{e}");
 }
@@ -202,7 +204,7 @@ fn a_working_directory_that_is_not_there_is_named_rather_than_the_shell() {
 fn a_working_directory_is_judged_when_a_command_runs_not_when_it_is_named() {
 	// An earlier line may be what makes it, so naming one that is not there
 	// yet is not a mistake on its own.
-	let d = nested("$ mkdir made\n\ndo\n\t.workdir = \"made\"\n\n\t$ touch here\nend\n");
+	let d = nested("$ mkdir made\n\ndo\n\tset_cwd(\"made\")\n\n\t$ touch here\nend\n");
 	host_run(&d, "t").expect("the directory existed by the time a command ran in it");
 	assert!(d.path().join("made/here").is_file());
 }

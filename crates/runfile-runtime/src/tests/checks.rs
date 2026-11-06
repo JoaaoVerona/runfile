@@ -36,33 +36,18 @@ fn the_language_s_findings_and_the_shell_s_are_reported_together_in_order() {
 }
 
 #[test]
-fn a_shared_file_that_runs_a_command_in_a_let_refuses_every_target_below_it() {
+fn a_shared_file_runs_its_lines_ahead_of_every_target_below_it() {
+	// A `_shared.run` used to be folded rather than run, so a `let` there had
+	// no process to run a command in and was refused. It runs line for line
+	// now, the way the target after it does, and hands it what it bound.
 	let d = project(&[
-		("runfiles/_shared.run", "let branch = $ git branch --show-current\n"),
-		("runfiles/t.run", "$ touch ran\n"),
+		(
+			"runfiles/_shared.run",
+			"let branch = $ echo main\nif true\n\tlet nested = \"too\"\nend\n$ echo shared\n",
+		),
+		("runfiles/t.run", "$ echo {{ branch }} {{ nested }}\n"),
 	]);
-	let e = host_run(&d, "t").unwrap_err().to_string();
-	assert!(
-		e.contains("_shared.run: line 1:") && e.contains("[capture-position]"),
-		"{e}"
-	);
-	assert!(!d.path().join("ran").exists(), "nothing ran");
-}
-
-#[test]
-fn a_shared_let_that_runs_a_command_is_refused_by_the_runner_too() {
-	// What the check says, the runner does: the fold has no process to run it.
-	let d = project(&[
-		("runfiles/_shared.run", "let branch = $ echo main\n"),
-		("runfiles/t.run", "print(branch)\n"),
-	]);
-	let cat = runfile_discovery::discover(d.path(), None).unwrap();
-	let t = &cat.targets["t"];
-	let shared = runfile_lang::parse("let branch = $ echo main\n").unwrap();
-	let mut sc = runfile_lang::Scope::new();
-	crate::dispatch::populate_run_context(&mut sc, t, &cat);
-	let e = crate::run::fold_shared(&shared.body, &crate::props::Props::default(), &mut sc).unwrap_err();
-	assert!(e.to_string().contains("capture"), "{e}");
+	assert_eq!(host_run(&d, "t").unwrap(), ["echo shared", "echo main too"]);
 }
 
 #[test]

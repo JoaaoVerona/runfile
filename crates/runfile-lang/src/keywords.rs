@@ -47,9 +47,9 @@ pub const KEYWORDS: &[Keyword] = &[
 		name: "run",
 		syntax: "run <target> [arguments]",
 		doc: "Run another target **in this process** — no second binary, no shell in between. It \
-		      starts from the environment a command on this line would get — `.env`, `.env-file` and \
-		      `.add-path` included — and layers its own over it; a value only a `.env-file` supplied \
-		      stays a default its own `.env-file` replaces. Its arguments are values rather than shell \
+		      starts from the environment a command on this line would get — every `ENV.X = …` and \
+		      `add_path()` above it included — and changes its own copy; a value only a file \
+		      supplied stays a default its own `import_env_file()` replaces. Its arguments are values rather than shell \
 		      text: one `{{ … }}` is one argument even with spaces in it, and a list becomes one \
 		      argument per item. A bare `--` forwards the rest exactly as typed.",
 		example: "run build --env=production\nrun _aws -- s3api put-bucket-encryption --bucket {{ name }}",
@@ -66,10 +66,10 @@ pub const KEYWORDS: &[Keyword] = &[
 	Keyword {
 		name: "do",
 		syntax: "do … end",
-		doc: "A block with no condition. Properties are block-scoped, so this is where `.workdir`, \
-		      `.env`, `.env-file` or `.ignore-errors` go when they should cover a few commands and \
-		      not the whole target — without inventing an `if true` to hold them.",
-		example: "do\n\t.workdir = \"web\"\n\n\t$ pnpm install\n\t$ pnpm exec vite build\nend",
+		doc: "A block with no condition, and the one that scopes: what changes inside it -- `ENV.X = …`, \
+		      `set_cwd()`, `add_path()`, `import_env_file()`, `ignore_errors()` -- is put back at its \
+		      `end`. Every other block leaves those changes in place for the lines below it.",
+		example: "do\n\tset_cwd(\"web\")\n\n\t$ pnpm install\n\t$ pnpm exec vite build\nend",
 	},
 	Keyword {
 		name: "parallel",
@@ -171,9 +171,10 @@ pub const KEYWORDS: &[Keyword] = &[
 		name: "retry",
 		syntax: "retry <n> [every <seconds>] … [else …] end",
 		doc: "Run the block again while it fails, up to `n` times, pausing `every` seconds between \
-		      attempts. `else` runs once when every attempt has failed. Failure is always visible \
-		      inside it, whatever `.ignore-errors` says — a retry that could not see failure would \
-		      run exactly once.",
+		      attempts. Each attempt starts from the environment and working directory the `retry` \
+		      began with, and the one that succeeds keeps what it changed. `else` runs once when every \
+		      attempt has failed. Failure is always visible inside it, whatever `ignore_errors()` \
+		      says — a retry that could not see failure would run exactly once.",
 		example: "retry 120 every 1\n\t$ docker exec db pg_isready -h 127.0.0.1\nelse\n\terror(\"the database never became ready\")\nend",
 	},
 	Keyword {

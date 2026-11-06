@@ -92,6 +92,7 @@ module.exports = grammar({
 				$.exec_block,
 				$.let_statement,
 				$.assignment,
+				$.env_assignment,
 				$.do_statement,
 				$.if_statement,
 				$.retry_statement,
@@ -232,6 +233,16 @@ module.exports = grammar({
 				endsLine($, "value", choice($.capture_call, $.shell_capture), choice($.structured, $.exec_capture, $._expression)),
 			),
 
+		// `ENV.NAME = value`: the one source a file may set, for every line below
+		// it. Any other source on the left is the runner's to refuse, with a
+		// reason -- the shape is the same, and an editor colours it as written.
+		env_assignment: ($) =>
+			seq(
+				field("name", $.source),
+				"=",
+				endsLine($, "value", choice($.capture_call, $.shell_capture), choice($.structured, $.exec_capture, $._expression)),
+			),
+
 		// `json … end`: a block of structured text, as one value of that format.
 		// Its body closes on an `end` at the opener's indentation, like every
 		// other body here, so the scanner needs nothing new. Adding YAML or
@@ -253,8 +264,9 @@ module.exports = grammar({
 		exec_capture: ($) =>
 			seq(alias($._capture_exec_keyword, "exec"), field("command", $.command), $._eol, optional(field("body", $.exec_body)), "end"),
 
-		// `do` … `end`: a block with no condition, so a property has somewhere
-		// to go without inventing a question.
+		// `do` … `end`: a block with no condition, and the one that puts back
+		// what changed inside it -- `ENV.X = …`, `set_cwd()` and the rest -- at
+		// its `end`.
 		// `parallel` in front of `do` or `for` runs its branches at once. A
 		// marker on the block rather than a block of its own, the way `detach`
 		// is a marker on a command, and recognised the same way: by the

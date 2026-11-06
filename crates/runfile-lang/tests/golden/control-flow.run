@@ -20,7 +20,7 @@ default
 end
 
 do
-	.workdir = "web"
+	set_cwd("web")
 
 	$ pnpm install
 end

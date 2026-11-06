@@ -1,0 +1,141 @@
+Target {
+    description: Some(
+        "The state every line below runs in\n\nAn environment variable set, and the four calls that change the rest, each a\nline of its own; a `do` puts all of it back at its `end`.",
+    ),
+    body: Block {
+        properties: [],
+        statements: [
+            SetEnv {
+                name: "PORT",
+                value: Chain {
+                    lhs: Source {
+                        kind: Arg,
+                        key: Some(
+                            "port",
+                        ),
+                        span: Span,
+                    },
+                    rhs: Str(
+                        [
+                            Literal(
+                                "3000",
+                            ),
+                        ],
+                        Span,
+                    ),
+                    span: Span,
+                },
+                span: Span,
+            },
+            SetEnv {
+                name: "SHA",
+                value: Capture {
+                    command: None,
+                    body: [
+                        [
+                            Literal(
+                                "git rev-parse HEAD",
+                            ),
+                        ],
+                    ],
+                    span: Span,
+                },
+                span: Span,
+            },
+            Call {
+                expr: Call {
+                    name: "import_env_file",
+                    args: [
+                        List(
+                            [
+                                Str(
+                                    [
+                                        Literal(
+                                            ".env",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                                Str(
+                                    [
+                                        Literal(
+                                            ".env.local",
+                                        ),
+                                    ],
+                                    Span,
+                                ),
+                            ],
+                            Span,
+                        ),
+                    ],
+                    span: Span,
+                },
+                span: Span,
+            },
+            Call {
+                expr: Call {
+                    name: "add_path",
+                    args: [
+                        Str(
+                            [
+                                Literal(
+                                    "node_modules/.bin",
+                                ),
+                            ],
+                            Span,
+                        ),
+                    ],
+                    span: Span,
+                },
+                span: Span,
+            },
+            Do {
+                body: Block {
+                    properties: [],
+                    statements: [
+                        Call {
+                            expr: Call {
+                                name: "set_cwd",
+                                args: [
+                                    Str(
+                                        [
+                                            Literal(
+                                                "web",
+                                            ),
+                                        ],
+                                        Span,
+                                    ),
+                                ],
+                                span: Span,
+                            },
+                            span: Span,
+                        },
+                        Call {
+                            expr: Call {
+                                name: "ignore_errors",
+                                args: [],
+                                span: Span,
+                            },
+                            span: Span,
+                        },
+                        Exec {
+                            command: None,
+                            body: [
+                                [
+                                    Literal(
+                                        "npm run lint",
+                                    ),
+                                ],
+                            ],
+                            detach: false,
+                            lines,
+                            span: Span,
+                        },
+                    ],
+                },
+                parallel: false,
+                span: Span,
+            },
+        ],
+    },
+}

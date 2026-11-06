@@ -520,6 +520,10 @@
           "named": true
         },
         {
+          "type": "env_assignment",
+          "named": true
+        },
+        {
           "type": "exec_block",
           "named": true
         },
@@ -569,6 +573,106 @@
         },
         {
           "type": "while_statement",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "env_assignment",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "source",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "boolean",
+            "named": true
+          },
+          {
+            "type": "call_expression",
+            "named": true
+          },
+          {
+            "type": "capture_call",
+            "named": true
+          },
+          {
+            "type": "chain_expression",
+            "named": true
+          },
+          {
+            "type": "exec_capture",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "index_expression",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "shell_capture",
+            "named": true
+          },
+          {
+            "type": "source",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "structured",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
           "named": true
         }
       ]
@@ -858,6 +962,10 @@
           "named": true
         },
         {
+          "type": "env_assignment",
+          "named": true
+        },
+        {
           "type": "exec_block",
           "named": true
         },
@@ -1001,6 +1109,10 @@
         },
         {
           "type": "do_statement",
+          "named": true
+        },
+        {
+          "type": "env_assignment",
           "named": true
         },
         {
@@ -1380,6 +1492,10 @@
           "named": true
         },
         {
+          "type": "env_assignment",
+          "named": true
+        },
+        {
           "type": "exec_block",
           "named": true
         },
@@ -1474,6 +1590,10 @@
           "named": true
         },
         {
+          "type": "env_assignment",
+          "named": true
+        },
+        {
           "type": "exec_block",
           "named": true
         },
@@ -1554,6 +1674,10 @@
         },
         {
           "type": "do_statement",
+          "named": true
+        },
+        {
+          "type": "env_assignment",
           "named": true
         },
         {
@@ -2024,6 +2148,10 @@
           "named": true
         },
         {
+          "type": "env_assignment",
+          "named": true
+        },
+        {
           "type": "exec_block",
           "named": true
         },
@@ -2242,6 +2370,10 @@
         },
         {
           "type": "do_statement",
+          "named": true
+        },
+        {
+          "type": "env_assignment",
           "named": true
         },
         {
@@ -2518,6 +2650,10 @@
           "named": true
         },
         {
+          "type": "env_assignment",
+          "named": true
+        },
+        {
           "type": "exec_block",
           "named": true
         },
@@ -2661,6 +2797,10 @@
         },
         {
           "type": "do_statement",
+          "named": true
+        },
+        {
+          "type": "env_assignment",
           "named": true
         },
         {

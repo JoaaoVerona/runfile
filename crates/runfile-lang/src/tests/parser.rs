@@ -137,18 +137,20 @@ fn changing_what_a_target_does_changes_its_fingerprint() {
 
 #[test]
 fn an_unchanged_setup_keeps_the_fingerprint_it_was_recorded_with() {
-	// A real `setup.run`, and the fingerprint the runner stored for it before
-	// `Statement::Exec` grew `detach`. The field changes nothing about a file
-	// that does not use it, yet rendered into the hash it moved every one --
-	// and a prepare gate that trips on a runner upgrade asks every project on
-	// the machine to set up again, for a change none of them made: 83 of the
-	// author's 88 did. A field added the same way without an `UNASKED` entry
-	// fails here, which is the point of pinning a hash from before it.
+	// A real `setup.run`, pinned to its fingerprint. A field added to the tree
+	// changes nothing about a file that does not use it, yet rendered into the
+	// hash it moves every one -- and a prepare gate that trips on a runner
+	// upgrade asks every project on the machine to set up again, for a change
+	// none of them made: `detach` did that to 83 of the author's 88. A field
+	// added without an `UNASKED` entry fails here, which is the point of
+	// pinning it. Re-pinned at 2.0, when this file's `.workdir` inside its `do`
+	// became `set_cwd()`: the old line no longer parses, so its old hash says
+	// nothing about any file there is.
 	let src = "# One-time per clone: activate the git hooks and install the desktop UI dependencies\n\n\
 	           $ git config core.hooksPath .githooks\n\n\
-	           do\n\t.workdir = \"libretether-desktop\"\n\n\t$ pnpm install\nend\n";
+	           do\n\tset_cwd(\"libretether-desktop\")\n\n\t$ pnpm install\nend\n";
 	let t = crate::parse(src).unwrap();
-	assert_eq!(format!("{:x}", crate::fingerprint(&t)), "fc3ba8a69c88a636");
+	assert_eq!(format!("{:x}", crate::fingerprint(&t)), "764a9e86fe5bae05");
 }
 
 #[test]

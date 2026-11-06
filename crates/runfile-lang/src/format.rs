@@ -446,6 +446,12 @@ fn assignment(trimmed: &str, no: usize) -> Result<(String, Option<Frame>), Parse
 				None,
 			));
 		}
+		// `ENV.NAME = value`, laid out as a reassignment is.
+		if let Some(key) = names.strip_prefix("ENV.").map(str::trim)
+			&& is_name(key)
+		{
+			return Ok((format!("ENV.{key} = {}", rhs(trimmed[k + 1..].trim(), no)?), None));
+		}
 	}
 	Ok((spaced(trimmed, no)?, None))
 }

@@ -1,14 +1,13 @@
 //! What a target hands the target it `run`s, and what that target makes of it.
 //!
 //! The first half asserts the hand-over itself, with a recorder standing in for
-//! the host: what a `run` is given from every place a property can sit, and
+//! the host: what a `run` is given from every place a line can change it, and
 //! which half each value lands in. The second runs real targets, because what
 //! matters in the end is what a called target's commands and `ENV.X` see.
 
 use super::{Recorder, host_run, project, run_src};
 use crate::env::Inherited;
-use crate::props::Props;
-use crate::run::{Runner, run_target_with};
+use crate::run::{Runner, run_target};
 use runfile_lang::eval::Scope;
 use std::collections::HashMap;
 use std::path::Path;
@@ -34,12 +33,11 @@ fn slashed(p: &Path) -> String {
 fn walk_run_with(src: &str, inherited: Inherited, d: &Recorder) {
 	let target = runfile_lang::parse(src).expect("parse");
 	let mut scope = Scope::new();
-	scope.env = inherited.environment();
+	inherited.install(&mut scope);
 	scope.rooted_at(std::env::temp_dir());
 	let mut r = Runner {
 		scope,
 		chain: Vec::new(),
-		env: Vec::new(),
 		dispatch: d,
 		interrupted: None,
 		label: None,
@@ -47,11 +45,7 @@ fn walk_run_with(src: &str, inherited: Inherited, d: &Recorder) {
 		dry_run: false,
 		trace: Vec::new(),
 	};
-	let base = Props {
-		inherited: Some(std::sync::Arc::new(inherited)),
-		..Props::default()
-	};
-	run_target_with(&target, base, &mut r).expect("the walk");
+	run_target(&target, &mut r).expect("the walk");
 }
 
 /// A variable this process already has, with a plain name and a value no
@@ -76,12 +70,12 @@ fn plain_process_variable() -> (String, String) {
 fn a_run_is_handed_the_environment_of_its_own_line() {
 	let rec = Recorder::default();
 	run_src(
-		".env.RUNFILE_T_HEADER = \"header\"\n\
+		"ENV.RUNFILE_T_HEADER = \"header\"\n\
 		 \n\
 		 run first\n\
 		 \n\
 		 do\n\
-		 \t.env.RUNFILE_T_BLOCK = \"block\"\n\
+		 \tENV.RUNFILE_T_BLOCK = \"block\"\n\
 		 \n\
 		 \trun inside\n\
 		 end\n\
@@ -107,62 +101,57 @@ fn a_run_is_handed_the_environment_of_its_own_line() {
 }
 
 #[test]
-fn a_property_below_a_statement_is_handed_over_from_its_line_down() {
+fn an_assignment_is_handed_over_from_its_line_down() {
 	let rec = Recorder::default();
-	run_src("run before\n.env.RUNFILE_T_LATE = \"late\"\nrun after\n", &rec).unwrap();
+	run_src("run before\nENV.RUNFILE_T_LATE = \"late\"\nrun after\n", &rec).unwrap();
 	assert_eq!(exported(&rec.env_of("before"), "RUNFILE_T_LATE"), None);
 	assert_eq!(exported(&rec.env_of("after"), "RUNFILE_T_LATE"), Some("late"));
 }
 
 #[test]
-fn every_block_form_hands_a_run_inside_it_its_own_environment() {
-	// Each form reaches the environment through its own arm of the walker, so
-	// each is asked rather than one standing in for the rest.
+fn every_block_form_but_do_leaves_what_it_set_for_the_lines_below() {
+	// Each form reaches the state through its own arm of the walker, so each is
+	// asked rather than one standing in for the rest. A change lasts past the
+	// block it is written in, the way a `let` does; a `do` is the one block that
+	// puts it back.
 	let rec = Recorder::default();
 	run_src(
 		"if true\n\
-		 \t.env.RUNFILE_T_IN = \"if\"\n\
-		 \n\
+		 \tENV.RUNFILE_T_IF = \"if\"\n\
 		 \trun in-if\n\
 		 end\n\
 		 \n\
 		 if false\n\
 		 \trun never\n\
 		 else\n\
-		 \t.env.RUNFILE_T_IN = \"else\"\n\
-		 \n\
+		 \tENV.RUNFILE_T_ELSE = \"else\"\n\
 		 \trun in-else\n\
 		 end\n\
 		 \n\
 		 for n in [1]\n\
-		 \t.env.RUNFILE_T_IN = \"for\"\n\
-		 \n\
+		 \tENV.RUNFILE_T_FOR = \"for\"\n\
 		 \trun in-for\n\
 		 end\n\
 		 \n\
 		 match \"a\"\n\
 		 \tcase \"a\"\n\
-		 \t\t.env.RUNFILE_T_IN = \"match\"\n\
-		 \n\
+		 \t\tENV.RUNFILE_T_MATCH = \"match\"\n\
 		 \t\trun in-match\n\
 		 end\n\
 		 \n\
 		 retry 1\n\
-		 \t.env.RUNFILE_T_IN = \"retry\"\n\
-		 \n\
+		 \tENV.RUNFILE_T_RETRY = \"retry\"\n\
 		 \trun in-retry\n\
 		 end\n\
 		 \n\
 		 loop\n\
-		 \t.env.RUNFILE_T_IN = \"loop\"\n\
-		 \n\
+		 \tENV.RUNFILE_T_LOOP = \"loop\"\n\
 		 \trun in-loop\n\
 		 \tbreak\n\
 		 end\n\
 		 \n\
 		 do\n\
-		 \t.env.RUNFILE_T_IN = \"do\"\n\
-		 \n\
+		 \tENV.RUNFILE_T_DO = \"do\"\n\
 		 \trun in-do\n\
 		 end\n\
 		 \n\
@@ -171,48 +160,60 @@ fn every_block_form_hands_a_run_inside_it_its_own_environment() {
 	)
 	.unwrap();
 	for form in ["if", "else", "for", "match", "retry", "loop", "do"] {
+		let key = format!("RUNFILE_T_{}", form.to_uppercase());
 		assert_eq!(
-			exported(&rec.env_of(&format!("in-{form}")), "RUNFILE_T_IN"),
+			exported(&rec.env_of(&format!("in-{form}")), &key),
 			Some(form),
-			"{form}"
+			"inside the {form}"
 		);
+		let outside = rec.env_of("outside");
+		let after = exported(&outside, &key);
+		match form {
+			"do" => assert_eq!(after, None, "a `do` puts it back"),
+			_ => assert_eq!(after, Some(form), "after the {form}"),
+		}
 	}
-	assert_eq!(exported(&rec.env_of("outside"), "RUNFILE_T_IN"), None);
 }
 
 #[test]
 fn code_of_a_run_is_handed_the_same_environment_as_a_run() {
 	let rec = Recorder::default();
-	run_src(".env.RUNFILE_T_X = \"x\"\n\nlet status = code_of(run scored)\n", &rec).unwrap();
+	run_src("ENV.RUNFILE_T_X = \"x\"\n\nlet status = code_of(run scored)\n", &rec).unwrap();
 	assert_eq!(exported(&rec.env_of("scored"), "RUNFILE_T_X"), Some("x"));
 }
 
 #[test]
 fn each_parallel_branch_hands_over_the_environment_it_runs_in() {
-	// A property between two branches is the second one's, and an iteration's
-	// block is that iteration's -- so every branch's call is handed its own.
+	// A branch changes a copy of the state the block opened in: what it sets
+	// reaches its own calls, and neither a sibling's nor the line after.
 	let rec = Recorder::default();
 	run_src(
-		"parallel do\n\
+		"ENV.RUNFILE_T_BEFORE = \"before\"\n\
+		 \n\
+		 parallel do\n\
 		 \trun first\n\
-		 \t.env.RUNFILE_T_BETWEEN = \"between\"\n\
-		 \trun second\n\
+		 \tdo\n\
+		 \t\tENV.RUNFILE_T_OWN = \"second\"\n\
+		 \t\trun second\n\
+		 \tend\n\
 		 end\n\
 		 \n\
 		 parallel for n in [\"a\", \"b\"]\n\
-		 \tdo\n\
-		 \t\t.env.RUNFILE_T_ITEM = n\n\
+		 \tENV.RUNFILE_T_ITEM = n\n\
+		 \trun item-{{ n }}\n\
+		 end\n\
 		 \n\
-		 \t\trun item-{{ n }}\n\
-		 \tend\n\
-		 end\n",
+		 run after\n",
 		&rec,
 	)
 	.unwrap();
-	assert_eq!(exported(&rec.env_of("first"), "RUNFILE_T_BETWEEN"), None);
-	assert_eq!(exported(&rec.env_of("second"), "RUNFILE_T_BETWEEN"), Some("between"));
+	assert_eq!(exported(&rec.env_of("first"), "RUNFILE_T_BEFORE"), Some("before"));
+	assert_eq!(exported(&rec.env_of("first"), "RUNFILE_T_OWN"), None);
+	assert_eq!(exported(&rec.env_of("second"), "RUNFILE_T_OWN"), Some("second"));
 	assert_eq!(exported(&rec.env_of("item-a"), "RUNFILE_T_ITEM"), Some("a"));
 	assert_eq!(exported(&rec.env_of("item-b"), "RUNFILE_T_ITEM"), Some("b"));
+	assert_eq!(exported(&rec.env_of("after"), "RUNFILE_T_ITEM"), None);
+	assert_eq!(exported(&rec.env_of("after"), "RUNFILE_T_OWN"), None);
 }
 
 #[test]
@@ -226,7 +227,7 @@ fn a_value_only_an_env_file_supplied_is_handed_over_as_a_default() {
 	let rec = Recorder::default();
 	run_src(
 		&format!(
-			".env-file = \"{}\"\n.env.RUNFILE_T_BOTH = \"assigned\"\n\nrun child\n",
+			"import_env_file(\"{}\")\nENV.RUNFILE_T_BOTH = \"assigned\"\n\nrun child\n",
 			slashed(&dir.path().join(".env"))
 		),
 		&rec,
@@ -252,7 +253,10 @@ fn a_variable_the_process_had_is_exported_even_where_a_file_names_it_too() {
 	std::fs::write(dir.path().join(".env"), format!("{key}=from_file\n")).unwrap();
 	let rec = Recorder::default();
 	run_src(
-		&format!(".env-file = \"{}\"\n\nrun child\n", slashed(&dir.path().join(".env"))),
+		&format!(
+			"import_env_file(\"{}\")\n\nrun child\n",
+			slashed(&dir.path().join(".env"))
+		),
 		&rec,
 	)
 	.unwrap();
@@ -266,7 +270,7 @@ fn path_is_always_handed_over_as_exported_with_an_add_path_in_front() {
 	let dir = tempfile::TempDir::new().unwrap();
 	let bin = slashed(&dir.path().join("bin"));
 	let rec = Recorder::default();
-	run_src(&format!(".add-path = \"{bin}\"\n\nrun child\n"), &rec).unwrap();
+	run_src(&format!("add_path(\"{bin}\")\n\nrun child\n"), &rec).unwrap();
 	let env = rec.env_of("child");
 	let path = env
 		.exported
@@ -295,7 +299,7 @@ fn what_a_target_was_run_with_is_handed_on_in_the_same_halves() {
 	let rec = Recorder::default();
 	walk_run_with(
 		&format!(
-			".env-file = \"{}\"\n.env.RUNFILE_T_ASSIGNED = \"assigned\"\n\nrun grandchild\n",
+			"import_env_file(\"{}\")\nENV.RUNFILE_T_ASSIGNED = \"assigned\"\n\nrun grandchild\n",
 			slashed(&dir.path().join(".env"))
 		),
 		inherited,
@@ -340,13 +344,13 @@ fn read(d: &tempfile::TempDir, name: &str) -> String {
 }
 
 #[test]
-fn a_called_target_runs_with_its_callers_env_env_file_and_add_path() {
+fn a_called_target_runs_with_what_its_caller_set_imported_and_added() {
 	// Both readers: the commands it runs, and `ENV.X`.
 	let d = project(&[
 		(".env", "RUNFILE_T_FILE=from-file\n"),
 		(
 			"runfiles/caller.run",
-			".env-file = \".env\"\n.env.RUNFILE_T_ASSIGNED = \"from-caller\"\n.add-path = \"bin\"\n\nrun _child\n",
+			"import_env_file(\".env\")\nENV.RUNFILE_T_ASSIGNED = \"from-caller\"\nadd_path(\"bin\")\n\nrun _child\n",
 		),
 		(
 			"runfiles/_child.run",
@@ -368,10 +372,10 @@ fn a_called_targets_own_env_file_replaces_what_only_its_callers_file_supplied() 
 	let d = project(&[
 		(".env", "RUNFILE_T_DB=dev\n"),
 		(".env.test", "RUNFILE_T_DB=test\n"),
-		("runfiles/_shared.run", ".env-file = \".env\"\n"),
+		("runfiles/_shared.run", "import_env_file(\".env\")\n"),
 		(
 			"runfiles/test.run",
-			".env-file = \".env.test\"\n\n$ printf '%s' \"$RUNFILE_T_DB\" > db.txt\n",
+			"import_env_file(\".env.test\")\n\n$ printf '%s' \"$RUNFILE_T_DB\" > db.txt\n",
 		),
 		("runfiles/ci.run", "run test\n"),
 	]);
@@ -387,10 +391,10 @@ fn a_subprojects_own_env_file_replaces_what_only_the_roots_file_supplied() {
 	let d = project(&[
 		(".env", "RUNFILE_T_DB=root\nRUNFILE_T_ROOT_ONLY=root\n"),
 		("web/.env", "RUNFILE_T_DB=web\n"),
-		("runfiles/all.run", ".env-file = \".env\"\n\nrun web:test\n"),
+		("runfiles/all.run", "import_env_file(\".env\")\n\nrun web:test\n"),
 		(
 			"web/runfiles/test.run",
-			".env-file = \".env\"\n\n$ printf '%s|%s' \"$RUNFILE_T_DB\" \"$RUNFILE_T_ROOT_ONLY\" > seen.txt\n",
+			"import_env_file(\".env\")\n\n$ printf '%s|%s' \"$RUNFILE_T_DB\" \"$RUNFILE_T_ROOT_ONLY\" > seen.txt\n",
 		),
 	]);
 	host_run(&d, "all").unwrap();
@@ -405,11 +409,11 @@ fn what_a_caller_assigns_beats_the_called_targets_env_file() {
 		(".env.child", "RUNFILE_T_PORT=from-child-file\n"),
 		(
 			"runfiles/caller.run",
-			".env.RUNFILE_T_PORT = \"from-caller\"\n\nrun _child\n",
+			"ENV.RUNFILE_T_PORT = \"from-caller\"\n\nrun _child\n",
 		),
 		(
 			"runfiles/_child.run",
-			".env-file = \".env.child\"\n\n$ printf '%s' \"$RUNFILE_T_PORT\" > port.txt\n",
+			"import_env_file(\".env.child\")\n\n$ printf '%s' \"$RUNFILE_T_PORT\" > port.txt\n",
 		),
 	]);
 	host_run(&d, "caller").unwrap();
@@ -422,11 +426,11 @@ fn a_called_targets_own_assignment_beats_everything_it_was_run_with() {
 		(".env", "RUNFILE_T_FROM_FILE=caller-file\n"),
 		(
 			"runfiles/caller.run",
-			".env-file = \".env\"\n.env.RUNFILE_T_ASSIGNED = \"caller\"\n\nrun _child\n",
+			"import_env_file(\".env\")\nENV.RUNFILE_T_ASSIGNED = \"caller\"\n\nrun _child\n",
 		),
 		(
 			"runfiles/_child.run",
-			".env.RUNFILE_T_FROM_FILE = \"child\"\n.env.RUNFILE_T_ASSIGNED = \"child\"\n\n\
+			"ENV.RUNFILE_T_FROM_FILE = \"child\"\nENV.RUNFILE_T_ASSIGNED = \"child\"\n\n\
 			 $ printf '%s|%s' \"$RUNFILE_T_FROM_FILE\" \"$RUNFILE_T_ASSIGNED\" > seen.txt\n",
 		),
 	]);
@@ -441,11 +445,11 @@ fn a_called_target_defaults_what_its_caller_did_not_set() {
 	let d = project(&[
 		(
 			"runfiles/_serve.run",
-			".env.RUNFILE_T_PORT = ENV.RUNFILE_T_PORT ? \"3000\"\n\n$ printf '%s\\n' \"$RUNFILE_T_PORT\" >> ports.txt\n",
+			"ENV.RUNFILE_T_PORT = ENV.RUNFILE_T_PORT ? \"3000\"\n\n$ printf '%s\\n' \"$RUNFILE_T_PORT\" >> ports.txt\n",
 		),
 		(
 			"runfiles/both.run",
-			"run _serve\n\ndo\n\t.env.RUNFILE_T_PORT = \"4000\"\n\n\trun _serve\nend\n",
+			"run _serve\n\ndo\n\tENV.RUNFILE_T_PORT = \"4000\"\n\n\trun _serve\nend\n",
 		),
 	]);
 	host_run(&d, "both").unwrap();
@@ -458,7 +462,7 @@ fn nothing_a_called_target_sets_reaches_its_caller_or_the_next_target_it_runs() 
 		(".env.leak", "RUNFILE_T_LEAK_FILE=leaked\n"),
 		(
 			"runfiles/_sets.run",
-			".env.RUNFILE_T_LEAK = \"leaked\"\n.env-file = \".env.leak\"\n.add-path = \"leak-bin\"\n\n$ true\n",
+			"ENV.RUNFILE_T_LEAK = \"leaked\"\nimport_env_file(\".env.leak\")\nadd_path(\"leak-bin\")\n\n$ true\n",
 		),
 		(
 			"runfiles/_reads.run",
@@ -482,11 +486,11 @@ fn every_level_is_run_with_the_one_above_it_and_layers_its_own() {
 	let d = project(&[
 		(
 			"runfiles/a.run",
-			".env.RUNFILE_T_A = \"a\"\n.env.RUNFILE_T_OVER = \"a\"\n\nrun _b\n",
+			"ENV.RUNFILE_T_A = \"a\"\nENV.RUNFILE_T_OVER = \"a\"\n\nrun _b\n",
 		),
 		(
 			"runfiles/_b.run",
-			".env.RUNFILE_T_B = \"b\"\n.env.RUNFILE_T_OVER = \"b\"\n\nrun _c\n",
+			"ENV.RUNFILE_T_B = \"b\"\nENV.RUNFILE_T_OVER = \"b\"\n\nrun _c\n",
 		),
 		(
 			"runfiles/_c.run",
@@ -502,11 +506,11 @@ fn a_file_value_stays_a_default_however_many_levels_it_travels() {
 	let d = project(&[
 		(".env.a", "RUNFILE_T_K=a-file\n"),
 		(".env.c", "RUNFILE_T_K=c-file\n"),
-		("runfiles/a.run", ".env-file = \".env.a\"\n\nrun _b\n"),
+		("runfiles/a.run", "import_env_file(\".env.a\")\n\nrun _b\n"),
 		("runfiles/_b.run", "$ printf '%s' \"$RUNFILE_T_K\" > b.txt\n\nrun _c\n"),
 		(
 			"runfiles/_c.run",
-			".env-file = \".env.c\"\n\n$ printf '%s' \"$RUNFILE_T_K\" > c.txt\n",
+			"import_env_file(\".env.c\")\n\n$ printf '%s' \"$RUNFILE_T_K\" > c.txt\n",
 		),
 	]);
 	host_run(&d, "a").unwrap();
@@ -515,24 +519,24 @@ fn a_file_value_stays_a_default_however_many_levels_it_travels() {
 }
 
 #[test]
-fn a_called_targets_shared_file_and_header_read_what_it_was_run_with() {
-	// Both are read before any of the called target's own properties has built
-	// anything, which is the environment it was handed and nothing else.
+fn a_called_targets_shared_file_and_first_lines_read_what_it_was_run_with() {
+	// Both run before the called target has set anything itself, so what they
+	// read is the environment it was handed and nothing else.
 	let d = project(&[
 		(".env.eu", "RUNFILE_T_ENDPOINT=eu.example\n"),
 		(
 			"runfiles/deploy/_shared.run",
-			"let region = ENV.RUNFILE_T_REGION\n.env.RUNFILE_T_BUCKET = concat(\"logs-\", region)\n",
+			"let region = ENV.RUNFILE_T_REGION\nENV.RUNFILE_T_BUCKET = concat(\"logs-\", region)\n",
 		),
 		(
 			"runfiles/deploy/_push.run",
-			".env-file = \".env.{{ ENV.RUNFILE_T_STAGE }}\"\n\
-			 .env.RUNFILE_T_URL = concat(\"https://\", ENV.RUNFILE_T_ENDPOINT)\n\n\
+			"import_env_file(\".env.{{ ENV.RUNFILE_T_STAGE }}\")\n\
+			 ENV.RUNFILE_T_URL = concat(\"https://\", ENV.RUNFILE_T_ENDPOINT)\n\n\
 			 $ printf '%s|%s' \"$RUNFILE_T_BUCKET\" \"$RUNFILE_T_URL\" > push.txt\n",
 		),
 		(
 			"runfiles/release.run",
-			".env.RUNFILE_T_REGION = \"eu\"\n.env.RUNFILE_T_STAGE = \"eu\"\n\nrun deploy:_push\n",
+			"ENV.RUNFILE_T_REGION = \"eu\"\nENV.RUNFILE_T_STAGE = \"eu\"\n\nrun deploy:_push\n",
 		),
 	]);
 	host_run(&d, "release").unwrap();
@@ -540,25 +544,26 @@ fn a_called_targets_shared_file_and_header_read_what_it_was_run_with() {
 }
 
 #[test]
-fn a_rebuild_part_way_through_a_called_targets_header_keeps_what_it_was_run_with() {
-	// A value below an `.env-file` has the environment rebuilt for it. Rebuilt
-	// from the process's environment, the caller's value would be gone by the
-	// line that reads it -- in the shared file and in the header alike.
+fn a_file_a_called_target_imports_keeps_what_it_was_run_with() {
+	// When the environment was rebuilt from properties, a value below an
+	// `.env-file` was rebuilt from the process's environment, and the caller's
+	// value was gone by the line that read it -- in a shared file and a header
+	// alike. Importing a file now adds to the environment in hand.
 	let d = project(&[
 		(".env.shared", "RUNFILE_T_SHARED_FILE=1\n"),
 		(".env.own", "RUNFILE_T_OWN_FILE=1\n"),
 		(
 			"runfiles/child/_shared.run",
-			".env-file = \".env.shared\"\nlet copied = ENV.RUNFILE_T_FROM_CALLER ? \"missing\"\n.env.RUNFILE_T_IN_SHARED = copied\n",
+			"import_env_file(\".env.shared\")\nlet copied = ENV.RUNFILE_T_FROM_CALLER ? \"missing\"\nENV.RUNFILE_T_IN_SHARED = copied\n",
 		),
 		(
 			"runfiles/child/_run.run",
-			".env-file = \".env.own\"\n.env.RUNFILE_T_IN_HEADER = ENV.RUNFILE_T_FROM_CALLER ? \"missing\"\n\n\
+			"import_env_file(\".env.own\")\nENV.RUNFILE_T_IN_HEADER = ENV.RUNFILE_T_FROM_CALLER ? \"missing\"\n\n\
 			 $ printf '%s|%s' \"$RUNFILE_T_IN_SHARED\" \"$RUNFILE_T_IN_HEADER\" > copied.txt\n",
 		),
 		(
 			"runfiles/caller.run",
-			".env.RUNFILE_T_FROM_CALLER = \"handed-over\"\n\nrun child:_run\n",
+			"ENV.RUNFILE_T_FROM_CALLER = \"handed-over\"\n\nrun child:_run\n",
 		),
 	]);
 	host_run(&d, "caller").unwrap();
@@ -566,20 +571,17 @@ fn a_rebuild_part_way_through_a_called_targets_header_keeps_what_it_was_run_with
 }
 
 #[test]
-fn a_called_targets_blocks_and_later_properties_keep_what_it_was_run_with() {
-	// A block and a property below a statement each rebuild the environment,
-	// and each has to build on what the target was run with.
+fn a_called_targets_blocks_and_later_lines_keep_what_it_was_run_with() {
+	// A `do` puts back what it changed, and has to put back what the target
+	// was run with rather than the process's environment.
 	let d = project(&[
 		(
 			"runfiles/_child.run",
-			"do\n\t.env.RUNFILE_T_INNER = \"inner\"\n\n\t$ printf '%s|%s' \"$RUNFILE_T_OUTER\" \"$RUNFILE_T_INNER\" > block.txt\nend\n\n\
-			 $ true\n.env.RUNFILE_T_LATER = \"later\"\n\n\
+			"do\n\tENV.RUNFILE_T_INNER = \"inner\"\n\n\t$ printf '%s|%s' \"$RUNFILE_T_OUTER\" \"$RUNFILE_T_INNER\" > block.txt\nend\n\n\
+			 $ true\nENV.RUNFILE_T_LATER = \"later\"\n\n\
 			 $ printf '%s|%s' \"$RUNFILE_T_OUTER\" \"$RUNFILE_T_LATER\" > later.txt\n",
 		),
-		(
-			"runfiles/caller.run",
-			".env.RUNFILE_T_OUTER = \"outer\"\n\nrun _child\n",
-		),
+		("runfiles/caller.run", "ENV.RUNFILE_T_OUTER = \"outer\"\n\nrun _child\n"),
 	]);
 	host_run(&d, "caller").unwrap();
 	assert_eq!(read(&d, "block.txt"), "outer|inner");
@@ -588,14 +590,14 @@ fn a_called_targets_blocks_and_later_properties_keep_what_it_was_run_with() {
 
 #[test]
 fn a_subproject_finds_its_own_tools_first_and_the_roots_after_them() {
-	// A caller's `.add-path` was resolved against the caller's own directory
+	// A caller's `add_path()` was resolved against the caller's own directory
 	// before it was handed over, and a called target's goes in front of it: a
 	// subproject's `node_modules/.bin` wins over the root's that called it.
 	let d = project(&[
-		("runfiles/build.run", ".add-path = \"bin\"\n\nrun web:build\n"),
+		("runfiles/build.run", "add_path(\"bin\")\n\nrun web:build\n"),
 		(
 			"web/runfiles/build.run",
-			".add-path = \"bin\"\n\n$ printf '%s|%s' \"$(runfile-t-tool)\" \"$(runfile-t-root-only)\" > tools.txt\n",
+			"add_path(\"bin\")\n\n$ printf '%s|%s' \"$(runfile-t-tool)\" \"$(runfile-t-root-only)\" > tools.txt\n",
 		),
 	]);
 	tool(&d, "bin/runfile-t-tool", "root");
@@ -610,7 +612,7 @@ fn a_directory_both_levels_add_is_on_the_called_targets_path_once() {
 	// A `_shared.run` puts it on PATH for the caller, and again for the target
 	// it runs, which was run with the caller's PATH.
 	let d = project(&[
-		("runfiles/_shared.run", ".add-path = \"bin\"\n"),
+		("runfiles/_shared.run", "add_path(\"bin\")\n"),
 		("runfiles/caller.run", "run _child\n"),
 		("runfiles/_child.run", "write_file(\"path.txt\", ENV.PATH)\n"),
 	]);
@@ -631,7 +633,7 @@ fn a_scored_run_runs_the_target_with_the_callers_environment() {
 	let d = project(&[
 		(
 			"runfiles/caller.run",
-			".env.RUNFILE_T_X = \"x\"\n\nlet status = code_of(run _child)\n\n$ test {{ status }} = 0\n",
+			"ENV.RUNFILE_T_X = \"x\"\n\nlet status = code_of(run _child)\n\n$ test {{ status }} = 0\n",
 		),
 		("runfiles/_child.run", "$ test \"$RUNFILE_T_X\" = x\n"),
 	]);
@@ -643,7 +645,7 @@ fn each_parallel_branch_runs_its_target_with_its_own_environment() {
 	let d = project(&[
 		(
 			"runfiles/all.run",
-			"parallel for name in [\"one\", \"two\"]\n\tdo\n\t\t.env.RUNFILE_T_NAME = name\n\n\t\trun _write\n\tend\nend\n",
+			"parallel for name in [\"one\", \"two\"]\n\tdo\n\t\tENV.RUNFILE_T_NAME = name\n\n\t\trun _write\n\tend\nend\n",
 		),
 		(
 			"runfiles/_write.run",
@@ -658,7 +660,7 @@ fn each_parallel_branch_runs_its_target_with_its_own_environment() {
 #[test]
 fn a_preview_shows_a_called_targets_commands_with_its_callers_environment() {
 	let d = project(&[
-		("runfiles/caller.run", ".env.RUNFILE_T_WHO = \"caller\"\n\nrun _child\n"),
+		("runfiles/caller.run", "ENV.RUNFILE_T_WHO = \"caller\"\n\nrun _child\n"),
 		("runfiles/_child.run", "$ echo {{ ENV.RUNFILE_T_WHO }}\n"),
 	]);
 	let cat = runfile_discovery::discover(d.path(), None).unwrap();

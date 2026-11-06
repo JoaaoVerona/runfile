@@ -5,7 +5,7 @@ pub use parse::*;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 use thiserror::Error;
 
@@ -13,15 +13,14 @@ use thiserror::Error;
 pub use runfile_crypto::has_encrypted_values;
 pub use runfile_crypto::is_encrypted;
 
-/// Provider of decryption private keys. `EnvBuildParams.available_private_keys`
-/// takes a `&dyn PrivateKeyProvider` so callers can decide *when* the keys are
-/// actually obtained. The trait's `keys()` method is only invoked from
-/// [`resolve_decryption_key`], which itself only runs when the merged env
-/// actually contains an `encrypted:` value — so a target that does no
-/// decryption never triggers the underlying lookup.
+/// Provider of decryption private keys. [`read_env_file`] takes a
+/// `&dyn PrivateKeyProvider` so callers can decide *when* the keys are actually
+/// obtained: `keys()` is only invoked when a file actually holds an
+/// `encrypted:` value -- so a target that decrypts nothing never triggers the
+/// underlying lookup.
 ///
-/// The CLI uses [`LazyPrivateKeys`] to defer the credential-store fetch
-/// (and any user-facing unlock prompt) until it's strictly needed.
+/// The language's deferred key pool is one, so the OS credential store (and any
+/// user-facing unlock prompt) is only reached when strictly needed.
 ///
 /// `Sync` is a supertrait because a provider can be shared by reference
 /// across parallel-execution worker threads.
@@ -84,99 +83,46 @@ pub enum EnvError {
 	Encryption(String),
 }
 
-/// Input parameters for building the complete environment variable map.
+/// One `.env` file's values, its `encrypted:` ones decrypted -- or `None` when
+/// there is no file at `path`, which is passed over rather than refused: a
+/// project whose `.env` is git-ignored still has to run.
 ///
-/// All env values should already be converted to strings (e.g. via `EnvValue::to_env_string()`).
-/// The caller is responsible for converting non-string types before passing them here.
-pub struct EnvBuildParams<'a> {
-	/// Env file paths to load (in order; later files override earlier).
-	pub env_files: Option<&'a [String]>,
-	/// Env vars to set (applied after env files).
-	pub env: Option<&'a HashMap<String, String>>,
-	/// Directories to prepend to PATH. Entries should already be absolute —
-	/// the runtime resolves a relative `.add-path` against the working
-	/// directory in effect where it was written. The `working_dir` fallback in
-	/// `apply_add_to_path` only kicks in for a stray relative entry that did
-	/// not go through it.
-	pub add_to_path: Option<&'a [String]>,
-	/// Working directory the spawned command will run in (= the resolved
-	/// `.workdir`). Used as a fallback for any relative `.add-path`
-	/// entry that was not resolved before it got here; not used for `.env-file`.
-	pub working_dir: &'a Path,
-	/// Base directory for a relative `.env-file` path that reaches this build
-	/// still relative. The runtime resolves each against the working directory
-	/// in effect where it was written -- one rule for every relative path in a
-	/// file -- so only an entry built without one falls back to this.
-	pub env_files_base_dir: &'a Path,
-	/// Available private keys for decrypting `encrypted:` prefixed values.
-	/// After merging, if encrypted values are detected, `RUNFILE_ENCRYPTION_PUBLIC_KEY`
-	/// from the env is matched against this provider's keys to pick the right one.
-	///
-	/// The provider's `keys()` is invoked at most once per `build_env` call —
-	/// and only when an encrypted value is actually present in the merged env.
-	/// Callers that load keys from a slow or interactive source (e.g. an OS
-	/// credential store) should wrap them in [`LazyPrivateKeys`] so the
-	/// lookup is deferred until strictly needed.
-	pub available_private_keys: Option<&'a dyn PrivateKeyProvider>,
-	/// The environment this build is called with: the layer everything else is
-	/// built on, and the one laid back over the `.env-file` values, so what was
-	/// exported beats a file. `None` is the process's own environment, which is
-	/// what a target run from the command line is called with. A target another
-	/// target `run`s is called with its caller's -- less what `defaults` holds.
-	pub base_env: Option<&'a HashMap<String, String>>,
-	/// Values that only a calling target's `.env-file`s supplied. They stay
-	/// defaults, beneath this build's own files: a file is a default however far
-	/// its values travelled, so a called target's own `.env-file` still replaces
-	/// them. `None` when no target called this one.
-	pub defaults: Option<&'a HashMap<String, String>>,
-}
-
-/// Load environment variables from env files, applying substitution to file paths.
-/// Missing files are silently skipped. Parse errors are returned.
+/// **Only the file's own values are decrypted.** A ciphertext is the author's
+/// exactly when a committed file holds it; one arriving any other way --
+/// exported in the caller's shell, or set with `ENV.X = ARG.x` from a value an
+/// outsider controls (a PR title a CI job exposes) -- used to be decrypted too,
+/// with the job's key, and handed back as plaintext: an oracle for every secret
+/// in the repository's committed `.env` files (audit SA-004). The public key a
+/// ciphertext needs is looked up in `env`, what the run has so far, with the
+/// file's own values over it, since a file usually carries its own
+/// `RUNFILE_ENCRYPTION_PUBLIC_KEY` line. `keys` is asked only when the file
+/// holds an encrypted value, which is what keeps a plain `.env` from touching
+/// the credential store.
 ///
-/// The `substitute` function is called on each file path template with the current
-/// environment, allowing `{{ ARG.* }}` and `{{ ENV.* }}` expansion in paths.
-#[allow(clippy::type_complexity)]
-pub fn load_env_files(
-	env_files: &[String],
-	working_dir: &Path,
-	substitute: &dyn Fn(&str, &HashMap<String, String>) -> Result<String, String>,
-	current_env: &HashMap<String, String>,
-) -> Result<HashMap<String, String>, EnvError> {
-	let mut result = HashMap::new();
-
-	for file_template in env_files {
-		// Substitute {{ ARG.* }} and {{ ENV.* }} in the file path
-		let file_path_str = substitute(file_template, current_env).map_err(EnvError::Substitution)?;
-
-		// Resolve relative to working directory
-		let file_path = if Path::new(&file_path_str).is_absolute() {
-			PathBuf::from(&file_path_str)
-		} else {
-			working_dir.join(&file_path_str)
-		};
-
-		// Skip if file doesn't exist
-		if !file_path.exists() {
-			continue;
-		}
-
-		// Read and parse
-		let content =
-			fs::read_to_string(&file_path).map_err(|e| EnvError::ReadError(file_path.display().to_string(), e))?;
-
-		let pairs = parse_env_file(&content).map_err(|(_line, message)| EnvError::ParseError {
-			path: file_path.display().to_string(),
-			line: _line,
-			message,
-		})?;
-
-		for (key, value) in pairs {
-			result.insert(key, value);
-		}
+/// A parse error names the file and the line, and never the line's text: it may
+/// be a secret (audit SA-026).
+pub fn read_env_file(
+	path: &Path,
+	env: &HashMap<String, String>,
+	keys: Option<&dyn PrivateKeyProvider>,
+) -> Result<Option<HashMap<String, String>>, EnvError> {
+	if !path.exists() {
+		return Ok(None);
 	}
-
-	Ok(result)
+	let content = fs::read_to_string(path).map_err(|e| EnvError::ReadError(path.display().to_string(), e))?;
+	let pairs = parse_env_file(&content).map_err(|(line, message)| EnvError::ParseError {
+		path: path.display().to_string(),
+		line,
+		message,
+	})?;
+	let mut vars: HashMap<String, String> = pairs.into_iter().collect();
+	if runfile_crypto::has_encrypted_values(&vars) {
+		let mut view = env.clone();
+		view.extend(vars.iter().map(|(k, v)| (k.clone(), v.clone())));
+		let key_hex = resolve_decryption_key(&view, keys)?;
+		runfile_crypto::decrypt_env_values(&mut vars, &key_hex).map_err(|e| EnvError::Encryption(e.to_string()))?;
+	}
+	Ok(Some(vars))
 }
 
 /// The process environment as a UTF-8 map. `vars_os` rather than `vars`: a
@@ -189,181 +135,6 @@ pub fn process_env() -> HashMap<String, String> {
 	env::vars_os()
 		.filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
 		.collect()
-}
-
-/// Build the complete environment variable map for a command execution.
-///
-/// Merge order (lowest → highest priority for non-PATH vars):
-/// 1. `defaults` — what only a calling target's `.env-file`s supplied. Still a
-///    file's values, so they give way to everything below, this build's own
-///    files included.
-/// 2. `.env-file` — loaded left-to-right, later files override earlier
-/// 3. **The environment the build is called with** — `base_env`, or the
-///    process's own, re-overlaid so an exported value beats a file's. A file
-///    is a default, which is the dotenv convention: a checked-in `.env` must
-///    not clobber what someone exported. For a target another target `run`s,
-///    that is everything its caller's commands had but the file values in
-///    `defaults`: its caller's `.env` and `.add-path` beat its own files the
-///    way a shell's variables would.
-/// 4. `env` — the target's own `.env.NAME = value`, which beats all of it. It
-///    is an assignment written in the file, and the one place a target can
-///    *force* a value; a default the caller may override is spelled out
-///    instead, as `.env.PORT = ENV.PORT ? "3000"`. It used to sit below the
-///    shell here while the runtime overlaid it back on top for commands, so one
-///    target saw two answers: `$PORT` was the property's and `{{ ENV.PORT }}`
-///    the caller's.
-/// 5. `.add-path` — for PATH only, prepended onto whatever PATH turned out to
-///    be, this target's entries first. A called target's therefore go in front
-///    of its caller's, which arrived as part of PATH in step 3.
-/// 6. Decryption — `encrypted:` values rewritten in place
-///
-/// Step 1 and step 3 start the map together, so `{{ ENV.X }}` substitution
-/// while the files load sees both; the re-overlay in step 3 is what enforces
-/// exported-over-file on the final env.
-///
-/// The `substitute` function is called on env values and file paths, allowing
-/// `{{ ARG.* }}`, `{{ FLAG.* }}`, and `{{ ENV.* }}` expansion.
-#[allow(clippy::type_complexity)]
-pub fn build_env(
-	params: &EnvBuildParams<'_>,
-	substitute: &dyn Fn(&str, &HashMap<String, String>) -> Result<String, String>,
-) -> Result<HashMap<String, String>, EnvError> {
-	let process: HashMap<String, String>;
-	let base = match params.base_env {
-		Some(base) => base,
-		None => {
-			process = process_env();
-			&process
-		}
-	};
-	// The defaults go in first, so the base is what stands wherever both name a
-	// key. A caller hands over the two halves of one environment, so they never
-	// do; this only says which would win.
-	let mut env_map: HashMap<String, String> = params.defaults.cloned().unwrap_or_default();
-	env_map.extend(base.iter().map(|(k, v)| (k.clone(), v.clone())));
-
-	// Layer `.env-file`s (substitution sees the env_map built so far). The
-	// runtime hands them over resolved against the `.workdir` in effect where
-	// each was written; a relative one left over resolves against
-	// `env_files_base_dir`.
-	//
-	// **Only a `.env-file`'s own values are decrypted**, and here, before they
-	// are merged in. An `encrypted:` ciphertext is the author's own exactly when
-	// a committed file holds it; one arriving any other way -- exported in the
-	// caller's shell, or written as `.env.X = ARG.x` from a value an outsider
-	// controls (a PR title a CI job exposes) -- used to be decrypted too, with
-	// the job's key, and handed back as plaintext: an oracle for every secret in
-	// the repository's committed `.env` files (audit SA-004). So the base
-	// environment, the `defaults` (already plain when a caller handed them over),
-	// and the `.env` block below are never scanned for `encrypted:`. The public
-	// key may be set by the file itself or inherited, so it is resolved against
-	// the environment so far plus the file's own values.
-	if let Some(env_files) = params.env_files {
-		let mut file_vars = load_env_files(env_files, params.env_files_base_dir, substitute, &env_map)?;
-		if runfile_crypto::has_encrypted_values(&file_vars) {
-			let mut view = env_map.clone();
-			view.extend(file_vars.iter().map(|(k, v)| (k.clone(), v.clone())));
-			let key_hex = resolve_decryption_key(&view, params.available_private_keys)?;
-			runfile_crypto::decrypt_env_values(&mut file_vars, &key_hex)
-				.map_err(|e| EnvError::Encryption(e.to_string()))?;
-		}
-		env_map.extend(file_vars);
-	}
-
-	// Re-overlay the environment the build was called with. Any key it defines
-	// now beats whatever a `.env-file` set, restoring the inherited value. PATH
-	// is case-aware (Windows uses "Path", Unix "PATH") so we don't end up with
-	// two case-different PATH keys.
-	overlay_base(&mut env_map, base);
-
-	// Layer the target's own `env` last, so it beats the shell as well as the
-	// files: see step 3 above. Substitution sees the env_map built so far, and
-	// any encrypted file values have been decrypted by now, so substitutions
-	// like `{{ base64_decode(ENV.X) }}` work without the user having to think
-	// about decryption ordering.
-	if let Some(env_vars) = params.env {
-		for (key, raw) in env_vars {
-			let resolved = substitute(raw, &env_map).map_err(EnvError::Substitution)?;
-			env_map.insert(key.clone(), resolved);
-		}
-	}
-
-	// Prepend this target's `.add-path` to PATH. After the shell-env overlay
-	// PATH is the shell's, so this re-prepends on top of it.
-	apply_add_to_path(&mut env_map, params.add_to_path, params.working_dir);
-
-	// No final decrypt pass: a value is decrypted only where a `.env-file`
-	// supplied it, above. An `encrypted:` value the `.env` block or the shell
-	// introduced is left as it is -- decrypting it is the SA-004 oracle.
-	Ok(env_map)
-}
-
-/// Re-overlay the environment the build was called with, so it wins per key.
-/// Handles PATH's case-insensitive identity on Windows: if env_map already
-/// contains a case-insensitive PATH match, the base's PATH value is written
-/// to that existing key rather than introducing a duplicate "Path"/"PATH"
-/// pair that would later confuse `Command::envs`.
-fn overlay_base(env_map: &mut HashMap<String, String>, base: &HashMap<String, String>) {
-	let existing_path_key = env_map.keys().find(|k| k.eq_ignore_ascii_case("PATH")).cloned();
-	for (k, v) in base {
-		if k.eq_ignore_ascii_case("PATH") {
-			let target = existing_path_key.clone().unwrap_or_else(|| k.clone());
-			env_map.insert(target, v.clone());
-		} else {
-			env_map.insert(k.clone(), v.clone());
-		}
-	}
-}
-
-/// Prepend this target's `.add-path` entries to PATH, in the order written, so
-/// they are found ahead of whatever PATH already held. Relative paths resolve
-/// against `working_dir`. No-op when there are none.
-///
-/// An entry PATH already holds is moved to the front rather than added a
-/// second time. A target called by another is called with its caller's PATH,
-/// so a `_shared.run` both of them read would otherwise put the same directory
-/// on it again at every level. The move finds exactly what the copy would
-/// have: PATH is searched in order, so a later copy of a directory is never
-/// the one a lookup reaches.
-fn apply_add_to_path(env_map: &mut HashMap<String, String>, this_target: Option<&[String]>, working_dir: &Path) {
-	let this_layer: &[String] = this_target.unwrap_or(&[]);
-	if this_layer.is_empty() {
-		return;
-	}
-
-	let path_key = env_map
-		.keys()
-		.find(|k| k.eq_ignore_ascii_case("PATH"))
-		.cloned()
-		.unwrap_or_else(|| "PATH".to_string());
-	let current_path = env_map.get(&path_key).cloned().unwrap_or_default();
-	let separator = if cfg!(windows) { ";" } else { ":" };
-
-	let resolve = |p: &String| -> String {
-		let path = PathBuf::from(p);
-		if path.is_absolute() {
-			path.to_string_lossy().to_string()
-		} else {
-			working_dir.join(p).to_string_lossy().to_string()
-		}
-	};
-
-	// This target's entries first, then whatever PATH already held, less the
-	// entries it has just put in front. What is left is split and rejoined on
-	// the separator it was split on, so a PATH none of them was on comes back
-	// exactly as it was.
-	let added: Vec<String> = this_layer.iter().map(&resolve).collect();
-	let mut new_paths = added.clone();
-	if !current_path.is_empty() {
-		new_paths.extend(
-			current_path
-				.split(separator)
-				.filter(|held| !added.iter().any(|a| a == held))
-				.map(str::to_string),
-		);
-	}
-
-	env_map.insert(path_key, new_paths.join(separator));
 }
 
 /// Resolve the private key for decrypting encrypted env values.

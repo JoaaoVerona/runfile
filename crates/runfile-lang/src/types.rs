@@ -168,6 +168,7 @@ const TRUTH: Returns = Returns::Is(Ty::of(BOOL));
 /// this direction is a report about a call that works.
 pub(crate) const SIGNATURES: &[Signature] = &[
 	sig("abs", 1, ONE, &[N], NUMBER),
+	sig("add_path", 1, ONE, &[S | L], TEXT),
 	sig("append", 2, None, &[L, A], Returns::Added),
 	sig("base64_decode", 1, ONE, &[S], TEXT),
 	sig("base64_encode", 1, ONE, &[S], TEXT),
@@ -192,6 +193,8 @@ pub(crate) const SIGNATURES: &[Signature] = &[
 	sig("flatten", 1, ONE, &[L], Returns::Flattened),
 	sig("floor", 1, ONE, &[N], NUMBER),
 	sig("glob", 1, ONE, &[S], Returns::Is(Ty::list(STR))),
+	sig("ignore_errors", 0, Some(0), &[], TEXT),
+	sig("import_env_file", 1, ONE, &[S | L], TEXT),
 	sig("index_of", 2, TWO, &[L, A], NUMBER),
 	sig("is_executable", 1, ONE, &[S], TRUTH),
 	sig("is_number", 1, ONE, &[A], TRUTH),
@@ -231,6 +234,7 @@ pub(crate) const SIGNATURES: &[Signature] = &[
 	sig("replace_all", 3, THREE, &[S, S, S], TEXT),
 	sig("reverse", 1, ONE, &[L], Returns::Same),
 	sig("round", 1, ONE, &[N], NUMBER),
+	sig("set_cwd", 1, ONE, &[S], TEXT),
 	sig("sha256", 1, ONE, &[S], TEXT),
 	sig("sleep", 1, ONE, &[N], TEXT),
 	sig("slice", 2, THREE, &[L, N, N], Returns::Same),
@@ -519,7 +523,8 @@ fn collect<'a>(b: &'a Block, out: &mut Vec<(&'a [String], Site<'a>)>) {
 					collect(body, out);
 				}
 			}
-			Statement::Call { .. }
+			Statement::SetEnv { .. }
+			| Statement::Call { .. }
 			| Statement::Break { .. }
 			| Statement::Continue { .. }
 			| Statement::Run { .. }

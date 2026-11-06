@@ -421,7 +421,7 @@ fn security_regression_dry_run_does_not_read_outside_the_project_or_touch_the_ke
 	// pointing it out of the project must not take the preview's reads along.
 	let moved = project(&[(
 		"runfiles/t.run",
-		".workdir = ENV.HOME\n\nprint(\"rel:\", read_file(\"secret\"))\nprint(\"exists:\", file_exists(\"secret\"))\n",
+		"set_cwd(ENV.HOME)\n\nprint(\"rel:\", read_file(\"secret\"))\nprint(\"exists:\", file_exists(\"secret\"))\n",
 	)]);
 	std::fs::write(moved.home.path().join("secret"), "s3cret").unwrap();
 	let o = moved.run(&["--dry-run", "t"]);
@@ -434,7 +434,7 @@ fn security_regression_dry_run_does_not_read_outside_the_project_or_touch_the_ke
 	// that would reach the keyring. With DBUS pointed nowhere a real decrypt
 	// would error or hang; the preview completes instead.
 	let enc = project(&[
-		("runfiles/d.run", ".env-file = \".env\"\nprint(\"done\")\n"),
+		("runfiles/d.run", "import_env_file(\".env\")\nprint(\"done\")\n"),
 		(".env", "RUNFILE_ENCRYPTION_PUBLIC_KEY=deadbeef\nSECRET=encrypted:abc\n"),
 	]);
 	let o = enc.run(&["--dry-run", "d"]);

@@ -222,10 +222,10 @@ Left alone: any of these worked out during the run rather than written out.
 
 A `$` run or a `run` dispatch where the runner has nothing to run it in.
 
-The runner runs a `$` run as the whole value of a `let`, a reassignment, a line of its own or a `for` — or as the
-last argument of a call that is — and as the whole of what an `if`, `while`, `until` or `match` asks. Anywhere else
-there is no process to run it in, and the line fails every time: inside a call in a condition, and in a
-`_shared.run`'s own `let`s, which are worked out before any target runs.
+The runner runs a `$` run as the whole value of a `let`, a reassignment, an `ENV.X =`, a line of its own or a
+`for` — or as the last argument of a call that is — and as the whole of what an `if`, `while`, `until` or `match`
+asks. Anywhere else there is no process to run it in, and the line fails every time: inside a call in a condition.
+A `_shared.run` is no exception either way: it runs line for line ahead of its targets, the way a target does.
 
 ```sh
 # flagged
@@ -254,8 +254,6 @@ if $ make test
 end
 ```
 
-Left alone: a `let` inside a block of a `_shared.run`, which never runs at all.
-
 ### `glued-list`
 
 A list interpolated with no space between it and the text beside it, in a `$` line.
@@ -283,3 +281,35 @@ $ rm -rf {{ dirs }}
 Left alone: a list built *into* a word on purpose, with a non-space prefix (`-Dexec.args={{ ARGS }}`,
 `inst={{ ARGS }}; …`), which is the common "zero or one positional" idiom; a list with a space after it
 (`{{ ARGS }} -- --flag`); and a value that is only sometimes a list (`ARG.x ? glob("…")`), whose string form is fine.
+
+### `relative-cwd-in-loop`
+
+A relative `set_cwd()` in the body of a `for` that makes several passes, so every pass after the first moves on from where the last one left.
+
+`set_cwd()` is relative to the working directory in effect, and only a `do` block puts that back at its `end` —
+so in a loop, the second pass starts where the first one left it: `web`, then `web/web`. Reported only where that
+happens every time: the call sits directly in the body, so every pass reaches it; the `for` walks a list written out
+with at least two items, so there is a second pass; nothing in the body can leave a pass early; and the path is
+known to be relative — written out, or the loop's own name over a list of paths that are.
+
+```sh
+# flagged
+for app in ["web", "api"]
+	set_cwd(app)
+	$ npm test
+end
+```
+
+```sh
+# not flagged
+for app in ["web", "api"]
+	do
+		set_cwd(app)
+		$ npm test
+	end
+end
+```
+
+Left alone: a `while`, `until` or `loop`, and a `for` over a list worked out during the run, each of which may make
+a single pass; a `set_cwd()` inside an `if` or another block in the body, which a pass may not reach; a body with a
+`break` or `continue` in it; and a path that may be absolute (`set_cwd(ENV.HOME)`).

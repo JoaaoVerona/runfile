@@ -1,0 +1,16 @@
+# The state every line below runs in
+#
+# An environment variable set, and the four calls that change the rest, each a
+# line of its own; a `do` puts all of it back at its `end`.
+
+ENV.PORT = ARG.port ? "3000"
+ENV.SHA = $ git rev-parse HEAD
+import_env_file([".env", ".env.local"])
+add_path("node_modules/.bin")
+
+do
+	set_cwd("web")
+	ignore_errors()
+
+	$ npm run lint
+end

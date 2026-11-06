@@ -168,23 +168,6 @@ fn a_flag_read_by_the_shared_file_counts_as_read() {
 }
 
 #[test]
-fn a_header_lookup_does_not_refuse_on_its_own() {
-	// `header_props` is consulted before a run -- to read `.watch` -- and must
-	// not be the thing that rejects the command line.
-	let files = &[("runfiles/w.run", ".watch = \"src/**\"\n$ tool\n")];
-	let d = project(files);
-	let cat = runfile_discovery::discover(d.path(), None).unwrap();
-	let mut h = crate::dispatch::Host::new(&cat);
-	h.assume_yes = true;
-	h.dry_run = true;
-	let args = vec!["--oops".to_string()];
-	let t = cat.resolve("w").unwrap();
-	h.header_props(t, &args)
-		.expect("a probe reads properties, nothing more");
-	h.run("w", &args).expect_err("the run itself refuses");
-}
-
-#[test]
 fn a_dispatched_target_is_classified_the_same_way() {
 	// The case that found this: `run _aws s3api --bucket X` in a file. It is
 	// forwarded now, because `w` reads `ARGS`.

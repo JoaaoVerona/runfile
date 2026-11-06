@@ -188,18 +188,26 @@ fn a_stop_is_reported_ahead_of_a_failure() {
 }
 
 #[test]
-fn ignore_errors_on_the_block_forgives_each_branch() {
+fn ignore_errors_around_the_block_forgives_each_branch() {
 	let d = Recorder::default();
-	run_src("parallel do\n\t.ignore-errors\n\n\t$ false\n\t$ true\nend\n", &d).expect("contained");
+	run_src("ignore_errors()\n\nparallel do\n\t$ false\n\t$ true\nend\n", &d).expect("contained");
+	run_src(
+		"do\n\tignore_errors()\n\n\tparallel do\n\t\t$ false\n\t\t$ true\n\tend\nend\n",
+		&d,
+	)
+	.expect("contained by a `do` around it too");
 }
 
 #[test]
 fn ignore_errors_inside_one_branch_forgives_that_branch_only() {
 	let d = Recorder::default();
-	run_src("parallel do\n\tdo\n\t\t.ignore-errors\n\n\t\t$ false\n\tend\nend\n", &d)
-		.expect("the block that named it is forgiven");
+	run_src(
+		"parallel do\n\tdo\n\t\tignore_errors()\n\n\t\t$ false\n\tend\nend\n",
+		&d,
+	)
+	.expect("the block that named it is forgiven");
 	let e = run_src(
-		"parallel do\n\tdo\n\t\t.ignore-errors\n\n\t\t$ true\n\tend\n\t$ false\nend\n",
+		"parallel do\n\tdo\n\t\tignore_errors()\n\n\t\t$ true\n\tend\n\t$ false\nend\n",
 		&d,
 	)
 	.unwrap_err();
@@ -209,10 +217,10 @@ fn ignore_errors_inside_one_branch_forgives_that_branch_only() {
 // ---- properties
 
 #[test]
-fn a_property_on_the_block_is_every_branchs() {
+fn what_is_set_above_the_block_is_every_branchs() {
 	let d = project(&[(
 		"runfiles/w.run",
-		"parallel do\n\t.workdir = \"sub\"\n\n\t$ test -f marker\n\t$ test -f marker\nend\n",
+		"set_cwd(\"sub\")\n\nparallel do\n\t$ test -f marker\n\t$ test -f marker\nend\n",
 	)]);
 	std::fs::create_dir(d.path().join("sub")).unwrap();
 	std::fs::write(d.path().join("sub/marker"), "").unwrap();
@@ -220,22 +228,18 @@ fn a_property_on_the_block_is_every_branchs() {
 }
 
 #[test]
-fn a_property_between_branches_is_the_ones_below_it() {
-	// Properties are applied where they are written, and branches are set up
-	// in order before any starts.
-	let d = project(&[(
-		"runfiles/w.run",
-		"parallel do\n\t$ test ! -f marker\n\t.workdir = \"sub\"\n\t$ test -f marker\nend\n",
-	)]);
-	std::fs::create_dir(d.path().join("sub")).unwrap();
-	std::fs::write(d.path().join("sub/marker"), "").unwrap();
-	host_run(&d, "w").expect("the first ran in the anchor, the second in `sub`");
+fn a_change_that_is_a_whole_branch_is_refused_since_it_reaches_nothing() {
+	// Each statement is a branch, working on a copy, so a `set_cwd()` of its
+	// own moves no sibling -- it used to be a property, applied to the
+	// branches below it, and now it would do nothing at all.
+	let e = runfile_lang::parse("parallel do\n\t$ true\n\tset_cwd(\"sub\")\n\t$ true\nend\n").unwrap_err();
+	assert!(e.to_string().contains("changes nothing anyone can see"), "{e}");
 }
 
 #[test]
 fn a_block_inside_a_branch_applies_its_own_properties() {
 	for body in ["do", "if true"] {
-		let src = format!("parallel do\n\t{body}\n\t\t.workdir = \"sub\"\n\n\t\t$ test -f marker\n\tend\nend\n");
+		let src = format!("parallel do\n\t{body}\n\t\tset_cwd(\"sub\")\n\n\t\t$ test -f marker\n\tend\nend\n");
 		let d = project(&[("runfiles/w.run", src.as_str())]);
 		std::fs::create_dir(d.path().join("sub")).unwrap();
 		std::fs::write(d.path().join("sub/marker"), "").unwrap();
@@ -243,7 +247,7 @@ fn a_block_inside_a_branch_applies_its_own_properties() {
 	}
 	let d = Recorder::default();
 	run_src(
-		"parallel do\n\tdo\n\t\t.env.GREET = \"hello\"\n\n\t\t$ test \"$GREET\" = hello\n\tend\nend\n",
+		"parallel do\n\tdo\n\t\tENV.GREET = \"hello\"\n\n\t\t$ test \"$GREET\" = hello\n\tend\nend\n",
 		&d,
 	)
 	.expect("the branch saw its own block's `.env`");
@@ -253,7 +257,7 @@ fn a_block_inside_a_branch_applies_its_own_properties() {
 fn a_block_inside_a_branch_reads_its_own_env_file() {
 	let d = project(&[(
 		"runfiles/e.run",
-		"parallel do\n\tdo\n\t\t.env-file = \".env.extra\"\n\n\t\t$ test \"$FROMFILE\" = yes\n\tend\nend\n",
+		"parallel do\n\tdo\n\t\timport_env_file(\".env.extra\")\n\n\t\t$ test \"$FROMFILE\" = yes\n\tend\nend\n",
 	)]);
 	std::fs::write(d.path().join(".env.extra"), "FROMFILE=yes\n").unwrap();
 	host_run(&d, "e").expect("the branch saw its own block's `.env-file`");
@@ -265,7 +269,7 @@ fn a_parallel_for_list_is_worked_out_under_the_properties_around_it() {
 	// in it runs where the enclosing block says -- here, in `sub`.
 	let d = project(&[(
 		"runfiles/w.run",
-		"do\n\t.workdir = \"sub\"\n\n\tparallel for f in lines($ ls)\n\t\t$ test -f {{ f }}\n\tend\nend\n",
+		"do\n\tset_cwd(\"sub\")\n\n\tparallel for f in lines($ ls)\n\t\t$ test -f {{ f }}\n\tend\nend\n",
 	)]);
 	std::fs::create_dir(d.path().join("sub")).unwrap();
 	std::fs::write(d.path().join("sub/one"), "").unwrap();

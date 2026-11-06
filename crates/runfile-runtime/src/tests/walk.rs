@@ -51,10 +51,10 @@ fn match_without_a_default_lists_the_valid_cases() {
 }
 
 #[test]
-fn block_properties_are_scoped_to_their_block() {
-	// .ignore-errors inside the loop must not leak out to the statement after it.
+fn ignore_errors_in_a_do_ends_with_the_block() {
+	// It must not leak out to the statement after the block that named it.
 	let d = Recorder::default();
-	let e = run_src("for n in [\"a\"]\n\t.ignore-errors\n\t$ exit 1\nend\n$ exit 4\n", &d).unwrap_err();
+	let e = run_src("do\n\tignore_errors()\n\t$ exit 1\nend\n$ exit 4\n", &d).unwrap_err();
 	assert!(
 		e.to_string().contains("status 4"),
 		"outer failure still propagates: {e}"
@@ -62,14 +62,37 @@ fn block_properties_are_scoped_to_their_block() {
 }
 
 #[test]
-fn a_header_only_property_is_rejected_inside_a_block() {
-	let d = Recorder::default();
-	let e = run_src("for n in [\"a\"]\n\t.watch = \"src/**\"\n\trun {{ n }}\nend\n", &d).unwrap_err();
-	assert!(e.to_string().contains("header-only"), "{e}");
-	// And a name that is not a property at all says so, rather than being
-	// reported as a scope rule it was never subject to.
-	let e = run_src("for n in [\"a\"]\n\t.ignore-error\n\trun {{ n }}\nend\n", &d).unwrap_err();
-	assert!(e.to_string().contains("unknown property"), "{e}");
+fn ignore_errors_goes_only_where_it_is_plain_how_far_it_reaches() {
+	// At the top of a file it reaches the end of the target, and in a `do` the
+	// `end`; anywhere else it would reach past the block it is written in.
+	for src in [
+		"for n in [\"a\"]\n\tignore_errors()\nend\n",
+		"if true\n\tignore_errors()\nend\n",
+		"retry 2\n\tignore_errors()\nend\n",
+	] {
+		let e = runfile_lang::parse(src).expect_err(src);
+		assert!(e.to_string().contains("ignore_errors()"), "{src}: {e}");
+	}
+	for src in [
+		"ignore_errors()\n",
+		"do\n\tignore_errors()\nend\n",
+		"if true\n\tdo\n\t\tignore_errors()\n\tend\nend\n",
+	] {
+		runfile_lang::parse(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+	}
+}
+
+#[test]
+fn a_property_inside_a_block_is_refused_before_anything_runs() {
+	// Every property describes the whole file, so the parser keeps them at its
+	// top -- a known one and a typo alike.
+	for src in [
+		"for n in [\"a\"]\n\t.watch = \"src/**\"\n\trun {{ n }}\nend\n",
+		"for n in [\"a\"]\n\t.ignore-error\n\trun {{ n }}\nend\n",
+	] {
+		let e = runfile_lang::parse(src).unwrap_err();
+		assert!(e.to_string().contains("describes the whole file"), "{src}: {e}");
+	}
 }
 
 #[test]
@@ -91,7 +114,7 @@ fn a_cycle_is_reported_with_the_chain_that_caused_it() {
 #[test]
 fn shared_bindings_and_properties_reach_every_target() {
 	let d = project(&[
-		("runfiles/_shared.run", ".env.SHARED = \"yes\"\nlet who = \"world\"\n"),
+		("runfiles/_shared.run", "ENV.SHARED = \"yes\"\nlet who = \"world\"\n"),
 		(
 			"runfiles/greet.run",
 			"$ test \"$SHARED\" = yes\n$ test {{ who }} = world\n",
@@ -133,9 +156,9 @@ fn namespaces_come_from_discovered_subprojects() {
 #[test]
 fn every_exported_property_name_is_actually_known() {
 	// The exported list drives editor completion and every static check; a name
-	// here that `extend` rejects would be offered and then fail, and a column
-	// that does not match what `extend` does is an editor disagreeing with the
-	// runner. All three are asserted against the behaviour, not restated.
+	// here that `extend` rejects would be offered and then fail, and a flag
+	// column that does not match what `extend` does is an editor disagreeing
+	// with the runner. Both are asserted against the behaviour, not restated.
 	// Machine-wide, so `.only-in-directories` is admissible here: it is the one
 	// property whose legality depends on where the file was found rather than
 	// on anything in the line.
@@ -147,12 +170,6 @@ fn every_exported_property_name_is_actually_known() {
 	}
 	for p in crate::props::PROPERTIES {
 		let name = p.name;
-		// `.env` is the one property addressed by sub-key rather than set whole.
-		let lhs = if name == "env" {
-			"env.SOME_KEY".to_string()
-		} else {
-			(*name).to_string()
-		};
 		// A flag will not take a string, which is the point of the column; and
 		// `.shell` takes one of eight names rather than any string.
 		let rhs = if p.flag {
@@ -162,33 +179,43 @@ fn every_exported_property_name_is_actually_known() {
 		} else {
 			"\"x\"".to_string()
 		};
-		let src = format!(".{lhs} = {rhs}\n$ true\n");
+		let src = format!(".{name} = {rhs}\n$ true\n");
 		let ast = runfile_lang::parse(&src).unwrap_or_else(|e| panic!(".{name}: {e}"));
 		let mut sc = runfile_lang::Scope::new();
-		match base().extend(&ast.body, &mut sc, false) {
+		match base().extend(&ast.body, &mut sc) {
 			Err(crate::props::PropError::Unknown { .. }) => {
 				panic!("`.{name}` is exported for completion but not known")
 			}
 			Err(e) => panic!("`.{name}` is exported but its own example shape fails: {e}"),
 			Ok(_) => {}
 		}
-		// Column two: where a block allows it at all.
-		let nested = base().extend(&ast.body, &mut sc, true);
-		let allowed = !matches!(nested, Err(crate::props::PropError::NotBlockScoped { .. }));
-		assert_eq!(allowed, p.block_scoped, "`.{name}` block-scoping is mislabelled");
-
-		// Column three: whereabouts in one. Written below a statement rather
-		// than above it.
-		let below = runfile_lang::parse(&format!("$ true\n.{lhs} = {rhs}\n")).expect("parses");
-		let trailing = base().extend(&below.body, &mut sc, false);
-		let refused = matches!(trailing, Err(crate::props::PropError::NotInDeclaration { .. }));
-		assert_eq!(refused, p.declaration_only, "`.{name}` declaration-only is mislabelled");
-
-		// Column four: whether a constant that is not a bool is refused.
-		let with_number = runfile_lang::parse(&format!(".{lhs} = 23\n$ true\n")).expect("parses");
-		let numbered = base().extend(&with_number.body, &mut sc, false);
+		// A property describes the whole file, so it has one place: inside a
+		// block, or below a statement, the parser refuses it.
+		for misplaced in [
+			format!("do\n\t.{name} = {rhs}\nend\n"),
+			format!("$ true\n.{name} = {rhs}\n"),
+		] {
+			let e = runfile_lang::parse(&misplaced).expect_err(&misplaced);
+			assert!(e.to_string().contains("describes the whole file"), "{misplaced}: {e}");
+		}
+		// Whether a constant that is not a bool is refused.
+		let with_number = runfile_lang::parse(&format!(".{name} = 23\n$ true\n")).expect("parses");
+		let numbered = base().extend(&with_number.body, &mut sc);
 		let refused = matches!(numbered, Err(crate::props::PropError::NotABool { .. }));
 		assert_eq!(refused, p.flag, "`.{name}` flag is mislabelled");
+	}
+}
+
+#[test]
+fn what_used_to_be_a_block_scoped_property_is_an_unknown_one() {
+	// `.env`, `.env-file`, `.add-path`, `.workdir` and `.ignore-errors` became
+	// `ENV.X = …` and four calls. Nothing remembers they were properties.
+	for name in ["env.PORT", "env-file", "add-path", "workdir", "ignore-errors"] {
+		let ast = runfile_lang::parse(&format!(".{name} = \"x\"\n$ true\n")).expect("parses");
+		let e = crate::props::Props::default()
+			.extend(&ast.body, &mut runfile_lang::Scope::new())
+			.unwrap_err();
+		assert!(matches!(e, crate::props::PropError::Unknown { .. }), ".{name}: {e}");
 	}
 }
 
@@ -334,14 +361,14 @@ fn a_machine_wide_file_may_scope_itself_where_the_upward_walk_would_reach_it() {
 
 // ---- flags
 
-/// `.ignore-errors = <rhs>`, applied against a scope holding `ENV.F`.
+/// `.logging = <rhs>`, applied against a scope holding `ENV.F`.
 fn flag_with(rhs: &str, f: Option<&str>) -> Result<crate::props::Props, crate::props::PropError> {
-	let ast = runfile_lang::parse(&format!(".ignore-errors = {rhs}\n$ true\n")).expect("parses");
+	let ast = runfile_lang::parse(&format!(".logging = {rhs}\n$ true\n")).expect("parses");
 	let mut sc = runfile_lang::Scope::new();
 	if let Some(v) = f {
 		sc.env.insert("F".into(), v.into());
 	}
-	crate::props::Props::default().extend(&ast.body, &mut sc, false)
+	crate::props::Props::default().extend(&ast.body, &mut sc)
 }
 
 #[test]
@@ -360,8 +387,8 @@ fn a_flag_written_with_a_constant_that_is_not_a_bool_is_refused() {
 	let e = flag_with("\"0\"", None).unwrap_err();
 	assert!(e.to_string().contains("write `false`"), "{e}");
 	// And a bool is what it takes.
-	assert!(flag_with("true", None).expect("a bool literal").ignore_errors);
-	assert!(!flag_with("false", None).expect("a bool literal").ignore_errors);
+	assert!(flag_with("true", None).expect("a bool literal").logging);
+	assert!(!flag_with("false", None).expect("a bool literal").logging);
 }
 
 #[test]
@@ -371,15 +398,15 @@ fn a_flag_worked_out_during_the_run_is_left_to_the_run() {
 	// with no way to be decided by anything outside the file.
 	for (v, want) in [("true", true), ("1", true), ("TRUE", true), (" true ", true)] {
 		let p = flag_with("ENV.F", Some(v)).unwrap_or_else(|e| panic!("F={v}: {e}"));
-		assert_eq!(p.ignore_errors, want, "F={v}");
+		assert_eq!(p.logging, want, "F={v}");
 	}
 	for v in ["false", "0"] {
-		assert!(!flag_with("ENV.F", Some(v)).unwrap().ignore_errors, "F={v}");
+		assert!(!flag_with("ENV.F", Some(v)).unwrap().logging, "F={v}");
 	}
 	// An interpolated string is not a constant either, so it takes the same path.
-	assert!(flag_with("\"{{ ENV.F }}\"", Some("true")).unwrap().ignore_errors);
+	assert!(flag_with("\"{{ ENV.F }}\"", Some("true")).unwrap().logging);
 	// And a `?` chain ending in a literal is how a default is written.
-	assert!(!flag_with("ARG.f ? ENV.F ? \"false\"", None).unwrap().ignore_errors);
+	assert!(!flag_with("ARG.f ? ENV.F ? \"false\"", None).unwrap().logging);
 }
 
 #[test]
@@ -399,7 +426,7 @@ fn shell_with(rhs: &str) -> Result<crate::props::Props, crate::props::PropError>
 	let ast = runfile_lang::parse(&format!(".shell = {rhs}\n$ true\n")).expect("parses");
 	let mut sc = runfile_lang::Scope::new();
 	sc.env.insert("SH".into(), "pwsh".into());
-	crate::props::Props::default().extend(&ast.body, &mut sc, false)
+	crate::props::Props::default().extend(&ast.body, &mut sc)
 }
 
 #[test]

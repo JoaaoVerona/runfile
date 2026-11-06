@@ -14,7 +14,7 @@ fn parsed(src: &str) -> crate::Target {
 }
 
 fn findings(src: &str) -> Vec<Finding> {
-	check(src, &parsed(src), Some(&[]), false)
+	check(src, &parsed(src), Some(&[]))
 }
 
 /// The one finding in `src`, which has to be `rule`'s and cover `covers`.
@@ -142,12 +142,12 @@ fn a_value_that_can_be_the_right_type_is_left_alone() {
 fn a_name_the_chain_binds_carries_its_type_and_one_that_is_unknown_is_anything() {
 	let shared = parsed("let port = ARG.port\n");
 	let src = "print(port + 1)\n";
-	let f = check(src, &parsed(src), Some(std::slice::from_ref(&shared)), false);
+	let f = check(src, &parsed(src), Some(std::slice::from_ref(&shared)));
 	assert_eq!(f.len(), 1, "{f:#?}");
 	assert_eq!(f[0].rule, "wrong-type");
 	// When the chain cannot be read, a name could hold anything it bound.
 	let src = "let port = ARG.port\nprint(port + 1)\nprint(ARG.x + 1)\n";
-	let f = check(src, &parsed(src), None, false);
+	let f = check(src, &parsed(src), None);
 	assert_eq!(f.len(), 1, "only the source, which no chain can change: {f:#?}");
 	assert_eq!(&src[f[0].span.start..f[0].span.end], "ARG.x");
 }
@@ -331,16 +331,6 @@ fn a_run_where_nothing_can_run_it_is_found() {
 		"capture-position",
 		"$ make",
 	);
-	for (src, covers) in [
-		("let branch = $ git branch\n", "$ git branch"),
-		("let files = lines($ ls)\n", "$ ls"),
-		("let c = code_of(run build)\n", "run build"),
-	] {
-		let f = check(src, &parsed(src), Some(&[]), true);
-		assert_eq!(f.len(), 1, "{src}\n{f:#?}");
-		assert_eq!(f[0].rule, "capture-position");
-		assert_eq!(&src[f[0].span.start..f[0].span.end], covers);
-	}
 }
 
 #[test]
@@ -349,9 +339,9 @@ fn a_run_where_the_runner_runs_one_is_left_alone() {
 	clean("let files = lines($ ls)\nlet c = code_of($ true)\ncode_of($ false)\nlet d = code_of(run build)\n");
 	clean("match $ make\ncase \"0\"\n\tprint(1)\nend\n");
 	clean("parallel for f in lines($ ls)\n\tprint(f)\nend\n");
-	// In a shared file, only what runs: its top-level `let`s.
-	let src = "if FLAG.x\n\tlet branch = $ git branch\nend\n$ echo never runs\n";
-	assert!(check(src, &parsed(src), Some(&[]), true).is_empty());
+	// A `_shared.run` runs line for line ahead of its targets, so a `let` there
+	// runs its command the way one in a target does.
+	clean("let branch = $ git branch\nlet c = code_of(run build)\nENV.SHA = $ git rev-parse HEAD\n");
 }
 
 // ---- glued-list
@@ -400,7 +390,7 @@ fn every_documented_example_is_free_of_findings() {
 	for f in FUNCTIONS {
 		let src = format!("# what {} does\n\n{}\n", f.name, strip_results(f.example));
 		let Ok(t) = crate::parse(&src) else { continue };
-		let found = check(&src, &t, None, false);
+		let found = check(&src, &t, None);
 		assert!(found.is_empty(), "the example for `{}`: {found:#?}", f.name);
 	}
 }

@@ -77,29 +77,20 @@ fn flagged(src: &str) -> bool {
 }
 
 #[test]
-fn a_property_atop_a_loop_s_body_cannot_read_the_loop_s_names_when_run_either() {
+fn a_loop_s_names_reach_the_first_line_of_its_body_when_run() {
+	// A property at the top of a body used to be worked out once, before the
+	// first item was bound, so `.workdir = dir` there was `dir is not defined`.
+	// What it did is a line now, and a line runs on every pass.
 	for src in [
-		"for dir in [\"web\"]\n\t.workdir = dir\n\t$ true\nend\n",
-		"parallel for dir in [\"web\"]\n\t.workdir = dir\n\t$ true\nend\n",
-		// A `for` puts even an outer binding of the name aside.
-		"let dir = \"x\"\nfor dir in [\"web\"]\n\t.workdir = dir\n\t$ true\nend\n",
+		"for dir in [\"web\"]\n\tENV.D = dir\n\trun {{ ENV.D }}\nend\n",
+		"parallel for dir in [\"web\"]\n\tENV.D = dir\n\trun {{ ENV.D }}\nend\n",
+		"let dir = \"x\"\nfor dir in [\"web\"]\n\tENV.D = dir\n\trun {{ ENV.D }}\nend\n",
 	] {
-		let e = run_src(src, &Recorder::default()).unwrap_err().to_string();
-		assert!(e.contains("`dir` is not defined"), "{src}: {e}");
-		assert!(flagged(src), "{src}");
+		let d = Recorder::default();
+		run_src(src, &d).unwrap_or_else(|e| panic!("{src}: {e}"));
+		assert_eq!(d.calls(), ["web"], "{src}");
+		assert!(!flagged(src), "{src}");
 	}
-	// A `parallel for` does not.
-	let src = "let dir = \"x\"\nparallel for dir in [\"web\"]\n\t.env.D = dir\n\trun {{ ENV.D }}\nend\n";
-	let d = Recorder::default();
-	run_src(src, &d).unwrap();
-	assert_eq!(d.calls(), ["x"]);
-	assert!(!flagged(src));
-	// Below a statement, it reads the item.
-	let src = "for dir in [\"web\"]\n\trun first\n\t.env.D = dir\n\trun {{ ENV.D }}\nend\n";
-	let d = Recorder::default();
-	run_src(src, &d).unwrap();
-	assert_eq!(d.calls(), ["first", "web"]);
-	assert!(!flagged(src));
 }
 
 #[test]
@@ -125,16 +116,16 @@ fn a_loop_s_names_and_a_branch_s_bindings_end_with_them_when_run_too() {
 }
 
 #[test]
-fn a_let_inside_a_block_of_a_shared_file_binds_nothing_when_folded_either() {
-	let shared = runfile_lang::parse("if true\n\tlet hidden = 1\nend\nlet shown = 2\n").unwrap();
-	let mut sc = runfile_lang::Scope::new();
-	crate::run::fold_shared(&shared.body, &crate::props::Props::default(), &mut sc).unwrap();
-	assert!(sc.vars.contains_key("shown"));
-	assert!(!sc.vars.contains_key("hidden"), "the `if` never ran");
-	let target = runfile_lang::parse("print(shown, hidden)\n").unwrap();
-	let names: Vec<String> = runfile_lang::resolve::of_chain(&target, &[shared])
-		.into_iter()
-		.map(|u| u.name)
-		.collect();
-	assert_eq!(names, ["hidden"]);
+fn a_let_inside_a_block_of_a_shared_file_binds_for_the_target_as_it_runs() {
+	// A shared file runs ahead of the target, so a binding on any path through
+	// it is bound for the target, as one above in the file would be.
+	let shared = "if true\n\tlet nested = 1\nend\nlet shown = 2\n";
+	let target = runfile_lang::parse("$ echo {{ shown }} {{ nested }}\n").unwrap();
+	let unresolved = runfile_lang::resolve::of_chain(&target, &[runfile_lang::parse(shared).unwrap()]);
+	assert!(unresolved.is_empty(), "{unresolved:?}");
+	let d = project(&[
+		("runfiles/_shared.run", shared),
+		("runfiles/t.run", "$ echo {{ shown }} {{ nested }}\n"),
+	]);
+	assert_eq!(host_run(&d, "t").unwrap(), ["echo 2 1"]);
 }

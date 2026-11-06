@@ -64,13 +64,19 @@ fn opening_a_clean_file_publishes_an_empty_list() {
 
 #[test]
 fn opening_a_broken_file_publishes_the_error_with_its_position() {
-	let out = converse(&[did_open("file:///x/runfiles/a.run", "$ ok\n.wach = \"y\"\n")]);
+	let out = converse(&[did_open(
+		"file:///x/runfiles/a.run",
+		"$ ok\nprint(\"a\")\n.wach = \"y\"\n",
+	)]);
 	let d = diagnostics(&out[0]);
 	assert_eq!(d.len(), 1, "{d:?}");
-	assert_eq!(d[0]["range"]["start"]["line"], 1);
+	assert_eq!(d[0]["range"]["start"]["line"], 2);
 	assert_eq!(d[0]["severity"], 1, "an error, not a hint");
 	assert_eq!(d[0]["source"], "runfile");
-	assert!(d[0]["message"].as_str().unwrap().contains(".watch"), "{d:?}");
+	assert!(
+		d[0]["message"].as_str().unwrap().contains("describes the whole file"),
+		"{d:?}"
+	);
 }
 
 #[test]
@@ -380,7 +386,7 @@ fn hover_is_advertised_and_answered() {
 	let property = out[2]["result"]["contents"]["value"].as_str().expect("markdown");
 	assert!(property.contains("```runfile\n.watch\n```"), "{property}");
 	assert!(property.contains("**Example**"), "{property}");
-	assert!(property.contains("Header-only"), "{property}");
+	assert!(property.contains("above the first statement"), "{property}");
 	let source = out[3]["result"]["contents"]["value"].as_str().expect("markdown");
 	assert!(source.contains("```runfile\nRUN.os\n```"), "{source}");
 	assert!(source.contains("**Example**"), "{source}");

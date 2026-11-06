@@ -16,15 +16,13 @@
 //! * Bindings are flat. A `let` inside an `if` is still bound after its `end`,
 //!   so a name bound on *some* path to a line counts -- whether that path is
 //!   taken is the run's question, not this one's.
-//! * A loop's own names are put back when the loop ends. A sequential `for`
-//!   puts them aside before its body's properties are worked out, too, and
-//!   those are worked out once, before the first item is bound.
+//! * A loop's own names are put back when the loop ends.
 //! * A pass of a loop, or an attempt of a `retry`, sees what the one before it
 //!   bound, so a name bound anywhere in the body counts anywhere in it.
 //! * A parallel branch binds on a copy: nothing it binds reaches a sibling or
 //!   the code after the block.
-//! * A `_shared.run` binds with its top-level `let`s and nothing else, since
-//!   nothing else in it runs.
+//! * A `_shared.run` runs ahead of every target below it, so a name it binds
+//!   on any path is bound for the target, as one bound above in the file is.
 //!
 //! So a name is **unresolved where no binding of it can have run before it, on
 //! any path**. That is exact in the direction that matters: a file whose every
@@ -96,31 +94,16 @@ impl std::fmt::Display for Unresolved {
 /// chain above it, outermost first.
 pub fn of_chain(target: &Target, shared: &[Target]) -> Vec<Unresolved> {
 	let mut w = Walk::new(true);
-	let mut sc = Scope::default();
-	sc.bind(shared.iter().flat_map(exported));
+	let mut sc = chained(shared);
 	w.block(&target.body, &mut sc);
 	w.out
 }
 
 /// Every name a `_shared.run` uses that does not resolve, under the ones above
-/// it, outermost first.
-///
-/// Folded rather than walked, the way the runner applies one: its properties
-/// and its top-level `let`s, in order. Everything else in it is still checked
-/// -- a slip there is a slip -- but never runs, so nothing it binds reaches the
-/// line after it.
+/// it, outermost first. It runs ahead of its targets, line for line the way a
+/// target does, so it is checked as one.
 pub fn of_shared(file: &Target, above: &[Target]) -> Vec<Unresolved> {
-	let mut w = Walk::new(true);
-	let mut sc = Scope::default();
-	sc.bind(above.iter().flat_map(exported));
-	for p in file.body.declaration() {
-		w.property(p, &sc);
-	}
-	w.body(&file.body, &mut sc, |w, st, sc| match st {
-		Statement::Let { .. } => w.statement(st, sc),
-		_ => w.statement(st, &mut sc.clone()),
-	});
-	w.out
+	of_chain(file, above)
 }
 
 /// Only the calls to functions that do not exist.
@@ -134,16 +117,15 @@ pub fn functions(file: &Target) -> Vec<Unresolved> {
 	w.out
 }
 
-/// What a `_shared.run` binds for the files below it: its top-level `let`s.
-fn exported(file: &Target) -> impl Iterator<Item = &str> {
-	file.body
-		.statements
-		.iter()
-		.flat_map(|st| match st {
-			Statement::Let { names, .. } => names.as_slice(),
-			_ => &[],
-		})
-		.map(String::as_str)
+/// What the `_shared.run` chain binds for the file below it: whatever any path
+/// through each of them binds, since each runs ahead of the next, and the last
+/// ahead of the target.
+fn chained(shared: &[Target]) -> Scope {
+	let mut sc = Scope::default();
+	for file in shared {
+		Walk::new(false).block(&file.body, &mut sc);
+	}
+	sc
 }
 
 /// What a loop's names were bound as, after the loop.
@@ -151,10 +133,6 @@ const AFTER_LOOP: &str = "a loop's names end with the loop";
 
 /// What a parallel branch bound, after the block.
 const AFTER_BRANCH: &str = "it is bound inside a `parallel` branch, and what a branch binds ends with it";
-
-/// A loop's name, read by a property at the top of its body.
-const BEFORE_ITEM: &str = "a property at the top of a loop's body is worked out once, before the loop binds \
-                           its names -- write it below the body's first statement";
 
 /// What can be bound at one point of a walk.
 #[derive(Clone, Default)]
@@ -218,28 +196,14 @@ impl Walk {
 		Walk { out: Vec::new(), names }
 	}
 
-	/// A block as the runner walks one: the properties above its first
-	/// statement against the scope it is entered with, then everything else in
-	/// source order.
+	/// A block as the runner walks one: its properties -- a file's, at its top
+	/// -- against the scope it is entered with, then its statements in order.
 	fn block(&mut self, b: &Block, sc: &mut Scope) {
-		for p in b.declaration() {
+		for p in &b.properties {
 			self.property(p, sc);
 		}
-		self.body(b, sc, |w, st, sc| w.statement(st, sc));
-	}
-
-	/// A block's statements, with any property written between them read where
-	/// it sits. `each` walks one statement.
-	fn body(&mut self, b: &Block, sc: &mut Scope, each: impl Fn(&mut Walk, &Statement, &mut Scope)) {
-		let mut trailing = b.trailing().iter().peekable();
 		for st in &b.statements {
-			while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
-				self.property(p, sc);
-			}
-			each(self, st, sc);
-		}
-		for p in trailing {
-			self.property(p, sc);
+			self.statement(st, sc);
 		}
 	}
 
@@ -270,6 +234,7 @@ impl Walk {
 				// message rather than one for every line below that reads it.
 				sc.bind(names.iter().map(String::as_str));
 			}
+			Statement::SetEnv { value, .. } => self.expr(value, sc),
 			Statement::Call { expr, .. } => self.expr(expr, sc),
 			Statement::Do {
 				body, parallel: false, ..
@@ -279,14 +244,11 @@ impl Walk {
 			Statement::Do {
 				body, parallel: true, ..
 			} => {
-				for p in body.declaration() {
-					self.property(p, sc);
-				}
-				self.body(body, sc, |w, st, sc| {
+				for st in &body.statements {
 					let mut branch = sc.clone();
-					w.statement(st, &mut branch);
+					self.statement(st, &mut branch);
 					sc.forget(&branch, AFTER_BRANCH);
-				});
+				}
 			}
 			Statement::If {
 				cond, then, otherwise, ..
@@ -326,13 +288,9 @@ impl Walk {
 				if let Some(d) = delay {
 					self.expr(d, sc);
 				}
-				// Worked out once, before the first attempt.
-				for p in body.declaration() {
-					self.property(p, sc);
-				}
 				let mut attempt = sc.clone();
 				attempt.bind(carried(body).iter().map(String::as_str));
-				self.body(body, &mut attempt, |w, st, sc| w.statement(st, sc));
+				self.block(body, &mut attempt);
 				sc.absorb(attempt);
 				// Once every attempt has failed, after at least one of them, so
 				// whatever they bound may be there.
@@ -350,17 +308,13 @@ impl Walk {
 				..
 			} => self.for_loop(names, iter, body, *parallel, sc),
 			Statement::Loop { test, body, .. } => {
-				// Worked out once, before the condition is first asked.
-				for p in body.declaration() {
-					self.property(p, sc);
-				}
 				let mut pass = sc.clone();
 				pass.bind(carried(body).iter().map(String::as_str));
 				// Asked again after every pass, of what the passes bound.
 				if let Some(c) = test.cond() {
 					self.expr(c, &pass);
 				}
-				self.body(body, &mut pass, |w, st, sc| w.statement(st, sc));
+				self.block(body, &mut pass);
 				sc.absorb(pass);
 			}
 			Statement::Break { .. } | Statement::Continue { .. } => {}
@@ -385,19 +339,6 @@ impl Walk {
 		self.expr(iter, sc);
 		let own: Vec<&str> = names.iter().map(String::as_str).filter(|n| *n != "_").collect();
 		let before = sc.clone();
-		// The body's properties are worked out once, before any item is bound.
-		// A sequential `for` puts its names aside first, so not even a binding
-		// of one from above the loop reaches them; a `parallel for` leaves them
-		// as they were.
-		let mut header = sc.clone();
-		for n in &own {
-			if !parallel || !header.has(n) {
-				header.put_aside(n, BEFORE_ITEM);
-			}
-		}
-		for p in body.declaration() {
-			self.property(p, &header);
-		}
 		let mut pass = sc.clone();
 		pass.bind(own.iter().copied());
 		if !parallel {
@@ -405,7 +346,7 @@ impl Walk {
 			// `parallel for` is a branch of its own, and sees no other's.
 			pass.bind(carried(body).iter().map(String::as_str));
 		}
-		self.body(body, &mut pass, |w, st, sc| w.statement(st, sc));
+		self.block(body, &mut pass);
 		// The loop's names are put back as it ends: bound again if they were
 		// bound before it, and gone if they were not.
 		let ended: Vec<&str> = own.into_iter().filter(|n| !before.has(n)).collect();
@@ -543,6 +484,7 @@ fn binds(b: &Block, out: &mut BTreeSet<String>) {
 			}
 			Statement::Do { parallel: true, .. }
 			| Statement::For { parallel: true, .. }
+			| Statement::SetEnv { .. }
 			| Statement::Call { .. }
 			| Statement::Break { .. }
 			| Statement::Continue { .. }

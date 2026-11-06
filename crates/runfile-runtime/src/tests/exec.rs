@@ -36,7 +36,7 @@ fn a_failing_command_stops_the_target() {
 #[test]
 fn ignore_errors_lets_the_target_continue() {
 	let d = Recorder::default();
-	run_src(".ignore-errors\n$ exit 3\n\nlet x = 1\n$ true\n", &d).expect("failure is swallowed");
+	run_src("ignore_errors()\n$ exit 3\n\nlet x = 1\n$ true\n", &d).expect("failure is swallowed");
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn a_non_shell_command_is_spawned_verbatim() {
 #[test]
 fn env_properties_reach_the_process() {
 	let d = Recorder::default();
-	run_src(".env.GREETING = \"hi\"\n$ test \"$GREETING\" = hi\n", &d).expect("env is set");
+	run_src("ENV.GREETING = \"hi\"\n$ test \"$GREETING\" = hi\n", &d).expect("env is set");
 }
 
 #[test]
@@ -89,13 +89,13 @@ fn an_env_file_is_loaded_before_the_body_is_evaluated() {
 	std::fs::create_dir_all(&dir).unwrap();
 	std::fs::write(dir.join("vals.env"), "FROM_FILE=loaded\n").unwrap();
 	let d = Recorder::default();
-	let target = runfile_lang::parse(".env-file = \"vals.env\"\n$ test {{ ENV.FROM_FILE }} = loaded\n").expect("parse");
+	let target =
+		runfile_lang::parse("import_env_file(\"vals.env\")\n$ test {{ ENV.FROM_FILE }} = loaded\n").expect("parse");
 	let mut scope = runfile_lang::eval::Scope::new();
 	scope.rooted_at(dir.clone());
 	let mut r = crate::run::Runner {
 		chain: Vec::new(),
 		scope,
-		env: Vec::new(),
 		dispatch: &d,
 		interrupted: None,
 		label: None,
@@ -116,7 +116,6 @@ fn confirm_cancels_when_there_is_nobody_to_ask() {
 	let mut r = crate::run::Runner {
 		chain: Vec::new(),
 		scope,
-		env: Vec::new(),
 		dispatch: &d,
 		interrupted: None,
 		label: None,
@@ -149,7 +148,6 @@ fn confirm_asks_the_question_it_was_given() {
 	let mut r = crate::run::Runner {
 		chain: Vec::new(),
 		scope,
-		env: Vec::new(),
 		dispatch: &d,
 		interrupted: None,
 		label: None,
@@ -170,7 +168,7 @@ fn declining_stops_the_run_and_nothing_catches_it() {
 	// forgive someone answering no.
 	for src in [
 		"confirm(\"ok?\")\n$ true\n",
-		".ignore-errors\n\nconfirm(\"ok?\")\n$ true\n",
+		"ignore_errors()\n\nconfirm(\"ok?\")\n$ true\n",
 		"let x = confirm(\"ok?\") ? \"fallback\"\n",
 	] {
 		let target = runfile_lang::parse(src).unwrap_or_else(|e| panic!("{src:?}: {e}"));
@@ -181,7 +179,6 @@ fn declining_stops_the_run_and_nothing_catches_it() {
 		let mut r = crate::run::Runner {
 			chain: Vec::new(),
 			scope,
-			env: Vec::new(),
 			dispatch: &d,
 			interrupted: None,
 			label: None,
@@ -205,7 +202,7 @@ fn a_property_written_below_a_binding_can_read_it() {
 	// Without it this is `greeting is not defined`: the property resolved
 	// before the line above it ever ran.
 	run_src(
-		"let greeting = \"hello\"\n.env.GREET = greeting\n$ test \"$GREET\" = hello\n",
+		"let greeting = \"hello\"\nENV.GREET = greeting\n$ test \"$GREET\" = hello\n",
 		&d,
 	)
 	.expect("the binding above it is in scope");
@@ -217,17 +214,16 @@ fn a_property_in_the_declaration_region_still_resolves_before_the_body() {
 	// statement is untouched: what changed is only where a property may be
 	// written, not when one written at the top is read.
 	let d = Recorder::default();
-	let e = run_src(".workdir = \"{{ later }}\"\nlet later = \"sub\"\n$ true\n", &d).unwrap_err();
+	let e = run_src("set_cwd(\"{{ later }}\")\nlet later = \"sub\"\n$ true\n", &d).unwrap_err();
 	assert!(e.to_string().contains("not defined"), "{e}");
 }
 
 #[test]
-fn a_property_that_describes_the_whole_block_has_to_be_written_above_it() {
+fn a_property_that_describes_the_whole_file_has_to_be_written_above_its_first_line() {
 	// `.watch` is answered once, around the run, so "from here down" is not
-	// a reading it has.
-	let d = Recorder::default();
-	let e = run_src("$ true\n.watch = \"src/**\"\n$ true\n", &d).unwrap_err();
-	assert!(e.to_string().contains("above the block's first statement"), "{e}");
+	// a reading it has -- and the parser says so, before anything runs.
+	let e = runfile_lang::parse("$ true\n.watch = \"src/**\"\n$ true\n").unwrap_err();
+	assert!(e.to_string().contains("above the first statement"), "{e}");
 }
 
 #[test]
@@ -334,7 +330,7 @@ fn a_named_bash_passes_over_wsl_s_launcher_as_the_default_shell_does() {
 			format!("\"{}\"", at.to_string_lossy().replace('\\', "/"))
 		})
 		.collect();
-	let first = format!(".add-path = [{}]\n", launchers.join(", "));
+	let first = format!("add_path([{}])\n", launchers.join(", "));
 	let d = Recorder::default();
 	run_src(&format!(".shell = \"bash\"\n{first}\n$ true\n"), &d).expect("`.shell` reached the launcher");
 	run_src(&format!("{first}\nexec bash\n\ttrue\nend\n"), &d).expect("`exec` reached the launcher");
@@ -357,7 +353,7 @@ fn a_named_shell_is_looked_up_on_the_path_its_command_runs_with() {
 	std::fs::set_permissions(&bash, std::fs::Permissions::from_mode(0o755)).unwrap();
 	let d = Recorder::default();
 	run_src(
-		&format!(".shell = \"bash\"\n.add-path = \"{}\"\n\n$ true\n", bin.display()),
+		&format!(".shell = \"bash\"\nadd_path(\"{}\")\n\n$ true\n", bin.display()),
 		&d,
 	)
 	.unwrap();
@@ -405,11 +401,7 @@ fn retry_sees_failures_that_ignore_errors_would_forgive() {
 	// Otherwise the body always "succeeds" and a retry runs exactly once,
 	// which is the least useful way for this to be wrong.
 	let d = Recorder::default();
-	run_src(
-		".ignore-errors = true\nretry 3\n\t$ false\nelse\n\trun gave-up\nend\n",
-		&d,
-	)
-	.unwrap();
+	run_src("ignore_errors()\nretry 3\n\t$ false\nelse\n\trun gave-up\nend\n", &d).unwrap();
 	assert_eq!(d.calls(), vec!["gave-up"]);
 }
 

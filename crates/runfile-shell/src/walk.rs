@@ -43,18 +43,19 @@ struct Taint {
 
 type Env = BTreeMap<String, Vec<Taint>>;
 
-/// The functions whose first argument names a file.
+/// The functions whose first argument names a file -- or a directory, or a
+/// list of either, for the three that change the state the lines below run in.
 const PATH_FUNCTIONS: &[&str] = &[
+	"add_path",
 	"directory_exists",
 	"file_exists",
 	"glob",
+	"import_env_file",
 	"is_executable",
 	"read_file",
+	"set_cwd",
 	"write_file",
 ];
-
-/// The properties whose value names a file.
-const PATH_PROPERTIES: &[&str] = &["add-path", "env-file", "workdir"];
 
 pub(crate) fn check(src: &str, file: &Target, chain: Option<&[Target]>) -> Vec<Finding> {
 	let source = Source::new(src);
@@ -254,28 +255,17 @@ impl Walk<'_> {
 			return;
 		}
 		self.budget -= 1;
-		for p in b.declaration() {
+		for p in &b.properties {
 			self.property(p, env);
 		}
-		let mut trailing = b.trailing().iter().peekable();
 		for st in &b.statements {
-			while let Some(p) = trailing.next_if(|p| p.span.line < st.span().line) {
-				self.property(p, env);
-			}
 			self.statement(st, env);
-		}
-		for p in trailing {
-			self.property(p, env);
 		}
 	}
 
 	fn property(&mut self, p: &Property, env: &Env) {
-		let Some(v) = &p.value else {
-			return;
-		};
-		self.expr(v, env);
-		if p.path.len() == 1 && PATH_PROPERTIES.contains(&p.path[0].as_str()) {
-			self.path_value(v, env);
+		if let Some(v) = &p.value {
+			self.expr(v, env);
 		}
 	}
 
@@ -286,7 +276,7 @@ impl Walk<'_> {
 				let t = taints(value, env, true);
 				bind(env, names, &t);
 			}
-			Statement::Call { expr, .. } => self.expr(expr, env),
+			Statement::SetEnv { value, .. } | Statement::Call { expr: value, .. } => self.expr(value, env),
 			Statement::Do {
 				body, parallel: false, ..
 			} => self.block(body, env),

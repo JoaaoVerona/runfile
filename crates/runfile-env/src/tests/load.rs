@@ -1,95 +1,42 @@
 use super::*;
 
-#[test]
-fn load_env_files_missing_file_ignored() {
-	let dir = TempDir::new().unwrap();
-	let env = HashMap::new();
-	let result = load_env_files(&[".env.nonexistent".to_string()], dir.path(), &no_substitute, &env);
-	assert!(result.is_ok());
-	assert!(result.unwrap().is_empty());
+/// Read the file `name` in `dir`, with nothing in the environment so far.
+fn read(dir: &TempDir, name: &str) -> Result<Option<HashMap<String, String>>, crate::EnvError> {
+	read_env_file(&dir.path().join(name), &HashMap::new(), None)
 }
 
 #[test]
-fn load_env_files_reads_existing_file() {
+fn a_file_that_is_not_there_is_none_rather_than_an_error() {
+	// A project whose `.env` is git-ignored still has to run.
 	let dir = TempDir::new().unwrap();
-	std::fs::write(dir.path().join(".env"), "MY_KEY=my_value\n").unwrap();
-	let env = HashMap::new();
-	let result = load_env_files(&[".env".to_string()], dir.path(), &no_substitute, &env).unwrap();
-	assert_eq!(result.get("MY_KEY").unwrap(), "my_value");
+	assert!(read(&dir, ".env.nonexistent").unwrap().is_none());
 }
 
 #[test]
-fn load_env_files_later_overrides_earlier() {
+fn a_file_that_is_there_is_its_values() {
 	let dir = TempDir::new().unwrap();
-	std::fs::write(dir.path().join(".env"), "KEY=first\n").unwrap();
-	std::fs::write(dir.path().join(".env.local"), "KEY=second\n").unwrap();
-	let env = HashMap::new();
-	let result = load_env_files(
-		&[".env".to_string(), ".env.local".to_string()],
-		dir.path(),
-		&no_substitute,
-		&env,
-	)
-	.unwrap();
-	assert_eq!(result.get("KEY").unwrap(), "second");
+	std::fs::write(dir.path().join(".env"), "MY_KEY=my_value\nOTHER=\"quoted value\"\n").unwrap();
+	let vars = read(&dir, ".env").unwrap().unwrap();
+	assert_eq!(vars["MY_KEY"], "my_value");
+	assert_eq!(vars["OTHER"], "quoted value");
 }
 
 #[test]
-fn load_env_files_parse_error() {
+fn a_name_written_twice_in_one_file_takes_the_later_value() {
 	let dir = TempDir::new().unwrap();
-	std::fs::write(dir.path().join(".env"), "INVALID_NO_EQUALS\n").unwrap();
-	let env = HashMap::new();
-	let result = load_env_files(&[".env".to_string()], dir.path(), &no_substitute, &env);
-	assert!(result.is_err());
+	std::fs::write(dir.path().join(".env"), "KEY=first\nKEY=second\n").unwrap();
+	assert_eq!(read(&dir, ".env").unwrap().unwrap()["KEY"], "second");
 }
 
 #[test]
-fn load_env_files_absolute_path() {
+fn a_parse_error_names_the_file_and_the_line_and_not_its_text() {
+	// The line may be a secret (audit SA-026).
 	let dir = TempDir::new().unwrap();
-	let env_path = dir.path().join("abs.env");
-	std::fs::write(&env_path, "ABS_KEY=abs_value\n").unwrap();
-	let env = HashMap::new();
-	let result = load_env_files(
-		&[env_path.to_str().unwrap().to_string()],
-		dir.path(),
-		&no_substitute,
-		&env,
-	)
-	.unwrap();
-	assert_eq!(result.get("ABS_KEY").unwrap(), "abs_value");
-}
-
-#[test]
-fn load_env_files_multiple_missing_files_all_skipped() {
-	let dir = TempDir::new().unwrap();
-	let env = HashMap::new();
-	let result = load_env_files(
-		&[
-			".env.missing1".to_string(),
-			".env.missing2".to_string(),
-			".env.missing3".to_string(),
-		],
-		dir.path(),
-		&no_substitute,
-		&env,
+	std::fs::write(dir.path().join(".env"), "OK=1\nhunter2_NO_EQUALS\n").unwrap();
+	let err = read(&dir, ".env").unwrap_err().to_string();
+	assert!(err.contains(".env") && err.contains("line 2"), "{err}");
+	assert!(
+		!err.contains("hunter2"),
+		"the line's text leaked into the message: {err}"
 	);
-	assert!(result.is_ok());
-	assert!(result.unwrap().is_empty());
 }
-
-#[test]
-fn load_env_files_with_substitution() {
-	let dir = TempDir::new().unwrap();
-	std::fs::write(dir.path().join(".env.production"), "DB=prod-db\n").unwrap();
-	let env = HashMap::new();
-	// Simulate substitution that replaces {{ MYVAR }} with "production"
-	let substitute = |input: &str, _env: &HashMap<String, String>| -> Result<String, String> {
-		Ok(input.replace("{{ MYVAR }}", "production"))
-	};
-	let result = load_env_files(&[".env.{{ MYVAR }}".to_string()], dir.path(), &substitute, &env).unwrap();
-	assert_eq!(result.get("DB").unwrap(), "prod-db");
-}
-
-// ══════════════════════════════════════════════════════════════════════
-// build_env tests
-// ══════════════════════════════════════════════════════════════════════

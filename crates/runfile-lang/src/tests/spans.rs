@@ -24,7 +24,9 @@ fn names(b: &Block, out: &mut Vec<(String, Span)>) {
 	props(&b.properties, out);
 	for st in &b.statements {
 		match st {
-			Statement::Let { value, .. } | Statement::Assign { value, .. } => expr(value, out),
+			Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::SetEnv { value, .. } => {
+				expr(value, out)
+			}
 			Statement::Call { expr: e, .. } => expr(e, out),
 			Statement::Do { body, .. } => names(body, out),
 			Statement::If {

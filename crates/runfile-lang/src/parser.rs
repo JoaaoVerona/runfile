@@ -167,6 +167,7 @@ pub fn parse(src: &str) -> Result<Target, ParseError> {
 		unfold_next: false,
 		branch: None,
 		fence: None,
+		here: Here::File,
 	};
 	let description = p.take_description();
 	let body = p.block(None)?;
@@ -216,6 +217,21 @@ struct P<'a> {
 	/// and `continue` cannot reach a loop outside it: its branches run at once,
 	/// so there is no order for them to leave.
 	fence: Option<Fence>,
+	/// What kind of block the statement being parsed sits directly in.
+	here: Here,
+}
+
+/// The block a statement sits directly in, for the rules that depend on it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Here {
+	/// The file's own block, the one place a property may be written.
+	File,
+	/// A plain `do`'s body, whose changes to the run's state end with it.
+	Do,
+	/// A `parallel do`'s body, where every statement is a branch of its own.
+	Branches,
+	/// Any other block.
+	Other,
 }
 
 /// Where a parallel block sits among the loops around it.
@@ -279,6 +295,21 @@ impl<'a> P<'a> {
 			let line = self.lines.get(self.i).map_or(0, |l| l.no);
 			return err(line, "blocks nested too deeply");
 		}
+		let outer = std::mem::replace(
+			&mut self.here,
+			match (kw, branches) {
+				(None, _) => Here::File,
+				(Some(_), true) => Here::Branches,
+				(Some("do"), false) => Here::Do,
+				(Some(_), false) => Here::Other,
+			},
+		);
+		let b = self.statements(kw, branches);
+		self.here = outer;
+		b
+	}
+
+	fn statements(&mut self, kw: Option<&str>, branches: bool) -> Result<Block, ParseError> {
 		let mut b = Block::default();
 		loop {
 			while self.i < self.lines.len() {
@@ -304,6 +335,15 @@ impl<'a> P<'a> {
 				}
 			}
 			if line.trimmed.starts_with('.') {
+				// A property says something about the whole file -- the shell its
+				// `$` lines use, what it watches -- so there is one place for it,
+				// and a reader knows where to look.
+				if kw.is_some() || !b.statements.is_empty() {
+					return err(
+						line.no,
+						"a property describes the whole file, so it is written at the top of it, above the first statement",
+					);
+				}
 				b.properties.push(self.property()?);
 			} else {
 				let mut st = if branches {
@@ -340,7 +380,9 @@ impl<'a> P<'a> {
 			None => None,
 			Some(r) => {
 				let base = line.offset + (r.as_ptr() as usize - line.raw.as_ptr() as usize);
-				Some(parse_expr(r, base, line.no)?)
+				let e = parse_expr(r, base, line.no)?;
+				refuse_effects(&e)?;
+				Some(e)
 			}
 		};
 		Ok(Property {
@@ -406,7 +448,23 @@ impl<'a> P<'a> {
 		}
 	}
 
+	/// One statement, held to the rules about where an effect may sit.
 	fn statement(&mut self) -> Result<Statement, ParseError> {
+		let here = self.here;
+		let st = self.statement_of()?;
+		effects_of(&st)?;
+		if let Some(("ignore_errors", _)) = st.effect()
+			&& !matches!(here, Here::File | Here::Do)
+		{
+			return err(
+				st.span().line,
+				"`ignore_errors()` goes at the top of a file or directly inside a `do` block, where it is plain how far it reaches -- anywhere else it would forgive every failure to the end of the target; wrap what it is for in `do … end`",
+			);
+		}
+		Ok(st)
+	}
+
+	fn statement_of(&mut self) -> Result<Statement, ParseError> {
 		// Taken here, so it applies to this statement and to nothing nested in it.
 		let unfold = std::mem::take(&mut self.unfold_next);
 		let line = &self.lines[self.i];
@@ -476,6 +534,12 @@ impl<'a> P<'a> {
 				let Some(eq) = rest.find('=') else {
 					return err(no, "`let` needs `= value`");
 				};
+				if let Some((SourceKind::Env, Some(key), _)) = source_target(&rest[..eq + 1], no) {
+					return err(
+						no,
+						format!("`let` binds a name; an environment variable is set without it, as `ENV.{key} = …`"),
+					);
+				}
 				let names = binding_names(rest[..eq].trim(), no)?;
 				// Inside a parallel branch, a name bound here is the branch's own.
 				if let Some(own) = &mut self.branch {
@@ -493,7 +557,7 @@ impl<'a> P<'a> {
 				if !text[2..].trim().is_empty() {
 					return err(
 						no,
-						"`do` takes nothing; it opens a block so a property has somewhere to go",
+						"`do` takes nothing; it opens a block, and what changes inside it -- `ENV`, `add_path()`, `set_cwd()`, `import_env_file()`, `ignore_errors()` -- ends with it",
 					);
 				}
 				let body = self.block(Some("do"))?;
@@ -668,6 +732,33 @@ impl<'a> P<'a> {
 				if let Some(e) = shell_capture(&text, at, no)? {
 					return Ok(Statement::Call { expr: e, span });
 				}
+				// `ENV.NAME = value`, and every other source refused the same way.
+				if let Some((kind, key, eq)) = source_target(&text, no) {
+					let lhs = text[..eq].trim();
+					let name = match (kind, key) {
+						(SourceKind::Env, Some(k)) => k,
+						(SourceKind::Env, None) => {
+							return err(no, "`ENV` is set one name at a time, as `ENV.NAME = …`");
+						}
+						_ => {
+							return err(
+								no,
+								format!(
+									"`{lhs}` is read-only: it is what the run was given -- `ENV.NAME` is the one source a file may set"
+								),
+							);
+						}
+					};
+					let raw_rhs = text[eq + 1..].trim();
+					if raw_rhs.is_empty() {
+						return err(no, format!("`{lhs} =` needs a value"));
+					}
+					let value = match self.capture_rhs(raw_rhs, indent, pos(raw_rhs), no)? {
+						Some(e) => e,
+						None => parse_expr(raw_rhs, pos(raw_rhs), no)?,
+					};
+					return Ok(Statement::SetEnv { name, value, span });
+				}
 				if let Some(eq) = assignment_split(&text) {
 					let names = binding_names(text[..eq].trim(), no)?;
 					self.check_reassign(&names, no)?;
@@ -745,6 +836,20 @@ impl<'a> P<'a> {
 			return err(
 				st.span().line,
 				"a `let` directly inside `parallel do` binds nothing anyone can read: each statement there is a branch of its own, and what a branch binds ends with it -- bind it before the block, or inside the branch that uses it",
+			);
+		}
+		// The same for the run's state: a branch works on a copy of it, so a
+		// change that is a whole branch reaches nothing at all.
+		let what = match &st {
+			Statement::SetEnv { name, .. } => Some(format!("`ENV.{name} = …`")),
+			_ => st.effect().map(|(name, _)| format!("`{name}()`")),
+		};
+		if let Some(what) = what {
+			return err(
+				st.span().line,
+				format!(
+					"{what} directly inside `parallel do` changes nothing anyone can see: each statement there is a branch of its own, and what a branch changes ends with it -- write it above the block, or inside the branch that needs it"
+				),
 			);
 		}
 		Ok(st)
@@ -1131,6 +1236,112 @@ fn check_has_effect(e: &Expr, no: usize) -> Result<(), ParseError> {
 		_ => "it computes a value and discards it".to_string(),
 	};
 	err(no, format!("this line does nothing: {what}"))
+}
+
+/// The source on the left of a `=`, when a line assigns to one -- `ENV.PORT =
+/// …` -- with where the `=` is. `ARG.x = …` and the rest come back too, so
+/// they can be refused with a reason rather than as a parse error about `=`.
+fn source_target(text: &str, no: usize) -> Option<(SourceKind, Option<String>, usize)> {
+	let eq = text.find('=')?;
+	if text[eq..].starts_with("==") || eq == 0 {
+		return None;
+	}
+	let lhs = text[..eq].trim();
+	if lhs.ends_with(['!', '<', '>']) {
+		return None;
+	}
+	match parse_expr(lhs, 0, no) {
+		Ok(Expr::Source { kind, key, .. }) => Some((kind, key, eq)),
+		_ => None,
+	}
+}
+
+/// Refuse an effect anywhere in a statement but as the whole of it.
+///
+/// An effect changes the state every line below it runs in -- the environment,
+/// the working directory, whether a failure stops the target -- and answers
+/// with nothing worth having. As a value it would be a change hidden inside
+/// something that reads like a question: `if set_cwd("web")`, or a
+/// `{{ add_path("bin") }}` in a command. Refused here, so an editor says so.
+fn effects_of(st: &Statement) -> Result<(), ParseError> {
+	match st {
+		Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::SetEnv { value, .. } => {
+			refuse_effects(value)
+		}
+		Statement::Call {
+			expr: Expr::Call { name, args, .. },
+			..
+		} if crate::functions::is_effect(name) => args.iter().try_for_each(refuse_effects),
+		Statement::Call { expr, .. } => refuse_effects(expr),
+		Statement::If { cond, .. } => refuse_effects(cond),
+		Statement::Retry { attempts, delay, .. } => {
+			refuse_effects(attempts)?;
+			delay.iter().try_for_each(refuse_effects)
+		}
+		Statement::For { iter, .. } => refuse_effects(iter),
+		Statement::Loop { test, .. } => test.cond().map_or(Ok(()), refuse_effects),
+		Statement::Match { subject, .. } => refuse_effects(subject),
+		Statement::Run { target, args, .. } => {
+			refuse_effects_in(target)?;
+			args.iter().try_for_each(|a| refuse_effects_in(a))
+		}
+		Statement::Exec { command, body, .. } => {
+			if let Some(c) = command {
+				refuse_effects_in(c)?;
+			}
+			body.iter().try_for_each(|l| refuse_effects_in(l))
+		}
+		// What a block holds is checked as each of its statements is parsed.
+		Statement::Do { .. } | Statement::Break { .. } | Statement::Continue { .. } => Ok(()),
+	}
+}
+
+/// Refuse every effect in an expression: it is a value, and an effect is not.
+fn refuse_effects(e: &Expr) -> Result<(), ParseError> {
+	match e {
+		Expr::Call { name, args, span } => {
+			if crate::functions::is_effect(name) {
+				return err(
+					span.line,
+					format!(
+						"`{name}()` changes the state the lines below it run in, rather than answering with a value, so it is written as a line of its own"
+					),
+				);
+			}
+			args.iter().try_for_each(refuse_effects)
+		}
+		Expr::Number(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::Source { .. } => Ok(()),
+		Expr::Str(ps, _) => refuse_effects_in(ps),
+		Expr::List(items, _) => items.iter().try_for_each(refuse_effects),
+		Expr::Unary { rhs, .. } => refuse_effects(rhs),
+		Expr::Binary { lhs, rhs, .. } | Expr::Chain { lhs, rhs, .. } => {
+			refuse_effects(lhs)?;
+			refuse_effects(rhs)
+		}
+		Expr::Index { base, index, .. } => {
+			refuse_effects(base)?;
+			refuse_effects(index)
+		}
+		Expr::Structured { body, .. } => body.lines.iter().try_for_each(|l| refuse_effects_in(l)),
+		Expr::Capture { command, body, .. } => {
+			if let Some(c) = command {
+				refuse_effects_in(c)?;
+			}
+			body.iter().try_for_each(|l| refuse_effects_in(l))
+		}
+		Expr::Dispatch { target, args, .. } => {
+			refuse_effects_in(target)?;
+			args.iter().try_for_each(|a| refuse_effects_in(a))
+		}
+	}
+}
+
+/// [`refuse_effects`] for the interpolations in a run of text.
+fn refuse_effects_in(parts: &[InterpPart]) -> Result<(), ParseError> {
+	parts.iter().try_for_each(|p| match p {
+		InterpPart::Expr(e) => refuse_effects(e),
+		InterpPart::Literal(_) => Ok(()),
+	})
 }
 
 /// `$ cmd` used as a value, and a call whose **last argument** is one.

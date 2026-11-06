@@ -136,40 +136,62 @@ fn next_change(rx: &Receiver<PathBuf>, pats: &Patterns) -> Option<()> {
 	}
 }
 
-/// Run `once` now, then again after every debounced change a pattern matches.
+/// A watcher on a target's patterns, and what it has heard so far.
 ///
-/// Never returns on its own: watch mode ends with Ctrl+C. A failing run is
-/// reported and watching continues — the next save is the retry.
-pub fn watch(patterns: &[WatchPattern], mut once: impl FnMut()) -> Result<(), String> {
-	let pats = Patterns::compile(patterns)?;
-	let (tx, rx) = channel();
-	let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-		let Ok(ev) = res else { return };
-		if matches!(ev.kind, EventKind::Access(_)) {
-			return;
+/// Started by the run itself, the moment the target's header is worked out and
+/// before its first line: a `.watch` may read what its `_shared.run` chain set,
+/// and the chain is lines that run, so nothing short of the run knows the
+/// patterns. Started then rather than after the run, so a change made while the
+/// first run is still going is heard and runs it again.
+pub struct Watching {
+	pats: Patterns,
+	rx: Receiver<PathBuf>,
+	// Held for its `Drop`, which stops it.
+	_watcher: notify::RecommendedWatcher,
+}
+
+impl Watching {
+	pub fn start(patterns: &[WatchPattern]) -> Result<Self, String> {
+		let pats = Patterns::compile(patterns)?;
+		let (tx, rx) = channel();
+		let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+			let Ok(ev) = res else { return };
+			if matches!(ev.kind, EventKind::Access(_)) {
+				return;
+			}
+			for p in ev.paths {
+				let _ = tx.send(p);
+			}
+		})
+		.map_err(|e| format!("cannot watch: {e}"))?;
+		for root in pats.roots() {
+			watcher
+				.watch(root, RecursiveMode::Recursive)
+				.map_err(|e| format!("cannot watch {}: {e}", root.display()))?;
 		}
-		for p in ev.paths {
-			let _ = tx.send(p);
-		}
-	})
-	.map_err(|e| format!("cannot watch: {e}"))?;
-	for root in pats.roots() {
-		watcher
-			.watch(root, RecursiveMode::Recursive)
-			.map_err(|e| format!("cannot watch {}: {e}", root.display()))?;
+		Ok(Watching {
+			pats,
+			rx,
+			_watcher: watcher,
+		})
 	}
 
-	once();
-	eprintln!("{} watching for changes — Ctrl+C to stop", runfile_runtime::exec::tag());
-	while next_change(&rx, &pats).is_some() {
-		// The message says Ctrl+C stops it, so it has to.
-		if runfile_runtime::interrupt::interrupted() {
-			break;
-		}
-		once();
+	/// Run `once` again after every debounced change a pattern matches, the
+	/// first run having been and gone.
+	///
+	/// Never returns on its own: watch mode ends with Ctrl+C. A failing run is
+	/// reported and watching continues — the next save is the retry.
+	pub fn follow(self, mut once: impl FnMut()) {
 		eprintln!("{} watching for changes — Ctrl+C to stop", runfile_runtime::exec::tag());
+		while next_change(&self.rx, &self.pats).is_some() {
+			// The message says Ctrl+C stops it, so it has to.
+			if runfile_runtime::interrupt::interrupted() {
+				break;
+			}
+			once();
+			eprintln!("{} watching for changes — Ctrl+C to stop", runfile_runtime::exec::tag());
+		}
 	}
-	Ok(())
 }
 
 #[cfg(test)]

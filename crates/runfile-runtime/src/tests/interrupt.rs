@@ -59,7 +59,7 @@ fn ignore_errors_does_not_shrug_off_an_interrupt() {
 	// A failure it may swallow; a Ctrl+C it may not.
 	let files = &[(
 		"runfiles/t.run",
-		".ignore-errors = true\n$ echo one > one.txt\nlet x = \"1\"\n$ echo late > late.txt\n",
+		"ignore_errors()\n$ echo one > one.txt\nlet x = \"1\"\n$ echo late > late.txt\n",
 	)];
 	let (out, d) = run_interrupting_after(files, "t", 1);
 	assert!(matches!(out, Err(crate::RunError::Interrupted)), "{out:?}");

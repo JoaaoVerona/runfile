@@ -5,4 +5,4 @@
 # than taking the per-OS one the root `_shared.run` sets -- from Windows that
 # would be `target-windows`, which is not what the Linux toolchain wrote.
 
-.env.CARGO_TARGET_DIR = "target-linux"
+ENV.CARGO_TARGET_DIR = "target-linux"

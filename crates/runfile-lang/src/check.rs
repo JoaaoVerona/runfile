@@ -62,6 +62,10 @@ pub const RULES: &[Rule] = &[
 		id: "glued-list",
 		summary: "A list interpolated with no space between it and the text beside it, in a `$` line.",
 	},
+	Rule {
+		id: "relative-cwd-in-loop",
+		summary: "A relative `set_cwd()` in the body of a `for` that makes several passes, so every pass after the first moves on from where the last one left.",
+	},
 ];
 
 /// Something wrong with a runfile, found before it runs: by this checker, or by
@@ -91,19 +95,16 @@ impl std::fmt::Display for Finding {
 ///
 /// `chain` is the `_shared.run` files above it, outermost first, for what they
 /// bind; `None` when one of them could not be read, and then a name could hold
-/// anything. `shared` says `file` is a `_shared.run` itself, whose `let`s are
-/// worked out with nothing to run a command in.
-pub fn check(src: &str, file: &Target, chain: Option<&[Target]>, shared: bool) -> Vec<Finding> {
+/// anything. A `_shared.run` is checked the same way: it runs line for line
+/// ahead of its targets, the way a target does.
+pub fn check(src: &str, file: &Target, chain: Option<&[Target]>) -> Vec<Finding> {
 	let mut c = Check {
 		src,
 		names: Names::of(file, chain),
 		out: Vec::new(),
 		root: Place::Inner,
 	};
-	match shared {
-		true => c.shared(&file.body),
-		false => c.block(&file.body),
-	}
+	c.block(&file.body);
 	c.out.sort_by_key(|f| (f.span.start, f.span.end));
 	c.out.dedup();
 	c.out
@@ -118,9 +119,6 @@ enum Place {
 	/// An `if`, `while` or `until` condition, or a `match` subject: a `$` run
 	/// may be all of it, and nothing else.
 	Asked(&'static str),
-	/// A `_shared.run`'s own `let`, worked out before any target has a process
-	/// to run anything in.
-	Shared,
 	/// Anywhere else.
 	Inner,
 }
@@ -146,6 +144,34 @@ fn literal_str(e: &Expr) -> Option<String> {
 			.map(|t| t.concat()),
 		_ => None,
 	}
+}
+
+/// A path written out that is relative: what `set_cwd()` joins onto the one in
+/// effect rather than replacing it with.
+fn relative_literal(e: &Expr) -> bool {
+	let Some(p) = literal_str(e) else {
+		return false;
+	};
+	let drive = p.len() >= 2 && p.as_bytes()[0].is_ascii_alphabetic() && p.as_bytes()[1] == b':';
+	!matches!(p.as_str(), "" | "." | "./") && !p.starts_with(['/', '\\']) && !drive
+}
+
+/// Whether a `break` or `continue` in `b` -- outside a loop of its own -- can
+/// leave a pass of the loop it is the body of before its end.
+fn leaves_a_pass(b: &Block) -> bool {
+	b.statements.iter().any(|st| match st {
+		Statement::Break { .. } | Statement::Continue { .. } => true,
+		Statement::For { .. } | Statement::Loop { .. } => false,
+		Statement::Do { body, .. } => leaves_a_pass(body),
+		Statement::If { then, otherwise, .. } => leaves_a_pass(then) || otherwise.as_ref().is_some_and(leaves_a_pass),
+		Statement::Retry { body, otherwise, .. } => {
+			leaves_a_pass(body) || otherwise.as_ref().is_some_and(leaves_a_pass)
+		}
+		Statement::Match { cases, default, .. } => {
+			cases.iter().any(|c| leaves_a_pass(&c.body)) || default.as_ref().is_some_and(leaves_a_pass)
+		}
+		_ => false,
+	})
 }
 
 /// A number written out, with its sign.
@@ -232,26 +258,26 @@ impl Check<'_> {
 		}
 	}
 
-	/// A `_shared.run`: its top-level `let`s are folded into every target below
-	/// it before any of them runs. The rest of it never runs, and is checked as
-	/// the runner would have run it anyway -- a slip there is still a slip.
-	fn shared(&mut self, b: &Block) {
-		for p in &b.properties {
-			if let Some(v) = &p.value {
-				self.value(v, Place::Inner);
-			}
-		}
-		for st in &b.statements {
-			match st {
-				Statement::Let { .. } => self.bind(st, Place::Shared),
-				_ => self.statement(st),
-			}
-		}
-	}
-
 	fn statement(&mut self, st: &Statement) {
 		match st {
 			Statement::Let { .. } | Statement::Assign { .. } => self.bind(st, Place::Whole),
+			Statement::SetEnv { name, value, .. } => {
+				if self.value(value, Place::Whole) {
+					return;
+				}
+				let t = self.names.ty(value);
+				if t.refused(STR | NUM | BOOL) {
+					let text = self.text(value.span());
+					self.report(
+						"wrong-type",
+						value.span(),
+						format!("`ENV.{name}` holds text, and `{text}` is {}", types::named(t.kinds)),
+						Some(format!(
+							"`join({text}, \" \")` makes one string of it, with the separator you mean"
+						)),
+					);
+				}
+			}
 			Statement::Call { expr, .. } => {
 				self.value(expr, Place::Whole);
 			}
@@ -287,8 +313,17 @@ impl Check<'_> {
 					self.block(o);
 				}
 			}
-			Statement::For { names, iter, body, .. } => {
+			Statement::For {
+				names,
+				iter,
+				body,
+				parallel,
+				..
+			} => {
 				self.for_loop(names.len(), iter);
+				if !parallel {
+					self.cwd_in_passes(names, iter, body);
+				}
 				self.block(body);
 			}
 			Statement::Match {
@@ -324,6 +359,52 @@ impl Check<'_> {
 					}
 				}
 			}
+		}
+	}
+
+	/// A relative `set_cwd()` that every pass of a `for` after the first moves
+	/// on from where the last one left.
+	///
+	/// `set_cwd()` is relative to the working directory in effect, and nothing
+	/// but a `do` puts that back -- so in a loop the second pass starts where
+	/// the first one left it: `web`, then `web/web`. Reported only where that is
+	/// so every time: the call sits directly in the body, where every pass
+	/// reaches it; the loop walks a list written out with at least two items,
+	/// so there is a second pass; nothing in the body can leave a pass early;
+	/// and the path is known to be relative -- one written out, or the loop's
+	/// own name over a list of them. A `while`, or a `for` over a list worked
+	/// out at run time, may well make one pass, and is left alone.
+	fn cwd_in_passes(&mut self, names: &[String], iter: &Expr, body: &Block) {
+		let Expr::List(items, _) = iter else {
+			return;
+		};
+		if items.len() < 2 || leaves_a_pass(body) {
+			return;
+		}
+		let relative_name = match names {
+			[n] if items.iter().all(relative_literal) => Some(n.as_str()),
+			_ => None,
+		};
+		for st in &body.statements {
+			let Some(("set_cwd", [arg])) = st.effect() else {
+				continue;
+			};
+			let known = match arg {
+				Expr::Ident(n, _) => Some(n.as_str()) == relative_name,
+				e => relative_literal(e),
+			};
+			if !known {
+				continue;
+			}
+			let text = self.text(arg.span());
+			self.report(
+				"relative-cwd-in-loop",
+				arg.span(),
+				format!(
+					"`set_cwd({text})` is relative to the working directory it finds, and in a loop that is the one the pass before left: every pass after the first moves on from there"
+				),
+				Some("put the loop's body in `do … end`, which puts the working directory back at its `end`".into()),
+			);
 		}
 	}
 
@@ -1132,15 +1213,9 @@ impl Check<'_> {
 					"bind it on a line above -- `let out = …` -- and ask about that here; `{keyword} $ …` alone asks about the command's exit status"
 				)),
 			),
-			Place::Shared => (
-				format!(
-					"a `_shared.run` works out its `let`s before any target runs, with nothing to run {what} in, so this fails for every target below it"
-				),
-				Some("do it in the targets that need it".into()),
-			),
 			Place::Whole | Place::Inner => (
 				format!(
-					"there is nothing to run {what} in here: the runner runs one only as the whole value of a `let`, a line of its own or a `for`, or as the last argument of a call that is"
+					"there is nothing to run {what} in here: the runner runs one only as the whole value of a `let`, an `ENV.X =`, a line of its own or a `for`, or as the last argument of a call that is"
 				),
 				Some("bind it on a line above, and use the name here".into()),
 			),

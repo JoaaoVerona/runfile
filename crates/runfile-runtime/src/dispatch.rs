@@ -47,6 +47,9 @@ pub enum HostError {
 		path: String,
 		findings: Vec<runfile_lang::check::Finding>,
 	},
+	/// What [`Host::on_header`] said no with.
+	#[error("{0}")]
+	Header(String),
 }
 
 /// One problem to a line, each naming its file. The first line is the error the
@@ -81,6 +84,9 @@ impl Drop for TempGuard<'_> {
 	}
 }
 
+/// What [`Host::on_header`] is: handed a target's properties, and able to say no.
+pub type OnHeader<'a> = dyn Fn(&Props) -> Result<(), String> + Sync + 'a;
+
 pub struct Host<'a> {
 	pub catalog: &'a Catalog,
 	pub assume_yes: bool,
@@ -105,6 +111,15 @@ pub struct Host<'a> {
 	pub trace: Mutex<Vec<String>>,
 	/// What `temp_file` and `temp_dir` created during this run.
 	pub temps: runfile_lang::TempFiles,
+	/// Handed the properties of the target a run was asked for, once its
+	/// `_shared.run` chain has run and its header is worked out, and before its
+	/// first line: what the watch loop learns `.watch` from.
+	///
+	/// From the run itself rather than from a probe ahead of it, because a
+	/// `.watch` may read what the chain set, and the chain is lines that run --
+	/// a probe would have had to run them twice. An error it answers with ends
+	/// the run, as `HostError::Header`.
+	pub on_header: Option<&'a OnHeader<'a>>,
 	/// The key pool of the run in progress, once something in it has needed one.
 	pool: Mutex<Option<runfile_lang::Keys>>,
 }
@@ -121,6 +136,7 @@ impl<'a> Host<'a> {
 			interrupted: None,
 			trace: Mutex::new(Vec::new()),
 			temps: runfile_lang::TempFiles::default(),
+			on_header: None,
 			pool: Mutex::new(None),
 		}
 	}
@@ -131,9 +147,8 @@ impl<'a> Host<'a> {
 	/// clones share, so every clone handed out here -- to each target a `run`
 	/// dispatches, and through `fork` to every parallel branch -- asks the
 	/// credential store once between them. A `Keys::new` for each target asked
-	/// once per target: two targets reading one encrypted `.env-file`, through the
-	/// `_shared.run` above both, unlocked the keyring twice in one run. The watch
-	/// probe takes it too, so the run after the probe asks nothing more.
+	/// once per target: two targets reading one encrypted `.env` file, through
+	/// the `_shared.run` above both, unlocked the keyring twice in one run.
 	fn key_pool(&self) -> runfile_lang::Keys {
 		self.pool
 			.lock()
@@ -246,43 +261,31 @@ impl<'a> Host<'a> {
 		ended(&target.name, self.run_inner(target, args, env, next, label, trace))
 	}
 
-	/// Everything both `run_inner` and `header_props` need: a scope with the
-	/// run context and arguments in place, plus `_shared.run` already folded in.
+	/// Everything `run_inner` needs before a line runs: the target's tree and
+	/// its chain's, a scope with the run context and arguments in place, and
+	/// the properties the target starts from.
 	///
 	/// `env` is what another target ran this one with, and `None` for a target
 	/// run from the command line, which starts from the process's environment.
-	///
-	/// `real` separates an actual run from a probe. `header_props` probes: it
-	/// evaluates the declaration region only to read `.watch`, so it must
-	/// neither refuse an unread input -- a probe rejecting the command line
-	/// would report the failure before the run that owns it -- nor let a
-	/// writing function write. Without the second half, `.env.X =
-	/// temp_file(...)` created two files per run, one of them an orphan
-	/// nothing referenced.
 	fn prepare(
 		&self,
 		target: &runfile_discovery::Target,
 		args: &[String],
 		env: Option<crate::env::Inherited>,
-		real: bool,
-	) -> Result<(runfile_lang::Target, Scope, Props), RunError> {
+	) -> Result<Prepared, RunError> {
 		let (ast, shared) = self.load(target)?;
 
 		// The whole `_shared.run` chain is walked for what it reads *before* the
 		// command line is classified: a name only a shared file reads is still a
-		// name this target takes a value for. It cannot simply be folded in where
-		// it used to be, because evaluating those files reads `ARG.x` out of the
-		// scope -- so the parse and the evaluation are two passes over one list.
+		// name this target takes a value for.
 		let reads = runfile_lang::inputs::of_chain(&ast, &shared);
 
 		let mut scope = Scope::new();
 		populate_run_context(&mut scope, target, self.catalog);
-		// A target another one ran reads what it was handed from its first line:
-		// `ENV.X` in a `_shared.run` above it is read before any of its own
-		// properties has built anything.
-		let inherited = env.map(std::sync::Arc::new);
-		if let Some(i) = &inherited {
-			scope.env = i.environment();
+		// A target another one ran reads what it was handed from its first line,
+		// a `_shared.run`'s included.
+		if let Some(i) = &env {
+			i.install(&mut scope);
 		}
 		let unknown = parse_args(&mut scope, args, &reads).map_err(|e| RunError::MissingArgValue {
 			key: e.key,
@@ -293,9 +296,9 @@ impl<'a> Host<'a> {
 		scope.confirm = self.confirm;
 		scope.assume_yes = self.assume_yes;
 		scope.rooted_at(target.anchor.clone());
-		scope.dry_run = self.dry_run || !real;
-		// A real `--dry-run` confines reads and skips `.env-file`s/keyring; the
-		// probe (`!real`) sets `dry_run` to suppress writes but must still read.
+		// A `--dry-run` writes nothing, confines its reads to the project, and
+		// reads no `.env` file and asks for no key (SA-008).
+		scope.dry_run = self.dry_run;
 		scope.preview = self.dry_run;
 		scope.temps = self.temps.clone();
 		scope.private_keys = self.key_pool();
@@ -306,7 +309,7 @@ impl<'a> Host<'a> {
 		// warns is a flag that did not take effect, discovered later. A target
 		// reading `ARGS` is the exception and is handled in `parse_args`: it can
 		// read the word, so it gets it.
-		if real && let Some((name, key)) = unknown {
+		if let Some((name, key)) = unknown {
 			return Err(RunError::UnknownInput {
 				name,
 				key,
@@ -315,11 +318,7 @@ impl<'a> Host<'a> {
 			});
 		}
 
-		// `_shared.run` is the globals analog: its properties and bindings apply
-		// to every target in the directory, so they are evaluated first into the
-		// same scope. Outermost first, so a nested directory's settings layer
-		// over the one above it.
-		let mut shared_props = Props {
+		let props = Props {
 			// Where the file *lives*, carried in so the one property that
 			// depends on it can say no. It survives every `extend`, which
 			// clones, so a `_shared.run` in the machine-wide directory may set
@@ -333,15 +332,9 @@ impl<'a> Host<'a> {
 			// with two answers is how an editor and the runner come to
 			// disagree.
 			machine_wide: runfile_discovery::is_machine_wide(&target.path),
-			// What every environment built for this target starts from, which is
-			// carried the same way and for the same reason.
-			inherited,
 			..Props::default()
 		};
-		for s in &shared {
-			shared_props = crate::run::fold_shared(&s.body, &shared_props, &mut scope)?;
-		}
-		Ok((ast, scope, shared_props))
+		Ok((ast, shared, scope, props))
 	}
 
 	/// A target's tree, and the trees of the `_shared.run` files above it,
@@ -364,10 +357,10 @@ impl<'a> Host<'a> {
 			.unzip();
 		for (i, (path, file)) in chain.iter().zip(&shared).enumerate() {
 			refuse_unresolved(path, runfile_lang::resolve::of_shared(file, &shared[..i]))?;
-			refuse_findings(path, findings(&texts[i], file, &shared[..i], true))?;
+			refuse_findings(path, findings(&texts[i], file, &shared[..i]))?;
 		}
 		refuse_unresolved(&target.path, runfile_lang::resolve::of_chain(&ast, &shared))?;
-		refuse_findings(&target.path, findings(&src, &ast, &shared, false))?;
+		refuse_findings(&target.path, findings(&src, &ast, &shared))?;
 		Ok((ast, shared))
 	}
 
@@ -381,15 +374,6 @@ impl<'a> Host<'a> {
 		self.load(target).map(|_| ())
 	}
 
-	/// Resolve a target's declaration-region properties without running it.
-	///
-	/// Watch mode needs `.watch` before the first execution, and the patterns
-	/// interpolate, so reading them off the source text would not do.
-	pub fn header_props(&self, target: &runfile_discovery::Target, args: &[String]) -> Result<Props, RunError> {
-		let (ast, mut scope, shared) = self.prepare(target, args, None, false)?;
-		Ok(shared.extend(&ast.body, &mut scope, false)?)
-	}
-
 	fn run_inner(
 		&self,
 		target: &runfile_discovery::Target,
@@ -399,7 +383,8 @@ impl<'a> Host<'a> {
 		label: Option<&str>,
 		trace: &mut Vec<String>,
 	) -> Result<(), RunError> {
-		let (ast, mut scope, shared_props) = self.prepare(target, args, env, true)?;
+		let top = chain.len() == 1;
+		let (ast, shared, mut scope, props) = self.prepare(target, args, env)?;
 		// Dispatched from a parallel branch, it is part of that branch: what it
 		// prints carries the branch's label, and it asks the terminal nothing.
 		if let Some(l) = label {
@@ -411,7 +396,6 @@ impl<'a> Host<'a> {
 		let mut r = Runner {
 			scope,
 			chain,
-			env: Vec::new(),
 			dispatch: &adapter,
 			dry_run: self.dry_run,
 
@@ -420,7 +404,12 @@ impl<'a> Host<'a> {
 			colour: None,
 			trace: Vec::new(),
 		};
-		let out = crate::run::run_target_with(&ast, shared_props, &mut r);
+		// Only the target the run was asked for says what to watch.
+		let header = |p: &Props| match (top, self.on_header) {
+			(true, Some(f)) => f(p).map_err(|m| RunError::Host(Box::new(HostError::Header(m)))),
+			_ => Ok(()),
+		};
+		let out = crate::run::run_chain(&shared, &ast, props, &mut r, header);
 		trace.append(&mut r.trace);
 		out
 	}
@@ -440,8 +429,8 @@ impl<'a> Host<'a> {
 /// A status is a byte, as a process's is: `exit(-1)` is the 255 a shell would
 /// report, and `exit(256)` is 0. Only the target's own `exit()` is converted --
 /// an `Exited` from something it ran and let through is already the answer.
-/// It is asked of `run_inner` whole, `prepare` included, since a `let` in the
-/// `_shared.run` chain is evaluated on the target's behalf.
+/// It is asked of `run_inner` whole, since the `_shared.run` chain runs on the
+/// target's behalf.
 fn ended(target: &str, out: Result<(), RunError>) -> Result<(), RunError> {
 	match out {
 		Err(RunError::Eval(runfile_lang::eval::EvalError::Exit { code, .. })) => match i32::from(code as u8) {
@@ -476,6 +465,10 @@ impl Dispatch for HostDispatch<'_, '_> {
 /// A target's tree and its chain's, as [`Host::load`] hands them back.
 type Loaded = (runfile_lang::Target, Vec<runfile_lang::Target>);
 
+/// What [`Host::prepare`] hands back: the trees, the scope, and the properties
+/// the chain starts from.
+type Prepared = (runfile_lang::Target, Vec<runfile_lang::Target>, Scope, Props);
+
 /// Refuse a file for the names in it that resolve to nothing, when there are any.
 fn refuse_unresolved(path: &Path, problems: Vec<runfile_lang::Unresolved>) -> Result<(), RunError> {
 	if problems.is_empty() {
@@ -493,9 +486,8 @@ fn findings(
 	src: &str,
 	file: &runfile_lang::Target,
 	chain: &[runfile_lang::Target],
-	shared: bool,
 ) -> Vec<runfile_lang::check::Finding> {
-	let mut all = runfile_lang::check::check(src, file, Some(chain), shared);
+	let mut all = runfile_lang::check::check(src, file, Some(chain));
 	all.extend(runfile_shell::check(src, file, Some(chain)));
 	all.sort_by_key(|f| (f.span.start, f.span.end));
 	all

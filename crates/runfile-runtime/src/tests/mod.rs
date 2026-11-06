@@ -68,6 +68,8 @@ pub fn run_src(src: &str, d: &dyn Dispatch) -> Result<Vec<String>, RunError> {
 	let target = runfile_lang::parse(src).expect("parse");
 	let mut scope = Scope::new();
 	scope.run.insert("os".into(), Value::Str("linux".into()));
+	// What a run starts from, as `populate_run_context` gives it one.
+	scope.env = runfile_env::process_env();
 	let dir = std::env::temp_dir();
 	let mut scope = scope;
 	scope.assume_yes = true;
@@ -75,7 +77,6 @@ pub fn run_src(src: &str, d: &dyn Dispatch) -> Result<Vec<String>, RunError> {
 	let mut r = Runner {
 		scope,
 		chain: Vec::new(),
-		env: Vec::new(),
 		dispatch: d,
 		interrupted: None,
 		label: None,
@@ -95,6 +96,25 @@ pub fn project(files: &[(&str, &str)]) -> tempfile::TempDir {
 		std::fs::write(full, body).unwrap();
 	}
 	d
+}
+
+/// The properties a run of `target` hands its header hook -- what the watch
+/// loop learns `.watch` from -- run under `--dry-run`, so nothing it would do
+/// happens.
+pub fn header_of(d: &tempfile::TempDir, target: &str) -> crate::props::Props {
+	let cat = runfile_discovery::discover(d.path(), None).unwrap();
+	let seen = std::sync::Mutex::new(None);
+	let hook = |p: &crate::props::Props| -> Result<(), String> {
+		*seen.lock().unwrap() = Some(p.clone());
+		Ok(())
+	};
+	let mut h = crate::dispatch::Host::new(&cat);
+	h.assume_yes = true;
+	h.dry_run = true;
+	h.on_header = Some(&hook);
+	let _ = h.run(target, &[]);
+	drop(h);
+	seen.into_inner().unwrap().expect("the run reached the target's header")
 }
 
 pub fn host_run(d: &tempfile::TempDir, target: &str) -> Result<Vec<String>, crate::RunError> {

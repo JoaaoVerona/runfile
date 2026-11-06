@@ -18,6 +18,7 @@ pub mod lexer;
 pub mod parser;
 pub mod resolve;
 pub mod span;
+pub mod state;
 pub mod structured;
 pub mod types;
 pub mod value;
