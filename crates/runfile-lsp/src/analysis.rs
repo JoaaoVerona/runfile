@@ -1434,10 +1434,10 @@ mod tests {
 	}
 
 	#[test]
-	fn the_parallel_property_is_underlined_with_where_it_went() {
+	fn a_property_that_became_syntax_is_underlined_as_unknown() {
 		let m = messages(".parallel\n$ true\n");
 		assert_eq!(m.len(), 1, "{m:?}");
-		assert!(m[0].contains("`parallel do"), "the message is the fix: {}", m[0]);
+		assert!(m[0].contains("unknown property `.parallel`"), "{}", m[0]);
 	}
 
 	#[test]

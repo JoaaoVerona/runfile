@@ -824,7 +824,7 @@ fn alias_is_not_a_property() {
 	let p = project(&[("runfiles/build.run", ".alias = \"b\"\n$ true\n")]);
 	let o = p.run(&["build"]);
 	assert!(!o.status.success(), "the property is refused where it is written");
-	assert!(err(&o).contains("`.alias` is gone"), "{}", err(&o));
+	assert!(err(&o).contains("unknown property `.alias`"), "{}", err(&o));
 }
 
 // ------------------------------------------------------- workdir and add-path

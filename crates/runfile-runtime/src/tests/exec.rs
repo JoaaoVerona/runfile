@@ -422,12 +422,15 @@ fn an_exit_inside_a_retry_is_not_retried() {
 }
 
 #[test]
-fn the_parallel_property_says_where_it_went() {
-	// It became `parallel do` and `parallel for`; a file still carrying it is
-	// told what to write rather than only that the name is unknown.
-	let d = Recorder::default();
-	let e = run_src(".parallel = true\nretry 2\n\t$ false\nend\n", &d).unwrap_err();
-	assert!(e.to_string().contains("`parallel do"), "{e}");
+fn a_property_that_became_syntax_is_an_unknown_property() {
+	// `.parallel`, `.detach` and `.alias` became something else, and nothing
+	// remembers that they were ever properties: each is refused the way any
+	// other name the list does not have is.
+	for name in ["parallel", "detach", "alias"] {
+		let d = Recorder::default();
+		let e = run_src(&format!(".{name} = true\n$ true\n"), &d).unwrap_err();
+		assert!(e.to_string().contains(&format!("unknown property `.{name}`")), "{e}");
+	}
 }
 
 #[test]

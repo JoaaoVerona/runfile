@@ -877,7 +877,7 @@ naming both, since merging them would let one target shadow another invisibly. A
   in the loosest possible way: a list literal registered nothing, `"k{{ x }}"` silently registered `k`, and
   `"{{ x }}k"` silently registered nothing. Meanwhile `Props.aliases` was filled by the *evaluator* and read
   by nobody, so `.alias = concat("a","b")` ran, succeeded, and registered nothing while `.alias = nope` failed
-  the run. One name per target instead, and `.alias` is refused with that sentence (`PropError::Replaced`).
+  the run. One name per target instead, and `.alias` is an unknown property like any other.
 - **`.only-in-directories` scopes a machine-wide target, per file.** Registered everywhere, active only
   inside the paths it names. Compared on path components, so `work/acme` does not admit `work/acme-other`;
   `~` expands, and a relative entry anchors to **home** at every level, so one spelling means one directory
@@ -2229,11 +2229,9 @@ functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKil
 `VAR.` (replaced by `let`), and `RUNFILE_TARGET`. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
 `shlex`.
 
-The three properties that became something else are refused with what replaced them
-(`PropError::Replaced`, from `props::REPLACED`) rather than as unknown: *"`.parallel` is gone -- write
-`parallel do … end`, or `parallel for` to run a loop's iterations at once"*. An unknown property is most
-often a typo, and these three are not -- they are a file written for an older runner, and the person reading
-the message needs to know what to write instead.
+**A property that became something else is an unknown property, and nothing remembers it was one.**
+`.parallel`, `.detach` and `.alias` were each refused for a while with what replaced them (a `REPLACED`
+table in `props.rs`); that table is gone, so the list of properties is the only list there is.
 
 Every other function from the old surface is present. Seventeen were missing at one point, dropped by
 oversight rather than decision, and all are back. `try` is the one exception, replaced by `a ? b`.

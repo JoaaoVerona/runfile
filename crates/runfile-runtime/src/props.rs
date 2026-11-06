@@ -190,14 +190,6 @@ fn as_bool(v: &Value) -> Option<bool> {
 pub enum PropError {
 	#[error("line {line}: unknown property `.{name}`")]
 	Unknown { name: String, line: usize },
-	/// A property that became syntax. Said apart from a spelling mistake,
-	/// since the fix is not a nearer name but a different line.
-	#[error("line {line}: `.{name}` is gone -- {instead}")]
-	Replaced {
-		name: String,
-		line: usize,
-		instead: &'static str,
-	},
 	#[error("line {line}: `.{name}` is header-only and cannot be set inside a block")]
 	NotBlockScoped { name: String, line: usize },
 	#[error("line {line}: `.{name}` needs a value")]
@@ -249,20 +241,6 @@ pub fn describe_constant(c: &runfile_lang::Constant) -> String {
 	}
 }
 
-/// Properties that became syntax, and what to write instead: a file carrying
-/// one is told where it went rather than only that it is unknown.
-const REPLACED: &[(&str, &str)] = &[
-	(
-		"parallel",
-		"write `parallel do … end`, or `parallel for` to run a loop's iterations at once",
-	),
-	(
-		"detach",
-		"write `detach` in front of the command itself, as `detach $ …`",
-	),
-	("alias", "a target is reached by its file name, and by nothing else"),
-];
-
 /// Whether applying this property changes the environment a value reads.
 pub(crate) fn changes_env(p: &Property) -> bool {
 	matches!(p.path[0].as_str(), "env" | "env-file" | "add-path")
@@ -299,13 +277,6 @@ pub fn check(p: &Property, nested: bool, trailing: bool) -> Result<&'static Know
 	// `.ignore-error` inside a `for` that it was header-only -- sending them
 	// after a rule instead of a spelling mistake.
 	let Some(known) = PROPERTIES.iter().find(|k| k.name == head) else {
-		if let Some((_, instead)) = REPLACED.iter().find(|(name, _)| *name == head) {
-			return Err(PropError::Replaced {
-				name: p.path.join("."),
-				line,
-				instead,
-			});
-		}
 		return Err(PropError::Unknown {
 			name: p.path.join("."),
 			line,
