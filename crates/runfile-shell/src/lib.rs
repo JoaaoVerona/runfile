@@ -133,7 +133,18 @@ pub const RULES: &[Rule] = &[
 		id: "arithmetic-interpolation",
 		summary: "An interpolation that is not a number in a shell arithmetic position.",
 	},
+	Rule {
+		id: "unplaced-interpolation",
+		summary: "An interpolation in shell text the runner cannot read far enough to quote it.",
+	},
 ];
+
+/// Whether the body `program` runs is shell text, whose values are written for
+/// the place they sit: the default shell (`None`), any shell, and a shell behind
+/// a wrapper such as `env` or `sudo` -- see [`script::body_shell`].
+pub fn reads_as_shell(program: Option<&str>) -> bool {
+	program.is_none_or(|cmd| script::body_shell(cmd).is_some())
+}
 
 /// Everything wrong with the shell in `file`, whose text is `src`.
 ///
@@ -149,18 +160,17 @@ pub fn check(src: &str, file: &Target, chain: Option<&[Target]>) -> Vec<Finding>
 /// write its value for that place -- see [`runfile_lang::Quoting`].
 ///
 /// `program` is what runs the body: an `exec`'s command, a `.shell`, or `None`
-/// for the default shell. The answer is `None` when that is not a shell this
-/// checker reads, or when the reading cannot follow the body, and the runner
-/// then writes every value the one way it always has. An entry is `None` for
-/// an interpolation the reading passed without learning where it was.
+/// for the default shell. The answer is `None` only when that is not a shell at
+/// all ([`reads_as_shell`]). Otherwise there is an entry per interpolation, and
+/// an entry is `None` where the reading could not learn where it sits -- every
+/// entry, when the reading did not get to the end. The runner refuses to write
+/// a value it has no place for (audit 2026-11-06, SA-002): a context-blind word
+/// inside the author's own quotes is how a value becomes a command.
 pub fn spots(program: Option<&str>, body: &[Vec<runfile_lang::InterpPart>]) -> Option<Vec<Option<runfile_lang::Spot>>> {
 	let bash = match program {
 		None => true,
-		Some(cmd) => {
-			script::shell(cmd)?;
-			script::is_bash(cmd)
-		}
+		Some(cmd) => script::body_shell(cmd)?,
 	};
 	let (chars, holes) = script::chars_of(body);
-	syntax::spots(&chars, holes, bash)
+	Some(syntax::spots(&chars, holes, bash).unwrap_or_else(|| vec![None; holes]))
 }

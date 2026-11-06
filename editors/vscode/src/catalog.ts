@@ -26,8 +26,15 @@ export async function load(
 		return { folder, targets: [] };
 	}
 	// An absolute path, so the folder (as cwd) cannot shadow the runner with a
-	// committed `run.exe` on Windows -- see `resolveProgram`.
+	// committed `run.exe` on Windows -- see `resolveProgram`. Not on PATH is no
+	// targets: spawned bare, the name would be looked for in the folder first.
 	const resolved = resolveProgram(program);
+	if (resolved === undefined) {
+		log.appendLine(
+			`[${folder.name}] \`${program}\` is not on PATH; put it there, or set runfile.catalogCommand to its absolute path`,
+		);
+		return { folder, targets: [] };
+	}
 	const stdout = await new Promise<string>((resolve) => {
 		execFile(
 			resolved,

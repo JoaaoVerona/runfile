@@ -152,6 +152,143 @@ pub fn shell(command: &str) -> Option<bool> {
 	Some(arguments)
 }
 
+/// Programs that only start the program named after them, with the options each
+/// takes a value for as a separate word. `exec env bash` reads its body exactly
+/// as `exec bash` does, so a body behind one of these is the shell's text and is
+/// quoted for it (audit 2026-11-06, SA-001).
+const WRAPPERS: &[(&str, &[&str])] = &[
+	("env", &["-u", "--unset", "-C", "--chdir"]),
+	(
+		"sudo",
+		&[
+			"-u",
+			"-g",
+			"-C",
+			"-D",
+			"-h",
+			"-p",
+			"-r",
+			"-t",
+			"-T",
+			"-U",
+			"--user",
+			"--group",
+			"--chdir",
+			"--prompt",
+			"--role",
+			"--type",
+			"--host",
+			"--close-from",
+			"--command-timeout",
+			"--other-user",
+		],
+	),
+	("doas", &["-u", "-C"]),
+	("nice", &["-n", "--adjustment"]),
+	("nohup", &[]),
+	("time", &["-f", "-o", "--format", "--output"]),
+	("timeout", &["-s", "-k", "--signal", "--kill-after"]),
+	("stdbuf", &["-i", "-o", "-e", "--input", "--output", "--error"]),
+	("setsid", &[]),
+	("command", &[]),
+];
+
+/// The shells whose body is shell text, by program name.
+const SHELLS: &[&str] = &["sh", "bash", "dash", "ash", "zsh", "ksh", "busybox", "brush"];
+
+fn base(word: &str) -> &str {
+	let b = word.rsplit(['/', '\\']).next().unwrap_or(word);
+	b.strip_suffix(".exe").unwrap_or(b)
+}
+
+/// Whether the body of a command line is read by a shell, and if so whether that
+/// shell is bash: `Some(is_bash)`, or `None` for anything else -- another
+/// language, or a program not known until the run.
+///
+/// Unlike [`shell`], which says what the *checker* reads, this is about where an
+/// interpolation's value lands, so it sees through [`WRAPPERS`], and through
+/// `ssh` to a shell it names, and takes every shell: zsh and ksh quote exactly as
+/// bash does (audit 2026-11-06, SA-002), they only parse other things it refuses.
+pub fn body_shell(command: &str) -> Option<bool> {
+	let words: Vec<&str> = command
+		.split_whitespace()
+		.map(|w| w.trim_matches(['\'', '"']))
+		.collect();
+	let mut rest = &words[..];
+	loop {
+		let (first, after) = rest.split_first()?;
+		let name = base(first);
+		if SHELLS.contains(&name) {
+			return match name {
+				// An applet other than a shell is not a shell's body.
+				"busybox" => match after.first().map(|a| base(a)) {
+					None | Some("sh" | "ash") => Some(false),
+					Some(a) if a.starts_with('-') => Some(false),
+					Some(_) => None,
+				},
+				_ => Some(name == "bash"),
+			};
+		}
+		if name == "ssh" {
+			// The remote command is the rest of the line; a shell named in it is
+			// what reads the body piped to it.
+			let at = after.iter().position(|w| SHELLS.contains(&base(w)))?;
+			rest = &after[at..];
+			continue;
+		}
+		let (_, valued) = WRAPPERS.iter().find(|(w, _)| *w == name)?;
+		let mut i = 0;
+		// `command -v` and `command -V` describe the program rather than run it.
+		while let Some(w) = after.get(i) {
+			if *w == "--" {
+				i += 1;
+				break;
+			}
+			if name == "env" && (w.starts_with("-S") || w.starts_with("--split-string")) {
+				return None;
+			}
+			if name == "command" && matches!(*w, "-v" | "-V") {
+				return None;
+			}
+			if w.starts_with('-') {
+				i += if valued.contains(w) { 2 } else { 1 };
+			} else if matches!(name, "env" | "sudo") && w.contains('=') {
+				i += 1;
+			} else {
+				break;
+			}
+		}
+		// `timeout` takes its duration before the program.
+		if name == "timeout" {
+			i += 1;
+		}
+		rest = after.get(i..)?;
+	}
+}
+
+/// What the `$` runs in `file` are handed to: `Some(None)` for the default
+/// shell, `Some(Some(command))` for the `.shell` named across the chain, and
+/// `None` when that is not known before the run -- a computed `.shell`, or a
+/// `_shared.run` above that could not be read.
+pub fn dollar_program(file: &Target, chain: Option<&[Target]>) -> Option<Option<String>> {
+	let mut named: Option<Option<String>> = None;
+	for f in chain?.iter().chain(std::iter::once(file)) {
+		for p in f.body.properties.iter().filter(|p| p.path == ["shell"]) {
+			named = Some(literal(p));
+		}
+	}
+	match named {
+		None => Some(None),
+		Some(Some(cmd)) => Some(Some(cmd)),
+		Some(None) => None,
+	}
+}
+
+/// The literal text of a command line, when nothing in it is interpolated.
+pub fn literal_command(parts: &[InterpPart]) -> Option<String> {
+	text_of(parts)
+}
+
 /// Whether the `$` runs in `file` are read: `Some(false)` when they run under a
 /// shell this checker reads, and `None` when `.shell` names another one or a
 /// value not known until the run -- or when the `_shared.run` files above, one

@@ -943,6 +943,12 @@ replaces it: a `ci` target that loads `.env` and runs `test` does not push the d
 `test`'s own `.env.test`. `$ run test` is different. A new process can only be handed variables, so there the
 caller's `.env-file` values arrive as if you had exported them, and they beat `test`'s own file.
 
+**A value handed to `run` stays a value.** `run deploy {{ ARG.branch }}` gives `deploy` a positional however the
+branch is spelled — a branch named `--force` does not set `deploy`'s `FLAG.force` — and `run deploy --env
+{{ ARG.env }}` gives `--env` its value whatever it begins with. What you write yourself is read as written, and
+so is a list handed on whole, which is how a wrapper forwards its command line: `run build {{ ARGS }}` still
+passes `--release` along as a flag.
+
 `do … end` is a block with no condition — somewhere for a property to go when it should cover a few commands
 and not the whole target:
 

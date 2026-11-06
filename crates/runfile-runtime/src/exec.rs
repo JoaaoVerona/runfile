@@ -253,10 +253,66 @@ fn executable<'a>(program: &'a Path, env: &[(String, String)]) -> std::io::Resul
 	crate::shell::locate(program.as_os_str(), path).map(Cow::Owned)
 }
 
+/// Where a shell finds its script on Unix: a pipe the runner writes, as fd 3.
+#[cfg(unix)]
+const SCRIPT_FD: i32 = 3;
+
+/// Hand a shell its script on a pipe rather than on its command line.
+///
+/// The script holds every interpolated value, decrypted secrets included, and a
+/// process's command line is readable by every local user (`/proc/<pid>/cmdline`,
+/// `ps`) for as long as it runs -- audit 2026-11-06, SA-005. So the shell is told
+/// only to read fd 3, `-c '. /dev/fd/3' <shell>`, which keeps stdin the terminal
+/// (the reason for `-c`) and `$0` the shell's path as it always was; and the
+/// script travels down a pipe the runner writes once the child is started. The
+/// read end is moved to fd 3 in the child alone, so no other spawn can inherit
+/// it. Answers the write end; the read end is dropped by the caller once the
+/// child exists.
+#[cfg(unix)]
+fn pipe_script(c: &mut Command, exe: &Path) -> std::io::Result<(std::io::PipeReader, std::io::PipeWriter)> {
+	use std::os::fd::AsRawFd;
+	use std::os::unix::process::CommandExt;
+	let (r, w) = std::io::pipe()?;
+	let fd = r.as_raw_fd();
+	c.arg("-c").arg(format!(". /dev/fd/{SCRIPT_FD}")).arg(exe);
+	// SAFETY: runs between fork and exec, and calls only dup2 and fcntl, both
+	// async-signal-safe; `fd` is open in the parent until after the spawn.
+	unsafe {
+		c.pre_exec(move || {
+			if fd == SCRIPT_FD {
+				// dup2 onto itself would leave close-on-exec set.
+				let flags = libc::fcntl(fd, libc::F_GETFD);
+				if flags == -1 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+					return Err(std::io::Error::last_os_error());
+				}
+			} else if libc::dup2(fd, SCRIPT_FD) == -1 {
+				return Err(std::io::Error::last_os_error());
+			}
+			Ok(())
+		});
+	}
+	Ok((r, w))
+}
+
+/// Write `script` to the pipe a shell reads it from, behind an `exec 3<&-` that
+/// closes fd 3 in the shell before anything it starts can inherit it -- on the
+/// script's own first line, so every line keeps its number. On its own thread:
+/// a script longer than the pipe holds is read as the shell gets to it, and a
+/// shell that stops early is no error here (the run reports its status).
+#[cfg(unix)]
+fn write_script(mut w: std::io::PipeWriter, script: &str) -> std::thread::JoinHandle<()> {
+	let text = format!("exec {SCRIPT_FD}<&-; {script}");
+	std::thread::spawn(move || {
+		let _ = w.write_all(text.as_bytes());
+	})
+}
+
 /// Hand a shell its script as the argument after `-c`.
 ///
 /// Its own function because Windows needs one script quoted that the standard
-/// library leaves bare; everything else takes the path it always took.
+/// library leaves bare; everything else takes the path it always took. Not on
+/// Unix, which hands the script over on fd 3 instead (`pipe_script`).
+#[cfg(not(unix))]
 fn push_script(c: &mut Command, body: &str) {
 	#[cfg(windows)]
 	if body.contains('\n') && !body.contains([' ', '\t']) {
@@ -438,11 +494,23 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 
 	let mut c = Command::new(&*exe);
 	c.args(&args).current_dir(s.cwd);
+	#[cfg(unix)]
+	let mut piped: Option<(std::io::PipeReader, std::io::PipeWriter)> = None;
 	if shell {
-		// A shell gets its script as an argument, so **stdin stays the
+		// A shell does not get its script on stdin, so **stdin stays the
 		// terminal**. Handing the script over on stdin instead left every
 		// interactive command inside it -- `ssh`, `vim`, a REPL, anything
-		// asking for a password -- reading a pipe that was already at EOF.
+		// asking for a password -- reading a pipe that was already at EOF. On
+		// Unix it reads it from fd 3, so the script's values are not on its
+		// command line (SA-005); on Windows it is the argument after `-c`.
+		#[cfg(unix)]
+		{
+			piped = Some(pipe_script(&mut c, &exe).map_err(|e| ExecError::Spawn {
+				cmd: label.clone(),
+				source: e,
+			})?);
+		}
+		#[cfg(not(unix))]
 		push_script(&mut c, script.as_deref().unwrap_or(s.body));
 		// Except when detached: a background process must not hold the
 		// terminal's input after the run that started it is over. And except
@@ -482,6 +550,12 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		cmd: label.clone(),
 		source: e,
 	})?;
+	// The read end is the child's now; the write end gets the script.
+	#[cfg(unix)]
+	let writer = piped.map(|(r, w)| {
+		drop(r);
+		write_script(w, script.as_deref().unwrap_or(s.body))
+	});
 	if let Some(mut stdin) = child.stdin.take() {
 		stdin.write_all(s.body.as_bytes()).map_err(|e| ExecError::Spawn {
 			cmd: label.clone(),
@@ -490,7 +564,12 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 	}
 	if s.detach {
 		// Nothing to wait for, and nothing to report: its exit status arrives
-		// long after this run is over.
+		// long after this run is over. Its script has to be all written first,
+		// though, or the run ending would cut it short.
+		#[cfg(unix)]
+		if let Some(w) = writer {
+			let _ = w.join();
+		}
 		return Ok(String::new());
 	}
 	if labelled {
@@ -507,6 +586,11 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		cmd: label.clone(),
 		source: e,
 	})?;
+	// Not joined: the shell is gone, so the writer has finished or meets a closed
+	// pipe -- unless something the shell started still holds its read end, which
+	// is no reason to wait for it.
+	#[cfg(unix)]
+	drop(writer);
 	if !out.status.success() {
 		return Err(ExecError::Status {
 			// The display command and body, so an interpolated secret is named

@@ -1111,11 +1111,36 @@ fn normalized(path: &Path) -> Option<Vec<std::ffi::OsString>> {
 /// The bound is the anchor and not the working directory, though a path
 /// resolves against the second: the repository writes `.workdir`, so a bound
 /// that moved with it is one `.workdir = "/"` would lift.
+///
+/// Lexically inside is not inside: the repository can commit `link -> /` or
+/// `link -> ~/.ssh`, and `link/id_rsa` reads the file it names (audit
+/// 2026-11-06, SA-008). So a path that passes the lexical test is also resolved
+/// the way the read will resolve it -- its deepest part that exists,
+/// canonicalised -- and has to land under the canonical anchor too.
 fn escapes_anchor(sc: &Scope, p: &str) -> bool {
-	match (normalized(&sc.anchor), normalized(&resolve(&sc.workdir, p))) {
-		(Some(b), Some(resolved)) => !resolved.starts_with(&b),
-		// `..` climbed above the root: outside by definition.
+	let path = resolve(&sc.workdir, p);
+	match (normalized(&sc.anchor), normalized(&path)) {
+		(Some(b), Some(resolved)) if resolved.starts_with(&b) => !resolves_inside(&sc.anchor, &path),
+		// Outside as written, or `..` climbed above the root.
 		_ => true,
+	}
+}
+
+/// Whether `path` lands under `anchor` once the links on the way are followed.
+/// A part that does not exist yet has nothing to follow, so the deepest part
+/// that does is what is resolved -- `link/missing` is wherever `link` points.
+/// Anything that cannot be resolved counts as outside.
+fn resolves_inside(anchor: &Path, path: &Path) -> bool {
+	let Ok(root) = std::fs::canonicalize(anchor) else {
+		return false;
+	};
+	let mut at = path.to_path_buf();
+	loop {
+		match std::fs::canonicalize(&at) {
+			Ok(real) => return real.starts_with(&root),
+			Err(_) if at.pop() => {}
+			Err(_) => return false,
+		}
 	}
 }
 
@@ -1687,7 +1712,17 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 			let root = sc.workdir.join(&plan.prefix);
 			let mut above: Vec<PathBuf> = std::fs::canonicalize(&root).into_iter().collect();
 			let mut hits = Vec::new();
-			walk(&root, &root, 0, &plan, &mut above, &mut hits);
+			// A preview's walk follows no link out of the project (SA-008); with
+			// no project to resolve, it walks nothing.
+			let inside = if sc.preview {
+				match std::fs::canonicalize(&sc.anchor) {
+					Ok(a) => Some(a),
+					Err(_) => return Ok(V::List(Vec::new())),
+				}
+			} else {
+				None
+			};
+			walk(&root, &root, 0, &plan, &mut above, inside.as_deref(), &mut hits);
 			hits.sort();
 			Ok(V::List(hits.into_iter().map(V::Str).collect()))
 		})(),
@@ -1699,6 +1734,11 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 				return Ok(V::Str(format!("<contents of {}>", s(0)?)));
 			}
 			let p = resolve(&sc.workdir, s(0)?);
+			// Nor is anything but a file read in a preview: a FIFO waits for a
+			// writer and a device can be endless (SA-008).
+			if sc.preview && std::fs::metadata(&p).is_ok_and(|m| !m.is_file()) {
+				return Ok(V::Str(format!("<contents of {}>", s(0)?)));
+			}
 			std::fs::read_to_string(&p)
 				.map(V::Str)
 				.map_err(|e| other(format!("could not read {}: {e}", p.display())))
@@ -2024,7 +2064,18 @@ pub(crate) fn glob_plan(pattern: &str) -> Result<GlobPlan, globset::Error> {
 /// `above` holds those directories resolved, so the same directory reached two
 /// ways is still walked both times, the way `find -L` does; a set of every
 /// directory seen would keep only whichever came first.
-fn walk(root: &Path, dir: &Path, depth: usize, plan: &GlobPlan, above: &mut Vec<PathBuf>, out: &mut Vec<String>) {
+///
+/// `inside`, under a preview, is the canonical anchor: a directory that
+/// resolves anywhere else is not entered (SA-008).
+fn walk(
+	root: &Path,
+	dir: &Path,
+	depth: usize,
+	plan: &GlobPlan,
+	above: &mut Vec<PathBuf>,
+	inside: Option<&Path>,
+	out: &mut Vec<String>,
+) {
 	let Ok(rd) = std::fs::read_dir(dir) else { return };
 	for e in rd.flatten() {
 		let p = e.path();
@@ -2038,11 +2089,11 @@ fn walk(root: &Path, dir: &Path, depth: usize, plan: &GlobPlan, above: &mut Vec<
 				continue;
 			}
 			let Ok(real) = std::fs::canonicalize(&p) else { continue };
-			if above.contains(&real) {
+			if above.contains(&real) || inside.is_some_and(|i| !real.starts_with(i)) {
 				continue;
 			}
 			above.push(real);
-			walk(root, &p, depth + 1, plan, above, out);
+			walk(root, &p, depth + 1, plan, above, inside, out);
 			above.pop();
 			continue;
 		}

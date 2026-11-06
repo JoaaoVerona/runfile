@@ -216,6 +216,37 @@ fn render(v: &Value, indent: &str) -> String {
 	out
 }
 
+/// Refuse a path with a symlink anywhere between the project root and it.
+///
+/// A repository can commit `.vscode` as a link to a directory outside the
+/// project, or `tasks.json` as a link to any file -- dangling or not -- and
+/// following either would create or rewrite a file wherever the repository
+/// chose, or read a link to `/dev/zero` whole (audit 2026-11-06, SA-007). `:lint`
+/// refuses to write through a symlink for the same reason (SA-021). Checked a
+/// component at a time with `symlink_metadata`, which does not follow a link,
+/// and stopping at the first one that does not exist yet.
+fn no_links(root: &Path, path: &Path) -> Result<(), String> {
+	let rel = path
+		.strip_prefix(root)
+		.map_err(|_| format!("{}: outside the project; not touching it", path.display()))?;
+	let mut at = root.to_path_buf();
+	for c in rel.components() {
+		at.push(c);
+		match std::fs::symlink_metadata(&at) {
+			Ok(m) if m.file_type().is_symlink() => {
+				return Err(format!(
+					"{}: is a symlink; not following it out of the project (run `:generate` where it points instead)",
+					shown(root, &at)
+				));
+			}
+			Ok(_) => {}
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+			Err(e) => return Err(format!("{}: {e}", at.display())),
+		}
+	}
+	Ok(())
+}
+
 /// Atomically, keeping the file's mode: `fs::write` truncated first, so a full
 /// disk or a kill mid-write left a task file someone had customised empty
 /// (audit SA-038).
@@ -260,6 +291,7 @@ fn zed(entries: &[Entry], root: &Path, opts: &Options) -> Result<String, String>
 		return Ok(String::new());
 	}
 	let path = root.join(".zed").join("tasks.json");
+	no_links(root, &path)?;
 	let (existing, indent) = read_json(&path)?;
 	let mut tasks = match existing {
 		Some(Value::Array(a)) => a,
@@ -297,6 +329,7 @@ fn vscode(entries: &[Entry], root: &Path, opts: &Options) -> Result<String, Stri
 	let (existing, indent) = if opts.stdout {
 		(None, DEFAULT_INDENT.to_string())
 	} else {
+		no_links(root, &path)?;
 		read_json(&path)?
 	};
 	let mut file = match existing {
@@ -472,6 +505,7 @@ fn jetbrains(entries: &[Entry], root: &Path, opts: &Options) -> Result<String, S
 	}
 	let mut stats = Stats::default();
 	let wanted: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+	no_links(root, &dir)?;
 
 	// Stale configurations of ours go first, so a renamed target does not
 	// leave its old name behind.
@@ -479,6 +513,10 @@ fn jetbrains(entries: &[Entry], root: &Path, opts: &Options) -> Result<String, S
 		for f in existing.flatten() {
 			let name = f.file_name().to_string_lossy().to_string();
 			if !name.starts_with("Runfile_") || !name.ends_with(".run.xml") {
+				continue;
+			}
+			// What the entry is, not what a link in its place points at.
+			if !f.file_type().is_ok_and(|t| t.is_file()) {
 				continue;
 			}
 			let Ok(text) = std::fs::read_to_string(f.path()) else {
@@ -494,6 +532,7 @@ fn jetbrains(entries: &[Entry], root: &Path, opts: &Options) -> Result<String, S
 	}
 	for e in entries {
 		let path = dir.join(config_file(&e.name));
+		no_links(root, &path)?;
 		let fresh = jetbrains_config(e);
 		match std::fs::read_to_string(&path) {
 			Ok(old) if jetbrains_target_of(&old).is_none() => {

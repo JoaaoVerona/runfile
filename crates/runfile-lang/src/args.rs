@@ -40,6 +40,37 @@ pub enum Arg {
 	Unknown { token: String, key: String },
 }
 
+/// One word of a command line, and whether it is **data**: a value a `run`
+/// statement interpolated, as in `run w {{ ARG.name }}`. Data is a positional,
+/// or the value of a `--key` written before it, and never a flag or a key of its
+/// own: `run` arguments are values (audit 2026-11-06, SA-006), so a value that
+/// happens to begin with `--` must not set what the callee reads. A word the
+/// file wrote, and each item of a list forwarded whole (`{{ ARGS }}`, how a
+/// wrapper hands on its own command line), is classified as typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Word {
+	pub text: String,
+	pub data: bool,
+}
+
+impl Word {
+	/// A word classified as typed.
+	pub fn literal(text: impl Into<String>) -> Self {
+		Word {
+			text: text.into(),
+			data: false,
+		}
+	}
+
+	/// A value, which is never a flag of its own.
+	pub fn data(text: impl Into<String>) -> Self {
+		Word {
+			text: text.into(),
+			data: true,
+		}
+	}
+}
+
 /// `--key` names something read as `ARG.key`, with no value to put in it.
 ///
 /// `next` is the word that was there and could not be the value, so whoever
@@ -67,16 +98,29 @@ pub struct MissingValue {
 /// `run x --verbose hello` is a flag and a positional today -- and preferring
 /// the flag is what keeps this from changing it.
 pub fn parse(argv: &[String], reads: &Inputs) -> Result<Vec<Arg>, MissingValue> {
+	let words: Vec<Word> = argv.iter().map(Word::literal).collect();
+	parse_words(&words, reads)
+}
+
+/// [`parse`], for a command line some of whose words are [`Word::data`]: each
+/// of those is a positional, or the value of a bare `--key` read as `ARG.key`
+/// just before it -- whatever it begins with, since it is a value and not a word
+/// that could be a mistyped flag.
+pub fn parse_words(argv: &[Word], reads: &Inputs) -> Result<Vec<Arg>, MissingValue> {
 	let mut out = Vec::with_capacity(argv.len());
 	let mut i = 0;
 	while i < argv.len() {
-		let word = &argv[i];
+		let Word { text: word, data } = &argv[i];
 		i += 1;
+		if *data {
+			out.push(Arg::Positional(word.clone()));
+			continue;
+		}
 		// A bare `--` ends parsing: everything after it is a positional
 		// exactly as typed, flags included. That is how a wrapper forwards a
 		// word this would otherwise claim for itself.
 		if word == "--" {
-			out.extend(argv[i..].iter().cloned().map(Arg::Positional));
+			out.extend(argv[i..].iter().map(|w| Arg::Positional(w.text.clone())));
 			break;
 		}
 		let Some(rest) = word.strip_prefix("--") else {
@@ -98,18 +142,18 @@ pub fn parse(argv: &[String], reads: &Inputs) -> Result<Vec<Arg>, MissingValue> 
 			out.push(Arg::Flag(rest.to_string()));
 		} else if reads.args.contains_key(rest) {
 			let next = argv.get(i);
-			match next.filter(|v| !v.starts_with('-')) {
+			match next.filter(|v| v.data || !v.text.starts_with('-')) {
 				Some(v) => {
 					out.push(Arg::Arg {
 						key: rest.to_string(),
-						value: v.clone(),
+						value: v.text.clone(),
 					});
 					i += 1;
 				}
 				None => {
 					return Err(MissingValue {
 						key: rest.to_string(),
-						next: next.cloned(),
+						next: next.map(|w| w.text.clone()),
 					});
 				}
 			}
