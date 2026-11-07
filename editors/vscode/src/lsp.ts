@@ -102,8 +102,18 @@ export class LanguageClient implements vscode.Disposable {
 		// A fresh reader: a half-written frame from a process that died is not
 		// the start of the next one's first message.
 		this.reader = new MessageReader();
+		// Never spawned bare: a name not on PATH would be looked for in the cwd
+		// first on Windows (SA-011). `fellBack` is what stops this recursing.
+		const program = resolveProgram(command);
+		if (program === undefined) {
+			const hint = command === this.command ? "; put it there, or set runfile.lspPath to its absolute path" : "";
+			this.log.appendLine(`language server unavailable: \`${command}\` is not on PATH${hint}`);
+			this.child = undefined;
+			this.fallBack("is not on PATH");
+			return;
+		}
 		try {
-			this.child = spawn(resolveProgram(command), args, { stdio: ["pipe", "pipe", "pipe"] });
+			this.child = spawn(program, args, { stdio: ["pipe", "pipe", "pipe"] });
 		} catch (e) {
 			this.log.appendLine(`language server did not start: ${String(e)}`);
 			this.child = undefined;

@@ -177,9 +177,19 @@ pub fn parse(chars: &[Ch], bash: bool) -> R<List> {
 /// reads it -- `None` when this reading does not follow the script. An entry
 /// is `None` for an interpolation it passed without learning where it was.
 pub fn spots(chars: &[Ch], holes: usize, bash: bool) -> Option<Vec<Option<Spot>>> {
+	placed(chars, holes, bash).ok()
+}
+
+/// [`spots`], saying why when the reading did not get to the end: `Err` is the
+/// [`Stop`] it ended on, and a heredoc left open counts as [`Stop::Lost`].
+pub fn placed(chars: &[Ch], holes: usize, bash: bool) -> Result<Vec<Option<Spot>>, Stop> {
 	let mut p = P::new(chars, bash, vec![None; holes]);
-	p.list(End::Eof, None).ok()?;
-	p.heredocs.is_empty().then_some(p.spots)
+	p.list(End::Eof, None)?;
+	if p.heredocs.is_empty() {
+		Ok(p.spots)
+	} else {
+		Err(Stop::Lost)
+	}
 }
 
 /// A heredoc whose body starts at the next newline.

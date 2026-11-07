@@ -663,9 +663,11 @@ fn display_expr(e: &Expr) -> String {
 ///
 /// `spots` has one entry per interpolation, in order, from the shell checker's
 /// reading of the body (see [`crate::value::Quoting`]). An interpolation it has
-/// no entry for -- and every one, when it is `None`, because the body is in a
-/// shell that reading does not follow -- is written the way
-/// [`interpolate_shell`] writes it.
+/// no place for -- and every one, when it is `None` -- is refused rather than
+/// written: the one context-blind word written there before was a single-quoted
+/// word, which inside the author's own `"…"` is no quoting at all (audit
+/// 2026-11-06, SA-002). The shell check says so before the run
+/// (`unplaced-interpolation`); this is what holds when it could not know.
 ///
 /// A line inside a heredoc's body is checked once its values are in: one that
 /// came out as the heredoc's delimiter would end the body there, and whatever
@@ -691,7 +693,15 @@ pub fn interpolate_script(
 							text.push_str(&v.to_shell_at(spot).map_err(|msg| EvalError::Other { msg, line })?);
 							ends.extend(spot.heredocs.iter().map(|d| (d, line)));
 						}
-						None => text.push_str(&v.to_shell()),
+						None => {
+							return Err(EvalError::Other {
+								msg: "the runner cannot read this shell text far enough to know where this value \
+								      sits, so it would not be quoted safely; pass it through the environment \
+								      instead (`ENV.X = …`, then `\"$X\"`)"
+									.into(),
+								line,
+							});
+						}
 					}
 					k += 1;
 				}

@@ -327,15 +327,22 @@ function buildTask(
 	const args = ["--stdin-args", ...(dir ? ["--dir", dir] : []), name]
 
 	// An absolute path, so a committed `run.exe` in `cwd` cannot shadow the
-	// installed runner on Windows (audit SA-010).
+	// installed runner on Windows (audit SA-010). Not on PATH, the task says so
+	// and spawns nothing: `cp.spawn` and `ProcessExecution` would both look for a
+	// bare `run` in `cwd` (SA-011).
 	const run = resolveProgram("run")
 	// `ProcessExecution` spawns `run` with `args` directly -- no shell -- so a
 	// target name holding `;`, `$(…)` or a backtick is one literal argument, not
 	// shell syntax, when the interactive setting is off (audit SA-029). The
 	// interactive path already spawns without a shell via the pseudoterminal.
-	const execution = isInteractive()
-		? new vscode.CustomExecution(async () => new RunfileInteractivePty(run, args, cwd))
-		: new vscode.ProcessExecution(run, args, { cwd })
+	let execution: vscode.CustomExecution | vscode.ProcessExecution
+	if (run === undefined) {
+		execution = new vscode.CustomExecution(async () => notOnPathPty("run"))
+	} else if (isInteractive()) {
+		execution = new vscode.CustomExecution(async () => new RunfileInteractivePty(run, args, cwd))
+	} else {
+		execution = new vscode.ProcessExecution(run, args, { cwd })
+	}
 
 	const definition: RunfileTaskDefinition = { type: TASK_TYPE, task: name }
 	if (dir) {
@@ -706,6 +713,27 @@ class RunfileInteractivePty implements vscode.Pseudoterminal {
 				this.writeEmitter.fire(ch)
 			}
 		}
+	}
+}
+
+/**
+ * The task a target gets when `run` is not on PATH: it says so and fails with
+ * nothing spawned, since a bare name would be looked for in the task's cwd --
+ * the workspace folder -- before PATH (audit SA-011).
+ */
+function notOnPathPty(program: string): vscode.Pseudoterminal {
+	const writeEmitter = new vscode.EventEmitter<string>()
+	const closeEmitter = new vscode.EventEmitter<number>()
+	return {
+		onDidWrite: writeEmitter.event,
+		onDidClose: closeEmitter.event,
+		open: () => {
+			const message = `\`${program}\` is not on PATH, so the task was not started`
+			output.appendLine(message)
+			writeEmitter.fire(`\x1b[31m${message}\x1b[0m\r\n`)
+			closeEmitter.fire(1)
+		},
+		close: () => {}
 	}
 }
 

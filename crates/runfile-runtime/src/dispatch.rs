@@ -8,6 +8,7 @@
 use crate::props::Props;
 use crate::run::{Dispatch, RunError, Runner};
 use runfile_discovery::Catalog;
+use runfile_lang::args::Word;
 use runfile_lang::eval::Scope;
 use runfile_lang::{Arg, Value};
 use std::path::Path;
@@ -190,7 +191,7 @@ impl<'a> Host<'a> {
 		// caller's, where the call appeared. Nothing ran it, so it is run with
 		// the process's own environment.
 		let mut trace = Vec::new();
-		let out = self.run_with_chain(name, args, None, &[], None, &mut trace);
+		let out = self.run_with_chain(name, &literal(args), None, &[], None, &mut trace);
 		// The run is over however it ended, and its key pool with it, so the next
 		// run on this host -- a watch iteration -- asks again. A pool that outlived
 		// its run would keep what it failed to load, from a keyring that was
@@ -206,7 +207,7 @@ impl<'a> Host<'a> {
 	fn run_with_chain(
 		&self,
 		name: &str,
-		args: &[String],
+		args: &[Word],
 		env: Option<crate::env::Inherited>,
 		chain: &[String],
 		label: Option<&str>,
@@ -270,7 +271,7 @@ impl<'a> Host<'a> {
 	fn prepare(
 		&self,
 		target: &runfile_discovery::Target,
-		args: &[String],
+		args: &[Word],
 		env: Option<crate::env::Inherited>,
 	) -> Result<Prepared, RunError> {
 		let (ast, shared) = self.load(target)?;
@@ -377,7 +378,7 @@ impl<'a> Host<'a> {
 	fn run_inner(
 		&self,
 		target: &runfile_discovery::Target,
-		args: &[String],
+		args: &[Word],
 		env: Option<crate::env::Inherited>,
 		chain: Vec<String>,
 		label: Option<&str>,
@@ -458,8 +459,26 @@ impl Dispatch for HostDispatch<'_, '_> {
 		label: Option<&str>,
 		trace: &mut Vec<String>,
 	) -> Result<(), RunError> {
+		self.host
+			.run_with_chain(target, &literal(args), Some(env), chain, label, trace)
+	}
+
+	fn run_words(
+		&self,
+		target: &str,
+		args: &[Word],
+		env: crate::env::Inherited,
+		chain: &[String],
+		label: Option<&str>,
+		trace: &mut Vec<String>,
+	) -> Result<(), RunError> {
 		self.host.run_with_chain(target, args, Some(env), chain, label, trace)
 	}
+}
+
+/// A command line typed by a person, every word classified as written.
+fn literal(args: &[String]) -> Vec<Word> {
+	args.iter().map(Word::literal).collect()
 }
 
 /// A target's tree and its chain's, as [`Host::load`] hands them back.
@@ -578,11 +597,11 @@ pub(crate) fn populate_run_context(sc: &mut Scope, t: &runfile_discovery::Target
 /// which is where a reader will look for it.
 fn parse_args(
 	sc: &mut Scope,
-	args: &[String],
+	args: &[Word],
 	reads: &runfile_lang::Inputs,
 ) -> Result<Option<(String, String)>, runfile_lang::args::MissingValue> {
 	let mut unknown = None;
-	for a in runfile_lang::args::parse(args, reads)? {
+	for a in runfile_lang::args::parse_words(args, reads)? {
 		match a {
 			Arg::Arg { key, value } => {
 				sc.args.insert(key, value);

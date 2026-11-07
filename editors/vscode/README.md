@@ -69,6 +69,12 @@ If targets are missing, *Show Log* has the failing command and its stderr.
 
 The `run` CLI on your `PATH`. That is all — the language server is `run :lsp`, so there is no second binary.
 
+`run` is looked up on the `PATH` VS Code was started with, and only there: one that is not found is never
+tried anyway, since Windows would then run a `run.exe` sitting in the workspace folder. The log says
+`` `run` is not on PATH `` and nothing is started. If you keep `run` elsewhere, set `runfile.catalogCommand`
+and `runfile.lspPath` to its absolute path in your user settings — a workspace cannot set either. Tasks run
+the `run` on `PATH`, so they need it there.
+
 ## License
 
 MIT

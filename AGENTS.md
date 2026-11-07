@@ -189,7 +189,13 @@ is what is shown. One guarded use does not excuse a bare one. This is what `--he
 
 **`run` statement arguments are values, not shell text.** A `{{ x }}` in `run w {{ x }}` arrives at `w` as one
 positional even with spaces, and a list expands to one positional per item — there is no shell in between to
-quote for.
+quote for. **A value is data, never a flag** (`args::Word`, `args::parse_words`; audit 2026-11-06 SA-006): a word
+that is one interpolation, or starts with one, reaches `w` as a positional -- or as the value of a `--key` the
+file wrote just before it, whatever it begins with -- so a CI-supplied `--force` cannot set `w`'s `FLAG.force`.
+What the file wrote is classified as written, and so is each item of a list forwarded whole: `run build
+{{ ARGS }}` is how a wrapper hands on its own command line, flags included. `let f = "--release"` then `run b
+{{ f }}` is therefore a positional now; write `run b --release`, or forward a list. `Dispatch::run_words` carries
+the distinction; a dispatcher that does not classify arguments (the test recorders) gets plain text.
 
 `a ? b` takes `a`, or `b` if `a` does not resolve. It is not a ternary; branch with `if`.
 
@@ -215,9 +221,13 @@ text there), a backtick's body is read again in a sandbox after bash's own backs
 for it, and a quoted heredoc's body is left as it is. The word keeps its quotes in every case, so a message
 reads as it did and a command string for another shell gets the value quoted for *that* shell. Two places
 refuse instead of writing: a value inside a heredoc whose line would be the delimiter (it would end the body,
-and what followed would run), and a value holding a line break inside a shell comment. Where the reading does
-not follow the body -- it gave up, or the shell is zsh, ksh or one only known at run time -- every value is the
-one quoted word it always was. `security_regression.rs` runs eleven forms against thirteen hostile values in
+and what followed would run), and a value holding a line break inside a shell comment. Every shell is read
+for this, zsh and ksh included, since they quote as bash does, and so is a shell behind `env`, `sudo`, `nice`
+and the other wrappers `script::body_shell` sees through (audit 2026-11-06 SA-001, SA-002). **Where the reading
+does not get to a value -- it gave up, as on a `coproc` -- the value is refused, not written blind**: the one
+context-blind word it used to be was a single-quoted word, which inside the author's `"…"` is no quoting at
+all. The shell check says so before the run (`unplaced-interpolation`), and `eval::interpolate_script` holds it
+for a program only known at run time. `security_regression.rs` runs eleven forms against thirteen hostile values in
 real bash and asserts both that nothing runs and that what arrives is the value, or its quoted text, exactly.
 
 ### Structured blocks
@@ -1109,6 +1119,15 @@ terminal's width, and how wide text is on it).
   `exec <command>` keeps the body-as-stdin contract, since that is what `exec tee file` and `exec python3`
   are for. A detached shell gets `/dev/null`: a background process must not hold the terminal's input after
   the run that started it is over.
+- **On Unix the script is not on the shell's command line** (`exec::pipe_script`, audit 2026-11-06 SA-005).
+  It holds every interpolated value, decrypted secrets included, and a command line is readable by every local
+  user through `/proc/<pid>/cmdline` and `ps` for as long as the process runs. So the shell is started as
+  `<shell> -e -c '. /dev/fd/3' <shell>` -- the `-c` text is fixed, `$0` is the shell's path as it was -- and the
+  script goes down a pipe moved to fd 3 in the child alone (`pre_exec`), written on a thread of its own and
+  prefixed `exec 3<&-; ` on its first line, so nothing the shell starts inherits the pipe and every line keeps
+  its number. A shell's own error now names `/dev/fd/3:` where it said `bash:`. A `detach`ed shell's script is
+  written in full before the run moves on. It also lifts the 128 KiB a single argument could hold. Windows,
+  which has no `/dev/fd`, keeps `-c`.
 - **`detach`** starts the command and does not wait. Its streams go to null: inherited, they would hold the
   runner's own stdout and stderr open after it exits, so whoever is reading them waits for the very command
   that was meant to outlive the run. **On Windows that is not enough** -- `Stdio::null()` says what a child
@@ -1327,7 +1346,9 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
   so no finding can move. A `((` read both ways is why a later reading of a hole wins over an earlier one.
 - **A script it cannot follow is left alone** (`Stop::Lost`): `coproc`, a heredoc delimiter that expands, a `(`
   after a word that is neither an extended glob nor an array. Giving up costs a check; guessing costs a false
-  report. Every script in the author's 1,194-file corpus is read without giving up.
+  report. Every script in the author's 1,194-file corpus is read without giving up. A script it gives up on that
+  interpolates a value is refused all the same (`unplaced-interpolation`), since the runner has no place to write
+  that value for.
 - **The reading follows bash where bash is surprising**, each case pinned by a test against `bash -n`:
   `${x:-{a}` closes on the first `}` (no braces are counted), a `'` inside a double-quoted `${…}` still opens a
   quote, `$((` is arithmetic only when its last two parentheses close together, and a heredoc's body starts at

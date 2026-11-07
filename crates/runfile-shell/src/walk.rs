@@ -63,6 +63,7 @@ pub(crate) fn check(src: &str, file: &Target, chain: Option<&[Target]>) -> Vec<F
 		src: &source,
 		dollar: script::dollar(file, chain),
 		bash: script::dollar_bash(file, chain),
+		program: script::dollar_program(file, chain),
 		names: runfile_lang::Names::of(file, chain),
 		out: Vec::new(),
 		seen: BTreeSet::new(),
@@ -221,6 +222,8 @@ struct Walk<'a> {
 	dollar: Option<bool>,
 	/// Whether the `$` runs are bash's.
 	bash: bool,
+	/// What the `$` runs are handed to, when it is known before the run.
+	program: Option<Option<String>>,
 	/// The types of what is in scope, for judging an interpolation in an
 	/// arithmetic position -- which has to be a number.
 	names: runfile_lang::Names,
@@ -245,6 +248,68 @@ impl Walk<'_> {
 				message,
 				fix,
 			});
+		}
+	}
+
+	/// Every interpolation in a shell body the runner would have no place to write
+	/// for (`unplaced-interpolation`): the reading of the body stopped before it,
+	/// or passed it without learning where it sits. The runner refuses such a
+	/// value at run time too; this says so before the first statement runs, and
+	/// says it in an editor. A body whose program is only known at run time -- an
+	/// interpolated `exec` command, a computed `.shell` -- is the runner's alone.
+	fn placement(&mut self, command: Option<&[InterpPart]>, body: &[Vec<InterpPart>]) {
+		let program = match command {
+			None => match &self.program {
+				Some(p) => p.clone(),
+				None => return,
+			},
+			Some(parts) => match script::literal_command(parts) {
+				Some(cmd) => Some(cmd),
+				None => return,
+			},
+		};
+		let bash = match program.as_deref() {
+			None => true,
+			Some(cmd) => match script::body_shell(cmd) {
+				Some(bash) => bash,
+				None => return,
+			},
+		};
+		let holes: Vec<(usize, usize)> = body
+			.iter()
+			.flatten()
+			.filter_map(|p| match p {
+				InterpPart::Expr(e) => Some((e.span().start, e.span().end)),
+				InterpPart::Literal(_) => None,
+			})
+			.collect();
+		if holes.is_empty() {
+			return;
+		}
+		let (chars, n) = script::chars_of(body);
+		let spots = match syntax::placed(&chars, n, bash) {
+			Ok(spots) => spots,
+			// What a shell this checker reads refuses is reported as itself, and a
+			// body that does not run is not the place to say more about it.
+			Err(Stop::Refused { .. }) if program.as_deref().is_none_or(|cmd| script::shell(cmd).is_some()) => return,
+			Err(_) => vec![None; n],
+		};
+		for (at, spot) in holes.into_iter().zip(spots) {
+			if spot.is_none() {
+				self.report(
+					"unplaced-interpolation",
+					at,
+					"the runner cannot read this shell text far enough to know where this value sits, so it would \
+					 not be quoted safely; the block is refused rather than run"
+						.into(),
+					Some(
+						"pass the value through the environment instead (`ENV.X = …`, then `\"$X\"` in the shell), \
+						 or move what the reader cannot follow (a `coproc`, a construct of this shell's own) into a \
+						 block of its own"
+							.into(),
+					),
+				);
+			}
 		}
 	}
 
@@ -389,6 +454,7 @@ impl Walk<'_> {
 				for line in body {
 					self.parts(line, env);
 				}
+				self.placement(command.as_deref(), body);
 				if let Some(s) = script::of_statement(st, self.src, self.dollar, self.bash) {
 					self.script(&s, env);
 				}
@@ -413,6 +479,7 @@ impl Walk<'_> {
 				for line in body {
 					self.parts(line, env);
 				}
+				self.placement(command.as_deref(), body);
 				if let Some(s) = script::of_capture(e, self.src, self.dollar, self.bash) {
 					self.script(&s, env);
 				}

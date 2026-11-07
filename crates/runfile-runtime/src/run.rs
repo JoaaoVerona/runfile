@@ -4,6 +4,7 @@ use crate::exec::{self, ExecError, Spawn};
 use crate::props::{PropError, Props};
 use crate::term;
 use runfile_lang::Value;
+use runfile_lang::args::Word;
 use runfile_lang::ast::*;
 use runfile_lang::eval::{EvalError, Scope, eval_boundary};
 
@@ -206,6 +207,23 @@ pub trait Dispatch: Sync {
 		label: Option<&str>,
 		trace: &mut Vec<String>,
 	) -> Result<(), RunError>;
+
+	/// [`Dispatch::run`], with each argument saying whether it is a value a
+	/// `run` statement interpolated, which the target then reads as a positional
+	/// and never as a flag (audit 2026-11-06, SA-006). A dispatcher that does not
+	/// classify arguments itself is handed their text.
+	fn run_words(
+		&self,
+		target: &str,
+		args: &[runfile_lang::args::Word],
+		env: crate::env::Inherited,
+		chain: &[String],
+		label: Option<&str>,
+		trace: &mut Vec<String>,
+	) -> Result<(), RunError> {
+		let text: Vec<String> = args.iter().map(|w| w.text.clone()).collect();
+		self.run(target, &text, env, chain, label, trace)
+	}
 }
 
 pub struct NoDispatch;
@@ -458,7 +476,8 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 			let env = crate::env::handed_over(&r.scope);
 			// The dependency's trace lands where the call appeared. A target
 			// that ended with `exit(3)` fails this line, as `$ run` would have.
-			r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref(), &mut r.trace)
+			r.dispatch
+				.run_words(&t, &a, env, &r.chain, r.label.as_deref(), &mut r.trace)
 		}
 		Statement::Exec {
 			command, body, detach, ..
@@ -716,7 +735,10 @@ fn dispatch_code(target: &[InterpPart], args: &[Vec<InterpPart>], r: &mut Runner
 	let t = runfile_lang::eval::interpolate_plain(target, &mut r.scope)?;
 	let a = run_args(args, &mut r.scope)?;
 	let env = crate::env::handed_over(&r.scope);
-	match r.dispatch.run(&t, &a, env, &r.chain, r.label.as_deref(), &mut r.trace) {
+	match r
+		.dispatch
+		.run_words(&t, &a, env, &r.chain, r.label.as_deref(), &mut r.trace)
+	{
 		Ok(()) => Ok(0),
 		Err(e) if e.is_refusal() => Err(e),
 		Err(e) => Ok(e.exit_code().unwrap_or_else(|| {
@@ -751,16 +773,28 @@ fn subject_of(subject: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Strin
 /// which its own shell lines then quoted again. A word that is one
 /// interpolation of a list becomes one argument per item, the way it would on
 /// a shell line; each expression is evaluated exactly once.
-fn run_args(words: &[Vec<InterpPart>], sc: &mut Scope) -> Result<Vec<String>, RunError> {
+fn run_args(words: &[Vec<InterpPart>], sc: &mut Scope) -> Result<Vec<Word>, RunError> {
 	let mut out = Vec::new();
 	for w in words {
 		if let [InterpPart::Expr(e)] = &w[..] {
 			match eval_boundary(e, sc)? {
-				Value::List(items) => out.extend(items.iter().map(Value::to_string)),
-				v => out.push(v.to_string()),
+				// A list forwarded whole -- `{{ ARGS }}` -- is a command line
+				// being handed on, and is read the way it was typed.
+				Value::List(items) => out.extend(items.iter().map(|v| Word::literal(v.to_string()))),
+				// One value is data: whatever it spells, the callee reads it as
+				// a positional, never as a flag (audit 2026-11-06, SA-006).
+				v => out.push(Word::data(v.to_string())),
 			}
 		} else {
-			out.push(runfile_lang::eval::interpolate_plain(w, sc)?);
+			let text = runfile_lang::eval::interpolate_plain(w, sc)?;
+			// A word that starts with a value is data for the same reason; one
+			// the file starts, as `--name={{ x }}`, is classified by what the
+			// file wrote.
+			out.push(if matches!(w.first(), Some(InterpPart::Expr(_))) {
+				Word::data(text)
+			} else {
+				Word::literal(text)
+			});
 		}
 	}
 	Ok(out)
@@ -824,7 +858,10 @@ fn render(
 		Some(c) => Some(interpolate_command(c, &mut r.scope)?),
 		None => None,
 	};
-	let lines = if exec::body_is_shell(cmd.as_deref()) {
+	// Whether the body is shell text sees through `env bash`, `sudo sh` and the
+	// like (audit 2026-11-06, SA-001), which `exec::body_is_shell` -- the test for
+	// what the runner itself starts with `-e` and `-c` -- does not.
+	let lines = if runfile_shell::reads_as_shell(cmd.as_deref()) {
 		let spots = runfile_shell::spots(command_for(cmd.as_deref(), props), body);
 		runfile_lang::eval::interpolate_script(body, spots.as_deref(), &mut r.scope)?
 	} else {

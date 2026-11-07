@@ -212,10 +212,38 @@ fn an_interpolation_in_backticks_is_placed_inside_them() {
 
 #[test]
 fn a_body_this_reading_does_not_follow_places_nothing() {
-	// The runner then writes every value the one way it always has.
-	assert_eq!(spots_of("exec zsh\n\techo \"{{ v }}\"\nend\n"), None);
+	// Another language is not shell text at all, so nothing is placed in it.
 	assert_eq!(spots_of("exec python3\n\tprint({{ v }})\nend\n"), None);
-	assert_eq!(spots_of("$ coproc cat {{ v }}\n"), None);
+	// A shell body the reading stops in has an entry per value, and none is a
+	// place: the runner refuses such a value rather than write it blind (audit
+	// 2026-11-06, SA-002), which used to be a single-quoted word.
+	assert_eq!(spots_of("$ coproc cat {{ v }}\n"), Some(vec![None]));
+}
+
+#[test]
+fn every_shell_and_a_wrapped_one_is_placed_like_bash() {
+	use runfile_lang::Quoting::{Bare, Double};
+	// zsh and ksh quote exactly as bash does (audit 2026-11-06, SA-002).
+	assert_eq!(quoting("exec zsh\n\techo \"{{ v }}\"\nend\n"), [Double]);
+	assert_eq!(quoting("exec ksh\n\techo {{ v }}\nend\n"), [Bare]);
+	// A shell behind a wrapper reads its body as its own (SA-001).
+	assert_eq!(quoting("exec /usr/bin/env bash\n\techo \"{{ v }}\"\nend\n"), [Double]);
+	assert_eq!(
+		quoting("exec sudo -n -u ops env A=1 nice -n 5 bash -s\n\techo \"{{ v }}\"\nend\n"),
+		[Double]
+	);
+	assert_eq!(
+		quoting("exec timeout -s KILL 30 sh\n\techo \"{{ v }}\"\nend\n"),
+		[Double]
+	);
+	assert_eq!(
+		quoting("exec ssh -p 2222 host bash\n\techo \"{{ v }}\"\nend\n"),
+		[Double]
+	);
+	// What a wrapper starts that is not a shell is still not one.
+	assert_eq!(spots_of("exec env python3\n\tprint({{ v }})\nend\n"), None);
+	assert_eq!(spots_of("exec env -S \"bash -e\"\n\techo {{ v }}\nend\n"), None);
+	assert_eq!(spots_of("exec busybox awk\n\t{ print {{ v }} }\nend\n"), None);
 }
 
 // ---- tilde-in-quotes

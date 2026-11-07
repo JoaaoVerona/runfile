@@ -2,8 +2,12 @@
 // Run with `run vscode:test`.
 
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { test } from "node:test";
 
+import { resolveProgram } from "./exe";
 import {
 	MessageReader,
 	SUPPORTED_FORMAT_VERSION,
@@ -213,6 +217,31 @@ test("pathCandidates resolves a bare name against absolute PATH dirs only", () =
 		"C:\\tools\\run.CMD",
 	]);
 	assert.deepEqual(pathCandidates("run", "", posix), []);
+})
+
+test("resolveProgram never hands back a bare name it did not find on PATH (SA-011)", () => {
+	// A bare name reaching execFile/spawn is looked for in the child's cwd -- the
+	// workspace folder -- before PATH on Windows, so a committed `run.exe` there
+	// would run. Not found on PATH has to mean "do not spawn", not "try anyway".
+	const empty = mkdtempSync(path.join(tmpdir(), "runfile-sa011-empty-"));
+	const bin = mkdtempSync(path.join(tmpdir(), "runfile-sa011-bin-"));
+	try {
+		writeFileSync(path.join(bin, "run"), "");
+		assert.equal(resolveProgram("run", { PATH: empty }), undefined);
+		assert.equal(resolveProgram("run", { PATH: "" }), undefined);
+		assert.equal(resolveProgram("run", {}), undefined);
+		// Entries that mean the cwd are not a way back in.
+		assert.equal(resolveProgram("run", { PATH: [".", "", "rel"].join(path.delimiter) }), undefined);
+		// Found on PATH: the absolute path, never the bare name.
+		assert.equal(resolveProgram("run", { PATH: [empty, bin].join(path.delimiter) }), path.join(bin, "run"));
+		// A path the user wrote (`runfile.lspPath` / `runfile.catalogCommand`) is theirs.
+		for (const given of ["/opt/runfile/run", "./run", "bin/run", "C:\\Tools\\run.exe"]) {
+			assert.equal(resolveProgram(given, { PATH: empty }), given);
+		}
+	} finally {
+		rmSync(empty, { recursive: true, force: true });
+		rmSync(bin, { recursive: true, force: true });
+	}
 })
 
 test("hasTaskVar flags VS Code variable syntax in a name or dir (SA-029)", () => {

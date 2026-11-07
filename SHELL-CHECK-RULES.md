@@ -23,9 +23,10 @@ narrower than ShellCheck on purpose: it does not report style, portability or "p
 mistakes.
 
 A script the checker cannot follow completely — `coproc`, a heredoc delimiter built from an interpolation, a few
-other rare constructs — is **left alone entirely** rather than read by a guess. Every syntax finding is one bash
-reports too, which the tests hold it to with `bash -n`; every other rule is held to what bash does when the
-script runs.
+other rare constructs — is **left alone entirely** rather than read by a guess, unless it interpolates a value:
+then it is refused, since a value whose place is not known cannot be quoted (`unplaced-interpolation`). Every
+syntax finding is one bash reports too, which the tests hold it to with `bash -n`; every other rule is held to
+what bash does when the script runs.
 
 There is no comment that silences a rule. A rule that needs silencing is a rule that is wrong, and the fix
 belongs in the rule.
@@ -701,3 +702,40 @@ The value's type decides it, so a `let n = number(ARG.count)` used as `{{ n }}` 
 this way is reported wherever it is bound. The arithmetic *expansions* `$(( … ))`, `(( … ))` and `$[ … ]` are not
 reported here: an interpolation in one is written escaped so the shell cannot expand it, which the language
 check and `security_regression.rs` cover.
+
+### `unplaced-interpolation`
+
+An interpolation in shell text the runner cannot read far enough to quote it.
+
+A value is written for the place it sits: one quoted word outside quotes, escaped inside the author's `"…"`,
+closed and reopened inside `'…'`. That needs a reading of the text up to the value. Where the reading stops
+first — a `coproc`, or syntax of a shell's own that bash's reading does not follow — the runner has no place to
+write the value for, and the one word it wrote there before was a single-quoted word, which inside `"…"` is no
+quoting at all. So the block is refused rather than run.
+
+```sh
+# flagged
+$ coproc cat
+$ echo "x {{ ARG.v }}"
+```
+
+```sh
+# not flagged
+.shell = "zsh"
+
+$ echo "Deploying {{ ARG.v }}"
+```
+
+```sh
+# not flagged
+exec /usr/bin/env bash
+	echo "deploy {{ ARG.v }}"
+end
+```
+
+Every shell is read for this, zsh and ksh included — they quote exactly as bash does — and so is a shell started
+through `env`, `sudo`, `nice`, `nohup`, `time`, `timeout`, `stdbuf`, `setsid`, `command`, or named after `ssh`.
+Left alone: a body whose program is not known until the run (an interpolated `exec` command, a computed
+`.shell`), which the runner refuses on its own when it gets there, and a body in a shell this checker reads that
+already has a syntax finding. The fix is to pass the value through the environment (`ENV.X = …`, then `"$X"`),
+or to move what the reader cannot follow into a block of its own.

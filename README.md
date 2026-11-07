@@ -936,6 +936,12 @@ target that loads `.env` and runs `test` does not push the development database 
 `$ run test` is different. A new process can only be handed variables, so there the caller's file values arrive
 as if you had exported them, and they beat `test`'s own file.
 
+**A value handed to `run` stays a value.** `run deploy {{ ARG.branch }}` gives `deploy` a positional however the
+branch is spelled — a branch named `--force` does not set `deploy`'s `FLAG.force` — and `run deploy --env
+{{ ARG.env }}` gives `--env` its value whatever it begins with. What you write yourself is read as written, and
+so is a list handed on whole, which is how a wrapper forwards its command line: `run build {{ ARGS }}` still
+passes `--release` along as a flag.
+
 `_shared.run` runs ahead of every target in its directory, line for line the way the target does, and the target
 starts from what it left — its bindings, the environment, the working directory. A nested one runs after the
 directory above it, so `runfiles/api/_shared.run` adds to `runfiles/_shared.run`. Its commands run once for each
