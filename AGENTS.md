@@ -1773,12 +1773,24 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   append a `/` instead of a space. **A bare Tab lists the commands and the targets together**, as it always
   has: a command nobody can see without first guessing its `:` is a command nobody finds. Flags are the one
   list that waits for a `-`, and past a target name nothing is offered at all: the arguments there are the
-  target's, and guessing would be confident nonsense. The bash script takes `:` out of `COMP_WORDBREAKS` at
-  load, as npm and nvm do and as the old one did: readline otherwise splits `:env` and `vscode:test` before
-  the function sees them, and inserts a candidate's own colon after the one already typed. It is tested by
-  sourcing it and driving `_run` the way the shell does — **splitting the line on the script's own
-  `COMP_WORDBREAKS`, not on spaces**, since a harness that splits by hand cannot see that class of bug at
-  all. The tree is tested directly, and in both directions against the help.
+  target's, and guessing would be confident nonsense. **The bash script leaves `COMP_WORDBREAKS` alone.** `:`
+  is a word break by default, so readline hands `_run` `:env` and `vscode:test` in pieces (`:` `env`, `vscode`
+  `:` `test` -- every run of break characters a word of its own) and replaces only what follows the last `:`.
+  `_run_words` joins a piece to the one before it where nothing stands between them on `COMP_LINE` and either
+  side of the join is a `:`, which gives the binary the words it reads; each candidate then has what readline
+  keeps -- everything before the last piece -- taken off its front. It used to take `:` out of the variable as
+  it loaded, the npm and nvm fix, and that was wrong twice over: the variable is every command's, and
+  bash-completion loads the file *during* a session's first Tab, after readline had already split that line
+  with `:` still a break. The function then saw `:comp` whole while readline replaced `comp`, so the first
+  `run :comp<Tab>` of every session became `run ::completions` and `vscode:te` became `vscode:vscode:test`. The
+  cost of leaving the variable alone is a list on a second Tab after `vscode:` showing `compile install …`, the
+  way bash lists the files of a directory. Without `COMP_LINE` the pieces are taken as given. It is tested by
+  sourcing it and driving `_run` the way readline does -- **splitting the line on the `COMP_WORDBREAKS` a fresh
+  session has, before the script is sourced, and checking the word readline makes of each candidate** rather
+  than `COMPREPLY` -- since a harness that splits by hand, reads the breaks after sourcing, or looks only at
+  the candidates cannot see that class of bug at all. zsh and fish split no word at `:`, and PowerShell's
+  native completer replaces the whole token. The tree is tested directly, and in both directions against the
+  help.
   **A candidate is data.** The bash script used to filter with `compgen -W`, which *expands* its word list --
   and a target's name is its file name, so `runfiles/$(…).run` ran on Tab: the 2026-10-03 audit's SA-002, and
   `<( )` does it with no `$` at all. It reads the binary's answer a line at a time now, matches the typed

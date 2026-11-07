@@ -1088,7 +1088,7 @@ whose state is still worth keeping, so a `setup` run under it is still recorded.
 | `run :init` | Create `runfiles/` with an example |
 | `run :lint [path…]` | Format runfiles in place and report anything the runner would refuse (`--check` writes nothing, `--stdout`) |
 | `run :env <sub>` | Manage `.env` files: `init`, `get`, `set`, `encrypt`, `decrypt`, `rotate`, `inject`, `secret-keys` |
-| `run :completions <command> <shell>` | `install`, `uninstall` or `output` a completion script for `bash`, `zsh`, `fish` or `powershell` — after upgrading from 1.8.2 or older, `install bash` again: the installed script is a copy |
+| `run :completions <command> <shell>` | `install`, `uninstall` or `output` a completion script for `bash`, `zsh`, `fish` or `powershell` — after upgrading from 1.11 or older, `install bash` again: the installed script is a copy, and an older one completes a session's first `run :comp<Tab>` to `run ::completions` |
 | `run :generate <editor>` | Task files for `zed`, `jetbrains` or `vscode`, merged into what is there |
 | `run :update [version]` | Update the binary to the newest release, or to the tag named; `--channel=github` takes it from the GitHub mirror, `--force` reinstalls |
 

@@ -512,46 +512,84 @@ const BASH: &str = r#"# run(1) completion. Install: run :completions install bas
 # answers with words, or with <files>/<dirs> when only the shell can do it.
 
 # Readline breaks a word at every character in COMP_WORDBREAKS, and `:` is one
-# of them by default -- which splits both `:env` and a namespaced target like
-# `vscode:test` into pieces before this function ever sees them, and makes
-# readline insert a candidate's own colon after the one already typed. Taking
-# `:` out is the fix npm and nvm use, and it has to happen at load: readline
-# reads the variable after the function returns, not before.
-COMP_WORDBREAKS="${COMP_WORDBREAKS//:/}"
-
+# of them by default: `run :env` and a namespaced `run vscode:test` reach this
+# function as `run` `:` `env` and `run` `vscode` `:` `test`, and readline then
+# replaces only what follows the last `:`. This leaves the variable alone --
+# it is every command's, not this one's -- and joins the pieces back into the
+# words the binary reads, then takes off each candidate what readline will not
+# replace. It used to take `:` out of COMP_WORDBREAKS as it loaded, and
+# bash-completion loads this file *during* the first Tab, after readline has
+# already split that line: the first `run :comp<Tab>` of every session became
+# `run ::completions`.
+#
 # Every candidate is data: read a line at a time and added as it is. Never
 # through `compgen -W`, which *expands* its word list -- a target's name is its
 # file name, so `$( )`, backticks and `<( )` in one ran on Tab. Each is escaped
 # for the command line it is about to be typed into, so a name holding a `;` or
 # a space arrives as one word rather than as shell.
 _run() {
-	local cur out word quoted
-	cur="${COMP_WORDS[COMP_CWORD]}"
-	out="$(run :complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null)"
+	local -a words
+	local cword=0 cur piece keep out word quoted
+	_run_words
+	cur="${words[cword]}"
+	# What readline replaces is the last piece, or nothing when that piece is
+	# the colons themselves (`vscode:`): everything before it stays as typed.
+	piece="${COMP_WORDS[COMP_CWORD]}"
+	if [[ -n "$piece" && "$piece" != *[!:]* ]]; then
+		keep="$cur"
+	else
+		keep="${cur%"$piece"}"
+	fi
+	out="$(run :complete "$cword" "${words[@]}" 2>/dev/null)"
 	COMPREPLY=()
 	while IFS= read -r word; do
 		case "$word" in
 			"") ;;
-			"<dirs>") _run_paths -d "$cur" ;;
-			"<files>") _run_paths -f "$cur" ;;
+			"<dirs>") _run_paths -d "$cur" "$keep" ;;
+			"<files>") _run_paths -f "$cur" "$keep" ;;
 			*)
 				printf -v quoted '%q' "$word"
 				if [[ "$word" == "$cur"* || "$quoted" == "$cur"* ]]; then
-					COMPREPLY+=("$quoted")
+					COMPREPLY+=("${quoted#"$keep"}")
 				fi
 				;;
 		esac
 	done <<< "$out"
 }
 
+# The words of the line as the binary reads them, into the caller's `words`,
+# and the index of the one being completed into its `cword`. A piece is joined
+# to the one before it when nothing stands between them on the line and either
+# side of the join is a `:` -- so `vscode` `:` `test` is `vscode:test` again,
+# while `--key` `=` `value` stays as readline split it. Without COMP_LINE there
+# is nothing to tell where the blanks were, and the words are taken as given.
+_run_words() {
+	local line="$COMP_LINE" i w gap n
+	for (( i = 0; i < ${#COMP_WORDS[@]}; i++ )); do
+		w="${COMP_WORDS[i]}"
+		gap="${line%%[![:space:]]*}"
+		line="${line:${#gap}}"
+		n=${#words[@]}
+		if (( n > 0 )) && [[ -n "$COMP_LINE" && -z "$gap" ]] && [[ "$w" == :* || "${words[n-1]}" == *: ]]; then
+			words[n-1]="${words[n-1]}$w"
+		else
+			words[n]="$w"
+		fi
+		line="${line:${#w}}"
+		if (( i == COMP_CWORD )); then
+			cword=$(( ${#words[@]} - 1 ))
+		fi
+	done
+}
+
 # Paths are the shell's to complete. `-o filenames` is what lets readline quote
 # one and put a `/` after a directory; bash 3.2 has no `compopt`, and gets the
-# paths without either.
+# paths without either. `$3` is what readline keeps of the word, as above.
 _run_paths() {
 	local path
 	compopt -o filenames 2>/dev/null
 	while IFS= read -r path; do
-		[[ -n "$path" ]] && COMPREPLY+=("$path")
+		[[ -n "$path" ]] && COMPREPLY+=("${path#"$3"}")
 	done <<< "$(compgen "$1" -- "$2")"
 }
 complete -F _run run

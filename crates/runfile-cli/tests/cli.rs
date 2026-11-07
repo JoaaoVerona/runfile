@@ -1038,36 +1038,35 @@ fn completions_with_no_command_prints_its_help() {
 	}
 }
 
-/// Source the generated bash script and ask it to complete, the way the shell
-/// would. Without this the scripts are only ever eyeballed.
+/// Source the generated bash script and press Tab the way readline does, and
+/// answer with what the word being completed becomes, for each candidate.
+///
+/// Readline splits the line on COMP_WORDBREAKS as a fresh session has it --
+/// `:` included, and read before the script is sourced, since bash-completion
+/// loads it during the first Tab -- with every run of break characters a word of
+/// its own. Then it replaces only what follows the last break in the word. Both
+/// halves are what made a session's first `run :comp<Tab>` `run ::completions`:
+/// a harness that splits on spaces, or reads the breaks after the script has
+/// run, or looks at COMPREPLY rather than at the word it makes, cannot see it.
 #[cfg(unix)]
 fn complete_bash(p: &Project, line: &str) -> Vec<String> {
 	let script = out(&p.run(&[":completions", "output", "bash"]));
 	let path = p.dir.path().join("comp.bash");
 	std::fs::write(&path, &script).unwrap();
 
-	// Split the line the way readline does, using the script's own
-	// COMP_WORDBREAKS -- not on spaces alone. `:` is a word break by default,
-	// so a script that does not deal with it sees `run : env`, not `run :env`,
-	// and every nested completion silently stops working. Splitting by hand
-	// hides exactly that.
-	let breaks = bash(
-		p,
-		&format!("source {}\nprintf '%s' \"$COMP_WORDBREAKS\"", path.display()),
-	);
+	let breaks = bash(p, "printf '%s' \"$COMP_WORDBREAKS\"");
 	let breaks: Vec<char> = breaks.chars().filter(|c| !c.is_whitespace()).collect();
+	assert!(breaks.contains(&':'), "a fresh bash breaks words at `:`: {breaks:?}");
 	let mut words: Vec<String> = Vec::new();
 	for tok in line.split(' ').filter(|t| !t.is_empty()) {
-		let mut buf = String::new();
+		let (mut buf, mut in_break) = (String::new(), false);
 		for c in tok.chars() {
-			if breaks.contains(&c) {
-				if !buf.is_empty() {
-					words.push(std::mem::take(&mut buf));
-				}
-				words.push(c.to_string());
-			} else {
-				buf.push(c);
+			let at_break = breaks.contains(&c);
+			if !buf.is_empty() && at_break != in_break {
+				words.push(std::mem::take(&mut buf));
 			}
+			in_break = at_break;
+			buf.push(c);
 		}
 		if !buf.is_empty() {
 			words.push(buf);
@@ -1079,16 +1078,26 @@ fn complete_bash(p: &Project, line: &str) -> Vec<String> {
 	let cword = words.len() - 1;
 	let quoted: Vec<String> = words.iter().map(|w| format!("'{w}'")).collect();
 
+	// What readline keeps of the word on the line: everything up to the last
+	// break in it.
+	let typed = if line.ends_with(' ') {
+		""
+	} else {
+		line.rsplit(' ').next().unwrap_or_default()
+	};
+	let kept = typed.rfind(|c| breaks.contains(&c)).map_or("", |k| &typed[..k + 1]);
+
 	let prog = format!(
-		"source {}\nCOMP_WORDS=({})\nCOMP_CWORD={}\n_run\nprintf '%s\\n' \"${{COMPREPLY[@]}}\"",
+		"source {}\nCOMP_WORDS=({})\nCOMP_CWORD={}\nCOMP_LINE='{line}'\nCOMP_POINT={}\n_run\nprintf '%s\\n' \"${{COMPREPLY[@]}}\"",
 		path.display(),
 		quoted.join(" "),
 		cword,
+		line.len(),
 	);
 	bash(p, &prog)
 		.lines()
 		.filter(|l| !l.is_empty())
-		.map(String::from)
+		.map(|reply| format!("{kept}{reply}"))
 		.collect()
 }
 
@@ -1133,8 +1142,8 @@ fn the_bash_script_completes_target_names() {
 fn the_bash_script_completes_subcommands_after_a_colon() {
 	let p = project(&[(MARK, &marker("o"))]);
 	let got = complete_bash(&p, "run :l");
-	// All three, in the tree's own order -- the point is that readline handed
-	// the script `:l` whole rather than splitting the colon off it.
+	// All three, in the tree's own order -- readline hands the script `:` and
+	// `l` apart, and the word it makes of each is still the whole command.
 	assert_eq!(got, [":list", ":lsp", ":lint"]);
 }
 
@@ -1157,10 +1166,11 @@ fn the_bash_script_completes_env_subcommands() {
 
 #[cfg(unix)]
 #[test]
-fn the_bash_script_takes_the_colon_out_of_the_word_breaks() {
-	// Readline splits on `:` by default, which would hand this function
-	// `run : env` and make it insert a candidate's colon after the typed one.
-	// Asserting the mechanism, because the symptom only shows under readline.
+fn the_bash_script_leaves_the_word_breaks_as_it_found_them() {
+	// They are every command's. Taking `:` out as the script loaded was the
+	// npm fix, and it is what broke a session's first Tab: bash-completion
+	// loads the script during that Tab, after readline has split the line with
+	// `:` still in it.
 	let p = project(&[(MARK, &marker("o"))]);
 	let script = out(&p.run(&[":completions", "output", "bash"]));
 	let path = p.dir.path().join("c.bash");
@@ -1168,15 +1178,50 @@ fn the_bash_script_takes_the_colon_out_of_the_word_breaks() {
 	let got = bash(
 		&p,
 		&format!(
-			"source {}\ncase \"$COMP_WORDBREAKS\" in *:*) echo split;; *) echo whole;; esac",
+			"before=\"$COMP_WORDBREAKS\"\nsource {}\n[[ \"$COMP_WORDBREAKS\" == \"$before\" ]] && echo same || echo changed",
 			path.display()
 		),
 	);
-	assert_eq!(
-		got.trim(),
-		"whole",
-		"a `:` in COMP_WORDBREAKS breaks every namespaced name"
+	assert_eq!(got.trim(), "same");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_first_tab_of_a_session_completes_a_word_with_a_colon_once() {
+	// `run :comp<Tab>` became `run ::completions`, and a namespaced name its
+	// namespace twice -- once per session, on the Tab that loaded the script.
+	let p = project(&[
+		("runfiles/deploy.run", "$ true\n"),
+		("web/runfiles/test.run", "$ true\n"),
+		("web/runfiles/lint.run", "$ true\n"),
+	]);
+	assert_eq!(complete_bash(&p, "run :comp"), [":completions"]);
+	assert_eq!(complete_bash(&p, "run web:te"), ["web:test"]);
+	// With nothing after the colon yet, readline keeps all of it.
+	let mut got = complete_bash(&p, "run web:");
+	got.sort();
+	assert_eq!(got, ["web:lint", "web:test"]);
+	// And a word after a colon command is its own word, as before.
+	assert_eq!(complete_bash(&p, "run :completions output z"), ["zsh"]);
+}
+
+/// The script's `_run`, driven with only COMP_WORDS and COMP_CWORD -- which is
+/// all a harness older than COMP_LINE gave it -- still completes.
+#[cfg(unix)]
+#[test]
+fn the_bash_script_completes_without_comp_line_too() {
+	let p = project(&[("runfiles/deploy.run", "$ true\n")]);
+	let script = out(&p.run(&[":completions", "output", "bash"]));
+	let path = p.dir.path().join("c.bash");
+	std::fs::write(&path, &script).unwrap();
+	let got = bash(
+		&p,
+		&format!(
+			"source {}\nCOMP_WORDS=(run de)\nCOMP_CWORD=1\n_run\nprintf '%s\\n' \"${{COMPREPLY[@]}}\"",
+			path.display()
+		),
 	);
+	assert_eq!(got.trim(), "deploy");
 }
 
 /// zsh's completion system is loaded by `compinit`, which defines `compdef`.
