@@ -66,13 +66,17 @@ fn parallel_for_runs_every_iteration_at_once_and_each_body_in_order() {
 	std::fs::create_dir_all(&dir).unwrap();
 	let path = shell_path(&dir);
 	let d = Recorder::default();
+	// In turn, the three sleeps alone take three times as long, whatever else
+	// is slow -- and starting a shell is, on Windows: Git Bash's six took the
+	// iterations, run at once, past a second, which the bound used to be.
+	let sleep = 1.0;
 	let src = format!(
-		"parallel for s in [\"a\", \"b\", \"c\"]\n\t$ sleep 0.4; touch {path}/{{{{ s }}}}.step\n\t$ test -e {path}/{{{{ s }}}}.step && touch {path}/{{{{ s }}}}.mark\nend\n"
+		"parallel for s in [\"a\", \"b\", \"c\"]\n\t$ sleep {sleep}; touch {path}/{{{{ s }}}}.step\n\t$ test -e {path}/{{{{ s }}}}.step && touch {path}/{{{{ s }}}}.mark\nend\n"
 	);
 	let start = Instant::now();
 	run_src(&src, &d).expect("each body ran in order");
 	let elapsed = start.elapsed().as_secs_f64();
-	assert!(elapsed < 1.0, "took {elapsed:.2}s: the iterations ran in turn");
+	assert!(elapsed < 3.0 * sleep, "took {elapsed:.2}s: the iterations ran in turn");
 	for s in ["a", "b", "c"] {
 		assert!(
 			dir.join(format!("{s}.mark")).exists(),
