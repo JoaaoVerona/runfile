@@ -374,6 +374,73 @@ fn a_capture_condition_uses_the_same_shell_as_a_line() {
 	assert_eq!(d.calls(), vec!["same"]);
 }
 
+/// The system's own shells, named by path as a Runfile would name them. On macOS
+/// both are bash 3.2, which is what the two tests below are for; elsewhere they
+/// are whatever the system ships, and the tests hold there too.
+#[cfg(unix)]
+fn system_shells() -> Vec<&'static str> {
+	["/bin/sh", "/bin/bash"]
+		.into_iter()
+		.filter(|p| std::path::Path::new(p).exists())
+		.collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_shell_runs_its_script_to_the_last_line_however_long() {
+	// The script comes down a pipe (SA-005), and bash before 4.0 sourced a pipe
+	// by reading only what fstat called its size: nothing on Linux, whatever
+	// was written so far on macOS. It ran none of the script, or the start of
+	// it, and exited 0, so on a Mac whose bash was its own every `$` line passed
+	// without running. Longer than any pipe holds, so the shell has to keep
+	// reading after the runner has blocked; the mark is the last line, so a
+	// script cut short anywhere fails here. Its first line asks for its own
+	// number and for `$0`, which the way 3.2 reads it must leave as they were.
+	let dir = tempfile::TempDir::new().unwrap();
+	let pad = format!("$ : {}\n", "x".repeat(100));
+	for shell in system_shells() {
+		let mark = dir.path().join(shell.replace('/', "-"));
+		let name = shell.rsplit('/').next().unwrap();
+		let src = format!(
+			".shell = \"{shell}\"\n\
+			 $ test \"$LINENO\" = 1 && test \"${{0##*/}}\" = {name}\n\
+			 {}\
+			 $ test \"$LINENO\" = 2002\n\
+			 $ touch '{}'\n",
+			pad.repeat(2000),
+			mark.display(),
+		);
+		let d = Recorder::default();
+		run_src(&src, &d).unwrap_or_else(|e| panic!("{shell}: {e}"));
+		assert!(mark.exists(), "{shell} stopped before the last line of a long script");
+	}
+}
+
+#[cfg(unix)]
+#[test]
+fn nothing_a_script_starts_can_read_the_script() {
+	// SA-005: the script holds every interpolated secret. It comes down fd 3,
+	// which its first line closes, so neither the shell past that line nor a
+	// program the script starts holds the pipe; and where bash 3.2 reads it into
+	// a variable first, that is unset before the first line runs. The mark is
+	// the last line, so a shell that never ran the script cannot pass this.
+	let dir = tempfile::TempDir::new().unwrap();
+	for shell in system_shells() {
+		let mark = dir.path().join(shell.replace('/', "-"));
+		let src = format!(
+			".shell = \"{shell}\"\n\
+			 $ test -z \"${{__runfile_script+set}}\" || exit 31\n\
+			 $ if ( true <&3 ) 2>/dev/null; then exit 32; fi\n\
+			 $ sh -c 'if ( true <&3 ) 2>/dev/null; then exit 1; fi' || exit 33\n\
+			 $ touch '{}'\n",
+			mark.display(),
+		);
+		let d = Recorder::default();
+		run_src(&src, &d).unwrap_or_else(|e| panic!("{shell}: {e}"));
+		assert!(mark.exists(), "{shell} never ran the script");
+	}
+}
+
 #[test]
 fn retry_stops_at_the_first_success() {
 	let d = Recorder::default();

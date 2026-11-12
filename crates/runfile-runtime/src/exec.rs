@@ -262,19 +262,19 @@ const SCRIPT_FD: i32 = 3;
 /// The script holds every interpolated value, decrypted secrets included, and a
 /// process's command line is readable by every local user (`/proc/<pid>/cmdline`,
 /// `ps`) for as long as it runs -- audit 2026-11-06, SA-005. So the shell is told
-/// only to read fd 3, `-c '. /dev/fd/3' <shell>`, which keeps stdin the terminal
-/// (the reason for `-c`) and `$0` the shell's path as it always was; and the
-/// script travels down a pipe the runner writes once the child is started. The
-/// read end is moved to fd 3 in the child alone, so no other spawn can inherit
-/// it. Answers the write end; the read end is dropped by the caller once the
-/// child exists.
+/// only to read fd 3, by a fixed `-c` text (`read_script`) with `<shell>` after
+/// it, which keeps stdin the terminal (the reason for `-c`) and `$0` the shell's
+/// path as it always was; and the script travels down a pipe the runner writes
+/// once the child is started. The read end is moved to fd 3 in the child alone,
+/// so no other spawn can inherit it. Answers the write end; the read end is
+/// dropped by the caller once the child exists.
 #[cfg(unix)]
 fn pipe_script(c: &mut Command, exe: &Path) -> std::io::Result<(std::io::PipeReader, std::io::PipeWriter)> {
 	use std::os::fd::AsRawFd;
 	use std::os::unix::process::CommandExt;
 	let (r, w) = std::io::pipe()?;
 	let fd = r.as_raw_fd();
-	c.arg("-c").arg(format!(". /dev/fd/{SCRIPT_FD}")).arg(exe);
+	c.arg("-c").arg(read_script()).arg(exe);
 	// SAFETY: runs between fork and exec, and calls only dup2 and fcntl, both
 	// async-signal-safe; `fd` is open in the parent until after the spawn.
 	unsafe {
@@ -292,6 +292,47 @@ fn pipe_script(c: &mut Command, exe: &Path) -> std::io::Result<(std::io::PipeRea
 		});
 	}
 	Ok((r, w))
+}
+
+/// The `-c` text that has a shell read its script from fd 3 and run it.
+///
+/// `. /dev/fd/3` everywhere but in bash before 4.0, whose `.` reads a file with
+/// one `read` of the size `fstat` gives it. For a pipe that is 0 on Linux and on
+/// macOS whatever the runner had written so far, so it ran none of the script,
+/// or its first part, and exited 0 -- and bash 3.2 is macOS's own `/bin/bash`
+/// and `/bin/sh`, so on a Mac without Homebrew's bash every `$` line passed
+/// without running. bash 4.0 reads a pipe to its end, and so do dash, zsh,
+/// mksh and busybox, which never take the other branch.
+///
+/// Before 4.0 the shell reads the pipe to its end itself, with `read -d ''`,
+/// which stops only at a NUL (and a shell's text cannot hold one), and runs
+/// what it read with `eval`. The text is still never on a command line:
+/// `read` and `eval` are builtins, and the variable is unset by the first
+/// thing `eval` runs, before any line of the script, so nothing the script
+/// starts or exports can see it.
+/// Then `exec 3<&-` on the script's first line closes the pipe, as it does
+/// after `.`. The `$'\n'` between the two keeps bash 3.2's line numbers the
+/// script's own: without it, the script's line 2 was reported as line 1. A
+/// pipe that holds nothing -- a runner that never wrote -- fails here, where
+/// `.` would succeed at running nothing. Two differences remain: the shell's
+/// own errors name the shell (`/bin/bash: line 7:`) rather than `/dev/fd/3:`,
+/// and a `return` outside a function, which ends a sourced script, is an error
+/// under `eval`.
+///
+/// The branch is decided by `BASH_VERSINFO`, which bash sets for itself and
+/// will not take from the environment. Another shell handed one by the
+/// environment that says 1, 2 or 3 takes the `eval` branch too: zsh, mksh and
+/// busybox run the script there just the same, and dash, whose `read` has no
+/// `-d`, fails -- none of them skips the script quietly.
+#[cfg(unix)]
+fn read_script() -> String {
+	format!(
+		"case ${{BASH_VERSINFO-}} in \
+		 [123]) IFS= read -r -d '' __runfile_script <&{SCRIPT_FD} || [ -n \"$__runfile_script\" ]; \
+		 eval \"unset __runfile_script\"$'\\n'\"$__runfile_script\";; \
+		 *) . /dev/fd/{SCRIPT_FD};; \
+		 esac"
+	)
 }
 
 /// Write `script` to the pipe a shell reads it from, behind an `exec 3<&-` that

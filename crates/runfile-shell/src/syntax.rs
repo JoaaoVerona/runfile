@@ -256,16 +256,25 @@ fn quoting_of(nest: &[Nest]) -> Quoting {
 	// Whether a `${…}` stands between that level and the value, which is where
 	// bash reads a `'` as a quote however the expansion treats it.
 	let braced = k + 1 < nest.len();
+	// Whether an expanding heredoc's body holds that level, with nothing that
+	// starts quoting over in between: where shells do not agree on a `\"`.
+	let in_heredoc = nest[..k]
+		.iter()
+		.rev()
+		.take_while(|n| !matches!(n, Nest::Fresh))
+		.any(|n| matches!(n, Nest::Heredoc(_, true)));
 	match n {
 		Nest::Fresh => Quoting::Bare,
+		Nest::Double if in_heredoc => Quoting::DoubleInHeredoc,
 		Nest::Double | Nest::Arith => Quoting::Double,
-		Nest::Heredoc(_, true) if braced => Quoting::Double,
+		Nest::Heredoc(_, true) if braced => Quoting::DoubleInHeredoc,
 		Nest::Heredoc(_, true) => Quoting::Heredoc,
 		Nest::Heredoc(_, false) => Quoting::Literal,
 		Nest::Ansi => Quoting::Ansi,
 		Nest::Comment => Quoting::Comment,
 		// A `'` inside a `${…}` that is itself inside double quotes or a
 		// heredoc, or in arithmetic, is read as a quote and kept as a character.
+		Nest::Single if expands(&nest[..k]) && in_heredoc => Quoting::SingleExpandedInHeredoc,
 		Nest::Single if expands(&nest[..k]) => Quoting::SingleExpanded,
 		Nest::Single => Quoting::Single,
 		Nest::Param | Nest::Backtick(_) => unreachable!(),

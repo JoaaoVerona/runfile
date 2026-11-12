@@ -183,11 +183,46 @@ fn security_regression_an_interpolated_value_is_not_in_the_shells_argv() {
 	)]);
 	let o = p.run(&["t", "--token=TOKEN-MARKER-1234"]);
 	assert!(o.status.success(), "{}", text(&o));
+	let out = String::from_utf8_lossy(&o.stdout);
+	// That the command line was printed at all, so a script that never ran --
+	// as one did under bash 3.2 -- cannot pass for a command line without it.
 	assert!(
-		!String::from_utf8_lossy(&o.stdout).contains("TOKEN-MARKER-1234"),
+		out.contains("/dev/fd/3"),
+		"the command line was not printed:\n{}",
+		text(&o)
+	);
+	assert!(
+		!out.contains("TOKEN-MARKER-1234"),
 		"the interpolated value is readable in the shell's /proc/<pid>/cmdline:\n{}",
 		text(&o)
 	);
+}
+
+/// SA-005 on the shells macOS ships, `/bin/bash` and `/bin/sh`, both bash 3.2:
+/// it is given its script another way (`exec::read_script`), which must keep it
+/// off the command line too. Read with `ps`, there being no /proc.
+#[test]
+#[cfg(target_os = "macos")]
+fn security_regression_an_interpolated_value_is_not_in_bash_3_2_s_argv() {
+	for shell in ["/bin/bash", "/bin/sh"] {
+		let p = project(&[(
+			"runfiles/t.run",
+			&format!(".shell = \"{shell}\"\n$ : {{{{ ARG.token }}}}; ps -ww -o args= -p $$\n"),
+		)]);
+		let o = p.run(&["t", "--token=TOKEN-MARKER-1234"]);
+		assert!(o.status.success(), "{shell}: {}", text(&o));
+		let out = String::from_utf8_lossy(&o.stdout);
+		assert!(
+			out.contains("/dev/fd/3"),
+			"{shell}: the command line was not printed:\n{}",
+			text(&o)
+		);
+		assert!(
+			!out.contains("TOKEN-MARKER-1234"),
+			"{shell}: the interpolated value is on the shell's command line:\n{}",
+			text(&o)
+		);
+	}
 }
 
 /// SA-006: a value handed to another target with `run w {{ x }}` is a value. Data

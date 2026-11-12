@@ -218,6 +218,13 @@ fn a_value_is_written_for_the_quotes_around_it() {
 	// The author's own quotes are closed around the word and reopened.
 	assert_eq!(at("a b", Quoting::Single), "''a b''");
 	assert_eq!(at("$x", Quoting::SingleExpanded), r#"''\$x''"#);
+	// In a heredoc's `${…}` a `"` is printed by a command substitution, which
+	// every shell reads one way, where a `\"` is read two.
+	assert_eq!(
+		at("$(x) \"q\" it's", Quoting::DoubleInHeredoc),
+		r#"'\$(x) $(printf \\042)q$(printf \\042) it'\''s'"#
+	);
+	assert_eq!(at("a\"b", Quoting::SingleExpandedInHeredoc), r#"''a$(printf \\042)b''"#);
 	// What only looks quoted is a word no shell expands: unchanged everywhere.
 	assert_eq!(at("plain", Quoting::Double), "plain");
 	let comment = Value::Str("a\nb".into()).to_shell_at(&Spot {

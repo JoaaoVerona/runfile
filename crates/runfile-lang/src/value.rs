@@ -125,19 +125,36 @@ pub enum Quoting {
 	/// quote is closed around the word and opened again after it.
 	Single,
 	/// Inside a `'…'` that bash reads as a quote but keeps in the text -- in a
-	/// `${…}` inside double quotes or a heredoc, or in arithmetic: closed and
-	/// reopened around the word, which is written as [`Quoting::Double`].
+	/// `${…}` inside double quotes, or in arithmetic: closed and reopened around
+	/// the word, which is written as [`Quoting::Double`]. Inside a heredoc it is
+	/// [`Quoting::SingleExpandedInHeredoc`].
 	SingleExpanded,
+	/// [`Quoting::SingleExpanded`] where an expanding heredoc's body holds it:
+	/// closed and reopened the same way, the word written as
+	/// [`Quoting::DoubleInHeredoc`].
+	SingleExpandedInHeredoc,
 	/// Inside `$'…'`, closed and reopened the same way.
 	Ansi,
 	/// Where this shell expands `$`, backticks and `\` and keeps quotes as
-	/// plain characters: `"…"`, a `${…}` inside them or inside a heredoc,
-	/// arithmetic. The word keeps its quotes -- a command string for another
-	/// shell needs them -- and what this shell would expand is escaped inside
-	/// them. The `\'` between two quoted pieces is left as it is: inside a
-	/// `${…}` bash still reads `'` as a quote while it looks for the `}`, and an
-	/// escaped backslash there would leave the quotes unbalanced.
+	/// plain characters: `"…"`, a `${…}` inside them, arithmetic. The word keeps
+	/// its quotes -- a command string for another shell needs them -- and what
+	/// this shell would expand is escaped inside them. The `\'` between two
+	/// quoted pieces is left as it is: inside a `${…}` bash still reads `'` as a
+	/// quote while it looks for the `}`, and an escaped backslash there would
+	/// leave the quotes unbalanced. Inside a heredoc it is
+	/// [`Quoting::DoubleInHeredoc`].
 	Double,
+	/// [`Quoting::Double`] where an expanding heredoc's body holds it -- in a
+	/// `${…}` there, or in the `"…"` inside one -- with a `"` of the word's
+	/// written `$(printf \\042)`. The `\"` that serves everywhere else is not
+	/// read one way there: bash 5.1 and later, dash, mksh and busybox take the
+	/// backslash off, bash before 5.1 keeps it as text -- macOS's own 3.2,
+	/// RHEL 8's 4.4, the 5.0 of Ubuntu 20.04 and Debian 10, which printed
+	/// `'a"b'` as `'a\"b'` -- and zsh refuses the line. A bare `"` is a quote
+	/// to every one of them. A command substitution is read afresh by all of
+	/// them and prints the `"` in each, at the cost of a subshell, paid only
+	/// for a `"` in a value written into a heredoc's `${…}`.
+	DoubleInHeredoc,
 	/// An expanding heredoc's body: as [`Quoting::Double`], but `"` is a plain
 	/// character there, so it is left alone.
 	Heredoc,
@@ -190,9 +207,11 @@ fn written(word: &str, quoting: &Quoting) -> Result<String, String> {
 	Ok(match quoting {
 		Quoting::Bare | Quoting::Literal => word.to_string(),
 		Quoting::Single => format!("'{word}'"),
-		Quoting::SingleExpanded => format!("'{}'", in_quotes(word, &['\\', '$', '`', '"'])),
+		Quoting::SingleExpanded => format!("'{}'", in_quotes(word, "\\\"")),
+		Quoting::SingleExpandedInHeredoc => format!("'{}'", in_quotes(word, HEREDOC_QUOTE)),
 		Quoting::Ansi => format!("'{word}$'"),
-		Quoting::Double => in_quotes(word, &['\\', '$', '`', '"']),
+		Quoting::Double => in_quotes(word, "\\\""),
+		Quoting::DoubleInHeredoc => in_quotes(word, HEREDOC_QUOTE),
 		Quoting::Heredoc => escaped(word, &['\\', '$', '`']),
 		Quoting::Comment if word.contains(['\n', '\r']) => {
 			return Err(
@@ -212,11 +231,16 @@ fn written(word: &str, quoting: &Quoting) -> Result<String, String> {
 	})
 }
 
-/// `word` with a backslash in front of each of `special` inside its single
-/// quotes -- and nothing outside them, where a quoted word has only the `\'`
-/// joining two quoted pieces, the blank between two words of a list, and
-/// characters no shell gives a meaning to.
-fn in_quotes(word: &str, special: &[char]) -> String {
+/// How a `"` is written where an expanding heredoc's body holds it
+/// ([`Quoting::DoubleInHeredoc`]): `$(printf \\042)`.
+const HEREDOC_QUOTE: &str = "$(printf \\\\042)";
+
+/// `word` with a backslash in front of each `\`, `$` and backtick inside its
+/// single quotes, and each `"` there written as `quote` -- and nothing outside
+/// them, where a quoted word has only the `\'` joining two quoted pieces, the
+/// blank between two words of a list, and characters no shell gives a meaning
+/// to.
+fn in_quotes(word: &str, quote: &str) -> String {
 	let mut out = String::with_capacity(word.len() + 2);
 	let mut quoted = false;
 	let mut chars = word.chars();
@@ -230,7 +254,8 @@ fn in_quotes(word: &str, special: &[char]) -> String {
 				out.push(c);
 				out.extend(chars.next());
 			}
-			c if quoted && special.contains(&c) => {
+			'"' if quoted => out.push_str(quote),
+			'\\' | '$' | '`' if quoted => {
 				out.push('\\');
 				out.push(c);
 			}

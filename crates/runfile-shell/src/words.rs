@@ -472,7 +472,7 @@ impl P<'_> {
 	fn backtick(&mut self, parts: &mut Vec<Part>) -> R<()> {
 		let i = self.i;
 		self.i += 1;
-		let in_double = self.quoting_here() == Quoting::Double;
+		let in_double = matches!(self.quoting_here(), Quoting::Double | Quoting::DoubleInHeredoc);
 		let mut inner = Vec::new();
 		loop {
 			let Some(ch) = self.s.get(self.i).copied() else {

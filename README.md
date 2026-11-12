@@ -1278,8 +1278,10 @@ Shell is still there. It is just marked.
 | Windows | x86-64, arm64 |
 
 `$` lines use bash where it exists, Git Bash on Windows, and `sh` otherwise — so one file works everywhere. On
-Windows that is never WSL's `bash.exe`, and neither is `.shell = "bash"` or `exec bash`. Set `.shell` to pin one
-of the other POSIX shells, or name any other interpreter with `exec`.
+Windows that is never WSL's `bash.exe`, and neither is `.shell = "bash"` or `exec bash`. On macOS without
+Homebrew's bash it is the system's bash 3.2, which runs `$` lines like any other but has none of bash 4's
+additions (`declare -A`, `${x,,}`); name a newer one with `.shell` where a line needs them. Set `.shell` to pin
+one of the other POSIX shells, or name any other interpreter with `exec`.
 
 ## License
 

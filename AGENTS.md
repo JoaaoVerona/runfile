@@ -216,7 +216,17 @@ from `run::render`) and writes the quoted word for it: as it is outside quotes a
 reopened inside the author's `'…'` or `$'…'`, and with `\ $ \` "` escaped *inside its quoted pieces* where a
 shell expands and keeps quotes as text -- `"…"`, a `${…}` in them or in a heredoc, arithmetic. The `\'`
 joining two pieces is left alone, because inside a `${…}` bash still reads `'` as a quote while it looks for
-the `}`, and an escaped backslash there unbalanced it. An expanding heredoc's body escapes `\ $ \`` (a `"` is
+the `}`, and an escaped backslash there unbalanced it. **Inside a heredoc's `${…}` a `"` is written
+`$(printf \\042)`, not `\"`** (`Quoting::DoubleInHeredoc`, `SingleExpandedInHeredoc`; `syntax::quoting_of`
+asks whether an expanding heredoc holds the hole with no `$( )` between). Shells read a `\"` there two ways:
+bash 5.1 and later, dash, mksh and busybox take the backslash off; bash before 5.1 -- macOS's own 3.2, RHEL 8's
+4.4, Ubuntu 20.04's and Debian 10's 5.0 -- prints it, so `${x:-{{ v }}}` with `a"b` gave `'a\"b'`; zsh refuses
+the line; and a bare `"` is a quote to all of them. A command substitution is read afresh by every one, and
+costs a subshell only for a `"` of a value in that spot. Not one of these ran the value: the
+`security_regression_a_value_is_text_wherever_it_sits` matrix found nothing else under bash 3.2, and covers a
+heredoc's `${x:-'…'}` and `exec sh` now as well. Left as it was: in a `"…"` *inside* a heredoc's `${…}`, bash
+5.3 takes the backslash off the `\'` joint too, so `it's` arrives as `'it'''s'` -- text, never run; the matrix
+does not hold that shape for it. An expanding heredoc's body escapes `\ $ \`` (a `"` is
 text there), a backtick's body is read again in a sandbox after bash's own backslash pass and escaped once more
 for it, and a quoted heredoc's body is left as it is. The word keeps its quotes in every case, so a message
 reads as it did and a command string for another shell gets the value quoted for *that* shell. Two places
@@ -1122,12 +1132,31 @@ terminal's width, and how wide text is on it).
 - **On Unix the script is not on the shell's command line** (`exec::pipe_script`, audit 2026-11-06 SA-005).
   It holds every interpolated value, decrypted secrets included, and a command line is readable by every local
   user through `/proc/<pid>/cmdline` and `ps` for as long as the process runs. So the shell is started as
-  `<shell> -e -c '. /dev/fd/3' <shell>` -- the `-c` text is fixed, `$0` is the shell's path as it was -- and the
-  script goes down a pipe moved to fd 3 in the child alone (`pre_exec`), written on a thread of its own and
-  prefixed `exec 3<&-; ` on its first line, so nothing the shell starts inherits the pipe and every line keeps
-  its number. A shell's own error now names `/dev/fd/3:` where it said `bash:`. A `detach`ed shell's script is
-  written in full before the run moves on. It also lifts the 128 KiB a single argument could hold. Windows,
-  which has no `/dev/fd`, keeps `-c`.
+  `<shell> -e -c <fixed text> <shell>` -- `$0` is the shell's path as it was -- and the script goes down a pipe
+  moved to fd 3 in the child alone (`pre_exec`), written on a thread of its own and prefixed `exec 3<&-; ` on its
+  first line, so nothing the shell starts inherits the pipe and every line keeps its number. A `detach`ed
+  shell's script is written in full before the run moves on. It also lifts the 128 KiB a single argument could
+  hold. Windows, which has no `/dev/fd`, keeps `-c`.
+- **The fixed text is `. /dev/fd/3`, except under bash before 4.0** (`exec::read_script`). That bash's `.` reads
+  a file with one `read` of the size `fstat` reports, which for a pipe is 0 on Linux and on macOS whatever had
+  been written so far -- so it ran none of the script, or the start of it, and **exited 0**. bash 3.2 is macOS's
+  own `/bin/bash` and `/bin/sh`, so on a Mac without Homebrew's bash every `$` line passed without running.
+  Script-file mode (`<shell> -e /dev/fd/3`) reads a pipe properly on every shell, and was not used because it
+  makes `$0` the path `/dev/fd/3`, which `the_shell_property_decides_what_runs_a_line` and the note on
+  `exec bash` above rely on. Instead the text is a `case` on `BASH_VERSINFO`, which bash sets itself and will
+  not take from the environment: under 1-3 it reads the pipe to its end with `IFS= read -r -d ''` and runs it
+  with `eval "unset __runfile_script"$'\n'"$__runfile_script"`. Both are builtins, so the script is still on no
+  command line, and the variable is gone before the script's first line, so nothing it starts or exports sees
+  it. The `$'\n'` keeps 3.2's `$LINENO` the script's own: without it the script's line 2 reported 1, and with
+  a literal newline in the `-c` text instead, 3. Unlike `.`, an empty pipe fails rather than running nothing.
+  What differs from `.`: a shell's own error names the shell (`/bin/bash: line 7:`) where under `.` it names
+  `/dev/fd/3:`, and a `return` outside a function is an error rather than the end of the script. dash, zsh,
+  mksh and busybox read a pipe to its end with `.` and never take the other branch (a `BASH_VERSINFO` exported
+  into theirs sends them to it: zsh, mksh and busybox run the script there just the same, dash fails at
+  `read -d` -- none skips it). `a_shell_runs_its_script_to_the_last_line_however_long` and
+  `nothing_a_script_starts_can_read_the_script` run `/bin/sh` and `/bin/bash` -- on macOS, the 3.2s -- and end
+  on a mark, so a script that never ran cannot pass; the SA-005 argv tests assert they saw the command line for
+  the same reason, and on macOS read it with `ps`.
 - **`detach`** starts the command and does not wait. Its streams go to null: inherited, they would hold the
   runner's own stdout and stderr open after it exits, so whoever is reading them waits for the very command
   that was meant to outlive the run. **On Windows that is not enough** -- `Stdio::null()` says what a child
@@ -2396,7 +2425,12 @@ tests that assert the mechanism rather than the symptom.
    PATH, and `System32\bash.exe` is WSL's launcher -- which GitHub's Windows images ship with no distribution, so
    its "no installed distributions" was read as bash's verdict on every script. The fleet's Windows runner is
    provisioned without WSL, which is why only the mirror's CI saw it. The helper passes over both of the
-   launcher's places, as `shell::locate` does; it cannot call it, the runtime being above this crate. Every
+   launcher's places, as `shell::locate` does; it cannot call it, the runtime being above this crate. **A bash
+   older than 4.1 is no referee** (`bash_version`), and `bash_agrees_with_every_syntax_finding` skips under one,
+   saying so: the checker reads 4.1's grammar, and macOS's own 3.2 refuses five of the scripts 4.1 reads (a
+   `case` and a heredoc holding `)` inside `$( )`, `[[ -n ! ]]` and its kin, `@( … )` in `[[ … ]]`) and reads an
+   unended heredoc without the warning the checker matches. 4.0 differs only on `@( … )`; 4.1, 4.2, 4.3, 4.4,
+   5.0, 5.2 and 5.3 were tried and agree with every one. Every
    example in
    `SHELL-CHECK-RULES.md` is run through the checker (`tests/rules_doc.rs`), whose rule list must match `RULES`
    in order. For the author's corpus, `tests::corpus` reads runfile paths from `RUNFILE_CORPUS_LIST`, prints every

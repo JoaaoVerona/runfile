@@ -268,7 +268,7 @@ fn security_regression_a_value_is_text_wherever_it_sits() {
 	let exact = |v: &str| format!("{v}\n");
 	let quoted = |v: &str| format!("{}\n", shell_quote(v));
 	let around = |v: &str| format!("'pre'{}'post'\n", shell_quote(v));
-	let forms: [Form; 11] = [
+	let forms: [Form; 13] = [
 		("$ printf '%s\\n' {{ ARG.v }}\n", &exact),
 		("$ printf '%s\\n' \"{{ ARG.v }}\"\n", &quoted),
 		("$ sh -c \"printf '%s\\\\n' {{ ARG.v }}\"\n", &exact),
@@ -279,6 +279,14 @@ fn security_regression_a_value_is_text_wherever_it_sits() {
 			"exec bash\n\tx=\n\tcat <<EOF\n\t${x:-{{ ARG.v }}}\n\tEOF\nend\n",
 			&quoted,
 		),
+		// A `"` in the value is where shells part inside a heredoc's `${…}`:
+		// bash before 5.1 printed the `\"` written there with its backslash.
+		// Under `sh` too, which is dash on Debian and Ubuntu, bash 3.2 on macOS.
+		(
+			"exec bash\n\tx=\n\tcat <<EOF\n\t${x:-'pre{{ ARG.v }}post'}\n\tEOF\nend\n",
+			&around,
+		),
+		("exec sh\n\tx=\n\tcat <<EOF\n\t${x:-{{ ARG.v }}}\n\tEOF\nend\n", &quoted),
 		("$ x=; y=${x:-'{{ ARG.v }}'}; printf '%s\\n' \"$y\"\n", &exact),
 		("$ printf '%s\\n' \"`printf '%s' {{ ARG.v }}`\"\n", &exact),
 		("exec bash\n\tcat <<EOF\n\t{{ ARG.v }}\n\tEOF\nend\n", &quoted),

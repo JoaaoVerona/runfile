@@ -153,8 +153,16 @@ fn an_interpolation_is_placed_inside_the_quotes_that_hold_it() {
 	assert_eq!(quoting("$ echo \"${x:-{{ v }}}\"\n"), [Double]);
 	assert_eq!(quoting("$ echo ${x:-'{{ v }}'}\n"), [Single]);
 	assert_eq!(quoting("$ echo \"${x:-'{{ v }}'}\"\n"), [SingleExpanded]);
-	// Inside a heredoc a `${…}` is written for the way bash reads it too.
-	assert_eq!(quoting("$ cat <<EOF\n$ ${x:-{{ v }}}\n$ EOF\n"), [Double]);
+	// Inside a heredoc a `${…}` is written for the way bash reads it too -- and
+	// for the shells that read a `\"` there two ways, so are the quotes in it.
+	// Not a command substitution there, which starts quoting over.
+	assert_eq!(quoting("$ cat <<EOF\n$ ${x:-{{ v }}}\n$ EOF\n"), [DoubleInHeredoc]);
+	assert_eq!(
+		quoting("$ cat <<EOF\n$ ${x:-'{{ v }}'}\n$ EOF\n"),
+		[SingleExpandedInHeredoc]
+	);
+	assert_eq!(quoting("$ cat <<EOF\n$ ${x:-\"{{ v }}\"}\n$ EOF\n"), [DoubleInHeredoc]);
+	assert_eq!(quoting("$ cat <<EOF\n$ $(echo \"{{ v }}\")\n$ EOF\n"), [Double]);
 	// Arithmetic expands what is in it the way double quotes do.
 	assert_eq!(quoting("$ echo $(( {{ v }} + 1 ))\n"), [Double]);
 	assert_eq!(quoting("$ (( {{ v }} > 1 )) && echo big\n"), [Double]);
@@ -948,6 +956,17 @@ fn bash(script: &str) -> Option<(bool, String)> {
 	Some((out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned()))
 }
 
+/// Which bash referees, as (major, minor). `None` where there is none.
+fn bash_version() -> Option<(u32, u32)> {
+	let out = std::process::Command::new(bash_program()?)
+		.args(["-c", "echo \"${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}\""])
+		.output()
+		.ok()?;
+	let text = String::from_utf8_lossy(&out.stdout);
+	let mut parts = text.split_whitespace().map(str::parse);
+	Some((parts.next()?.ok()?, parts.next()?.ok()?))
+}
+
 /// Bash agrees with every syntax finding in `src`, and with every script
 /// that has none.
 fn agrees(src: &str) {
@@ -969,6 +988,19 @@ fn agrees(src: &str) {
 
 #[test]
 fn bash_agrees_with_every_syntax_finding() {
+	// The checker reads the grammar bash has had since 4.1, and an older one
+	// is no referee for it. bash 3.2 -- macOS's own, what a Mac without
+	// Homebrew's bash has -- refuses five of these that 4.1 reads: a `case` and
+	// a heredoc holding a `)` inside `$( … )`, `[[ -n ! ]]` and its kin, and
+	// `@( … )` in `[[ … ]]`, which 4.1 made a pattern without `extglob`; and
+	// it reads a heredoc never ended without the warning the checker matches.
+	// 4.0 differs in the last `[[ … ]]` only. Every one agrees from 4.1 on.
+	if let Some(version @ (major, minor)) = bash_version()
+		&& version < (4, 1)
+	{
+		eprintln!("skipped: bash {major}.{minor} is older than 4.1, the grammar the checker reads");
+		return;
+	}
 	for src in [
 		"$ echo it's\n",
 		"$ if true; then\n$ \techo\n",
