@@ -39,7 +39,12 @@ pub struct Section(pub &'static str, pub &'static [Row]);
 /// Render sections, aligning descriptions to one column across all of them so
 /// the whole page reads as a single table rather than several.
 pub fn render(intro: &str, sections: &[Section]) -> String {
-	let paint = colour();
+	render_painted(intro, sections, colour())
+}
+
+/// `render` with the choice of colour already made: for a test that reads the
+/// page's words, which must not depend on whether `cargo test` has a terminal.
+pub fn render_painted(intro: &str, sections: &[Section], paint: bool) -> String {
 	let (bold, dim, cyan, reset) = if paint {
 		(BOLD, DIM, CYAN, RESET)
 	} else {

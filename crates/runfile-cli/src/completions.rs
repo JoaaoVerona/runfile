@@ -721,7 +721,11 @@ mod tests {
 	fn every_advertised_command_is_offered_by_completion() {
 		// The tree is written by hand, so it can drift from what the help
 		// offers. This is the check that it has not.
-		let usage = crate::usage();
+		//
+		// Read unpainted: this process's stdout is whatever ran `cargo test`,
+		// and in a terminal the page comes with escape codes, which turned
+		// `:list` into a word that ends `[0m`.
+		let usage = crate::help::render_painted(crate::INTRO, crate::SECTIONS, false);
 		for c in ROOT.subs {
 			assert!(usage.contains(c.name), "`{}` is completed but not in the help", c.name);
 		}
