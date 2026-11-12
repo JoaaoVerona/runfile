@@ -1,3 +1,18 @@
-# Run all workspace tests
+# Run all workspace tests, then again with bash 3.2, macOS's own, as `bash` and `sh`
+#
+# The second pass is how a Linux machine sees what a Mac without Homebrew's bash
+# does; `_macos-bash` says where that bash comes from, and when there is no
+# second pass. Arguments go to both.
 
 $ mbx test --workspace --all-features --locked {{ ARGS }}
+
+let shims = $ run _macos-bash
+
+if shims != ""
+	print("Again, with bash 3.2 as bash and sh, from {{ shims }}")
+
+	do
+		add_path(shims)
+		$ mbx test --workspace --all-features --locked {{ ARGS }}
+	end
+end

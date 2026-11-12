@@ -16,7 +16,7 @@ run setup                  # Git hooks and the pinned mbx the targets compile th
 run build                  # Debug build
 run check                  # Non-mutating gate: fmt --check + clippy (deny warnings) + every release target compiles
 run lint                   # Formats, then lints
-run test                   # All workspace tests
+run test                   # All workspace tests, then again with bash 3.2 (macOS's own) as `bash` and `sh`
 run audit                  # RustSec advisories, and a toolchain pin more than one stable release behind
 run install                # Builds release and installs BOTH binaries to ~/.local/bin
 
@@ -2395,7 +2395,18 @@ files, a dependency's trace printing before its call site — were invisible in 
 tests that assert the mechanism rather than the symptom.
 
 1. Run `run test` for the whole workspace, not just the crate you changed. Run `run vscode:test` for the
-   extension.
+   extension. **`run test` and `run ci:test` run the suite twice**: the second time with bash 3.2.57 first on
+   PATH as both `bash` and `sh`, which is what a Mac without Homebrew's bash runs everything under. Three bugs
+   reached the macOS CI and nowhere else, each invisible under the bash 5 of every Linux machine (`$` lines
+   that ran nothing and exited 0 under bash before 4.0; a heredoc's `"` printed with its backslash before 5.1;
+   a referee test older than the grammar it judged), and the second pass is how Linux sees them. The hidden
+   target `_macos-bash` says where that bash is: on Linux, GNU's 3.2.57 built static by open-source-patches
+   (`bash/release.sh` there) and published to git.joaoverona.com's generic registry, downloaded once into
+   `~/.cache/runfile/test-shells/` and checked against the sha256 pinned in `runfiles/_macos-bash.run` -- never
+   one the server gives; on macOS `/bin/bash`; on Windows none. A machine whose `bash` on PATH already is 3.2.57
+   gets no second pass, having run the first under it. A download that fails or does not match fails the run,
+   since a test run that quietly skipped it would say less than it seems to. A new build there is a new
+   version: move `version` and both sums together.
 2. New behaviour needs a test that would fail without it. Prefer asserting the mechanism (count the keyring
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with

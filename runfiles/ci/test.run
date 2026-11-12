@@ -1,5 +1,20 @@
-# Run all workspace tests
+# Run all workspace tests, then again with bash 3.2, macOS's own, as `bash` and `sh`
+#
+# As `test` does, and for the same reason: the Linux runners have bash 5 and
+# nothing older, and three bugs got past them to the macOS leg. `_macos-bash`
+# says where that bash comes from, and when there is no second pass.
 
 let cargo = ENV.RUNFILE_CI_CARGO ? "cargo"
 
 $ {{ cargo }} test --workspace --all-features --locked {{ ARGS }}
+
+let shims = $ run _macos-bash
+
+if shims != ""
+	print("Again, with bash 3.2 as bash and sh, from {{ shims }}")
+
+	do
+		add_path(shims)
+		$ {{ cargo }} test --workspace --all-features --locked {{ ARGS }}
+	end
+end

@@ -1,0 +1,96 @@
+# Where macOS's own bash, 3.2, is as `bash` and `sh`: the directory `test` and `ci:test` put first on PATH for a second pass
+#
+# Printed on stdout, the one thing this prints there; nothing when there is no
+# second pass to make, and then the reason on stderr. A failure -- a download
+# that does not match its checksum, a binary that does not run here -- fails the
+# run that asked, since a test run that quietly skipped this would say less
+# than it seems to.
+#
+# Three bugs reached the macOS CI and nowhere else, all of them invisible under
+# the bash 5 every Linux machine has: `$` lines that ran nothing and exited 0,
+# a `"` written into a heredoc's `${…}` printed with its backslash, and a syntax
+# referee older than the grammar it judged. A Mac without Homebrew's bash runs
+# everything under 3.2, `sh` too, and so does the second pass.
+#
+# On Linux it is GNU's 3.2.57, built static by open-source-patches (bash/ there)
+# and published to git.joaoverona.com's generic package registry, which anyone
+# may read: downloaded once into the cache directory and checked against the
+# checksum pinned below, never against one the server gives. A new build there
+# is a new version: move `version` and both sums to it. On macOS it is
+# /bin/bash and /bin/sh. Windows has none: its bash is Git Bash 5.
+#
+# A machine whose `bash` already is 3.2.57 -- a Mac without Homebrew's -- ran
+# the first pass under it, and gets no second.
+
+let version = "3.2.57-static.1"
+let reported = "3.2.57(1)-release"
+let registry = "https://git.joaoverona.com/api/packages/joaaoverona/generic/bash/{{ version }}"
+
+let current = $ bash -c 'printf %s "${BASH_VERSION-}"' 2>/dev/null || true
+
+if current == reported
+	$ echo 'bash 3.2: the suite already ran under it, as the bash on PATH; no second pass' >&2
+	exit()
+end
+
+if RUN.os == "windows"
+	$ echo 'bash 3.2: there is none for Windows, whose bash is Git Bash; no second pass' >&2
+	exit()
+end
+
+if RUN.os == "mac"
+	$ dir="${XDG_CACHE_HOME:-$HOME/.cache}/runfile/test-shells/macos"
+	$ mkdir -p "$dir"
+	$ ln -sf /bin/bash "$dir/bash"
+	$ ln -sf /bin/sh "$dir/sh"
+	$ printf '%s\n' "$dir"
+	exit()
+end
+
+let arch = ""
+let sum = ""
+
+match RUN.arch
+	case "x86-64"
+		arch = "amd64"
+		sum = "4057ee077fe1806089fdd291c53ed2b24076a2f8147d9e59197d44de544026c6"
+	case "arm64"
+		arch = "arm64"
+		sum = "c7097cb4133f7ea57c24fb2d4b6541efcb483ec9e1f31d91f612d5e1fb96ddd1"
+	default
+		$ echo 'bash 3.2: open-source-patches builds none for' {{ RUN.arch }} '; no second pass' >&2
+		exit()
+end
+
+let name = "bash-{{ version }}-linux-{{ arch }}"
+
+# Kept between runs, in the cache directory rather than the build's, so every
+# checkout and worktree shares one copy. Downloaded beside it and moved into
+# place once it matches, so a run that stops halfway leaves nothing behind that
+# the next would trust, and two runs at once do not write one file.
+exec sh
+	dir="${XDG_CACHE_HOME:-$HOME/.cache}/runfile/test-shells/"{{ name }}
+	if ! printf '%s  %s\n' {{ sum }} "$dir/bash" | sha256sum -c --status - 2>/dev/null; then
+		mkdir -p "$dir"
+		part=$(mktemp "$dir/.download.XXXXXX")
+		echo 'bash 3.2: downloading' {{ name }} >&2
+		if ! curl -fsSL --retry 3 -o "$part" {{ registry }}/{{ name }}; then
+			rm -f "$part"
+			echo 'bash 3.2: could not download it from' {{ registry }} >&2
+			exit 1
+		fi
+		if ! printf '%s  %s\n' {{ sum }} "$part" | sha256sum -c --status -; then
+			rm -f "$part"
+			echo 'bash 3.2: the download does not match the checksum pinned in runfiles/_macos-bash.run' >&2
+			exit 1
+		fi
+		chmod 755 "$part"
+		mv -f "$part" "$dir/bash"
+	fi
+	ln -sf bash "$dir/sh"
+	if [ "$("$dir/bash" -c 'printf %s "$BASH_VERSION"')" != {{ reported }} ]; then
+		echo "bash 3.2: $dir/bash does not run here, or is not 3.2.57" >&2
+		exit 1
+	fi
+	printf '%s\n' "$dir"
+end
