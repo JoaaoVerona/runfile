@@ -2405,8 +2405,10 @@ tests that assert the mechanism rather than the symptom.
    `~/.cache/runfile/test-shells/` and checked against the sha256 pinned in `runfiles/_macos-bash.run` -- never
    one the server gives; on macOS `/bin/bash`; on Windows none. A machine whose `bash` on PATH already is 3.2.57
    gets no second pass, having run the first under it. A download that fails or does not match fails the run,
-   since a test run that quietly skipped it would say less than it seems to. A new build there is a new
-   version: move `version` and both sums together.
+   since a test run that quietly skipped it would say less than it seems to. So does a second pass whose `bash`
+   is not the one `_macos-bash` printed. Its stdout is that one directory, which goes on PATH whole: everything
+   else in it goes to stderr, since uutils' `sha256sum` (Ubuntu 26.04's) once put a line there and the pass ran
+   bash 5 again. A new build there is a new version: move `version` and both sums together.
 2. New behaviour needs a test that would fail without it. Prefer asserting the mechanism (count the keyring
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with

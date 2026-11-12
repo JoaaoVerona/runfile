@@ -13,6 +13,14 @@ if shims != ""
 
 	do
 		add_path(shims)
+
+		# A pass that ran bash 5 again would pass, and say nothing: it once did.
+		let found = $ command -v bash || true
+
+		if found != "{{ shims }}/bash"
+			error("bash 3.2: the second pass would run bash from `{{ found }}`, not {{ shims }}/bash")
+		end
+
 		$ mbx test --workspace --all-features --locked {{ ARGS }}
 	end
 end

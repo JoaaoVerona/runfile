@@ -68,9 +68,17 @@ let name = "bash-{{ version }}-linux-{{ arch }}"
 # checkout and worktree shares one copy. Downloaded beside it and moved into
 # place once it matches, so a run that stops halfway leaves nothing behind that
 # the next would trust, and two runs at once do not write one file.
+#
+# Everything but the directory goes to stderr, from the block's first line:
+# the caller puts whatever comes out on stdout first on PATH, as one entry.
+# uutils' `sha256sum`, Ubuntu 26.04's, says `…: FAILED open or read` on
+# stdout for a file that is not there, `--status` or not, and that line once
+# made the second pass's PATH a directory that does not exist -- it ran under
+# bash 5 again, and passed.
 exec sh
+	exec 4>&1 >&2
 	dir="${XDG_CACHE_HOME:-$HOME/.cache}/runfile/test-shells/"{{ name }}
-	if ! printf '%s  %s\n' {{ sum }} "$dir/bash" | sha256sum -c --status - 2>/dev/null; then
+	if ! printf '%s  %s\n' {{ sum }} "$dir/bash" | sha256sum -c --status - >/dev/null 2>&1; then
 		mkdir -p "$dir"
 		part=$(mktemp "$dir/.download.XXXXXX")
 		echo 'bash 3.2: downloading' {{ name }} >&2
@@ -92,5 +100,5 @@ exec sh
 		echo "bash 3.2: $dir/bash does not run here, or is not 3.2.57" >&2
 		exit 1
 	fi
-	printf '%s\n' "$dir"
+	printf '%s\n' "$dir" >&4
 end
