@@ -401,13 +401,29 @@ fn a_shell_runs_its_script_to_the_last_line_however_long() {
 	for shell in system_shells() {
 		let mark = dir.path().join(shell.replace('/', "-"));
 		let name = shell.rsplit('/').next().unwrap();
+		// Debian's and Ubuntu's dash, their /bin/sh, is built without `LINENO`
+		// and leaves it empty in every script, the runner's or not. Numbers are
+		// checked where the shell, asked on its own, gives one.
+		let numbered = std::process::Command::new(shell)
+			.args(["-c", "printf %s \"$LINENO\""])
+			.output()
+			.is_ok_and(|o| !o.stdout.is_empty());
+		let line = |n: u32| {
+			if numbered {
+				format!("test \"$LINENO\" = {n}")
+			} else {
+				":".to_string()
+			}
+		};
 		let src = format!(
 			".shell = \"{shell}\"\n\
-			 $ test \"$LINENO\" = 1 && test \"${{0##*/}}\" = {name}\n\
+			 $ {} && test \"${{0##*/}}\" = {name}\n\
 			 {}\
-			 $ test \"$LINENO\" = 2002\n\
+			 $ {}\n\
 			 $ touch '{}'\n",
+			line(1),
 			pad.repeat(2000),
+			line(2002),
 			mark.display(),
 		);
 		let d = Recorder::default();
