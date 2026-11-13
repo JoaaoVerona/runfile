@@ -1,0 +1,95 @@
+# Publish what `macos-bash:build` made to git.joaoverona.com's generic package registry, link the package to this repository, and check that it reads with no token
+#
+# A file published with the same checksum is left alone, and one published with
+# another fails the run: `_macos-bash` pins the checksums, so a different build
+# under a published version would fail every test run instead. Bump `release` in
+# `_shared.run` for a different build. A binary whose .sha256 is missing is an
+# earlier run's, stopped between its two uploads, and is uploaded again.
+#
+# The package is linked to REPOSITORY, this one. The instance is patched so that
+# a package reads only through the repository it is linked to (open-source-
+# patches' gitea/Dockerfile says how), so it is exactly as readable as this
+# repository's Packages, which have to stay open to anonymous readers: the tests
+# download with no token, GitHub's runners and every contributor included. The
+# run ends by checking that. Deleting a version's last file deletes the package
+# with it, and its link, so the link is checked on every run, not only the first.
+#
+# REGISTRY_TOKEN is a personal access token with write:package.
+# .cicd/macos-bash.yml runs this with the account's secret of that name, and
+# GITEA_URL, OWNER and REPOSITORY from the run.
+
+let server = ENV.GITEA_URL ? "https://git.joaoverona.com"
+let owner = ENV.OWNER ? "joaaoverona"
+let repository = last(split(ENV.REPOSITORY ? "joaaoverona/runfile", "/"))
+let registry = "{{ server }}/api/packages/{{ owner }}/generic/bash/{{ version }}"
+let api = "{{ server }}/api/v1/packages/{{ owner }}/generic/bash"
+
+if (ENV.REGISTRY_TOKEN ? "") == ""
+	error("REGISTRY_TOKEN is not set: a personal access token with write:package")
+end
+
+for platform in platforms
+	let os, arch = split(platform, "/")
+	let name = "bash-{{ version }}-{{ os }}-{{ arch }}"
+
+	if !file_exists(join_path(out, name)) || !file_exists(join_path(out, "{{ name }}.sha256"))
+		error("{{ out }}/{{ name }} is missing; `run macos-bash:build` makes it")
+	end
+end
+
+for platform in platforms
+	let os, arch = split(platform, "/")
+	let name = "bash-{{ version }}-{{ os }}-{{ arch }}"
+	let url = "{{ registry }}/{{ name }}"
+	let sum = join_path(out, "{{ name }}.sha256")
+	let found = $ curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: token $REGISTRY_TOKEN" {{ url }}.sha256
+
+	if found == "200"
+		let published = $ curl -fsS -H "Authorization: token $REGISTRY_TOKEN" {{ url }}.sha256
+
+		if trim(published) != trim(read_file(sum))
+			error("{{ name }} is already published with another checksum, which runfiles/_macos-bash.run may pin; bump `release` in runfiles/macos-bash/_shared.run for a different build")
+		end
+
+		print("bash: {{ name }} already published, unchanged")
+		continue
+	end
+
+	if found != "404"
+		error("reading {{ url }}.sha256 answered HTTP {{ found }}")
+	end
+
+	# No checksum yet. A binary there without one is an earlier run's, stopped
+	# between the two uploads.
+	let deleted = $ curl -sS -o /dev/null -w "%{http_code}" -X DELETE -H "Authorization: token $REGISTRY_TOKEN" {{ url }}
+
+	if deleted != "204" && deleted != "404"
+		error("deleting the unchecked {{ name }} an incomplete run left answered HTTP {{ deleted }}")
+	end
+
+	$ curl -fsS -o /dev/null -X PUT -H "Authorization: token $REGISTRY_TOKEN" --upload-file {{ join_path(out, name) }} {{ url }}
+	$ curl -fsS -o /dev/null -X PUT -H "Authorization: token $REGISTRY_TOKEN" --upload-file {{ sum }} {{ url }}.sha256
+	print("bash: published {{ url }}")
+end
+
+let latest = $ curl -fsS -H "Authorization: token $REGISTRY_TOKEN" {{ api }}/-/latest
+let linked = json_get(latest, "repository.name") ? ""
+
+if linked == repository
+	print("bash: already linked to {{ owner }}/{{ repository }}")
+else if linked != ""
+	error("the package is linked to {{ owner }}/{{ linked }}, not {{ owner }}/{{ repository }}; unlink it (`gt package unlink generic bash`) if that is wrong")
+else
+	$ curl -fsS -o /dev/null -X POST -H "Authorization: token $REGISTRY_TOKEN" {{ api }}/-/link/{{ repository }}
+	print("bash: linked to {{ owner }}/{{ repository }}")
+end
+
+# What the tests depend on: they download with no token.
+let probe = "{{ registry }}/bash-{{ version }}-linux-amd64.sha256"
+let anonymous = $ curl -sS -o /dev/null -w "%{http_code}" {{ probe }}
+
+if anonymous != "200"
+	error("an anonymous reader gets HTTP {{ anonymous }} for {{ probe }}, and the tests download as one; check the package's link, and that this repository's public access lets anonymous readers read its Packages")
+end
+
+print("bash: {{ version }} reads without a token")

@@ -5,3 +5,5 @@ $ mbx clean
 for dir in ["", "-linux", "-mac", "-windows"]
 	$ cargo clean --target-dir target{{ dir }}
 end
+
+$ rm -rf target-macos-bash

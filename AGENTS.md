@@ -27,6 +27,9 @@ run vscode:package         # Build editors/vscode/runfile-vscode.vsix
 
 run tree-sitter:setup      # One-time: pnpm install for the tree-sitter CLI. Gates its other targets.
 run tree-sitter:test       # Regenerate the parser, run the corpus, parse every .run file in the repo
+
+run macos-bash:build       # Build the static bash 3.2.57 the second pass of `test` downloads (Docker, binfmt for arm64)
+run macos-bash:publish     # Publish it to git.joaoverona.com (CI does this; needs REGISTRY_TOKEN)
 ```
 
 `run setup` is a **preparation target** (see below): every other target in `runfiles/` refuses to run until it
@@ -632,11 +635,11 @@ the rest.
 
 ```
 GRAMMAR.ebnf                   # Normative grammar reference
-.cicd/                         # Gitea Actions (git.joaoverona.com reads only this): CI, audit, every release
+.cicd/                         # Gitea Actions (git.joaoverona.com reads only this): CI, audit, every release, bash 3.2
 .cicd/release-assets/          # install.sh / install.ps1 -- RUNFILE_CHANNEL picks gitea (default) or github
 .github/workflows/             # GitHub Actions for the mirror: run on the `github` branch `run mirror` pushes
 .github/actions/setup/         # The only shipped action: installs `run`, PATH, optional secret keys
-runfiles/                      # This project's own targets (self-hosting); ci/ and wsl/ are namespaces
+runfiles/                      # This project's own targets (self-hosting); ci/, wsl/ and macos-bash/ are namespaces
 editors/vscode/                # The VS Code extension (TypeScript) + its own runfiles/
 editors/tree-sitter/   # The tree-sitter grammar (Zed, Neovim, Helix) + its own runfiles/
 
@@ -2430,8 +2433,8 @@ tests that assert the mechanism rather than the symptom.
    reached the macOS CI and nowhere else, each invisible under the bash 5 of every Linux machine (`$` lines
    that ran nothing and exited 0 under bash before 4.0; a heredoc's `"` printed with its backslash before 5.1;
    a referee test older than the grammar it judged), and the second pass is how Linux sees them. The hidden
-   target `_macos-bash` says where that bash is: on Linux, GNU's 3.2.57 built static by open-source-patches
-   (`bash/release.sh` there) and published to git.joaoverona.com's generic registry, downloaded once into
+   target `_macos-bash` says where that bash is: on Linux, GNU's 3.2.57 built static by `macos-bash:build`
+   and published to git.joaoverona.com's generic registry by `.cicd/macos-bash.yml`, downloaded once into
    `~/.cache/runfile/test-shells/` and checked against the sha256 pinned in `runfiles/_macos-bash.run` -- never
    one the server gives; on macOS `/bin/bash`; on Windows none. A machine whose `bash` on PATH already is 3.2.57
    gets no second pass, having run the first under it. A download that fails or does not match fails the run,
@@ -2439,6 +2442,17 @@ tests that assert the mechanism rather than the symptom.
    is not the one `_macos-bash` printed. Its stdout is that one directory, which goes on PATH whole: everything
    else in it goes to stderr, since uutils' `sha256sum` (Ubuntu 26.04's) once put a line there and the pass ran
    bash 5 again. A new build there is a new version: move `version` and both sums together.
+
+   **That bash is built here.** `runfiles/macos-bash/` holds the recipe: `_shared.run` pins GNU's release, its
+   tarball's sha256 and the build's `release`, `macos-bash:build` compiles one static binary per platform in a
+   container of the pinned Alpine (arm64 under QEMU) into `target-macos-bash/`, and `macos-bash:publish` uploads
+   each with its `.sha256`, links the package to this repository and checks that it reads with no token.
+   `.cicd/macos-bash.yml` runs both on a push that touches the recipe; it has no GitHub counterpart. A published
+   version is never replaced: a rebuild that comes out the same publishes nothing, and one that differs fails
+   the publish, so any change to what is built bumps `release`. The pin in `_macos-bash.run` moves in a later
+   commit than the bump, once the workflow has published it, or CI's tests ask for a version that is not there
+   yet. The package reads through this repository's Packages, which have to stay open to anonymous readers:
+   every machine that tests downloads it with no token.
 2. New behaviour needs a test that would fail without it. Prefer asserting the mechanism (count the keyring
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with

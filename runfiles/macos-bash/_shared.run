@@ -1,0 +1,42 @@
+# What `macos-bash:build` builds and `macos-bash:publish` publishes: GNU bash 3.2, the bash macOS still ships as
+# /bin/bash and /bin/sh, as a static binary for Linux. `_macos-bash` downloads it for the second pass of `test` and
+# `ci:test`, from git.joaoverona.com's generic package registry:
+#
+#   https://git.joaoverona.com/api/packages/joaaoverona/generic/bash/<version>/bash-<version>-linux-<arch>
+#   ... and the same with .sha256 appended, in sha256sum's format (`<hash>  <file>`)
+#
+# for linux/amd64 and linux/arm64. There is no macOS build: a Mac has this bash already. Built once and published, so
+# that nothing that tests compiles a 2006 C program with today's compiler; each binary is static, against musl, so it
+# runs on any Linux of its architecture whatever libc that has.
+#
+# No patch: GNU's own 3.2.57 release, which is 3.2 with upstream's 57 official patches applied, checked against its
+# sha256. Its signature was checked once, when it was pinned, against Chet Ramey's key in GNU's keyring
+# (https://ftp.gnu.org/gnu/gnu-keyring.gpg, 7C01 35FB 088A AF6C 66C6 50B9 BB58 69F0 64EA 74AB); pinning the sum keeps
+# that check without a keyring here. Apple builds its /bin/bash from the same 3.2.57 with patches of its own for its
+# platform, none of which change what a script means.
+#
+# The version is upstream's with `-static.<release>` after it: 3.2.57-static.1 is the first build of 3.2.57. A
+# published version is never replaced, since `runfiles/_macos-bash.run` pins its checksums: any change to what is
+# built (the image, the flags, the platforms) bumps `release`, the new version is published beside the old one, and
+# `_macos-bash.run` moves `version` and both sums to it once .cicd/macos-bash.yml has published it. Not in the same
+# commit as the bump: CI's tests would ask for a version the publish has not finished.
+#
+# Another bash beside this one (4.4, which RHEL 8 ships, say) is another namespace, since one `release` answers for one
+# build.
+
+# GNU's release, and the sha256 of its tarball: `build` stops if the file has changed.
+let upstream = "3.2.57"
+let tarball_sha256 = "3fa9daf85ebf35068f090ce51283ddeeb3c75eb5bc70b1a4a7cb05868bfe06a4"
+
+# What the built bash must say $BASH_VERSION is.
+let reported = "3.2.57(1)-release"
+
+# This build of it: published as `<upstream>-static.<release>` (see above).
+let release = "1"
+let version = "{{ upstream }}-static.{{ release }}"
+
+# Every architecture the second pass runs on, as container platforms.
+let platforms = ["linux/amd64", "linux/arm64"]
+
+# Where `build` leaves each binary beside its .sha256, and `publish` takes them from.
+let out = "target-macos-bash"

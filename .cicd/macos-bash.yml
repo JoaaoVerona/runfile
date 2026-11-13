@@ -1,0 +1,69 @@
+# Gitea Actions. See .cicd/ci.yml for why workflows live in this directory.
+#
+# Builds GNU bash 3.2.57, the bash macOS ships, as a static binary for
+# linux/amd64 and linux/arm64 (runfiles/macos-bash/), and publishes each with its
+# .sha256 to git.joaoverona.com's generic package registry as
+# bash/<version>/bash-<version>-linux-<arch>, linked to this repository: the
+# second pass of `run test` and `run ci:test` downloads it from there with no
+# token (`_macos-bash`). A published version is never replaced: a rebuild of the
+# same release publishes nothing, and a different build under the same version
+# fails here instead of in every test run, as a checksum that no longer matches
+# its pin.
+#
+# It has no GitHub counterpart: the registry is Gitea's, and GitHub's runners
+# only download from it.
+name: bash 3.2
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - ".cicd/macos-bash.yml"
+      - "runfiles/macos-bash/**"
+  workflow_dispatch:
+
+# Least privilege: the job token is read-only. Publishing goes through
+# REGISTRY_TOKEN, which only the publish step is given.
+permissions:
+  contents: read
+
+concurrency:
+  cancel-in-progress: true
+  group: macos-bash-${{ gitea.ref }}
+
+jobs:
+  publish:
+    name: Build & publish
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      # Only to build `run` itself, which compiles nothing worth caching here.
+      - name: Rust toolchain
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
+        with:
+          cache: false
+
+      # From source, like every job here that runs a target: the released CLI
+      # is a previous version of this repository's own task files, so it breaks
+      # exactly when the language changes.
+      - name: Setup Runfile (from source)
+        uses: ./.github/actions/setup
+        with:
+          from-source: true
+
+      # One container of the pinned Alpine per platform, the arm64 one under the
+      # runner's QEMU: nothing is installed on the runner.
+      - name: Build the binaries
+        run: run macos-bash:build
+
+      - name: Publish them and link the package to this repository
+        run: run macos-bash:publish
+        env:
+          GITEA_URL: ${{ gitea.server_url }}
+          OWNER: ${{ gitea.repository_owner }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          REPOSITORY: ${{ gitea.repository }}

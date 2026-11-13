@@ -12,11 +12,12 @@
 # referee older than the grammar it judged. A Mac without Homebrew's bash runs
 # everything under 3.2, `sh` too, and so does the second pass.
 #
-# On Linux it is GNU's 3.2.57, built static by open-source-patches (bash/ there)
-# and published to git.joaoverona.com's generic package registry, which anyone
-# may read: downloaded once into the cache directory and checked against the
-# checksum pinned below, never against one the server gives. A new build there
-# is a new version: move `version` and both sums to it. On macOS it is
+# On Linux it is GNU's 3.2.57, built static by `macos-bash:build`
+# (runfiles/macos-bash/) and published by .cicd/macos-bash.yml to
+# git.joaoverona.com's generic package registry, which anyone may read:
+# downloaded once into the cache directory and checked against the checksum
+# pinned below, never against one the server gives. A new build there is a new
+# version: move `version` and both sums to it once it is published. On macOS it is
 # /bin/bash and /bin/sh. Windows has none: its bash is Git Bash 5.
 #
 # A machine whose `bash` already is 3.2.57 -- a Mac without Homebrew's -- ran
@@ -58,7 +59,7 @@ match RUN.arch
 		arch = "arm64"
 		sum = "c7097cb4133f7ea57c24fb2d4b6541efcb483ec9e1f31d91f612d5e1fb96ddd1"
 	default
-		$ echo 'bash 3.2: open-source-patches builds none for' {{ RUN.arch }} '; no second pass' >&2
+		$ echo 'bash 3.2: macos-bash:build builds none for' {{ RUN.arch }} '; no second pass' >&2
 		exit()
 end
 

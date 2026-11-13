@@ -4,6 +4,9 @@
 /target-mac/
 /target-windows/
 
+# The static bash `macos-bash:build` makes
+/target-macos-bash/
+
 # VS Code extension (editors/vscode) build output & dependencies
 /editors/vscode/out/
 /editors/vscode/node_modules/

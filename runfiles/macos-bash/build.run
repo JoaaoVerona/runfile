@@ -1,0 +1,107 @@
+# Build bash 3.2.57 static for linux/amd64 and linux/arm64 into target-macos-bash/, each binary beside its .sha256
+#
+# One throwaway container of Alpine per platform, the image pinned by digest,
+# the arm64 one under QEMU (the host needs binfmt for arm64, as the fleet's
+# Linux runners have). 3.2 is K&R C that GCC 14 refuses: -std=gnu89 lets a
+# function be called before it is declared, as C89 did, -fpermissive turns the
+# int and pointer conversions GCC 14 made errors back into warnings, and -w
+# silences the warnings, which are many and all upstream's; the tools make
+# builds and runs on the way (bashversion, mkbuiltins) take them as
+# CFLAGS_FOR_BUILD. The release's config.guess and config.sub, from 2006, know
+# neither aarch64 nor musl, and are replaced with the image's automake's, as
+# distributions update an old autotools project's. make runs one job at a time:
+# 3.2's makefiles race in parallel, and made the version say 3.2.57(2). bash's
+# own malloc does not build against musl (--without-bash-malloc), and
+# --enable-static-link links the whole of it in. Readline is kept, on the
+# termcap bash bundles, since configure finds no other in the image. The parser
+# is made from parse.y with bison: the y.tab.c the tarball carries predates the
+# patches that changed parse.y, and calls expand_prompt_string with fewer
+# arguments than the patched subst.h declares, so it cannot be used.
+#
+# The tarball goes in on stdin and the binary comes back on stdout, with no
+# bind mount, so rootless Docker leaves nothing owned by another user. The
+# binary is stripped, and built twice from the same packages it is the same
+# bytes, which is what lets `publish` tell an unchanged build from another one.
+# The image is pinned but the packages apk adds to it (gcc, bison) are the
+# branch's newest, so a rebuild after Alpine updated one can differ: `publish`
+# then fails, as for any other change, until `release` is bumped. Each binary is
+# run in its container before it leaves: it has to be static, and report
+# exactly the version `_shared.run` names.
+#
+# Needs curl, sha256sum and Docker; CONTAINER_ENGINE=podman also works.
+
+let engine = ENV.CONTAINER_ENGINE ? "docker"
+let image = "alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f"
+let tarball_url = "https://ftp.gnu.org/gnu/bash/bash-{{ upstream }}.tar.gz"
+let tarball = join_path(temp_dir(), "bash-{{ upstream }}.tar.gz")
+
+$ rm -rf {{ out }}
+$ mkdir -p {{ out }}
+$ curl -fsSL --retry 3 -o {{ tarball }} {{ tarball_url }}
+
+if $ printf '%s  %s\n' {{ tarball_sha256 }} {{ tarball }} | sha256sum -c --status -
+	print("bash: {{ tarball_url }} is the file pinned")
+else
+	error("{{ tarball_url }} is not the file pinned: GNU does not change a release's tarball, so read what happened before pinning another")
+end
+
+for platform in platforms
+	let os, arch = split(platform, "/")
+	let name = "bash-{{ version }}-{{ os }}-{{ arch }}"
+	let binary = join_path(out, name)
+
+	print("bash: building {{ name }}")
+
+	# The container's stdout carries the tar of /out and nothing else: every
+	# tool's own output goes to stderr.
+	exec bash
+		set -euo pipefail
+		{{ engine }} run -i --rm --platform {{ platform }} -e UPSTREAM={{ upstream }} -e REPORTED={{ reported }} \
+			-e NAME={{ name }} {{ image }} sh -euc '
+				apk add --no-cache build-base bison automake >&2
+				mkdir -p /build /out
+				tar -C /build -xzf -
+				cd "/build/bash-$UPSTREAM"
+				# The config.guess of 2006 knows no aarch64, and its config.sub no musl: the current ones
+				# from automake, as distributions update an old autotools project.
+				cp /usr/share/automake-*/config.guess /usr/share/automake-*/config.sub support/
+				flags="-O2 -std=gnu89 -fpermissive -w"
+				./configure --without-bash-malloc --enable-static-link --disable-nls \
+					CFLAGS="$flags" CFLAGS_FOR_BUILD="$flags" >&2 || { cat config.log >&2; exit 1; }
+				# One job: the makefiles of 3.2 are not safe in parallel. The one in lib/sh starts a make of
+				# its own at the top for version.h, which ran beside the top one; each made it, each counting
+				# a build into the version, so the binary said 3.2.57(2), and two writers of one file can as
+				# well make two different builds.
+				make >&2
+				strip bash
+				if readelf -d bash | grep -q NEEDED; then
+					echo "the build is linked dynamically:" >&2
+					readelf -d bash >&2
+					exit 1
+				fi
+				reported=$(./bash -c "echo \"\$BASH_VERSION\"")
+				[ "$reported" = "$REPORTED" ] || { echo "the build reports $reported, not $REPORTED" >&2; exit 1; }
+				echo "$NAME reports $reported" >&2
+				cp bash "/out/$NAME"
+				tar -C /out -cf - .' <{{ tarball }} | tar -C {{ out }} -xf - || {
+			echo 'bash: the' {{ platform }} 'build failed; its output is above' >&2
+			exit 1
+		}
+	end
+
+	if !file_exists(binary)
+		error("the {{ platform }} build produced no {{ binary }}")
+	end
+
+	# A static bash is about a megabyte. Anything much smaller is not one.
+	let bytes = $ wc -c < {{ binary }}
+
+	if number(trim(bytes)) < 500000
+		error("{{ binary }} is {{ trim(bytes) }} bytes, far too small to be a bash")
+	end
+
+	$ cd {{ out }} && sha256sum {{ name }} > {{ name }}.sha256
+end
+
+print("bash: built {{ version }} into {{ out }}/:")
+$ cat {{ out }}/*.sha256
