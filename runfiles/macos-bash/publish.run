@@ -7,8 +7,8 @@
 # earlier run's, stopped between its two uploads, and is uploaded again.
 #
 # The package is linked to REPOSITORY, this one. The instance is patched so that
-# a package reads only through the repository it is linked to (open-source-
-# patches' gitea/Dockerfile says how), so it is exactly as readable as this
+# a package reads only through the repository it is linked to (joaoverona.com's
+# gitea/image/Dockerfile says how), so it is exactly as readable as this
 # repository's Packages, which have to stay open to anonymous readers: the tests
 # download with no token, GitHub's runners and every contributor included. The
 # run ends by checking that. Deleting a version's last file deletes the package

@@ -1,8 +1,8 @@
 # Build bash 3.2.57 static for linux/amd64 and linux/arm64 into target-macos-bash/, each binary beside its .sha256
 #
 # One throwaway container of Alpine per platform, the image pinned by digest,
-# the arm64 one under QEMU (the host needs binfmt for arm64, as the fleet's
-# Linux runners have). 3.2 is K&R C that GCC 14 refuses: -std=gnu89 lets a
+# the arm64 one under QEMU (the host needs binfmt for arm64; .cicd/macos-bash.yml
+# registers it, since not every runner has it). 3.2 is K&R C that GCC 14 refuses: -std=gnu89 lets a
 # function be called before it is declared, as C89 did, -fpermissive turns the
 # int and pointer conversions GCC 14 made errors back into warnings, and -w
 # silences the warnings, which are many and all upstream's; the tools make

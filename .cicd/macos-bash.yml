@@ -55,8 +55,17 @@ jobs:
         with:
           from-source: true
 
-      # One container of the pinned Alpine per platform, the arm64 one under the
-      # runner's QEMU: nothing is installed on the runner.
+      # The arm64 build runs under QEMU, and not every runner of the fleet has it
+      # registered: run 2640 landed on one without and stopped at `exec format
+      # error`. Registered here, pinned as shared-actions' gitea-docker-image-publish
+      # pins it.
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3.6.0
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3-68@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+
+      # One container of the pinned Alpine per platform, the arm64 one under QEMU.
       - name: Build the binaries
         run: run macos-bash:build
 
