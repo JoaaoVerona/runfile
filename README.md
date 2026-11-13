@@ -380,7 +380,8 @@ end
 run build
 ```
 
-There is no `--watch` flag: the file already said what it wants, so `run watch` watches.
+There is no `--watch` flag: the file already said what it wants, so `run watch` watches. Ctrl+C ends the session,
+whether it is waiting for a change or part-way through a run.
 
 ## The language
 
@@ -575,7 +576,8 @@ the paths, or by a file, is still listed.
 A target that reads `ARGS` is asked for its positionals too, when none were given: one line, split the way a
 command line is, so `"two words"` stays one. Enter passes none, which is what a wrapper usually wants. A
 `confirm()` the target reaches is asked the same way. The answers come from stdin whether or not it is a
-terminal, so they can be piped in. In CI nothing is asked unless stdin is a terminal.
+terminal, so they can be piped in. In CI nothing is asked unless stdin is a terminal. Ctrl+C at a question
+stops the run there, with nothing run, and so does a SIGTERM or SIGHUP; Ctrl+Z suspends it, and `fg` asks again.
 
 ```bash
 $ run --stdin-args release

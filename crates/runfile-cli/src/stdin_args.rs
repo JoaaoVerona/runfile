@@ -65,10 +65,11 @@ pub(crate) fn collect(cat: &Catalog, target: &Target, args: &mut Vec<String>) {
 			continue;
 		}
 		if let Some(v) = crate::prompt::ask_input(name, u) {
-			// SAFETY: nothing has been dispatched yet, so this process is
-			// still single-threaded. The target's environment is built on top
-			// of this one, which is how the answer reaches `ENV.x` and every
-			// command below it.
+			// SAFETY: nothing has been dispatched yet, and a prompt joins the
+			// thread it read the answer on before returning it, so this process
+			// is still single-threaded. The target's environment is built on
+			// top of this one, which is how the answer reaches `ENV.x` and
+			// every command below it.
 			unsafe { std::env::set_var(name, v) };
 		}
 	}

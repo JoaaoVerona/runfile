@@ -707,6 +707,10 @@ class RunfileInteractivePty implements vscode.Pseudoterminal {
 				this.signal("SIGINT") // Ctrl+C — reaches the whole group, not just `run`
 			} else if (ch === "\x04") {
 				stdin.end() // Ctrl+D closes stdin (EOF)
+			} else if (ch === "\x1a") {
+				// Ctrl+Z: ignored on purpose. A terminal would suspend the job for a
+				// shell's `fg` to resume, and this terminal has no shell -- a task
+				// suspended here could only ever be closed.
 			} else if (ch >= " ") {
 				// Printable: buffer it and echo (the pipe gives no terminal echo).
 				this.line += ch

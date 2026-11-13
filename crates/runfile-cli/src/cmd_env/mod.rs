@@ -435,6 +435,11 @@ pub fn cmd_inject(files: &[String], command_args: &[String]) {
 	cmd.args(args);
 	cmd.envs(&env_map);
 
+	// The command is the one Ctrl+C is for: the terminal hands it the signal,
+	// and this waits for it to finish answering, as a wrapper should. Dying
+	// first would give the shell its prompt back while the command was still
+	// shutting down behind it.
+	runfile_runtime::interrupt::install();
 	let status = match cmd.status() {
 		Ok(s) => s,
 		Err(e) => {

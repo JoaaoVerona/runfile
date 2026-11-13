@@ -8,12 +8,25 @@
 //!
 //! The flag is process-global because a signal handler has nowhere else to
 //! write, and because every parallel branch needs to see it.
+//!
+//! Setting a flag is all a handler does, so whatever *waits* -- a prompt, the
+//! watch loop -- has to look at it: a blocking read is restarted after the
+//! handler returns (glibc's `signal` installs it with `SA_RESTART`, and the
+//! standard library retries an `EINTR` and, on Windows, a console read that
+//! Ctrl+C cut short), so a prompt sat there while the flag said stop.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// What a shell reports for a process killed by SIGINT, and what the old
 /// implementation used.
 pub const EXIT_CODE: i32 = 130;
+
+/// How often something that waits looks at the flag. Nothing can wake a wait
+/// from inside a signal handler -- an atomic store is all that is safe there,
+/// and the signal may land on any thread -- so a wait is a series of short
+/// ones. Short enough that Ctrl+C reads as immediate.
+pub const POLL: Duration = Duration::from_millis(25);
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -28,12 +41,17 @@ pub fn set_interrupted() {
 	INTERRUPTED.store(true, Ordering::SeqCst);
 }
 
-/// Clear it, for a watch-mode iteration and for tests.
+/// Clear it, for tests.
 pub fn clear() {
 	INTERRUPTED.store(false, Ordering::SeqCst);
 }
 
 /// Ask the OS to tell us about Ctrl+C.
+///
+/// Only for what looks at the flag: once this is installed, a signal no longer
+/// ends the process, so code that never asks `interrupted()` cannot be stopped
+/// at all. The CLI calls it when it runs a target, and around the command
+/// `:env inject` waits on.
 ///
 /// Best effort: if the handler cannot be installed the runner still works, it
 /// just exits the way it would have anyway. Idempotent.

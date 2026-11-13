@@ -1043,6 +1043,18 @@ terminal's width, and how wide text is on it).
   person at it. Without the flag it still needs a terminal (`prompt::confirm`), because nothing has said anyone
   answers on stdin, and a pipe that happens to hold a `y` is not somebody agreeing -- `cli.rs` pipes one in to
   hold that. End of input declines, so `yes` must be typed: nobody there is not consent.
+- **A signal ends a question** (`prompt::read_line`). The line is read on a thread of its own, and the prompt
+  waits for it an `interrupt::POLL` at a time, looking at the flag in between. Read in place, a Ctrl+C set the
+  flag and the read carried on -- glibc's `signal` installs a handler with `SA_RESTART`, and the standard
+  library retries an `EINTR`, and on Windows a console read Ctrl+C cut short -- so the run noticed only at the
+  next Enter, having taken whatever was typed by then as the answer, and the SIGTERM the VS Code extension
+  closes its task terminal with waited out the two seconds to the SIGKILL that leaves temp files behind. Now
+  the prompt ends its line and answers nothing: an up-front question stops the run before it starts (130, in
+  `main`), and a `confirm()` declines, which `main` reports as the 130 an interrupt is because the flag is set.
+  A signal wins over a line that arrives with it. An answered read's thread is joined before the answer is
+  returned, so `stdin_args::collect` still sets the environment single-threaded; a read given up on is left
+  blocked, which is harmless because nothing is asked after an interrupt. Ctrl+Z is not caught: the job stops,
+  and `fg` finds the same question waiting.
 - **A `one_of` around an input lists what it takes** (`Use::choices`, `Inputs::positional_choices`), in
   `--help` (`defaults to staging; one of staging, production`) and in the prompt (`--env (one of staging,
   production) [staging]: `, `ARGS (one of major, minor, patch): `). It is the one place a file already says
@@ -1073,6 +1085,13 @@ terminal's width, and how wide text is on it).
   SSH session) and SIGQUIT on Unix, and CTRL_CLOSE/LOGOFF/SHUTDOWN on Windows — each only sets the flag, so
   the walker still stops between statements and drains the temp registry rather than being killed with a
   decrypted file left behind. SIGKILL still cannot be caught, and the `temp_guard` `Drop` covers a panic.
+  **Whatever waits has to look at the flag**, since setting it is all a handler can do: a prompt and the watch
+  loop each wait an `interrupt::POLL` (25 ms) at a time. **And it is installed only where something looks** --
+  `main` installs it once it is about to run a target, and `:env inject` around the command it waits on, which
+  is the one that answers a Ctrl+C. It used to be installed for every command, and nothing else reads the
+  flag, so a caught signal ended nothing: `run :lsp` outlived the SIGTERM an editor stops it with, and Ctrl+C
+  at `:env secret-keys add`'s prompt -- echo off -- did nothing. Every other `:` command now ends the way any
+  program does.
 - `Dispatch` is `Sync` with `&self` and an explicit `chain: &[String]`. Per-path rather than shared, so
   parallel siblings are not mistaken for a cycle.
 - **A parallel branch is a `Runner::fork`**, walked by the same `statement` and `walk` as everything else --
@@ -1670,6 +1689,13 @@ arguments on Run -- `${command:<id>}` runs an editor command, `${input:<id>}` re
 with no way to pass a literal `${` -- so a target whose name or `dir` holds one is skipped (`pure.ts`'s
 `hasTaskVar`) in the task list, the Run-in-file command, task resolution and the CodeLens.
 
+**The interactive task terminal is the terminal, so it decides what a key means** (`RunfileInteractivePty`).
+Ctrl+C sends SIGINT to `run`'s whole process group -- which `run` answers at a prompt as anywhere else, see
+*A signal ends a question* -- and Ctrl+D closes stdin. **Ctrl+Z is ignored on purpose.** A terminal sends
+SIGTSTP and a shell's `fg` resumes the job; this terminal has no shell, so a suspended task could never be
+resumed, only closed -- a hang with extra steps. Building job control into the pseudoterminal to make it
+resumable was weighed and declined.
+
 The LSP client is hand-rolled rather than `vscode-languageclient`: the server speaks a small, fixed subset,
 and a full client library is a large dependency for five message types. It was notification-only until
 format-on-save needed a reply, so it now correlates requests by id with a **timeout** — this runs on save, and
@@ -1814,7 +1840,11 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   already said what it wants. Patterns interpolate, so they come from the run itself, through `Host::on_header`:
   the first run starts the watcher as its header is worked out (`watch::Watching::start`), is reported as the
   first iteration, and `Watching::follow` runs it again on every debounced change. A failing run is reported
-  and watching continues.
+  and watching continues. **A signal ends the session**, during a run or between runs, and it exits 130.
+  `next_change` asks a `stop` predicate while nothing changes and at every event -- it was a plain `recv`, so a
+  Ctrl+C was looked at only once a file changed -- and the flag is never cleared: it was cleared after every
+  run, which forgot the Ctrl+C that stopped one and kept watching. A run a signal stopped is reported by
+  nobody, as outside watch mode.
 - Completion scripts are hand-written per shell, but carry no knowledge of their own: they ask the binary
   what may follow what (`run :complete <cword> <word>...`, hidden, absent from the help and from the tree it
   serves). `completions::ROOT` is the single description of the command tree, so a subcommand of a subcommand

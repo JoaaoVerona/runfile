@@ -113,20 +113,39 @@ impl Patterns {
 	}
 }
 
-/// Block until a watched path changes, or return `None` if the watcher died.
+/// Block until a watched path changes, or return `None` if the watcher died
+/// or `stop` says the session is over.
 ///
 /// Split from the loop so the debounce and match logic can be tested without
-/// spawning a real target.
-fn next_change(rx: &Receiver<PathBuf>, pats: &Patterns) -> Option<()> {
+/// spawning a real target. `stop` is asked an `interrupt::POLL` at a time while
+/// nothing changes, and after every event: a signal handler can only set a
+/// flag, so a wait that does not look at it is a wait Ctrl+C cannot end -- it
+/// used to be a plain `recv`, and the session went on until a file changed.
+fn next_change(rx: &Receiver<PathBuf>, pats: &Patterns, stop: impl Fn() -> bool) -> Option<()> {
+	use runfile_runtime::interrupt::POLL;
 	loop {
-		let first = rx.recv().ok()?;
+		let first = match rx.recv_timeout(POLL) {
+			Ok(p) => p,
+			Err(RecvTimeoutError::Timeout) => {
+				if stop() {
+					return None;
+				}
+				continue;
+			}
+			Err(RecvTimeoutError::Disconnected) => return None,
+		};
+		if stop() {
+			return None;
+		}
 		if !pats.matches(&first) {
 			continue;
 		}
-		// Absorb the rest of the burst; each new event restarts the timer.
+		// Absorb the rest of the burst; each new event restarts the timer. A
+		// burst that never ends is still asked about `stop` at every event.
 		let mut deadline = Instant::now() + DEBOUNCE;
 		loop {
 			match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+				Ok(_) if stop() => return None,
 				Ok(p) if pats.matches(&p) => deadline = Instant::now() + DEBOUNCE,
 				Ok(_) => {}
 				Err(RecvTimeoutError::Timeout) => return Some(()),
@@ -179,17 +198,19 @@ impl Watching {
 	/// Run `once` again after every debounced change a pattern matches, the
 	/// first run having been and gone.
 	///
-	/// Never returns on its own: watch mode ends with Ctrl+C. A failing run is
-	/// reported and watching continues — the next save is the retry.
+	/// Never returns on its own: watch mode ends with Ctrl+C, or any other
+	/// signal the runner catches -- while it waits, or during a run, which a
+	/// signal stops part-way. A failing run is reported and watching continues
+	/// — the next save is the retry.
 	pub fn follow(self, mut once: impl FnMut()) {
-		eprintln!("{} watching for changes — Ctrl+C to stop", runfile_runtime::exec::tag());
-		while next_change(&self.rx, &self.pats).is_some() {
-			// The message says Ctrl+C stops it, so it has to.
-			if runfile_runtime::interrupt::interrupted() {
-				break;
+		// The message says Ctrl+C stops it, so it has to.
+		let stop = runfile_runtime::interrupt::interrupted;
+		while !stop() {
+			eprintln!("{} watching for changes — Ctrl+C to stop", runfile_runtime::exec::tag());
+			if next_change(&self.rx, &self.pats, stop).is_none() {
+				return;
 			}
 			once();
-			eprintln!("{} watching for changes — Ctrl+C to stop", runfile_runtime::exec::tag());
 		}
 	}
 }
@@ -287,10 +308,10 @@ mod tests {
 		for _ in 0..5 {
 			tx.send(a.join("src/main.rs")).unwrap();
 		}
-		assert!(next_change(&rx, &p(&["src/**"])).is_some());
+		assert!(next_change(&rx, &p(&["src/**"]), never).is_some());
 		// The whole burst was consumed by one wakeup.
 		drop(tx);
-		assert!(next_change(&rx, &p(&["src/**"])).is_none());
+		assert!(next_change(&rx, &p(&["src/**"]), never).is_none());
 	}
 
 	#[test]
@@ -299,6 +320,33 @@ mod tests {
 		let a = PathBuf::from("/proj");
 		tx.send(a.join("target/debug/x")).unwrap();
 		drop(tx);
-		assert!(next_change(&rx, &p(&["src/**"])).is_none(), "noise is skipped");
+		assert!(next_change(&rx, &p(&["src/**"]), never).is_none(), "noise is skipped");
+	}
+
+	#[test]
+	fn a_stop_ends_the_wait_with_nothing_changing() {
+		// The sender is kept: a watcher that is alive and quiet is the wait a
+		// Ctrl+C has to end, and a plain `recv` on it never returned.
+		let (tx, rx) = channel::<PathBuf>();
+		let asked = std::sync::atomic::AtomicUsize::new(0);
+		let stop = || asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 2;
+		assert!(next_change(&rx, &p(&["src/**"]), stop).is_none());
+		assert!(asked.into_inner() >= 3, "it looked, and kept looking until told");
+		drop(tx);
+	}
+
+	#[test]
+	fn a_stop_wins_over_a_change_that_arrives_with_it() {
+		let (tx, rx) = channel();
+		tx.send(PathBuf::from("/proj/src/main.rs")).unwrap();
+		assert!(
+			next_change(&rx, &p(&["src/**"]), || true).is_none(),
+			"no run after a stop"
+		);
+		drop(tx);
+	}
+
+	fn never() -> bool {
+		false
 	}
 }

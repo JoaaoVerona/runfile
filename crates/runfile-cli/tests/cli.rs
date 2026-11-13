@@ -2941,6 +2941,250 @@ fn until_exit(child: &mut Child) -> std::process::ExitStatus {
 	panic!("the run never exited");
 }
 
+// A run left waiting -- at a question, or in watch mode -- with stdin a pipe
+// that stays open and holds nothing: somebody who has not answered yet. So
+// nothing but the signal can end the wait, and a run that only noticed the
+// signal once a line arrived waits until `until_exit` gives up on it.
+
+#[cfg(unix)]
+struct Waiting {
+	child: Child,
+	stdin: Option<std::process::ChildStdin>,
+	stdout: std::sync::Arc<std::sync::Mutex<String>>,
+	stderr: std::sync::Arc<std::sync::Mutex<String>>,
+	readers: Vec<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+fn waiting(p: &Project, args: &[&str]) -> Waiting {
+	use std::os::unix::process::CommandExt;
+	let mut c = p.command(p.dir.path(), args);
+	c.stdin(Stdio::piped())
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped())
+		.process_group(0);
+	let mut child = c.spawn().expect("spawn run");
+	let mut readers = Vec::new();
+	let mut collect = |mut from: Box<dyn std::io::Read + Send>| {
+		let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+		let into = text.clone();
+		readers.push(std::thread::spawn(move || {
+			let mut buf = [0u8; 512];
+			while let Ok(n @ 1..) = from.read(&mut buf) {
+				into.lock().unwrap().push_str(&String::from_utf8_lossy(&buf[..n]));
+			}
+		}));
+		text
+	};
+	let stdout = collect(Box::new(child.stdout.take().unwrap()));
+	let stderr = collect(Box::new(child.stderr.take().unwrap()));
+	Waiting {
+		stdin: child.stdin.take(),
+		child,
+		stdout,
+		stderr,
+		readers,
+	}
+}
+
+#[cfg(unix)]
+impl Waiting {
+	fn stderr(&self) -> String {
+		self.stderr.lock().unwrap().clone()
+	}
+
+	fn until_said(&self, what: &str) {
+		until(what, || self.stderr().contains(what));
+	}
+
+	fn signal(&self, sig: libc::c_int) {
+		unsafe { libc::kill(-(self.child.id() as i32), sig) };
+	}
+
+	/// How it ended, once everything it wrote has been read: the readers end
+	/// with the pipes, which every process in the test has let go by then.
+	fn exit(&mut self) -> std::process::ExitStatus {
+		let status = until_exit(&mut self.child);
+		for r in self.readers.drain(..) {
+			r.join().unwrap();
+		}
+		status
+	}
+}
+
+#[cfg(unix)]
+const ENDING_SIGNALS: [(libc::c_int, &str); 4] = [
+	(libc::SIGINT, "SIGINT"),
+	(libc::SIGTERM, "SIGTERM"),
+	(libc::SIGHUP, "SIGHUP"),
+	(libc::SIGQUIT, "SIGQUIT"),
+];
+
+#[cfg(unix)]
+#[test]
+fn a_signal_ends_a_stdin_args_question() {
+	// Ctrl+C at a `--stdin-args` question set the flag and the read carried on:
+	// the run noticed only after the next Enter, having taken whatever was
+	// typed by then as the answer. And every other signal it catches -- the
+	// SIGTERM the VS Code extension closes its task terminal with -- waited
+	// the same way.
+	for (sig, name) in ENDING_SIGNALS {
+		let p = project(&[("runfiles/t.run", "# T.\n$ printf ran > ran.txt\nprint(ARG.token)\n")]);
+		let mut w = waiting(&p, &["--stdin-args", "t"]);
+		w.until_said("--token (required): ");
+		w.signal(sig);
+		assert_eq!(w.exit().code(), Some(130), "{name}");
+		assert!(!p.dir.path().join("ran.txt").exists(), "{name}: it ran");
+		let said = w.stderr();
+		assert!(said.ends_with("(required): \n"), "{name}: the line is ended: {said:?}");
+		assert_eq!(said.matches("(required)").count(), 1, "{name}: asked again: {said:?}");
+	}
+}
+
+#[cfg(unix)]
+#[test]
+fn a_signal_ends_a_confirm_and_the_temp_files_go_with_it() {
+	// The SIGTERM the extension sends a task terminal it closes, two seconds
+	// ahead of a SIGKILL nothing is cleaned up after -- so a run that waited
+	// out the first left a decrypted temp file behind.
+	for (sig, name) in ENDING_SIGNALS {
+		let p = project(&[(
+			"runfiles/risky.run",
+			"# Risky.\nlet f = temp_file(\"secret\")\n$ echo {{ f }} > path.txt\nconfirm(\"go?\")\n$ printf ran > ran.txt\n",
+		)]);
+		let mut w = waiting(&p, &["--stdin-args", "risky"]);
+		w.until_said("go? [y/N] ");
+		let path = std::fs::read_to_string(p.dir.path().join("path.txt")).unwrap();
+		let path = Path::new(path.trim());
+		assert!(path.exists(), "{name}: made {}", path.display());
+		w.signal(sig);
+		assert_eq!(w.exit().code(), Some(130), "{name}");
+		assert!(!path.exists(), "{name}: {} survived", path.display());
+		assert!(!p.dir.path().join("ran.txt").exists(), "{name}: it went ahead");
+		assert!(!w.stderr().contains("cancelled"), "{name}: {}", w.stderr());
+	}
+}
+
+#[cfg(unix)]
+#[test]
+fn a_question_suspended_and_resumed_is_still_asked() {
+	// Ctrl+Z is a stop, not an end: it is not caught, so the job stops, and
+	// `fg` has to find the same question waiting for its answer.
+	let p = project(&[("runfiles/t.run", "# T.\nprint(\"port {{ ARG.port }}\")\n")]);
+	let mut w = waiting(&p, &["--stdin-args", "t"]);
+	w.until_said("--port (required): ");
+	w.signal(libc::SIGTSTP);
+	// Polled rather than waited on, so a stop that never comes fails the test
+	// instead of hanging it.
+	let pid = w.child.id() as i32;
+	until("the run to stop", || {
+		let mut status = 0;
+		let got = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED | libc::WNOHANG) };
+		assert!(got == 0 || got == pid, "waitpid: {got}");
+		assert!(
+			got == 0 || libc::WIFSTOPPED(status),
+			"it ended rather than stopping: {status:#x}"
+		);
+		got == pid
+	});
+	w.signal(libc::SIGCONT);
+	{
+		use std::io::Write;
+		w.stdin.take().unwrap().write_all(b"5000\n").unwrap();
+	}
+	assert_eq!(w.exit().code(), Some(0), "{}", w.stderr());
+	assert_eq!(w.stdout.lock().unwrap().trim(), "port 5000");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_signal_ends_watch_mode_while_it_waits() {
+	// It waited on a plain `recv`, so a Ctrl+C was looked at only once a file
+	// changed -- in a session whose message says "Ctrl+C to stop".
+	let p = project(&[
+		(
+			"runfiles/w.run",
+			"# W.\n.watch = \"src/**\"\n\n$ printf x >> runs.txt\n",
+		),
+		("src/a.txt", "a"),
+	]);
+	let mut w = waiting(&p, &["w"]);
+	w.until_said("watching for changes");
+	w.signal(libc::SIGINT);
+	assert_eq!(w.exit().code(), Some(130), "{}", w.stderr());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_signal_during_a_watched_run_ends_the_session() {
+	// The flag was cleared after every run, so the Ctrl+C that stopped one was
+	// forgotten and the session went on watching.
+	let p = project(&[
+		(
+			"runfiles/w.run",
+			"# W.\n.watch = \"src/**\"\n\n$ printf x > started.txt\n$ sleep 30\n",
+		),
+		("src/a.txt", "a"),
+	]);
+	let mut w = waiting(&p, &["w"]);
+	until("the run to start", || p.dir.path().join("started.txt").exists());
+	w.signal(libc::SIGINT);
+	assert_eq!(w.exit().code(), Some(130), "{}", w.stderr());
+	assert!(!w.stderr().contains("watching for changes"), "{}", w.stderr());
+	assert!(!w.stderr().contains("interrupted"), "said nothing: {}", w.stderr());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_command_that_runs_no_target_is_ended_by_a_signal() {
+	// The handler was installed for every command, and only a target run looks
+	// at the flag: `:lsp` outlived the SIGTERM an editor stops it with, and a
+	// Ctrl+C at a `:env` prompt did nothing. Neither catches it now.
+	//
+	// Each is signalled only once it has shown it is running -- a server that
+	// answered, a prompt that was printed -- since a signal that lands before
+	// `main` gets going meets the default disposition whatever `main` does.
+	use std::io::Write;
+	use std::os::unix::process::ExitStatusExt;
+
+	let p = project(&[(MARK, &marker("o"))]);
+	let mut w = waiting(&p, &[":lsp"]);
+	let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+	let stdin = w.stdin.as_mut().unwrap();
+	write!(stdin, "Content-Length: {}\r\n\r\n{init}", init.len()).unwrap();
+	stdin.flush().unwrap();
+	until("the server to answer", || {
+		w.stdout.lock().unwrap().contains(r#""id":1"#)
+	});
+	w.signal(libc::SIGTERM);
+	assert_eq!(w.exit().signal(), Some(libc::SIGTERM), "{}", w.stderr());
+
+	let mut w = waiting(&p, &[":env", "secret-keys", "add"]);
+	w.until_said("Enter choice (1 or 2): ");
+	w.signal(libc::SIGINT);
+	assert_eq!(w.exit().signal(), Some(libc::SIGINT), "{}", w.stderr());
+}
+
+#[cfg(unix)]
+#[test]
+fn env_inject_waits_for_the_command_a_ctrl_c_reaches() {
+	// The one command besides a target run that keeps the handler: it is a
+	// wrapper, and the command inside it answers the signal. Ending first
+	// would give the shell its prompt back while that was still shutting down.
+	let p = project(&[(MARK, &marker("o")), ("x.env", "A=1\n")]);
+	// In the foreground, so the SIGINT ends the `sleep` too: a background job
+	// of a shell like this one ignores it, and would outlive the test.
+	let script = "trap 'sleep 0.3; printf done > done.txt; exit 7' INT; printf up > up.txt; sleep 30";
+	let mut w = waiting(&p, &[":env", "inject", "x.env", "--", "sh", "-c", script]);
+	until("the command to start", || p.dir.path().join("up.txt").exists());
+	w.signal(libc::SIGINT);
+	assert_eq!(w.exit().code(), Some(7), "{}", w.stderr());
+	assert!(
+		p.dir.path().join("done.txt").exists(),
+		"it ended before its command did"
+	);
+}
+
 #[test]
 fn editing_a_comment_in_setup_does_not_re_trigger_the_gate() {
 	let p = project(&[

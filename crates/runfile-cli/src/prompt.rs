@@ -15,6 +15,10 @@ static EXHAUSTED: AtomicBool = AtomicBool::new(false);
 ///
 /// Only a terminal is asked: nothing has said that anyone answers on stdin,
 /// and a pipe that happens to hold a `y` is not somebody agreeing.
+///
+/// Interrupted while it waits, it declines -- a `Cancelled`, which nothing
+/// inside the run forgives, and which `main` reports as the 130 an interrupt
+/// is because the flag is set.
 pub fn confirm(question: &str) -> bool {
 	std::io::stdin().is_terminal() && yes(question)
 }
@@ -46,21 +50,72 @@ fn yes(question: &str) -> bool {
 /// there to answer, and a runner that leaves stdin open would wait on it until
 /// the job timed out.
 fn answerable() -> bool {
-	!EXHAUSTED.load(Ordering::Relaxed) && (std::io::stdin().is_terminal() || !crate::ci_detect::is_ci())
+	!EXHAUSTED.load(Ordering::Relaxed)
+		&& !runfile_runtime::interrupt::interrupted()
+		&& (std::io::stdin().is_terminal() || !crate::ci_detect::is_ci())
 }
 
-/// One line typed in answer, trimmed, or `None` at the end of input.
+/// One line typed in answer, trimmed, or `None` at the end of input or when
+/// the run was interrupted while it waited.
 fn answer() -> Option<String> {
-	let mut line = String::new();
-	match std::io::stdin().read_line(&mut line) {
-		Ok(0) | Err(_) => {
+	match read_line() {
+		Some(line) => Some(line.trim().to_string()),
+		None => {
 			EXHAUSTED.store(true, Ordering::Relaxed);
 			// End the prompt's line: nothing was typed to end it, so the error
-			// that follows would be printed on the end of the question.
+			// that follows -- or the shell's prompt, after a Ctrl+C -- would be
+			// printed on the end of the question.
 			eprintln!();
 			None
 		}
-		Ok(_) => Some(line.trim().to_string()),
+	}
+}
+
+/// A line from stdin, or `None` at its end -- or as soon as a signal says the
+/// run is over, whether or not anything was typed.
+///
+/// The read is on a thread of its own, and this one waits for it a
+/// `interrupt::POLL` at a time, looking at the flag in between. Read here, a
+/// Ctrl+C set the flag and the read carried on: the standard library retries a
+/// read a signal interrupts, so the prompt sat there until Enter, and whatever
+/// had been typed by then was taken as the answer to a run that was already
+/// stopping. SIGTERM -- the VS Code extension closing its task terminal --
+/// waited the same way, until the SIGKILL that follows it two seconds later,
+/// which leaves every temp file the run had made where it was.
+///
+/// A signal wins over a line that arrives with it. An answered read's thread
+/// has been joined by the time the answer is returned, so a prompt leaves no
+/// thread behind -- `stdin_args::collect` sets the environment from answers,
+/// which is only sound while nothing else runs. A read given up on is left
+/// blocked, holding stdin: nothing is asked again after an interrupt, and the
+/// process is on its way out.
+fn read_line() -> Option<String> {
+	use runfile_runtime::interrupt::{POLL, interrupted};
+	use std::sync::mpsc::{RecvTimeoutError, channel};
+
+	if interrupted() {
+		return None;
+	}
+	let (tx, rx) = channel();
+	let reader = std::thread::spawn(move || {
+		let mut line = String::new();
+		let got = match std::io::stdin().read_line(&mut line) {
+			Ok(0) | Err(_) => None,
+			Ok(_) => Some(line),
+		};
+		let _ = tx.send(got);
+	});
+	loop {
+		match rx.recv_timeout(POLL) {
+			Ok(got) => {
+				let _ = reader.join();
+				return got.filter(|_| !interrupted());
+			}
+			Err(RecvTimeoutError::Timeout) if interrupted() => return None,
+			Err(RecvTimeoutError::Timeout) => {}
+			// The reader panicked, which reading a line does not do.
+			Err(RecvTimeoutError::Disconnected) => return None,
+		}
 	}
 }
 

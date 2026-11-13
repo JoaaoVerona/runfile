@@ -77,7 +77,6 @@ fn runtime_pipe_default() {
 }
 
 fn main() -> ExitCode {
-	runfile_runtime::interrupt::install();
 	runtime_pipe_default();
 	match real_main() {
 		Ok(code) => code,
@@ -252,6 +251,13 @@ fn real_main() -> Result<ExitCode, String> {
 		prepare::enforce(&cat, target)?;
 	}
 
+	// Caught from here on, and only here: a target run is what looks at the
+	// flag -- between statements, at a prompt, in the watch loop -- and stops
+	// in order, cleaning up its temp files. Caught for every command, as it
+	// was, it made the rest unstoppable: nothing else looks, so a Ctrl+C at
+	// `:env secret-keys add`'s prompt, or the SIGTERM an editor ends `:lsp`
+	// with, was a flag nobody read. They are ended the way any program is.
+	runfile_runtime::interrupt::install();
 	let interrupted = || runfile_runtime::interrupt::interrupted();
 	// A target that declares `.watch` enters watch mode with no flag: the file
 	// already said what it wants. The run says what it watches as its header is
@@ -279,6 +285,10 @@ fn real_main() -> Result<ExitCode, String> {
 		// should be none, and a missing one must still be askable rather than
 		// fatal.
 		stdin_args::collect(&cat, target, &mut args);
+		// Stopped at a question: nothing has run, and nothing will.
+		if interrupted() {
+			return Ok(ExitCode::from(runfile_runtime::interrupt::EXIT_CODE as u8));
+		}
 		host.ask = Some(prompt::ask_value);
 		// The flag says somebody answers on stdin, so `confirm()` is asked there
 		// too, terminal or not -- the same rule as every other question.
@@ -306,22 +316,29 @@ fn real_main() -> Result<ExitCode, String> {
 		let report = |outcome: Result<(), runfile_runtime::run::RunError>| {
 			match outcome {
 				Ok(()) => prepare::record(&cat, target),
+				// Said about an interrupt by nobody, as outside watch mode: the
+				// terminal already echoed `^C`.
+				Err(_) if interrupted() => {}
 				Err(e) => eprintln!("{} {e}", runfile_runtime::exec::tag()),
 			}
-			// Each iteration starts clean; Ctrl+C ends the session rather than
-			// poisoning every run after it.
-			runfile_runtime::interrupt::clear();
 			// Between iterations, not just at the end: watch mode never reaches
 			// one, and each run makes its own temp files.
 			host.cleanup_temps();
 		};
 		report(outcome);
+		// Never cleared: a signal ends the session, during a run as much as
+		// between them, so no later run is there for a set flag to poison. It
+		// was cleared after every run, which kept a session that was asked to
+		// stop going, the flag forgotten, until a second Ctrl+C.
 		w.follow(|| {
 			// Cleans even if a run panics; `report` cleans too, which is
 			// idempotent, and the intent is clearer with both.
 			let _temps = host.temp_guard();
 			report(host.run(&first, &args));
 		});
+		if interrupted() {
+			return Ok(ExitCode::from(runfile_runtime::interrupt::EXIT_CODE as u8));
+		}
 		return Ok(ExitCode::SUCCESS);
 	}
 	if flags.dry_run {
