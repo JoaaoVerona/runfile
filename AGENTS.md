@@ -2453,9 +2453,7 @@ file, `-p` / target globs, `capture()`
 (now `$` in value position), `shell_quote()` (interpolation self-quotes),
 `define()` (now `let`), `nth()` / `count_parts()` (now `split()` and indexing), the arithmetic and comparison
 functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKillOnSigInt`, the JSON schema,
-`VAR.` (replaced by `let`), `RUNFILE_TARGET`, and the npm package (`@runfile/cli`): `run` arrives by an installer or
-the setup action, and `:update` treats a copy the package left inside `node_modules` like any other, replacing it
-where it sits. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
+`VAR.` (replaced by `let`), and `RUNFILE_TARGET`. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
 `shlex`.
 
 **A property that became something else is an unknown property, and nothing remembers it was one** -- the
