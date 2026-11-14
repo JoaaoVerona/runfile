@@ -1577,13 +1577,12 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
   `[[bin]]`, `serve()` is its entry point, and the CLI dispatches to it from an arm that returns before the
   catalog is built. Everything it links -- `runfile-lang`, `runfile-discovery`, `runfile-runtime`,
   `serde_json` -- was already inside `run`, so it costs `run` about 200 KB and saves 1.1 MB from every
-  archive, six of them in the npm package. The bytes are not the reason. **Two copies of one parser could
+  archive. The bytes are not the reason. **Two copies of one parser could
   skew, and did**: a `run` newer than the `runfile-lsp` beside it underlines valid files in red while the
   runner accepts them, which happened three times during the rewrite -- `retry`, `.logging`, a namespaced
-  `run` call. Ten sites existed only to keep the two in step (both installers, two blocks of `release.yml`,
-  the npm `bin` map and its name-yourself-from-`__filename` launcher, the setup action's `run*` glob, a CI
-  step, `install.run`, `runfile.lspPath`), and the glob had already broken every consumer's job once by
-  expanding to two words. One file cannot skew against itself.
+  `run` call. Ten sites existed only to keep the two in step -- both installers, two blocks of `release.yml`,
+  the setup action's `run*` glob, a CI step, `install.run` and `runfile.lspPath` among them -- and the glob had
+  already broken every consumer's job once by expanding to two words. One file cannot skew against itself.
 - **`:lsp` answers before anything can print.** LSP framing owns stdout, and one stray line desynchronises the
   client for the rest of the session -- so the arm sits with the other `:` commands, all of which return
   before `catalog()`, and errors go to stderr where `main` already writes them.
@@ -2330,7 +2329,7 @@ been tested or released there -- and pushes that branch to the remote it tracks,
 GitHub the `github` branch runs CI, and a release workflow that mirrors **one** release: the version Cargo.toml
 names at the pushed commit, built from that version's tag. So a mirror pushed long after a release, with
 commits past it, still gets exactly what Gitea released; several releases between two pushes arrive as the
-newest, since npm's `latest` and the `v1` alias only want that one and would race if each were built; and a push
+newest, since the `v1` alias only wants that one and would race if each were built; and a push
 with no new release is CI and nothing more. Tags were the trigger until the mirror, and would have built every
 intermediate release at once. A version whose tag did not arrive fails the release rather than skipping it.
 
@@ -2345,7 +2344,7 @@ intermediate release at once. A version whose tag did not arrive fails the relea
   scheduled audit all read. Nothing here can set that; it is a repository setting.
 - **Every workflow is least-privilege** (audit SA-018). Each `.cicd/*.yml` and `.github/workflows/*.yml` file
   declares top-level `permissions: contents: read`, only a job that publishes raises itself -- `contents: write`
-  for Gitea's `release` and GitHub's `release` and `major-tag`, `id-token: write` for `npm` -- and every
+  for Gitea's `release` and GitHub's `release` and `major-tag` -- and every
   `actions/checkout` sets `persist-credentials: false`. So the third-party code an ordinary CI job runs -- cargo
   and its build scripts, `npx`, the tree-sitter CLI's binary download -- cannot reuse a persisted write-capable
   job token to rewrite a published release. **A command that writes is handed the token itself.** `gh` reads
@@ -2354,8 +2353,8 @@ intermediate release at once. A version whose tag did not arrive fails the relea
   `v1` still on v1.8.0. It is given the header checkout would have written, `http.https://github.com/.extraheader`,
   in its own environment (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0`) and masked, so it is
   gone when the push is. A job is not re-run to recover from this: a re-run uses the workflow file of the
-  commit it ran for, and a dispatch rebuilds and re-uploads every asset, then fails at an npm publish of a
-  version that already exists. The tag is moved by hand instead.
+  commit it ran for, and a dispatch rebuilds and re-uploads every asset for a tag a person can move in one
+  command. The tag is moved by hand instead.
 
 What each side publishes is decided by what it can do:
 
@@ -2365,15 +2364,11 @@ What each side publishes is decided by what it can do:
 | Six archives, `.vsix`, installers | yes | yes |
 | What `run :update` and the installers download by default | **yes** | with `--channel=github` |
 | What the setup action downloads, and its `v1` alias | no | **yes** |
-| npm | no | **yes** |
 
 - **The setup action stays on GitHub.** Consumers write `JoaaoVerona/runfile/.github/actions/setup@v1`, and
   Gitea resolves a bare `owner/repo` against `DEFAULT_ACTIONS_URL`, which is github.com on this instance -- so a
   Gitea job already fetches the action, and the archive it installs, from GitHub. It moves when the mirror
   does. Pointing it at Gitea is a change to every consumer's supply chain and was not made in passing.
-- **npm stays on GitHub** because trusted publishing accepts only GitHub's OIDC issuer, the provenance it
-  generates requires `repository` in `npm/package.json` to be that GitHub repository, and a version can be
-  published once -- so exactly one side does it.
 - **Both releases ship the same installers**, Gitea by default and GitHub under `RUNFILE_CHANNEL=github`. A
   binary built before `:update` moved runs it against GitHub's `latest/download/install.sh`; that copy is what
   moves it over. Anonymous reads need the Gitea repository to be **public** (the instance has
@@ -2381,9 +2376,8 @@ What each side publishes is decided by what it can do:
   `:update` and the Gitea leg of CI's `update` job all 404.
 - **A tag with a `-` is published as a prerelease on Gitea**, since Gitea's `latest` leaves prereleases out and
   `latest` is what every update installs. `v*.*.*` matches `v1.3.0-rc.1`. **GitHub marks the same versions**,
-  for the same reason: its `latest` is what the setup action and the github channel install. npm takes one under
-  `next`, since npm 11 refuses to publish a prerelease without a `--tag`. `run release` only ever makes
-  `vX.Y.Z`, so a prerelease is a tag made by hand -- and both sides have to agree about one when it is.
+  for the same reason: its `latest` is what the setup action and the github channel install. `run release` only
+  ever makes `vX.Y.Z`, so a prerelease is a tag made by hand -- and both sides have to agree about one when it is.
 
 What differs on Gitea's side is forced by the fleet (`gitea-easy-runners` documents it):
 
@@ -2459,7 +2453,9 @@ file, `-p` / target globs, `capture()`
 (now `$` in value position), `shell_quote()` (interpolation self-quotes),
 `define()` (now `let`), `nth()` / `count_parts()` (now `split()` and indexing), the arithmetic and comparison
 functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKillOnSigInt`, the JSON schema,
-`VAR.` (replaced by `let`), and `RUNFILE_TARGET`. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
+`VAR.` (replaced by `let`), `RUNFILE_TARGET`, and the npm package (`@runfile/cli`): `run` arrives by an installer or
+the setup action, and `:update` treats a copy the package left inside `node_modules` like any other, replacing it
+where it sits. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
 `shlex`.
 
 **A property that became something else is an unknown property, and nothing remembers it was one** -- the

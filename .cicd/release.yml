@@ -5,9 +5,7 @@
 # (crates/runfile-cli/src/cmd_update.rs, .cicd/release-assets/). GitHub is a
 # mirror that `run mirror` pushes when it is wanted, and its release workflow
 # then mirrors the newest version -- the archives the setup action installs,
-# the `v1` alias consumers pin it by, and the npm package. npm is only there
-# because its trusted publishing accepts only GitHub's OIDC issuer, and a
-# version can be published once, so exactly one side does it.
+# and the `v1` alias consumers pin it by.
 #
 # The same six targets as GitHub, on the runners this fleet has:
 #
@@ -36,7 +34,7 @@
 # survive into the binary. A release is rare enough that the queue is the
 # cheaper risk.
 #
-# Archives keep the layout the installers, the setup action and npm all read:
+# Archives keep the layout the installers and the setup action both read:
 # `runfile-cli-<target>/run[.exe]` beside the README, as .tar.xz, or .zip on
 # Windows.
 name: Release

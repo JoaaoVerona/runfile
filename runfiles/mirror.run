@@ -4,7 +4,7 @@
 # goes to Gitea, which runs CI and cuts every release, and this is the one thing
 # that sends anything to GitHub. The `github` branch landing there runs GitHub's
 # CI and mirrors the newest release in it (.github/workflows/release.yml): the
-# archives the setup action installs, its `v1` alias and the npm package.
+# archives the setup action installs, and its `v1` alias.
 #
 # What is mirrored is Gitea's master, fetched first, not the local one: a commit
 # that has not reached Gitea has not been tested or released there, and the

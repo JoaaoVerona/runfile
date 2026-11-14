@@ -1,14 +1,14 @@
 # GitHub is a mirror. Every release is cut on git.joaoverona.com
 # (.cicd/release.yml); this mirrors one here when `run mirror` pushes the
-# `github` branch -- the archives the setup action installs, its `v1` alias,
-# and the npm package, which only GitHub can publish.
+# `github` branch -- the archives the setup action installs, and its `v1`
+# alias.
 #
 # So it runs on that branch rather than on a tag, and releases the version
 # Cargo.toml names at the pushed commit, built from that version's tag: a
 # mirror pushed a while after a release, with commits past it, still mirrors
 # exactly what Gitea released. Several releases between two pushes are
-# mirrored as the newest -- npm's `latest` and the `v1` alias only ever want
-# that one, and building each would have them race for it. A push that brings
+# mirrored as the newest -- the `v1` alias only ever wants that one, and
+# building each would have them race for it. A push that brings
 # no new release runs CI and nothing here.
 name: Release
 
@@ -295,7 +295,7 @@ jobs:
   # `…/actions/setup@v1` is what a consumer writes, so the major tag has to
   # follow the releases -- the same alias `shared-actions` keeps, which its own
   # `release.run` moves as it tags. Here it is a job instead, because a release
-  # is six platform builds and an npm publish, and a tag meaning "the newest v1"
+  # is six platform builds and an upload, and a tag meaning "the newest v1"
   # must not point at a release that never finished. `needs` is the only thing
   # that knows whether it did.
   major-tag:
@@ -350,78 +350,3 @@ jobs:
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
             git push --force origin "refs/tags/$major"
-
-  npm:
-    name: Publish npm package
-    needs: [resolve, build, release]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6.0.2
-        with:
-          persist-credentials: false
-          ref: ${{ needs.resolve.outputs.tag }}
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v5.0.0
-        with:
-          merge-multiple: true
-          path: dist
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6.4.0
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-
-      - name: Assemble npm package
-        shell: bash
-        run: |
-          pkg="$RUNNER_TEMP/npm-pkg"
-          mkdir -p "$pkg/bin"
-          cp npm/package.json "$pkg/"
-          cp npm/run.js "$pkg/bin/"
-          cp README.md "$pkg/"
-          declare -A map=(
-            [aarch64-apple-darwin]=darwin-arm64
-            [aarch64-pc-windows-msvc]=win32-arm64
-            [aarch64-unknown-linux-musl]=linux-arm64
-            [x86_64-apple-darwin]=darwin-x64
-            [x86_64-pc-windows-msvc]=win32-x64
-            [x86_64-unknown-linux-musl]=linux-x64
-          )
-          for target in "${!map[@]}"; do
-            plat="${map[$target]}"
-            mkdir -p "$pkg/bin/$plat"
-            case "$target" in
-              *windows*)
-                unzip -q "dist/runfile-cli-$target.zip" -d "$RUNNER_TEMP/x-$target"
-                cp "$RUNNER_TEMP/x-$target/runfile-cli-$target/run.exe" "$pkg/bin/$plat/"
-                ;;
-              *)
-                tar -xJf "dist/runfile-cli-$target.tar.xz" -C "$RUNNER_TEMP"
-                cp "$RUNNER_TEMP/runfile-cli-$target/run" "$pkg/bin/$plat/"
-                chmod +x "$pkg/bin/$plat/run"
-                ;;
-            esac
-          done
-          cd "$pkg" && npm pkg set version="${TAG#v}"
-          echo "PKG_DIR=$pkg" >> "$GITHUB_ENV"
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-
-      # npm 11 refuses a prerelease without `--tag`, since the default is
-      # `latest` -- what a bare `npm install` fetches. So one goes under `next`,
-      # out of `latest` the way both hosts' releases keep it.
-      - name: Publish
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          case "$TAG" in
-            *-*) npm publish --access public --tag next ;;
-            *) npm publish --access public ;;
-          esac
-        working-directory: ${{ env.PKG_DIR }}

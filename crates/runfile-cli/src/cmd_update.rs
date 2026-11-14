@@ -15,10 +15,6 @@
 //!
 //! Releases come from one of two [`Channel`]s: Gitea, which cuts every release
 //! and is the default, and the GitHub mirror, which releases what it is pushed.
-//!
-//! npm-managed installs are handed to npm: their binary lives inside
-//! `node_modules` and is owned by the package manager, so the right update path
-//! is `npm install -g @runfile/cli@latest`, not a sideways overwrite.
 
 use crate::help::{Row, Section};
 use std::cmp::Ordering;
@@ -115,8 +111,6 @@ pub(crate) struct Request {
 	/// A release tag, always with its leading `v`.
 	pub(crate) version: Option<String>,
 	pub(crate) channel: Channel,
-	/// Whether `--channel` was written, which an npm install cannot honour.
-	pub(crate) channel_given: bool,
 	pub(crate) force: bool,
 }
 
@@ -124,7 +118,6 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Request, String> {
 	let mut req = Request {
 		version: None,
 		channel: Channel::Gitea,
-		channel_given: false,
 		force: false,
 	};
 	let names = || Channel::ALL.map(Channel::name).join(" or ");
@@ -142,7 +135,6 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Request, String> {
 		};
 		if let Some(name) = channel {
 			req.channel = Channel::named(name).ok_or_else(|| format!("unknown channel `{name}`; it is {}", names()))?;
-			req.channel_given = true;
 		} else if word == "--force" {
 			req.force = true;
 		} else if word.starts_with('-') {
@@ -171,31 +163,6 @@ fn release_tag(version: &str) -> Result<String, String> {
 	} else {
 		version.to_string()
 	})
-}
-
-/// How the running binary was installed — determines whether `:update` can
-/// manage it.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum InstallKind {
-	/// Binary lives inside a `node_modules` tree → owned by a JS package
-	/// manager. We refuse and defer to it.
-	Npm,
-	/// Installed via the install scripts (or any other standalone copy) →
-	/// safe to overwrite in place.
-	Standalone,
-}
-
-/// Classify an install purely from the executable path. Pure (no I/O) so it's
-/// unit-testable. The `node_modules` component is the signal that a JS package
-/// manager owns the binary (the npm package extracts to
-/// `.../node_modules/@runfile/cli/bin/<platform>/run`).
-pub(crate) fn classify_install(exe: &Path) -> InstallKind {
-	let in_node_modules = exe.components().any(|c| c.as_os_str() == "node_modules");
-	if in_node_modules {
-		InstallKind::Npm
-	} else {
-		InstallKind::Standalone
-	}
 }
 
 /// Whether `v` is a safe release-tag string. The install scripts put the
@@ -276,16 +243,6 @@ pub fn cmd_update(args: &[String]) -> Result<ExitCode, String> {
 	let req = parse_args(args)?;
 	let current = env!("CARGO_PKG_VERSION");
 	let exe = std::env::current_exe().map_err(|e| format!("could not locate the running executable: {e}"))?;
-
-	if classify_install(&exe) == InstallKind::Npm {
-		if req.channel_given {
-			return Err(format!(
-				"this run was installed with npm, which has one source; update it with: npm install -g {}",
-				npm_package_spec(req.version.as_deref())
-			));
-		}
-		return update_via_npm(&exe, req.version.as_deref());
-	}
 
 	let dir = exe
 		.parent()
@@ -446,61 +403,6 @@ fn schedule_old_deletion_at_reboot(exe: &Path) {
 		unsafe {
 			MoveFileExW(wide.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT);
 		}
-	}
-}
-
-/// Build the `npm install -g` package spec. npm uses bare semver, but our
-/// release tags carry a leading `v` — strip it so `--version v0.19.0` and
-/// `--version 0.19.0` both map to `@runfile/cli@0.19.0`. `None` → `@latest`.
-pub(crate) fn npm_package_spec(version: Option<&str>) -> String {
-	match version {
-		Some(v) => format!("@runfile/cli@{}", v.trim_start_matches('v')),
-		None => "@runfile/cli@latest".to_string(),
-	}
-}
-
-/// Update an npm-managed install.
-///
-/// On Unix we run `npm install -g <spec>` directly — replacing a running
-/// binary's file is fine there. On Windows we can't: npm would have to
-/// overwrite the currently-running `run.exe` (locked by this process), and
-/// since npm owns the extraction we can't apply the rename-aside trick the
-/// standalone path uses — a failed overwrite mid-reify can corrupt the global
-/// package. So on Windows we print the command for the user to run in a fresh
-/// shell, where no `run.exe` is executing.
-fn update_via_npm(exe: &Path, version: Option<&str>) -> Result<ExitCode, String> {
-	let spec = npm_package_spec(version);
-
-	#[cfg(windows)]
-	{
-		let _ = exe;
-		eprintln!("run is managed by npm. Update it from a fresh shell with:");
-		eprintln!();
-		eprintln!("  npm install -g {spec}");
-		eprintln!();
-		eprintln!("(Auto-update isn't safe here: npm must overwrite the running run.exe, which Windows locks.)");
-		Ok(ExitCode::FAILURE)
-	}
-
-	#[cfg(not(windows))]
-	{
-		let current = env!("CARGO_PKG_VERSION");
-		eprintln!("run v{current} is managed by npm; updating it with: npm install -g {spec}");
-		let status = Command::new("npm")
-			.args(["install", "-g", &spec])
-			.status()
-			.map_err(|e| format!("could not run npm ({e}); update with: npm install -g {spec}"))?;
-		if !status.success() {
-			return Err(format!("`npm install -g {spec}` exited with {status}"));
-		}
-		// npm replaced the package in place, so the path this binary ran from
-		// now holds whatever it installed.
-		let installed = binary_version(exe)?;
-		match compare(current, &installed) {
-			Some(Ordering::Equal) => eprintln!("run v{current} is up to date (npm)."),
-			_ => eprintln!("Updated run v{current} → v{installed} (npm)."),
-		}
-		Ok(ExitCode::SUCCESS)
 	}
 }
 
@@ -679,15 +581,14 @@ mod tests {
 			Request {
 				version: None,
 				channel: Channel::Gitea,
-				channel_given: false,
 				force: false,
 			}
 		);
 		let r = args(&["1.2.0", "--channel=github", "--force"]).unwrap();
 		assert_eq!(r.version.as_deref(), Some("v1.2.0"), "the tag carries its `v`");
-		assert_eq!((r.channel, r.channel_given, r.force), (Channel::GitHub, true, true));
+		assert_eq!((r.channel, r.force), (Channel::GitHub, true));
 		assert_eq!(args(&["--channel", "github"]).unwrap().channel, Channel::GitHub);
-		assert!(args(&["--channel=gitea"]).unwrap().channel_given);
+		assert_eq!(args(&["--channel=gitea"]).unwrap().channel, Channel::Gitea);
 	}
 
 	#[test]
