@@ -53,9 +53,6 @@ jobs:
         include:
           - arch: amd64
             runs-on: ubuntu-24.04
-          # Its own steps run emulated too -- this job's container is aarch64 --
-          # so building `run` here is slower than on the other leg. The workflow
-          # runs when the recipe changes, which is rarely.
           - arch: arm64
             runs-on: ubuntu-24.04-arm
     runs-on: ${{ matrix.runs-on }}
@@ -65,19 +62,18 @@ jobs:
         with:
           persist-credentials: false
 
-      # Only to build `run` itself, which compiles nothing worth caching here.
-      - name: Rust toolchain
-        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
-        with:
-          cache: false
-
-      # From source, like every job here that runs a target: the released CLI
-      # is a previous version of this repository's own task files, so it breaks
-      # exactly when the language changes.
-      - name: Setup Runfile (from source)
+      # The released CLI, unlike the jobs that test this repository: these are
+      # task files and nothing more, and building `run` from source took the
+      # arm64 leg 21 minutes under emulation (run 2708). The binary is the static
+      # x86-64 one on both legs -- the arm runner reports X64 -- and runs natively
+      # there too, its host being x86-64. `latest` because a release of this
+      # repository reaches GitHub, where the action downloads from, only once it
+      # is mirrored: the version this checkout names may not be there yet. These
+      # files stay to what the newest mirrored release reads.
+      - name: Setup Runfile
         uses: ./.github/actions/setup
         with:
-          from-source: true
+          version: latest
 
       # A container of the pinned Alpine for this platform.
       - name: Build the binary
@@ -100,15 +96,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Rust toolchain
-        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
-        with:
-          cache: false
-
-      - name: Setup Runfile (from source)
+      - name: Setup Runfile
         uses: ./.github/actions/setup
         with:
-          from-source: true
+          version: latest
 
       # Both binaries and their .sha256, where `macos-bash:publish` reads them.
       - name: Download the binaries

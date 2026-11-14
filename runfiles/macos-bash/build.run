@@ -57,10 +57,14 @@ for platform in building
 		expected = "aarch64"
 	end
 
-	let machine = $ {{ engine }} run --rm --platform {{ platform }} {{ image }} uname -m 2>&1 || true
+	# Errors included, so a failure can say why -- and only the last line
+	# compared, since a machine without the image prints its pull first. Nothing
+	# at all is a preview, which runs no command and so has no answer to judge.
+	let output = $ {{ engine }} run --rm --platform {{ platform }} {{ image }} uname -m 2>&1 || true
+	let machine = trim(last(lines(output)))
 
-	if trim(machine) != expected
-		error("{{ platform }} does not run here -- `uname -m` said `{{ trim(machine) }}`: the host needs QEMU registered for it, which on git.joaoverona.com's runners only the ubuntu-24.04-arm one has")
+	if machine != "" && machine != expected
+		error("{{ platform }} does not run here -- `uname -m` said `{{ machine }}`: the host needs QEMU registered for it, which on git.joaoverona.com's runners only the ubuntu-24.04-arm one has")
 	end
 end
 

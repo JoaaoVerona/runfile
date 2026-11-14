@@ -2596,9 +2596,14 @@ tests that assert the mechanism rather than the symptom.
    containers run on the x86-64 host's daemon, through the host's handler. A plain `ubuntu-24.04` runner has
    none, and no step can register one: the engine is rootless, so `docker/setup-qemu-action` reports
    `installing: arm64 OK` and registers nothing the next container sees -- runs 2640 and 2706 stopped at
-   `exec format error`. That leg's own container is aarch64 as well, so building `run` there is emulated and
-   slower; the workflow runs when the recipe changes. `macos-bash:build` runs `uname -m` in a container of each
-   platform it builds before it builds anything, so a machine without the handler fails in seconds and says so.
+   `exec format error`. **These jobs install the released `run`** (`version: latest`), unlike the jobs that test
+   this repository: they run task files and nothing else, and building `run` from source took the arm64 leg 21
+   minutes under emulation (run 2708). The binary is the static x86-64 one on both legs -- the arm runner reports
+   `X64` -- and runs natively on that runner's x86-64 host. `latest` is GitHub's newest, where the action
+   downloads from, since a release reaches GitHub only once it is mirrored, so `runfiles/macos-bash/` stays to
+   what that release reads. `macos-bash:build` runs `uname -m` in a container of each platform it builds before
+   it builds anything -- comparing the last line, since a first pull prints its progress ahead of the answer --
+   so a machine without the handler fails in seconds and says so.
 2. New behaviour needs a test that would fail without it. Prefer asserting the mechanism (count the keyring
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with
