@@ -5,7 +5,7 @@
 
 ENV.CARGO_TERM_COLOR = "always"
 
-# Back to cargo's default directory. The root `_shared.run` sets a per-OS one
-# so three platforms can share a checkout, which a runner never does -- and the
-# release workflow copies out of `target/<triple>/release/`.
+# Cargo's default directory, pinned: the release workflows copy out of
+# `target/<triple>/release/`, so a `CARGO_TARGET_DIR` a runner's environment
+# sets must not move what they look for.
 ENV.CARGO_TARGET_DIR = "target"

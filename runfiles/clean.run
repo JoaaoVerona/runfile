@@ -1,9 +1,5 @@
 # Remove build artifacts
 
 $ mbx clean
-
-for dir in ["", "-linux", "-mac", "-windows"]
-	$ cargo clean --target-dir target{{ dir }}
-end
-
+$ cargo clean
 $ rm -rf target-macos-bash

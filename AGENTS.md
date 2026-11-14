@@ -726,7 +726,7 @@ GRAMMAR.ebnf                   # Normative grammar reference
 .cicd/release-assets/          # install.sh / install.ps1 -- RUNFILE_CHANNEL picks gitea (default) or github
 .github/workflows/             # GitHub Actions for the mirror: run on the `github` branch `run mirror` pushes
 .github/actions/setup/         # The only shipped action: installs `run`, PATH, optional secret keys
-runfiles/                      # This project's own targets (self-hosting); ci/, wsl/ and macos-bash/ are namespaces
+runfiles/                      # This project's own targets (self-hosting); ci/ and macos-bash/ are namespaces
 editors/vscode/                # The VS Code extension (TypeScript) + its own runfiles/
 editors/tree-sitter/   # The tree-sitter grammar (Zed, Neovim, Helix) + its own runfiles/
 
@@ -2384,8 +2384,7 @@ What differs on Gitea's side is forced by the fleet (`gitea-easy-runners` docume
 - **The toolchain is `shared-actions/rust-toolchain-and-cache` on its mbx backend**, and every job on it ends with
   `rust-build-cache-save`. The `ci:` targets and the setup action's from-source build are shared with GitHub's
   workflows, which have no mbx, so they take the command from `RUNFILE_CI_CARGO`, set by `.cicd/ci.yml` and
-  `.cicd/release.yml` only, and fall back to `cargo`. `runfiles/wsl/` stays plain cargo: mbx would have to be
-  installed inside the WSL distribution too.
+  `.cicd/release.yml` only, and fall back to `cargo`.
 - **`macos-26` is an Intel Mac**, so `aarch64-apple-darwin` is cross-compiled there and nothing on Gitea runs
   aarch64 code; GitHub's `macos-15` is Apple Silicon and covers it. `ubuntu-24.04-arm` is qemu emulating the
   compiler, so `aarch64-unknown-linux-musl` builds on `ubuntu-24.04`, **linked by `rust-lld`**
@@ -2453,7 +2452,8 @@ file, `-p` / target globs, `capture()`
 (now `$` in value position), `shell_quote()` (interpolation self-quotes),
 `define()` (now `let`), `nth()` / `count_parts()` (now `split()` and indexing), the arithmetic and comparison
 functions (now operators), `when:` blocks, `sameShell`, `extendStdio`, `forceKillOnSigInt`, the JSON schema,
-`VAR.` (replaced by `let`), and `RUNFILE_TARGET`. Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
+`VAR.` (replaced by `let`), `RUNFILE_TARGET`, and the `wsl:` targets with the per-OS `target-<os>` build
+directories they needed (builds go to cargo's own `target/`). Dropped dependencies: `rmcp`, `tokio`, `json5`, `md-5`,
 `shlex`.
 
 **A property that became something else is an unknown property, and nothing remembers it was one** -- the

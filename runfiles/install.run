@@ -15,7 +15,7 @@ end
 
 # Written beside the target and moved into place: `cp` onto a binary that is
 # running fails with "Text file busy", and an editor usually has one open.
-$ cp {{ ENV.CARGO_TARGET_DIR }}/release/run{{ ext }} ~/.local/bin/.run.new{{ ext }}
+$ cp {{ ENV.CARGO_TARGET_DIR ? "target" }}/release/run{{ ext }} ~/.local/bin/.run.new{{ ext }}
 $ mv -f ~/.local/bin/.run.new{{ ext }} ~/.local/bin/run{{ ext }}
 
 print("Installed run to ~/.local/bin")

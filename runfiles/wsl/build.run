@@ -1,3 +1,0 @@
-# Debug build of the whole workspace, through WSL
-
-$ wsl --shell-type login -- cargo build --locked
