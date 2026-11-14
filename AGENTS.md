@@ -2590,6 +2590,15 @@ tests that assert the mechanism rather than the symptom.
    commit than the bump, once the workflow has published it, or CI's tests ask for a version that is not there
    yet. The package reads through this repository's Packages, which have to stay open to anonymous readers:
    every machine that tests downloads it with no token.
+   **Each architecture is built by a job of its own** (`macos-bash:build --platform=linux/<arch>`), and a third
+   job publishes both. amd64 builds on `ubuntu-24.04`, natively. arm64 builds on `ubuntu-24.04-arm`, the runner
+   whose machine has QEMU registered for it (installed with `--x64-to-arm64`; see gitea-easy-runners): its
+   containers run on the x86-64 host's daemon, through the host's handler. A plain `ubuntu-24.04` runner has
+   none, and no step can register one: the engine is rootless, so `docker/setup-qemu-action` reports
+   `installing: arm64 OK` and registers nothing the next container sees -- runs 2640 and 2706 stopped at
+   `exec format error`. That leg's own container is aarch64 as well, so building `run` there is emulated and
+   slower; the workflow runs when the recipe changes. `macos-bash:build` runs `uname -m` in a container of each
+   platform it builds before it builds anything, so a machine without the handler fails in seconds and says so.
 2. New behaviour needs a test that would fail without it. Prefer asserting the mechanism (count the keyring
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with

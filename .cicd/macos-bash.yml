@@ -1,8 +1,9 @@
 # Gitea Actions. See .cicd/ci.yml for why workflows live in this directory.
 #
 # Builds GNU bash 3.2.57, the bash macOS ships, as a static binary for
-# linux/amd64 and linux/arm64 (runfiles/macos-bash/), and publishes each with its
-# .sha256 to git.joaoverona.com's generic package registry as
+# linux/amd64 and linux/arm64 (runfiles/macos-bash/) -- one job each, on a runner
+# that can run that platform -- and publishes each with its .sha256 from a third
+# job to git.joaoverona.com's generic package registry as
 # bash/<version>/bash-<version>-linux-<arch>, linked to this repository: the
 # second pass of `run test` and `run ci:test` downloads it from there with no
 # token (`_macos-bash`). A published version is never replaced: a rebuild of the
@@ -32,9 +33,32 @@ concurrency:
   group: macos-bash-${{ gitea.ref }}
 
 jobs:
-  publish:
-    name: Build & publish
-    runs-on: ubuntu-24.04
+  # One job per architecture, each on a runner that can run it, and a third that
+  # publishes what both made.
+  #
+  # The arm64 build needs QEMU registered on the machine's own kernel, which only
+  # the runner installed with --x64-to-arm64 has -- the one behind
+  # ubuntu-24.04-arm, as gitea-easy-runners' own docker-multiarch job runs on. A
+  # plain ubuntu-24.04 runner has none, and nothing a job runs can register one
+  # there: the engine is rootless, so docker/setup-qemu-action's --privileged
+  # install reports "installing: arm64 OK" and registers nothing the next
+  # container can see, which is how runs 2640 and 2706 stopped at `exec format
+  # error`. The amd64 build stays on ubuntu-24.04, native. `macos-bash:build`
+  # checks that its platform runs before it builds anything.
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-24.04
+          # Its own steps run emulated too -- this job's container is aarch64 --
+          # so building `run` here is slower than on the other leg. The workflow
+          # runs when the recipe changes, which is rarely.
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
@@ -55,19 +79,43 @@ jobs:
         with:
           from-source: true
 
-      # The arm64 build runs under QEMU, and not every runner of the fleet has it
-      # registered: run 2640 landed on one without and stopped at `exec format
-      # error`. Registered here, pinned as shared-actions' gitea-docker-image-publish
-      # pins it.
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3.6.0
-        with:
-          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3-68@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
-          platforms: arm64
+      # A container of the pinned Alpine for this platform.
+      - name: Build the binary
+        run: run macos-bash:build --platform=linux/${{ matrix.arch }}
 
-      # One container of the pinned Alpine per platform, the arm64 one under QEMU.
-      - name: Build the binaries
-        run: run macos-bash:build
+      - name: Upload it
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/gitea-upload-artifact@v1
+        with:
+          if-no-files-found: error
+          name: bash-linux-${{ matrix.arch }}
+          path: target-macos-bash/*
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/rust-toolchain-and-cache@v1
+        with:
+          cache: false
+
+      - name: Setup Runfile (from source)
+        uses: ./.github/actions/setup
+        with:
+          from-source: true
+
+      # Both binaries and their .sha256, where `macos-bash:publish` reads them.
+      - name: Download the binaries
+        uses: https://git.joaoverona.com/joaaoverona/shared-actions/gitea-download-artifact@v1
+        with:
+          merge-multiple: true
+          path: target-macos-bash
 
       - name: Publish them and link the package to this repository
         run: run macos-bash:publish

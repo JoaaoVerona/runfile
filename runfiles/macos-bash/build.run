@@ -1,8 +1,11 @@
 # Build bash 3.2.57 static for linux/amd64 and linux/arm64 into target-macos-bash/, each binary beside its .sha256
 #
+# `--platform=linux/arm64` builds that one alone, which is how .cicd/macos-bash.yml
+# builds each on the runner that runs it; with no platform it builds both.
+#
 # One throwaway container of Alpine per platform, the image pinned by digest,
-# the arm64 one under QEMU (the host needs binfmt for arm64; .cicd/macos-bash.yml
-# registers it, since not every runner has it). 3.2 is K&R C that GCC 14 refuses: -std=gnu89 lets a
+# the arm64 one under QEMU (the host needs binfmt for arm64, registered on the
+# host itself; .cicd/macos-bash.yml runs where it is, and this checks it first). 3.2 is K&R C that GCC 14 refuses: -std=gnu89 lets a
 # function be called before it is declared, as C89 did, -fpermissive turns the
 # int and pointer conversions GCC 14 made errors back into warnings, and -w
 # silences the warnings, which are many and all upstream's; the tools make
@@ -31,11 +34,36 @@
 # Needs curl, sha256sum and Docker; CONTAINER_ENGINE=podman also works.
 
 let engine = ENV.CONTAINER_ENGINE ? "docker"
+let building = platforms
+
+if (ARG.platform ? "") != ""
+	building = [one_of(ARG.platform, platforms)]
+end
+
 let image = "alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f"
 let tarball_url = "https://ftp.gnu.org/gnu/bash/bash-{{ upstream }}.tar.gz"
 let tarball = join_path(temp_dir(), "bash-{{ upstream }}.tar.gz")
 
-$ rm -rf {{ out }}
+# Every platform has to run here before anything is built. One with no QEMU
+# registered for it fails at its first command, minutes into the build after the
+# ones before it -- and under rootless Docker, a step that says it registered
+# QEMU from a container proves nothing, since it registered nothing the host
+# keeps.
+for platform in building
+	let _, arch = split(platform, "/")
+	let expected = "x86_64"
+
+	if arch == "arm64"
+		expected = "aarch64"
+	end
+
+	let machine = $ {{ engine }} run --rm --platform {{ platform }} {{ image }} uname -m 2>&1 || true
+
+	if trim(machine) != expected
+		error("{{ platform }} does not run here -- `uname -m` said `{{ trim(machine) }}`: the host needs QEMU registered for it, which on git.joaoverona.com's runners only the ubuntu-24.04-arm one has")
+	end
+end
+
 $ mkdir -p {{ out }}
 $ curl -fsSL --retry 3 -o {{ tarball }} {{ tarball_url }}
 
@@ -45,11 +73,13 @@ else
 	error("{{ tarball_url }} is not the file pinned: GNU does not change a release's tarball, so read what happened before pinning another")
 end
 
-for platform in platforms
+for platform in building
 	let os, arch = split(platform, "/")
 	let name = "bash-{{ version }}-{{ os }}-{{ arch }}"
 	let binary = join_path(out, name)
 
+	# Only this platform's: building one leaves the other's where it was.
+	$ rm -f {{ binary }} {{ binary }}.sha256
 	print("bash: building {{ name }}")
 
 	# The container's stdout carries the tar of /out and nothing else: every
