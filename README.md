@@ -1110,7 +1110,7 @@ ssh addresses are not.
 before anything runs, the way any [line that fails every time](LANGUAGE-CHECK-RULES.md) is. A **commit** names
 one tree forever: it is fetched once and never asked about again. A **tag or a branch** can move, so the host is
 asked what it points at again once a week has passed since it last was — and when it cannot be asked, offline or
-with the host down, the commit it pointed at last time is used. `run :fetch <package>` asks now.
+with the host down, the commit it pointed at last time is used. `run :packages fetch <package>` asks now.
 
 What is fetched lands in the platform's cache directory — `~/.cache/runfile` on Linux,
 `~/Library/Caches/runfile` on macOS, `%LOCALAPPDATA%\runfile` on Windows, or `RUNFILE_CACHE_DIR` — without its
@@ -1155,8 +1155,34 @@ caller's environment, as it hands any target, so a key the caller decrypted reac
 fetching it — that is where a mistyped name would otherwise fetch someone else's code. `-y` and CI skip the
 question, and a reference written in a file is never asked about: the file is the decision.
 
-`--dry-run` fetches nothing: it previews a package the cache already holds, and says to `run :fetch` one it does
+`--dry-run` fetches nothing: it previews a package the cache already holds, and says to `run :packages fetch` one it does
 not.
+
+### The cache
+
+`run :packages` says where the cache is, what it holds and how much room it takes, and what a prune would take:
+
+```bash
+$ run :packages
+cache      /home/me/.cache/runfile
+packages   3 copies of 2 repositories    1.3 MiB
+downloads  2 files                      19.6 MiB
+total                                   20.9 MiB
+
+Fetched more than 7 days ago: 1 package copy, 1 download (9.9 MiB). `run :packages prune` removes them.
+```
+
+| Command | |
+| --- | --- |
+| `run :packages list` | Every copy: its repository, commit, the tags and branches it was fetched as, whether it is `runfiles/` or the whole repository, its size and its age |
+| `run :packages downloads` | Everything `download()` fetched: its URL, whether it was unpacked, its size, its age and the start of its SHA-256 |
+| `run :packages fetch <package>…` | Fetch now, asking the host what each tag or branch points at today, whatever the week says |
+| `run :packages prune [age]` | Remove what was fetched more than a week ago, or more than `age` ago — `30d`, `12h`, `2w` — and say what that freed; `--all` removes everything |
+| `run :packages remove <package>…` | Remove a repository's copies, whatever their age; with `@version`, only the copy that version was last found at |
+
+`list` and `downloads` take `--json`, and `prune` and `remove` take `--dry-run`, which says what would go and removes
+nothing. An age is the time since something was fetched: a copy is cheap to fetch again, and the next run that
+needs one does.
 
 ### One pin for a monorepo
 
@@ -1239,7 +1265,7 @@ whose state is still worth keeping, so a `setup` run under it is still recorded.
 | --- | --- |
 | `run <target> [args…]` | Run a target |
 | `run <package> [args…]` | Run a [package](#packages): `host/owner/repo@version`, or a `./folder` |
-| `run :fetch <package>…` | Fetch packages into the cache now, asking each host what its tag or branch points at |
+| `run :packages [command]` | What the cache of [packages](#packages) and downloads holds and how much room it takes; `list`, `downloads`, `fetch`, `prune [age \| --all]` and `remove` |
 | `run :list` | List every target (`--names`, `--json` for tooling) |
 | `run :init` | Create `runfiles/` with an example |
 | `run :lint [path…]` | Format runfiles in place and report anything the runner would refuse (`--check` writes nothing, `--stdout`) |

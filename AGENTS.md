@@ -493,7 +493,7 @@ reason -- a separate verb would have been one more thing that reads differently 
   `GIT_TERMINAL_PROMPT=0`, since a run may have no terminal and a branch must not read the one there is.
 - **A commit is cached forever; a tag or branch is asked about again after `RECHECK` (a week)**, and a re-check
   that fails -- offline, the host down -- uses the commit it found last time. `refs.json` beside the trees records
-  each name's commit, tag and when it was asked. `run :fetch` asks now (`Network::Refresh`), and is the one place
+  each name's commit, tag and when it was asked. `run :packages fetch` asks now (`Network::Refresh`), and is the one place
   a failed question is an error. `--dry-run` and the language server ask nothing (`Network::Offline`).
 - **The cache is readable, not hashed**: `<cache>/packages/<host>/<repo>/<commit>/` for a whole repository and
   `<commit>-<hash of the folder>/` for a package's `runfiles/` alone, the commit already being a content hash, so
@@ -1913,6 +1913,22 @@ a file without a trailing newline gets a zero-width one from the scanner, exactl
   holds the file open for writing ("Text file busy"). The same fake answers install.sh run on its own and the
   setup action's install step, cut out of `action.yml` and handed to bash as a runner hands it -- which is the
   only way that script is ever run before a consumer runs it.
+- **`:packages` is the cache, seen and pruned** (`cmd_packages.rs`; `runfile_remote::inventory`). Bare, it says
+  where the cache is, what it holds and how much room it takes, and what a prune would free; `list`, `downloads`,
+  `fetch`, `prune [age | --all]` and `remove <package>` are the rest, `--json` for the two lists and `--dry-run`
+  for the two that remove. Every line that names something says what it weighs -- on disk, the record kept beside
+  it included -- and everything that removes says what it freed and what it kept. **What is held is read from the
+  layout**, not from an index kept beside it: a repository is a folder of commit-named trees, a download a folder
+  with a `meta.json`, so nothing has to be kept in step and a copy an older runner kept is listed too. Beside each
+  tree is `<tree>.json` (`inventory::record_tree`): its commit, whether it is whole, its package's folder and when
+  it was fetched; without one, the folder's own time stands in, and a root copy's folder is known from its hash.
+  **An age is the time since a thing was fetched, not since it was last run**: it is the clock nothing has to
+  write on every run, and a copy is cheap to fetch again. A prune takes a repository's folder with its last copy;
+  `remove` with a version takes the copy that version was last found at, and without one the `refs.json` too.
+  What an interrupted fetch left under `tmp/` goes once it is an hour old, past any git call's limit, so a prune
+  never takes a fetch still running. **`:fetch` became `:packages fetch`** and is refused with the new name, as
+  `:format` is: it is a script written for the runner before, not a typo. The age is a word after `prune` rather
+  than a flag, because a flag's value is a thing completion has no kind for.
 - **`:list` shows the machine-wide targets first**, under `global:`. They are reachable from every directory
   and appear in no file a reader of the project can see, so they are the group worth meeting first; the local
   ones follow. `local:` is the unlabelled default only while nothing precedes it, which is every project

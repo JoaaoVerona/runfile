@@ -333,8 +333,40 @@ pub const ROOT: Cmd = Cmd {
 			flags: &[Flag("--names", Arg::None), Flag("--json", Arg::None)],
 			arg: Arg::None,
 		},
-		// The packages to fetch are references nothing on this machine can list.
-		leaf(":fetch"),
+		// The packages to fetch or remove are references nothing on this
+		// machine can list, and an age is a word nobody completes.
+		Cmd {
+			name: ":packages",
+			subs: &[
+				Cmd {
+					name: "list",
+					subs: &[],
+					flags: &[Flag("--json", Arg::None)],
+					arg: Arg::None,
+				},
+				Cmd {
+					name: "downloads",
+					subs: &[],
+					flags: &[Flag("--json", Arg::None)],
+					arg: Arg::None,
+				},
+				leaf("fetch"),
+				Cmd {
+					name: "prune",
+					subs: &[],
+					flags: &[Flag("--all", Arg::None), Flag("--dry-run", Arg::None)],
+					arg: Arg::None,
+				},
+				Cmd {
+					name: "remove",
+					subs: &[],
+					flags: &[Flag("--dry-run", Arg::None)],
+					arg: Arg::None,
+				},
+			],
+			flags: &[],
+			arg: Arg::None,
+		},
 		leaf(":init"),
 		// Typed once, into an editor's configuration, by someone who read the
 		// help -- so it is listed rather than hidden the way `:complete` is.

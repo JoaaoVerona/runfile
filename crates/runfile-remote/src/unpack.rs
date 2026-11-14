@@ -63,7 +63,7 @@ pub(crate) fn download(
 			Some(name) => format!("content/{name}"),
 			None => "content".to_string(),
 		};
-		let meta = serde_json::json!({ "url": url, "sha256": sum, "path": path });
+		let meta = serde_json::json!({ "url": url, "sha256": sum, "path": path, "fetched": crate::now() });
 		std::fs::write(entry.join("meta.json"), meta.to_string())
 			.map_err(|e| RemoteError(format!("could not write to the cache: {e}")))?;
 		// What was kept before was not what the pin says; it goes, and this

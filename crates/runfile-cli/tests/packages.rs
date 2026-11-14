@@ -464,20 +464,32 @@ fn a_preview_fetches_nothing_and_fetch_fills_the_cache() {
 	let o = w.run(&["--dry-run", "example.test/acme/tool@v1.0.0"]);
 	assert!(!o.status.success());
 	assert!(
-		err(&o).contains("a preview fetches nothing; `run :fetch example.test/acme/tool@v1.0.0` fetches it"),
+		err(&o).contains("a preview fetches nothing; `run :packages fetch example.test/acme/tool@v1.0.0` fetches it"),
 		"{}",
 		err(&o)
 	);
 
-	let o = w.run(&[":fetch", "example.test/acme/tool@v1.0.0", "example.test/acme/tool@main"]);
+	let o = w.run(&[
+		":packages",
+		"fetch",
+		"example.test/acme/tool@v1.0.0",
+		"example.test/acme/tool@main",
+	]);
 	assert!(o.status.success(), "{}", err(&o));
-	assert_eq!(
-		out(&o),
-		format!(
-			"example.test/acme/tool@v1.0.0: {} (tag v1.0.0)\nexample.test/acme/tool@main: {}\n",
-			&commit[..7],
+	let lines: Vec<String> = out(&o).lines().map(str::to_string).collect();
+	assert_eq!(lines.len(), 2, "{}", out(&o));
+	assert!(
+		lines[0].starts_with(&format!(
+			"example.test/acme/tool@v1.0.0: {} (tag v1.0.0), runfiles/, ",
 			&commit[..7]
-		)
+		)),
+		"{}",
+		out(&o)
+	);
+	assert!(
+		lines[1].starts_with(&format!("example.test/acme/tool@main: {}, runfiles/, ", &commit[..7])),
+		"{}",
+		out(&o)
 	);
 	let o = w.run(&["--dry-run", "example.test/acme/tool@v1.0.0"]);
 	assert!(o.status.success(), "{}", err(&o));
@@ -488,8 +500,158 @@ fn a_preview_fetches_nothing_and_fetch_fills_the_cache() {
 		out(&o)
 	);
 
-	assert!(err(&w.run(&[":fetch", "./x"])).contains("needs no fetching"));
-	assert!(out(&w.run(&[":fetch"])).contains("run :fetch <package>..."));
+	assert!(err(&w.run(&[":packages", "fetch", "./x"])).contains("needs no fetching"));
+	assert!(err(&w.run(&[":packages", "fetch"])).contains("needs a package to fetch"));
+	// The command it was, for a script written for the runner before.
+	assert!(err(&w.run(&[":fetch", "example.test/acme/tool@v1.0.0"])).contains("`:fetch` is now `:packages fetch`"));
+}
+
+/// Make every record of what the cache fetched say it came `days` ago.
+fn age_cache(w: &World, days: u64) {
+	let then = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.unwrap()
+		.as_secs()
+		- days * 86_400;
+	let mut stack = vec![w.cache()];
+	while let Some(d) = stack.pop() {
+		for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+			let p = e.path();
+			if p.is_dir() && !p.ends_with("content") && !p.ends_with("runfiles") {
+				stack.push(p);
+			} else if p.extension().is_some_and(|x| x == "json") && !p.ends_with("refs.json") {
+				let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+				v["fetched"] = serde_json::json!(then);
+				std::fs::write(&p, v.to_string()).unwrap();
+			}
+		}
+	}
+}
+
+#[test]
+fn the_packages_command_says_what_the_cache_holds_and_what_pruning_frees() {
+	if !has_git() {
+		return eprintln!("skipped: git is not installed");
+	}
+	let w = World::new();
+	let assets = TempDir::new().unwrap();
+	std::fs::write(assets.path().join("asset"), "x".repeat(4096)).unwrap();
+	let entry = format!(
+		"# Downloads something\n\nlet f = download(\"{}/asset\")\nprint(\"got it\")\n",
+		file_url(assets.path())
+	);
+	w.repo("acme/tool.git", &[("runfiles/_main.run", &entry)]);
+	let o = w.run(&[":packages"]);
+	assert!(
+		out(&o).contains("0 copies of 0 repositories") && out(&o).contains("0 files"),
+		"{}",
+		out(&o)
+	);
+	let o = w.run(&["-y", "example.test/acme/tool@v1.0.0"]);
+	assert!(o.status.success(), "{}", err(&o));
+
+	let o = w.run(&[":packages"]);
+	assert!(o.status.success(), "{}", err(&o));
+	// Sizes are what is on disk, the record kept beside each one included.
+	for want in [
+		"1 copy of 1 repository",
+		"1 file",
+		" KiB\n",
+		"Nothing was fetched more than 7 days ago.",
+	] {
+		assert!(out(&o).contains(want), "{want}: {}", out(&o));
+	}
+	let o = w.run(&[":packages", "list"]);
+	for want in [
+		"example.test/acme/tool\n",
+		"v1.0.0",
+		"runfiles/",
+		"fetched just now",
+		"1 copy of 1 repository, ",
+	] {
+		assert!(out(&o).contains(want), "{want}: {}", out(&o));
+	}
+	let o = w.run(&[":packages", "downloads"]);
+	for want in ["/asset\n", "kept as asset", " KiB  fetched just now", "1 download, "] {
+		assert!(out(&o).contains(want), "{want}: {}", out(&o));
+	}
+	let listed: serde_json::Value = serde_json::from_str(&out(&w.run(&[":packages", "list", "--json"]))).unwrap();
+	assert_eq!(listed[0]["repository"], "example.test/acme/tool");
+	assert_eq!(listed[0]["names"], serde_json::json!(["v1.0.0"]));
+	assert_eq!(listed[0]["whole"], false);
+	let downloaded: serde_json::Value =
+		serde_json::from_str(&out(&w.run(&[":packages", "downloads", "--json"]))).unwrap();
+	let size = downloaded[0]["size"].as_u64().unwrap();
+	assert!((4096..8192).contains(&size), "{size}");
+
+	age_cache(&w, 10);
+	let o = w.run(&[":packages"]);
+	assert!(
+		out(&o).contains("Fetched more than 7 days ago: 1 package copy, 1 download ("),
+		"{}",
+		out(&o)
+	);
+	// A dry run says what would go, and takes nothing.
+	let o = w.run(&[":packages", "prune", "--dry-run"]);
+	assert_eq!(out(&o).matches("would remove").count(), 2, "{}", out(&o));
+	assert!(
+		out(&o).contains("fetched 10 days ago") && out(&o).contains("would free "),
+		"{}",
+		out(&o)
+	);
+	assert!(out(&w.run(&[":packages", "list"])).contains("v1.0.0"));
+	// An age it is younger than keeps it.
+	let o = w.run(&[":packages", "prune", "30d"]);
+	assert!(
+		out(&o).starts_with("Nothing was fetched more than 30 days ago. Kept 1 package copy and 1 download ("),
+		"{}",
+		out(&o)
+	);
+	let o = w.run(&[":packages", "prune"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).matches("removed").count(), 2, "{}", out(&o));
+	assert!(
+		out(&o).contains("freed ") && out(&o).contains(": 1 package copy, 1 download. Kept nothing."),
+		"{}",
+		out(&o)
+	);
+	assert!(out(&w.run(&[":packages", "list"])).starts_with("No packages in "));
+	assert!(out(&w.run(&[":packages", "downloads"])).starts_with("No downloads in "));
+
+	// Removing a repository, whatever its age.
+	w.run(&["-y", "example.test/acme/tool@v1.0.0"]);
+	let o = w.run(&[":packages", "remove", "example.test/acme/tool"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert!(
+		out(&o).contains("removed  example.test/acme/tool ") && out(&o).contains("freed "),
+		"{}",
+		out(&o)
+	);
+	// And everything, however new.
+	w.run(&["-y", "example.test/acme/tool@v1.0.0"]);
+	let o = w.run(&[":packages", "prune", "--all"]);
+	assert!(out(&o).contains("Kept nothing."), "{}", out(&o));
+	assert!(out(&w.run(&[":packages", "downloads"])).starts_with("No downloads in "));
+
+	for (args, says) in [
+		(&[":packages", "prune", "3x"][..], "`3x` is not an age"),
+		(
+			&[":packages", "prune", "30d", "--all"][..],
+			"an age or `--all`, not both",
+		),
+		(
+			&[":packages", "list", "--nope"][..],
+			"unknown flag `--nope` for `:packages list`",
+		),
+		(&[":packages", "frob"][..], "unknown command `:packages frob`"),
+		(
+			&[":packages", "remove", "example.test/acme/none"][..],
+			"holds nothing of example.test/acme/none",
+		),
+	] {
+		let o = w.run(args);
+		assert!(!o.status.success() && err(&o).contains(says), "{args:?}: {}", err(&o));
+	}
 }
 
 #[cfg(unix)]

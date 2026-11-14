@@ -34,8 +34,11 @@
 //! finished, and two runs fetching the same thing at once both end up with it.
 
 mod git;
+mod inventory;
 mod unpack;
 mod zip;
+
+pub use inventory::{CachedDownload, CachedTree, Leftover, Pruned, human_age, human_size, parse_age};
 
 use runfile_lang::reference::{ENTRY, Remote, Rev};
 use sha2::{Digest, Sha256};
@@ -57,7 +60,7 @@ pub enum Network {
 	/// Fetch what is missing, and ask about a tag or branch once its week is up.
 	Allowed,
 	/// Ask about a tag or branch now, however recently it was asked: `run
-	/// :fetch`, which is what someone runs to pick a moved branch up today.
+	/// :packages fetch`, which is what someone runs to pick a moved branch up today.
 	Refresh,
 	/// Use the cache, at any age, and fetch nothing: `--dry-run` and an editor.
 	Offline,
@@ -220,7 +223,9 @@ impl Cache {
 		})
 		.and_then(|(tree, is_whole)| {
 			let into = if is_whole { &whole } else { &thin };
-			settle(&tree, into).map(|()| into.clone())
+			settle(&tree, into)?;
+			inventory::record_tree(into, &resolved.commit, (!is_whole).then_some(r.dir.as_str()));
+			Ok(into.clone())
 		});
 		remove_tree(&tmp);
 		package_at(r, &out?, resolved)
@@ -314,6 +319,11 @@ pub(crate) fn settle(from: &Path, to: &Path) -> Result<(), RemoteError> {
 /// way, and Windows will not delete one until it is writable. Best effort: a
 /// leftover under `tmp/` is harmless.
 pub(crate) fn remove_tree(dir: &Path) {
+	// A file -- what an interrupted download leaves -- is just removed.
+	if std::fs::symlink_metadata(dir).is_ok_and(|m| !m.is_dir()) {
+		let _ = std::fs::remove_file(dir);
+		return;
+	}
 	if std::fs::remove_dir_all(dir).is_ok() || !dir.exists() {
 		return;
 	}
@@ -362,7 +372,7 @@ fn package_at(r: &Remote, tree: &Path, resolved: Resolved) -> Result<Package, Re
 
 fn not_fetched(r: &Remote) -> String {
 	format!(
-		"`{}` has not been fetched on this machine, and a preview fetches nothing; `run :fetch {}` fetches it",
+		"`{}` has not been fetched on this machine, and a preview fetches nothing; `run :packages fetch {}` fetches it",
 		r.shown(),
 		r.shown()
 	)
@@ -373,7 +383,7 @@ pub fn short(commit: &str) -> &str {
 	&commit[..commit.len().min(7)]
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
 	SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 

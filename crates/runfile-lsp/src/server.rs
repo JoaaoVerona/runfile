@@ -336,7 +336,7 @@ impl Server {
 			}
 			(Reference::Remote(r), None) => format!(
 				"{heading}\nNot fetched on this machine yet. Running it fetches it, and so does\n{}",
-				analysis::fenced(&format!("run :fetch {}", r.shown()))
+				analysis::fenced(&format!("run :packages fetch {}", r.shown()))
 			),
 			(Reference::Path(_), Some(entry)) => format!("{heading}\n{}", about(&entry).unwrap_or_default()),
 			(Reference::Path(_), None) => format!("{heading}\nThere is no `runfiles/_main.run` in that folder."),

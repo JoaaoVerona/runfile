@@ -7,9 +7,9 @@
 
 mod ci_detect;
 mod cmd_env;
-mod cmd_fetch;
 mod cmd_generate;
 mod cmd_lint;
+mod cmd_packages;
 mod cmd_update;
 mod completions;
 mod help;
@@ -40,7 +40,10 @@ const SECTIONS: &[Section] = &[
 				"run <package> [args...]",
 				"run a package: host/owner/repo@version, or a ./folder",
 			),
-			Row("run :fetch <package>...", "fetch packages into the cache now"),
+			Row(
+				"run :packages <command>",
+				"list, fetch and prune packages and downloads, with their sizes",
+			),
 			Row("run :list", "list every target"),
 			Row("run :init", "create runfiles/ with an example target"),
 			Row("run :lint", "format every runfile and check it for errors"),
@@ -152,13 +155,10 @@ fn real_main() -> Result<ExitCode, String> {
 			let cat = catalog(&flags)?;
 			return cmd_generate::dispatch(&cat, &args);
 		}
-		":fetch" => {
-			if args.is_empty() || help::wants_help(&args) {
-				print!("{}", cmd_fetch::usage());
-				return Ok(ExitCode::SUCCESS);
-			}
-			return cmd_fetch::cmd_fetch(&args);
-		}
+		":packages" => return cmd_packages::dispatch(&args),
+		// Became `:packages fetch`. Said apart from an unknown command, as
+		// `:format` is: it is a script written for the runner before.
+		":fetch" => return Err(cmd_packages::FETCH_IS_PACKAGES.to_string()),
 		":update" => {
 			if help::wants_help(&args) {
 				print!("{}", cmd_update::usage());

@@ -183,7 +183,7 @@ fn a_branch_is_fetched_with_no_version_and_rechecked_after_a_week() {
 			.unwrap()
 			.contains("two")
 	);
-	// `run :fetch` asks now, whatever the age.
+	// `run :packages fetch` asks now, whatever the age.
 	write(&d, "runfiles/_main.run", "# The tool\n\nprint(\"three\")\n");
 	let third = commit(&d, "three");
 	assert_eq!(cache.package(&r, Network::Refresh, &quiet).unwrap().commit, third);
@@ -470,7 +470,7 @@ fn what_cannot_be_run_says_why() {
 		.cache()
 		.package(&remote("example.test/acme/other@v1"), Network::Offline, &quiet)
 		.unwrap_err();
-	assert!(e.0.contains("run :fetch example.test/acme/other@v1"), "{e}");
+	assert!(e.0.contains("run :packages fetch example.test/acme/other@v1"), "{e}");
 }
 
 #[test]
@@ -648,4 +648,183 @@ fn only_https_and_file_addresses_are_downloaded() {
 		.unwrap_err();
 	assert!(e.0.contains("64 hex digits"), "{e}");
 	let _ = std::fs::remove_dir_all(cache.root());
+}
+
+// ---------------------------------------------------------------- inventory
+
+/// Make every record of what the cache fetched say it came `age` ago.
+fn age_everything(cache: &Cache, age: Duration) {
+	let then = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.unwrap()
+		.as_secs()
+		- age.as_secs();
+	let mut records = Vec::new();
+	let mut stack = vec![cache.root().to_path_buf()];
+	while let Some(d) = stack.pop() {
+		for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+			let p = e.path();
+			if p.is_dir() && !p.ends_with("content") && !p.ends_with("runfiles") {
+				stack.push(p);
+			} else if p.extension().is_some_and(|x| x == "json") && !p.ends_with("refs.json") {
+				records.push(p);
+			}
+		}
+	}
+	assert!(!records.is_empty(), "nothing records when it was fetched");
+	for r in records {
+		let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&r).unwrap()).unwrap();
+		v["fetched"] = serde_json::json!(then);
+		std::fs::write(&r, v.to_string()).unwrap();
+	}
+}
+
+/// A repository with a package at its root, and one in a folder that asks for
+/// everything.
+fn stocked(s: &Server) -> (String, Cache) {
+	let d = s.repo("acme/tool.git");
+	write(&d, "runfiles/_main.run", "# The tool\n\nprint(\"one\")\n");
+	write(
+		&d,
+		"pkgs/all/runfiles/_main.run",
+		"# All\n\n.requires-whole-repository = true\n\nprint(\"all\")\n",
+	);
+	write(&d, "data.bin", &"x".repeat(10_000));
+	let c = commit(&d, "one");
+	git(&d, &["tag", "v1.0.0"]);
+	let cache = s.cache();
+	cache
+		.package(&remote("example.test/acme/tool@v1.0.0"), Network::Allowed, &quiet)
+		.unwrap();
+	cache
+		.package(&remote("example.test/acme/tool@main"), Network::Allowed, &quiet)
+		.unwrap();
+	cache
+		.package(
+			&remote("example.test/acme/tool/pkgs/all@v1.0.0"),
+			Network::Allowed,
+			&quiet,
+		)
+		.unwrap();
+	(c, cache)
+}
+
+#[test]
+fn the_cache_says_what_it_holds_and_what_each_copy_weighs() {
+	if !has_git() {
+		return eprintln!("skipped: git is not installed");
+	}
+	let s = Server::new();
+	let (c, cache) = stocked(&s);
+	let trees = cache.trees();
+	assert_eq!(trees.len(), 2, "{trees:#?}");
+	let thin = trees.iter().find(|t| !t.whole).unwrap();
+	let whole = trees.iter().find(|t| t.whole).unwrap();
+	for t in [thin, whole] {
+		assert_eq!(
+			(t.repository.as_str(), t.commit.as_str()),
+			("example.test/acme/tool", c.as_str())
+		);
+		// One commit, fetched as a tag and as a branch: both name it.
+		assert_eq!(t.names, ["main", "v1.0.0"]);
+	}
+	assert_eq!(thin.folder.as_deref(), Some(""));
+	assert_eq!(whole.folder, None);
+	// What each holds, counted: the whole repository has the data in it.
+	assert!(thin.size > 0 && thin.size < 1_000, "{}", thin.size);
+	assert!(whole.size > 10_000, "{}", whole.size);
+	let now = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.unwrap()
+		.as_secs();
+	assert!(now - thin.fetched < 60);
+}
+
+#[test]
+fn a_prune_takes_what_is_older_than_its_age_and_says_what_it_freed() {
+	if !has_git() || !has_curl() {
+		return eprintln!("skipped: git or curl is not installed");
+	}
+	let s = Server::new();
+	let (_, cache) = stocked(&s);
+	let src = TempDir::new().unwrap();
+	std::fs::write(src.path().join("tool"), "a tool").unwrap();
+	cache
+		.download(&file_url(&src.path().join("tool")), None, &quiet)
+		.unwrap();
+	let before =
+		cache.trees().iter().map(|t| t.size).sum::<u64>() + cache.downloads().iter().map(|d| d.size).sum::<u64>();
+
+	// Nothing is a week old yet.
+	let p = cache.prune(Some(Duration::from_secs(7 * 86_400)), false);
+	assert!(p.trees.is_empty() && p.downloads.is_empty(), "{p:#?}");
+	assert_eq!((p.kept_trees, p.kept_downloads, p.kept_size), (2, 1, before));
+
+	age_everything(&cache, Duration::from_secs(8 * 86_400));
+	// A dry run says what would go, and takes nothing.
+	let p = cache.prune(Some(Duration::from_secs(7 * 86_400)), true);
+	assert_eq!((p.trees.len(), p.downloads.len(), p.freed()), (2, 1, before));
+	assert_eq!(cache.trees().len(), 2);
+	// A longer age keeps them.
+	let p = cache.prune(Some(Duration::from_secs(30 * 86_400)), false);
+	assert!(p.trees.is_empty() && p.downloads.is_empty());
+	// And the default one takes them, and the repository's folder with them.
+	let p = cache.prune(Some(Duration::from_secs(7 * 86_400)), false);
+	assert_eq!(
+		(p.trees.len(), p.downloads.len(), p.freed(), p.kept_size),
+		(2, 1, before, 0)
+	);
+	assert!(cache.trees().is_empty() && cache.downloads().is_empty());
+	assert!(
+		!cache.root().join("packages/example.test").exists(),
+		"an empty host folder was left"
+	);
+}
+
+#[test]
+fn a_prune_of_everything_takes_what_was_just_fetched_too() {
+	if !has_git() {
+		return eprintln!("skipped: git is not installed");
+	}
+	let s = Server::new();
+	let (_, cache) = stocked(&s);
+	// What an interrupted fetch left, an hour ago and a moment ago.
+	let tmp = cache.root().join("tmp");
+	std::fs::create_dir_all(&tmp).unwrap();
+	std::fs::write(tmp.join("old"), "x").unwrap();
+	std::fs::write(tmp.join("new"), "y").unwrap();
+	let old = std::fs::OpenOptions::new().write(true).open(tmp.join("old")).unwrap();
+	old.set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 3600))
+		.unwrap();
+	let p = cache.prune(None, false);
+	assert_eq!(p.trees.len(), 2);
+	assert_eq!(p.leftovers.len(), 1, "only a leftover nothing can still be writing");
+	assert!(cache.trees().is_empty());
+	assert!(tmp.join("new").exists() && !tmp.join("old").exists());
+}
+
+#[test]
+fn a_repository_or_one_version_of_it_can_be_removed() {
+	if !has_git() {
+		return eprintln!("skipped: git is not installed");
+	}
+	let s = Server::new();
+	let (c, cache) = stocked(&s);
+	let e = cache.remove("example.test/acme/other", false).unwrap_err();
+	assert!(e.0.contains("holds nothing of example.test/acme/other"), "{e}");
+	let e = cache.remove("example.test/acme/tool@v9", false).unwrap_err();
+	assert!(e.0.contains("has no `v9`"), "{e}");
+	// A dry run takes nothing.
+	assert_eq!(cache.remove("example.test/acme/tool", true).unwrap().len(), 2);
+	assert_eq!(cache.trees().len(), 2);
+	// A version takes the copies at the commit it was found at.
+	let gone = cache.remove("example.test/acme/tool@v1.0.0", false).unwrap();
+	assert_eq!(gone.len(), 2);
+	assert!(gone.iter().all(|t| t.commit == c));
+	assert!(cache.trees().is_empty());
+
+	let s = Server::new();
+	let (_, cache) = stocked(&s);
+	assert_eq!(cache.remove("https://example.test/acme/tool", false).unwrap().len(), 2);
+	assert!(!cache.root().join("packages/example.test/acme/tool").exists());
 }
