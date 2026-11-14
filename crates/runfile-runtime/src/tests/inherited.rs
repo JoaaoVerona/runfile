@@ -295,6 +295,7 @@ fn what_a_target_was_run_with_is_handed_on_in_the_same_halves() {
 			("RUNFILE_T_REDONE", "d"),
 			("RUNFILE_T_ASSIGNED", "d"),
 		]),
+		workdir: None,
 	};
 	let rec = Recorder::default();
 	walk_run_with(
@@ -319,10 +320,17 @@ fn a_target_run_with_nothing_set_hands_on_exactly_what_it_was_run_with() {
 	let inherited = Inherited {
 		exported: map(&[("RUNFILE_T_EXPORTED", "e"), ("PATH", "/caller/path")]),
 		defaults: map(&[("RUNFILE_T_DEFAULT", "d")]),
+		workdir: None,
 	};
 	let rec = Recorder::default();
 	walk_run_with("run grandchild\n", inherited.clone(), &rec);
-	assert_eq!(rec.env_of("grandchild"), inherited);
+	let handed = rec.env_of("grandchild");
+	assert_eq!(
+		(&handed.exported, &handed.defaults),
+		(&inherited.exported, &inherited.defaults)
+	);
+	// And where the line that ran it was, which is where a package starts.
+	assert!(handed.workdir.is_some());
 }
 
 // ------------------------------------------------------------ what the target sees

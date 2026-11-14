@@ -273,7 +273,11 @@ fn check_target_calls(block: &runfile_lang::Block, known: &[String], out: &mut V
 		if let Statement::Run { target, span, .. } = st {
 			// Only a literal name can be checked; an interpolated one is not
 			// known until the target runs.
+			// A package is not one of this catalog's: whether its reference can
+			// be fetched is the checker's `package-reference`, and whether it is
+			// there is a question for the network, which an editor does not ask.
 			if let [InterpPart::Literal(name)] = &target[..]
+				&& !runfile_lang::reference::is_reference(name)
 				&& !known.iter().any(|k| k == name)
 			{
 				out.push(Diagnostic {
@@ -448,7 +452,7 @@ pub const RUN_KEYS: &[(&str, &str, &str)] = &[
 	),
 	(
 		"parent",
-		"The parent of `runfiles/`, and the working directory until a `set_cwd()` moves it. Every relative path resolves against the working directory in effect where it is written.",
+		"The parent of `runfiles/`, and the working directory until a `set_cwd()` moves it -- except in a package, which starts in the directory it was run from, and finds its own files here. Every relative path resolves against the working directory in effect where it is written.",
 		"$ ln -sfn {{ RUN.parent }}/extension ~/.local/share/gnome-shell/extensions/mine",
 	),
 	(
@@ -460,6 +464,11 @@ pub const RUN_KEYS: &[(&str, &str, &str)] = &[
 		"user",
 		"The name of the user running this.",
 		"$ loginctl show-user {{ RUN.user }} -p Linger",
+	),
+	(
+		"version",
+		"The tag the package this target belongs to was fetched at, as `v0.14.1`. Empty for a package fetched at a branch or a commit, for a package on disk, and for every target that is not a package's.",
+		"let dir = download(\"https://example.com/tool/releases/download/{{ RUN.version }}/tool.tar.gz\")",
 	),
 ];
 
@@ -713,9 +722,23 @@ fn in_scope(here: Option<&Place>, shared: impl FnOnce() -> Vec<Binding>, rank: u
 /// character but a tab, and the two Unicode separators a renderer may also
 /// break at, becomes a blank; and the fence is longer than any run of
 /// backticks in the line, since only one at least as long can close it.
-fn fenced(line: &str) -> String {
-	let flat: String = line
-		.chars()
+pub fn fenced(line: &str) -> String {
+	let flat = flatten(line);
+	let fence = fence_for(&flat);
+	format!("{fence}runfile\n{flat}\n{fence}")
+}
+
+/// Several lines of somebody else's text -- a package's description, read from
+/// a repository fetched into the cache -- as a plain block, by the same rules
+/// as [`fenced`], each line its own.
+pub fn fenced_text(text: &str) -> String {
+	let lines: Vec<String> = text.lines().map(flatten).collect();
+	let fence = fence_for(&lines.join("\n"));
+	format!("{fence}text\n{}\n{fence}", lines.join("\n"))
+}
+
+fn flatten(line: &str) -> String {
+	line.chars()
 		.map(|c| {
 			if (c.is_control() && c != '\t') || matches!(c, '\u{2028}' | '\u{2029}') {
 				' '
@@ -723,10 +746,14 @@ fn fenced(line: &str) -> String {
 				c
 			}
 		})
-		.collect();
-	let longest = flat.split(|c| c != '`').map(str::len).max().unwrap_or(0);
-	let fence = "`".repeat(longest.max(2) + 1);
-	format!("{fence}runfile\n{flat}\n{fence}")
+		.collect()
+}
+
+/// A fence longer than any run of backticks in `text`, which is the only kind
+/// that text cannot close.
+fn fence_for(text: &str) -> String {
+	let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+	"`".repeat(longest.max(2) + 1)
 }
 
 /// Whether a keyword may open the line the cursor is on, as far as the blocks
@@ -1180,6 +1207,16 @@ pub fn definition(src: &str, no: usize, col: usize) -> Option<Ref> {
 		// Not bound here: a `_shared.run` above may bind it.
 		None => Some(Ref::Shared(word.to_string())),
 	}
+}
+
+/// The target or package a `run` on this line names, when `col` is on it.
+///
+/// What hover asks before reading the word under the pointer: a package's
+/// reference is several words to anything that splits on `/` and `.`, and
+/// hovering any of them means the package.
+pub fn dispatched_at(line: &str, col: usize) -> Option<&str> {
+	let (at, name) = dispatch_on(line)?;
+	at.contains(&col).then_some(name)
 }
 
 /// The clickable span of a dispatch on this line, and the target it names.
@@ -2220,6 +2257,48 @@ mod tests {
 		// binds nothing.
 		let src = "# let region = \"eu\"\nlet hint = \"let region = x\"\n\nprint(region)\n";
 		assert_eq!(definition(src, 3, 7), Some(Ref::Shared("region".into())));
+	}
+
+	#[test]
+	fn a_package_is_not_a_missing_target_and_one_that_cannot_be_fetched_says_why() {
+		let known = ["build".to_string()];
+		let d = diagnose(
+			"run github.com/acme/tasks@v1.2.0 deploy\nrun ./tools/j18n\nrun build\n",
+			&known,
+			false,
+			Chain::Target(&[]),
+		);
+		assert!(d.is_empty(), "{d:#?}");
+		let m: Vec<String> = diagnose("run github.com/acme/tasks deploy\n", &known, false, Chain::Target(&[]))
+			.into_iter()
+			.map(|d| d.message)
+			.collect();
+		assert_eq!(m.len(), 1, "{m:#?}");
+		assert!(m[0].contains("names no version"), "{m:#?}");
+	}
+
+	#[test]
+	fn hovering_any_part_of_a_package_reference_means_the_package() {
+		let line = "\trun git.joaoverona.com/joaaoverona/j18n@v0.14.1 sync";
+		for col in [2, 10, 30, 45] {
+			assert_eq!(
+				dispatched_at(line, col),
+				Some("git.joaoverona.com/joaaoverona/j18n@v0.14.1"),
+				"{col}"
+			);
+		}
+		assert_eq!(dispatched_at(line, 50), None, "the argument is not the package");
+		assert_eq!(dispatched_at("let s = code_of(run ./x)", 22), Some("./x"));
+	}
+
+	#[test]
+	fn a_package_s_description_cannot_leave_its_block() {
+		// A description is whoever wrote the package's, fetched into the cache.
+		let md = fenced_text("Fine\n```\n![x](https://example.test/x.png)\u{2028}tail");
+		let fence = md.lines().next().unwrap().trim_end_matches("text");
+		assert!(fence.len() > 3, "{md}");
+		assert_eq!(md.matches(fence).count(), 2, "{md}");
+		assert!(!md.contains('\u{2028}'), "{md}");
 	}
 
 	#[test]

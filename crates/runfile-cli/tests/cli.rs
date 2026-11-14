@@ -58,6 +58,10 @@ impl Project {
 			// overrides the CLI honours on every platform.
 			.env("USERPROFILE", self.home.path())
 			.env("RUNFILE_CONFIG_DIR", self.home.path())
+			// Packages and `download()` keep what they fetch here, never in a
+			// developer's own cache.
+			.env("RUNFILE_CACHE_DIR", self.home.path().join("cache"))
+			.env("XDG_CACHE_HOME", self.home.path())
 			.env("XDG_CONFIG_HOME", self.home.path())
 			.env("XDG_STATE_HOME", self.home.path())
 			.env("APPDATA", self.home.path())

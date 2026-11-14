@@ -82,7 +82,7 @@ impl EvalError {
 /// Every key `RUN` has. The runner fills in each of them, except `user` when no
 /// variable names whoever is running it -- and nothing else, so a key not here
 /// is a mistake wherever it is written.
-pub const RUN_KEYS: &[&str] = &["arch", "cwd", "file", "namespaces", "os", "parent", "user"];
+pub const RUN_KEYS: &[&str] = &["arch", "cwd", "file", "namespaces", "os", "parent", "user", "version"];
 
 /// Every value `RUN.os` can have.
 pub const OS_NAMES: &[&str] = &["linux", "mac", "windows"];
@@ -154,7 +154,16 @@ pub struct Scope {
 	/// the way a branch's commands are relayed, and `confirm()` refuses to ask:
 	/// every branch shares one terminal.
 	pub branch: Option<String>,
+	/// What `download()` fetches through: the runner's cache, handed in so the
+	/// language crate neither spawns `curl` nor knows where a cache lives.
+	/// `None` where nothing runs -- a test, a language server.
+	pub downloader: Option<Downloader>,
 }
+
+/// Fetch a URL into the cache, verified against a SHA-256 when one is given,
+/// and answer with where it is: the folder an archive was unpacked into, or the
+/// file. Shared by every branch of a run, which is why it is an `Arc`.
+pub type Downloader = std::sync::Arc<dyn Fn(&str, Option<&str>) -> Result<String, String> + Send + Sync>;
 
 /// Paths created by `temp_file` / `temp_dir`, shared by every scope in a run.
 ///
@@ -256,6 +265,7 @@ impl Scope {
 			preview: false,
 			temps: TempFiles::default(),
 			branch: None,
+			downloader: None,
 			from_files: std::collections::BTreeSet::new(),
 			ignore_errors: false,
 		}
@@ -449,6 +459,10 @@ pub fn eval(e: &Expr, sc: &mut Scope) -> Result<Value, EvalError> {
 		}),
 		Expr::Dispatch { span, .. } => Err(EvalError::Other {
 			msg: "`run` needs a target resolver; not available in pure evaluation".into(),
+			line: span.line,
+		}),
+		Expr::Program { span, .. } => Err(EvalError::Other {
+			msg: "`exec` needs a process host; not available in pure evaluation".into(),
 			line: span.line,
 		}),
 	}

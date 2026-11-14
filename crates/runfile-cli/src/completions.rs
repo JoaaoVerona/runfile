@@ -333,6 +333,8 @@ pub const ROOT: Cmd = Cmd {
 			flags: &[Flag("--names", Arg::None), Flag("--json", Arg::None)],
 			arg: Arg::None,
 		},
+		// The packages to fetch are references nothing on this machine can list.
+		leaf(":fetch"),
 		leaf(":init"),
 		// Typed once, into an editor's configuration, by someone who read the
 		// help -- so it is listed rather than hidden the way `:complete` is.

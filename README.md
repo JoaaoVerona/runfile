@@ -1,6 +1,6 @@
 # Runfile
 
-[Quick start](#quick-start) · [Examples](#what-a-runfile-looks-like) · [Language](#the-language) · [Environment](#the-environment-the-working-directory-and-failures) · [Properties](#properties) · [Commands](#commands) · [Editors](#editor-support)
+[Quick start](#quick-start) · [Examples](#what-a-runfile-looks-like) · [Language](#the-language) · [Environment](#the-environment-the-working-directory-and-failures) · [Properties](#properties) · [Packages](#packages) · [Commands](#commands) · [Editors](#editor-support)
 
 **One directory. One binary. Every OS.**
 
@@ -383,6 +383,19 @@ run build
 There is no `--watch` flag: the file already said what it wants, so `run watch` watches. Ctrl+C ends the session,
 whether it is waiting for a change or part-way through a run.
 
+### A tool from another repository, with nothing installed
+
+```sh
+# runfiles/locales.run
+# Translate new and changed strings
+
+run github.com/acme/translate@v1.4.0 sync
+```
+
+A `run` of a repository at a version fetches it once into the cache and runs it in the directory you are in. The
+version is in the file that uses it, so a laptop and CI run the same one, and nothing goes on anybody's PATH —
+see [Packages](#packages).
+
 ## The language
 
 Line-oriented, with one rule: **the language is the default, the shell is marked.**
@@ -532,7 +545,7 @@ end
 | `FLAG.name` | `--name` (a boolean) |
 | `ARGS` | positional arguments, as a list |
 | `ENV.NAME` | the environment |
-| `RUN.os` `RUN.arch` `RUN.cwd` `RUN.file` `RUN.parent` `RUN.namespaces` `RUN.user` | the run itself |
+| `RUN.os` `RUN.arch` `RUN.cwd` `RUN.file` `RUN.parent` `RUN.namespaces` `RUN.user` `RUN.version` | the run itself |
 
 `a ? b` means "`a`, or `b` if `a` is not there", and chains:
 
@@ -661,8 +674,9 @@ match $ curl -fsS https://example.com
 end
 ```
 
-`code_of($ cmd)` is the same status as a number, for when you want to keep it — and `code_of(run other)`
-scores another **target** the same way. That is how one target runs both halves of a check and gives a single
+`code_of($ cmd)` is the same status as a number, for when you want to keep it — `code_of(exec program …)`
+starts a program directly, with no shell and with the terminal, and scores it the same way — and
+`code_of(run other)` scores another **target**. That is how one target runs both halves of a check and gives a single
 verdict at the end, instead of stopping at the first thing that failed:
 
 ```sh
@@ -1067,6 +1081,112 @@ subproject's tools. An absolute path is taken as written, and an absolute `glob`
 absolute paths. `RUN.parent` and `RUN.cwd` never move: the first is the project, the second is where you typed
 `run`.
 
+## Packages
+
+A `run` word with a `/` in it names a **package** rather than a target — no target's name can hold one, since
+its directories become `:` — and running a package runs its `runfiles/_main.run`. It is written the same way in
+a file and on the command line:
+
+```bash
+$ run github.com/acme/translate@v1.4.0 sync --help
+```
+
+| Reference | |
+| --- | --- |
+| `github.com/owner/repo@v1.4.0` | A repository at a tag. `@1.4.0` finds `v1.4.0` too |
+| `github.com/owner/repo@main` | At a branch |
+| `github.com/owner/repo@<commit>` | At a commit, all 40 characters |
+| `github.com/owner/repo/tools/x@v1.4.0` | A folder of the repository, holding its own `runfiles/` |
+| `gitlab.com/group/sub/repo.git/tools@v1.4.0` | A `.git` marks where a repository ends, for a GitLab subgroup |
+| `./tools/translate`, `../x`, `/opt/pkg` | A folder on this machine |
+
+**Every repository is fetched with git, over HTTPS** — GitHub, GitLab, Bitbucket, Gitea, Forgejo and any other
+host alike, a private one through the credential helper git already uses. There is no registry: a package is
+named by where it lives. `https://` in front is accepted, so a URL copied from a browser works; `http://` and
+ssh addresses are not.
+
+**A version is required.** A reference without an `@` would run whatever its host had that day, so it is refused
+before anything runs, the way any [line that fails every time](LANGUAGE-CHECK-RULES.md) is. A **commit** names
+one tree forever: it is fetched once and never asked about again. A **tag or a branch** can move, so the host is
+asked what it points at again once a week has passed since it last was — and when it cannot be asked, offline or
+with the host down, the commit it pointed at last time is used. `run :fetch <package>` asks now.
+
+What is fetched lands in the platform's cache directory — `~/.cache/runfile` on Linux,
+`~/Library/Caches/runfile` on macOS, `%LOCALAPPDATA%\runfile` on Windows, or `RUNFILE_CACHE_DIR` — as the
+repository at that commit without its `.git`, or only the package's folder of it.
+
+**A package runs where it was run from.** It was fetched to work on whatever called it, so it starts in the
+directory you typed `run` in, or in the working directory of the line that ran it — a `set_cwd()` above that
+line moves it, as it moves any command. Its own files are under `{{ RUN.parent }}`, and `{{ RUN.version }}`
+is the tag it was fetched at (empty for a branch, a commit, or a folder on disk). It needs no project where it is
+run, has no setup gate, and its `_shared.run` runs ahead of it as it would for any target in its folder.
+Everything after the reference is the package's — `--help` included, which is the package's to answer.
+
+A package is a catalog of its own: its `run helper` is its own `helper`, never the caller's. A `run` hands it the
+caller's environment, as it hands any target, so a key the caller decrypted reaches the tool.
+
+**The first time a repository is typed at the terminal**, `run` says which commit it would run and asks before
+fetching it — that is where a mistyped name would otherwise fetch someone else's code. `-y` and CI skip the
+question, and a reference written in a file is never asked about: the file is the decision.
+
+`--dry-run` fetches nothing: it previews a package the cache already holds, and says to `run :fetch` one it does
+not.
+
+### One pin for a monorepo
+
+A subproject does not inherit the root's `_shared.run`, so a version written in each would drift. Pin it once in
+a package of your own, which every subproject reaches by path — from the root or from inside the subproject:
+
+```sh
+# tools/translate/runfiles/_main.run
+# The translator, pinned for every package in this repository
+
+run github.com/acme/translate@v1.4.0 {{ ARGS }}
+```
+
+```sh
+# web-docs/runfiles/i18n.run
+# Translate the docs
+
+run ../tools/translate sync
+```
+
+`../tools/translate` is relative to `web-docs/`, where the line runs, and so is where the translator starts.
+
+### Publishing a tool as a package
+
+A project that releases binaries needs no install script and no npm wrapper: a `_main.run` that downloads the
+build for the machine it is on and hands over to it is the whole of it.
+
+```sh
+# runfiles/_main.run
+# translate, for whoever runs this repository
+
+let os = RUN.os
+let arch = RUN.arch
+let archive = "tar.gz"
+let exe = "translate"
+
+if RUN.os == "windows"
+	archive = "zip"
+	exe = "translate.exe"
+end
+
+let name = "translate-{{ os }}-{{ arch }}"
+let dir = download("https://github.com/acme/translate/releases/download/{{ RUN.version }}/{{ name }}.{{ archive }}")
+let status = code_of(exec {{ join_path(dir, name, exe) }} {{ ARGS }})
+
+exit(status)
+```
+
+`download()` fetches a URL once into the cache, unpacks a `.tar.gz`, `.tar.xz` or `.zip`, and answers with the
+folder — or with the file, made executable, when it is not an archive; a SHA-256 as its second argument is checked
+against what arrived. `code_of(exec …)` starts the program with no shell in between, so nothing on Windows needs
+a bash to run a native `.exe`, and with the terminal, so it reads and prints as it would on its own; `exit()`
+with its status ends the run the way the program did. Because the version is the tag the package was fetched
+at, the binary is always the one released with the `_main.run` that names it. `run . sync` inside your own
+checkout runs it exactly as someone else would.
+
 ## Setup targets
 
 Name a target `setup` and every other target in its directory refuses to run until it has:
@@ -1092,6 +1212,8 @@ whose state is still worth keeping, so a `setup` run under it is still recorded.
 | Command | |
 | --- | --- |
 | `run <target> [args…]` | Run a target |
+| `run <package> [args…]` | Run a [package](#packages): `host/owner/repo@version`, or a `./folder` |
+| `run :fetch <package>…` | Fetch packages into the cache now, asking each host what its tag or branch points at |
 | `run :list` | List every target (`--names`, `--json` for tooling) |
 | `run :init` | Create `runfiles/` with an example |
 | `run :lint [path…]` | Format runfiles in place and report anything the runner would refuse (`--check` writes nothing, `--stdout`) |

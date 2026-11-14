@@ -11,7 +11,7 @@
 ((capture_call name: (identifier) @function)
  (#any-of? @function
   "abs" "add_path" "append" "base64_decode" "base64_encode" "basename" "capitalize" "ceil" "code_of" "concat"
-  "concat_lists" "confirm" "contains" "decrypt" "directory_exists" "dirname" "ends_with" "error"
+  "concat_lists" "confirm" "contains" "decrypt" "directory_exists" "dirname" "download" "ends_with" "error"
   "escape" "exit" "extname" "file_exists" "first" "flatten" "floor" "glob" "ignore_errors"
   "import_env_file" "index_of"
   "is_executable" "is_number" "join" "join_path" "json_encode" "json_format" "json_get" "json_keys"
@@ -50,7 +50,7 @@
 ((call_expression function: (identifier) @function.call)
  (#any-of? @function.call
   "abs" "add_path" "append" "base64_decode" "base64_encode" "basename" "capitalize" "ceil" "code_of" "concat"
-  "concat_lists" "confirm" "contains" "decrypt" "directory_exists" "dirname" "ends_with" "error"
+  "concat_lists" "confirm" "contains" "decrypt" "directory_exists" "dirname" "download" "ends_with" "error"
   "escape" "exit" "extname" "file_exists" "first" "flatten" "floor" "glob" "ignore_errors"
   "import_env_file" "index_of"
   "is_executable" "is_number" "join" "join_path" "json_encode" "json_format" "json_get" "json_keys"
@@ -63,6 +63,7 @@
 
 (run_statement target: (target) @function.call)
 (dispatch target: (target) @function.call)
+(program program: (program_name) @function.call)
 (argument) @string.special
 
 (string) @string

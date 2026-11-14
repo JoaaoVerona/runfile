@@ -107,7 +107,7 @@ it.
 ### Sources
 
 `ARG.x` (from `--x=value`), `ENV.X`, `FLAG.x` (bool, from `--x`), `ARGS` (a list of positionals), and
-`RUN.os` / `RUN.arch` / `RUN.cwd` / `RUN.file` / `RUN.parent` / `RUN.namespaces` / `RUN.user`.
+`RUN.os` / `RUN.arch` / `RUN.cwd` / `RUN.file` / `RUN.parent` / `RUN.namespaces` / `RUN.user` / `RUN.version`.
 
 **`--key value` works, and nothing declares that it does.** It used to be a flag plus a positional -- the
 argument was `--key=value` only, because nothing said which names take values, so it could not be
@@ -419,6 +419,19 @@ run rather than a target reporting how it went, and a re-exec propagates them to
 whole process group. This is what `coverage.run` is for — run both halves, report one verdict — and what
 `$ run x` was standing in for.
 
+**`code_of(exec <program> [args])` starts a program directly and scores it** (`Expr::Program`,
+`run::program_code`, `Spawn.direct`). It is how a target hands itself over to a program -- a package's
+`_main.run` becoming the tool it downloaded -- and it fills the two gaps a `$` line leaves there. A `$` line is
+a shell: on Windows that means Git Bash just to start a native `.exe`, and its failure is the runner's error
+line and status 1, so a wrapper could never end the way its program did. The command is split by the runner,
+as an `exec` block's is (`interpolate_command`, `split_command`), the program is started with the terminal for
+stdin, stdout and stderr -- null and relayed with a label in a parallel branch, as a shell's are -- and the
+status is the value; `let s = code_of(exec …)` then `exit(s)` ends the run with it, silently. One line, no
+body, no `end`: that is why only `code_of` may hold it, for the reason only it may hold a dispatch. The command
+is read to the call's last `)` before the arguments are split, so a comma in it is the program's; a `)`
+outside an interpolation is refused, since it cannot be told from the closing one, while one inside a
+`{{ join_path(…) }}` is the expression's. `length(exec)` stays a binding named `exec`, as `length(run)` does.
+
 ### `$` and `exec` in value position
 
 `let files = $ git diff --cached --name-only` captures stdout. This replaced a `capture()` function.
@@ -452,6 +465,63 @@ shell-quoted, and the splitter read the `'\''` that writes an apostrophe as a ba
 `D'Ávila` arrived as `D\Ávila` and every quote after it paired with the wrong one, which turned a JSON argument
 to `psql -v` into something no parser would take. `exec::tests` holds the writer and the reader to each other
 over values chosen to break either.
+
+### Packages
+
+**A `run` word holding a `/` names a package** (`runfile_lang::reference`): a repository at a version,
+`host/owner/repo[/folder…]@version`, or a folder on disk, `./x`, `../x`, `/x`, `.`, `..`. Running one runs its
+`runfiles/_main.run` (`reference::ENTRY`, hidden from its own `:list` by the `_`). A target is its file name
+with `:` where its directories were, so no target's name holds a `/` and nothing that worked before means
+something else. The same word works in a file and on the command line, which is the whole of the integration:
+`run <ref> sync` in `locales.run` is `run <ref> sync` typed at a prompt. It is not an `:exec` command for that
+reason -- a separate verb would have been one more thing that reads differently in the two places.
+
+- **A repository is its first two path segments**, which is every GitHub, Bitbucket, Gitea, Forgejo and
+  Codeberg repository; a segment ending in `.git` marks where a longer one ends, for a GitLab subgroup
+  (`gitlab.com/g/sub/repo.git/pkg@v1`). Probing the host for where the repository ends was rejected: a private
+  repository and a missing one answer alike, and a guess that costs round trips is still a guess. The host needs
+  a `.` (Go's rule), so `tools/j18n` -- a path someone forgot the `./` of -- is refused rather than fetched from a
+  host called `tools`. `https://` is accepted and dropped, so a URL from a browser works; `http://`, `ssh://` and
+  `git@host:` are refused with the reference they meant.
+- **A version is required** -- a tag, a branch, or a full 40- or 64-character commit id -- and a reference
+  without one is a `package-reference` finding, refused before the target runs. A short commit is read as a name,
+  since no host fetches by a prefix, and the host's "no tag or branch" answer then says to write it in full.
+  `@1.2.0` finds `v1.2.0` when there is no `1.2.0`, as `:update` reads a version.
+- **Fetched with git over HTTPS, never through a host's API** (`runfile-remote`). Git is the one protocol every
+  host speaks the same way, so no host needs code of its own; a private repository goes through the credential
+  helper the person already uses; and HTTPS never waits on an SSH agent asking a person to approve it.
+  `GIT_TERMINAL_PROMPT=0`, since a run may have no terminal and a branch must not read the one there is.
+- **A commit is cached forever; a tag or branch is asked about again after `RECHECK` (a week)**, and a re-check
+  that fails -- offline, the host down -- uses the commit it found last time. `refs.json` beside the trees records
+  each name's commit, tag and when it was asked. `run :fetch` asks now (`Network::Refresh`), and is the one place
+  a failed question is an error. `--dry-run` and the language server ask nothing (`Network::Offline`).
+- **The cache is readable, not hashed**: `<cache>/packages/<host>/<repo>/<commit>/`, the commit already being a
+  content hash, so a person can see what is there and delete one entry. A package in a folder is a sparse,
+  blob-filtered checkout of that folder alone, under `<commit>-<hash of the folder>`. No `.git` is kept, so a git
+  command run inside a package finds nothing. Everything is built under `<cache>/tmp/` and renamed into place,
+  so an interrupted fetch leaves nothing that looks finished and two runs fetching one commit both end with it.
+- **A package starts in the working directory of the line that ran it**, or the process's from the command line
+  (`Inherited.workdir`). It was fetched to work on whatever called it: `web-docs:i18n-sync` running j18n has it
+  translate `web-docs/`. A target of the project still starts at its anchor -- it works on the project it belongs
+  to. `RUN.parent` is the package's own folder, `RUN.version` the tag it was fetched at (empty otherwise), so an
+  entry can download the binary released with it by construction.
+- **A package is a catalog of its own** (`dispatch::Package`). Its `run x` is its own `x`, never the caller's,
+  which it cannot know about; a call-chain entry inside one is `<root>\0<name>`, so cycle detection and the
+  subproject qualification read it like any other. It is discovered from its folder with no machine-wide
+  directory joining it. Its `_shared.run` runs ahead of it, as for any target in its folder -- so j18n's dev-only
+  `.logging` would reach its consumers, and belongs in the targets that want it.
+- **No setup gate, and `--help` is the package's.** Nobody set up a cache entry or works in one, so the gate is
+  not asked; and a package is a program someone runs, so `run <ref> sync --help` hands `--help` on. A package
+  needs no project where it is run: the CLI builds no catalog for one.
+- **The first time a repository is typed at the terminal it is asked about** (`main::first_fetch`), naming the
+  commit it would run -- the one place a mistyped name fetches someone else's code. A tree in the cache is what
+  "known" means (`Cache::knows`), not a lookup: answering no must not make the next run skip the question. `-y`,
+  CI and a reference in a file are never asked; the file is the decision, as its `$ curl … | sh` would be.
+- **A monorepo pins a version once with a package of its own**: `tools/j18n/runfiles/_main.run` holding
+  `run <ref>@v1 {{ ARGS }}`, reached as `run ../tools/j18n sync` from each subproject. A root *target* could not do
+  it: a subproject run from its own folder never sees the root's targets (the upward walk stops at the nearest
+  `runfiles/`), and a root target starts at the root, so the tool would run there. A path package has neither
+  problem, and is the same concept rather than a new one.
 
 ### Comments
 
@@ -653,6 +723,7 @@ crates/
   runfile-env/                 # .env parsing, and reading (and decrypting) one .env file
   runfile-crypto/              # AES-256-GCM for encrypted env values; replacing a file in one step
   runfile-state/               # Prepare state, OS credential store access, the Linux key file
+  runfile-remote/              # Packages fetched with git into the cache, and what download() fetches
 ```
 
 ## Crate Responsibilities
@@ -950,6 +1021,22 @@ naming both, since merging them would let one target shadow another invisibly. A
   wrote it whether or not it had a file, so any `~/.runfiles` at all hid a project's root `_shared.run` from
   `:lint` -- the collision `shared_chain` had been rid of, still alive in the one reader left. Only files that
   exist are recorded, and `:lint` filters them by `Origin` exactly as it filters targets.
+
+### runfile-remote
+
+`lib.rs` (the `Cache`, resolving a version, the re-check), `git.rs` (`ls-remote` and a checkout at a commit),
+`unpack.rs` (`download()`), `zip.rs`. See *Packages* and `download()` above for what it does.
+
+- **Every git call is bounded by a wall clock** (`git::git`), since a host that never answers would otherwise
+  hold the run as long as a TCP connection takes to give up: 30 seconds for a re-check, which has an answer to
+  fall back on, longer for a first question and a fetch.
+- **A fetch by commit id falls back to fetching everything.** Most hosts hand over any reachable commit under
+  protocol v2; one that will not still serves its refs.
+- **The checkout ignores the person's own hooks and line-ending conversion** (`core.hooksPath` pointed at
+  nothing, `core.autocrlf=false`): a cache entry is the tree as committed.
+- **`Cache::rewriting` points a host at a folder for a test**, handed to each git call as `-c url.….insteadOf`
+  rather than set in an environment a whole test binary shares. The CLI tests hand the child git's own
+  `GIT_CONFIG_COUNT` instead.
 
 ### runfile-runtime
 
@@ -2397,6 +2484,18 @@ literal or a trip out to `seq`. `range(n)` counts from zero and stops short, whi
 empty rather than a count down, so `range(1, length(xs))` over an empty list is nothing rather than an error
 or a backwards list. Bounded the way `repeat` is, because `range(1e9)` is a typo rather than a plan.
 
+**`download(url[, sha256])` fetches once into the cache and answers with where it is** -- the folder an archive
+was unpacked into, or the file, made executable (`runfile_remote::Cache::download`, reached through
+`Scope.downloader`, which the runtime sets and the pure library only calls). A URL is the key: one that names
+its version is one file forever, so it is downloaded the first time and kept, and a pin is checked on that
+download and fetches again whenever what is kept is not what it says. A release cannot carry its own binaries'
+checksums -- they are built after the tag -- so the pin is optional. An archive is recognised by its bytes, and
+unpacked in-process -- gzip and xz through `flate2` and `lzma-rs`, tar through `tar`, zip by a reader of its own
+(`runfile-remote/src/zip.rs`, stored and deflated entries, Zip64) -- because GNU tar reads no zip and needs an
+`xz` beside it, and all of them are pure Rust, so the six release triples still cross-check. Nothing is written
+outside the folder: tar's `unpack` refuses it, the zip reader refuses `..`, a root or a drive, and links. It
+fetches with curl, as `:update` does, `https://` and `file://` only, and nothing under `--dry-run`.
+
 **`sleep(seconds)` takes a float**, and does nothing under `--dry-run` -- waiting changes nothing, but a
 preview that takes the full minute a real run takes is not a preview. It is the gap `retry … every` left: a
 pause on its own was still `$ sleep 5`.
@@ -2456,7 +2555,7 @@ tests that assert the mechanism rather than the symptom.
 2. New behaviour needs a test that would fail without it. Prefer asserting the mechanism (count the keyring
    loads) over the symptom (notice the hang).
 3. CLI behaviour is tested by driving the compiled binary in `crates/runfile-cli/tests/cli.rs`, with
-   `HOME`, `USERPROFILE`, `RUNFILE_CONFIG_DIR`, `XDG_*` and `APPDATA` pointed at an empty directory and
+   `HOME`, `USERPROFILE`, `RUNFILE_CONFIG_DIR`, `RUNFILE_CACHE_DIR`, `XDG_*` and `APPDATA` pointed at an empty directory and
    `RUNFILE_SKIP_PREPARE`, `RUNFILE_PRIVATE_KEYS`, `RUNFILE_SAFE_DIRECTORIES`, `XDG_DATA_HOME`,
    `DBUS_SESSION_BUS_ADDRESS` and **every one of the ten variables `ci_detect` looks at** stripped, and keyutils
    refused by a seccomp filter, so no key store of the developer's is reachable (see *runfile-runtime* on the

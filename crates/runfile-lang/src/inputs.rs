@@ -451,6 +451,7 @@ fn expr(e: &Expr, out: &mut Inputs, at: At<'_>) {
 			parts(target, out, at.set);
 			args.iter().for_each(|a| parts(a, out, at.set));
 		}
+		Expr::Program { command, .. } => parts(command, out, at.set),
 	}
 }
 

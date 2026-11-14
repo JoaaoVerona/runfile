@@ -331,6 +331,10 @@
           "named": true
         },
         {
+          "type": "program",
+          "named": true
+        },
+        {
           "type": "raw_string",
           "named": true
         },
@@ -1885,6 +1889,32 @@
     }
   },
   {
+    "type": "program",
+    "named": true,
+    "fields": {
+      "program": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "program_name",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "argument",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "property",
     "named": true,
     "fields": {
@@ -3069,6 +3099,10 @@
   {
     "type": "parallel",
     "named": false
+  },
+  {
+    "type": "program_name",
+    "named": true
   },
   {
     "type": "r\"",

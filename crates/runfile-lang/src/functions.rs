@@ -1258,6 +1258,12 @@ pub const FUNCTIONS: &[Function] = &[
 		example: "let d = dirname(\"/srv/app/main.rs\")          # \"/srv/app\"",
 	},
 	Function {
+		name: "download",
+		signature: "download(url[, sha256])",
+		doc: "Fetch a file once into the machine's cache and answer with where it is: the folder a `.tar.gz`, `.tar.xz` or `.zip` was unpacked into, or the file itself, made executable. A URL is downloaded the first time it is asked for and kept; given a SHA-256, the download is checked against it. `https://` and `file://` only. Fetches nothing under `--dry-run`.",
+		example: "let dir = download(\"https://example.com/releases/download/{{ RUN.version }}/tool-{{ RUN.os }}-{{ RUN.arch }}.tar.gz\")\nlet status = code_of(exec {{ join_path(dir, \"tool\") }} {{ ARGS }})\n\nexit(status)",
+	},
+	Function {
 		name: "ends_with",
 		signature: "ends_with(s, suffix)",
 		doc: "Whether `s` ends with `suffix`.",
@@ -1823,6 +1829,21 @@ pub(crate) fn call_io(name: &str, v: &[Value], sc: &Scope, sp: Span) -> Option<R
 		})(),
 		"write_file" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would write {}>", s(0)?))))(),
 		"decrypt" if n == 2 && sc.dry_run => (|| Ok(Value::Str(format!("<would decrypt to {}>", s(1)?))))(),
+		// Into the cache rather than the project, but a write all the same, and
+		// a preview of an untrusted repository must not reach out to whatever
+		// address it names (SA-008).
+		"download" if (n == 1 || n == 2) && sc.dry_run => (|| Ok(Value::Str(format!("<download of {}>", s(0)?))))(),
+		"download" if n == 1 || n == 2 => (|| {
+			let url = s(0)?;
+			let pin = if n == 2 { Some(s(1)?) } else { None };
+			let Some(fetch) = sc.downloader.as_ref() else {
+				return Err(other(format!(
+					"`download()` needs the runner's cache, which is not available here, to fetch {url}"
+				)));
+			};
+			fetch(url, pin).map(V::Str).map_err(other)
+		})(),
+		"download" => Err(arity(name, "1 or 2 arguments", n, sp)),
 		"write_file" if n == 2 => (|| {
 			let p = resolve(&sc.workdir, s(0)?);
 			if let Some(d) = p.parent() {

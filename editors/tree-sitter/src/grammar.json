@@ -640,6 +640,10 @@
             {
               "type": "SYMBOL",
               "name": "dispatch"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "program"
             }
           ]
         },
@@ -693,6 +697,40 @@
             },
             "named": true,
             "value": "target"
+          }
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "ALIAS",
+            "content": {
+              "type": "SYMBOL",
+              "name": "dispatch_word"
+            },
+            "named": true,
+            "value": "argument"
+          }
+        }
+      ]
+    },
+    "program": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "exec"
+        },
+        {
+          "type": "FIELD",
+          "name": "program",
+          "content": {
+            "type": "ALIAS",
+            "content": {
+              "type": "SYMBOL",
+              "name": "dispatch_word"
+            },
+            "named": true,
+            "value": "program_name"
           }
         },
         {

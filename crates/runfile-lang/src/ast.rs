@@ -327,6 +327,18 @@ pub enum Expr {
 		args: Vec<Vec<InterpPart>>,
 		span: Span,
 	},
+	/// `exec <command>` on one line, which only `code_of` may hold: the program
+	/// started directly -- no shell, no body -- with the terminal for its stdin,
+	/// stdout and stderr, and its exit status as the value.
+	///
+	/// It is how a target hands itself over to a program, the way a package's
+	/// `_main.run` becomes the tool it fetched: `exec` reads its command line
+	/// itself, so nothing on Windows needs a bash to start a native `.exe`, and
+	/// `code_of` keeps the status a failing `$` line would have flattened to 1.
+	Program {
+		command: Vec<InterpPart>,
+		span: Span,
+	},
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,7 +477,7 @@ impl Expr {
 			Expr::Index { base, index, .. } => base.reads_env() || index.reads_env(),
 			Expr::Call { args, .. } => args.iter().any(Expr::reads_env),
 			Expr::Structured { body, .. } => body.lines.iter().any(|l| parts(l)),
-			Expr::Capture { .. } | Expr::Dispatch { .. } => true,
+			Expr::Capture { .. } | Expr::Dispatch { .. } | Expr::Program { .. } => true,
 		}
 	}
 
@@ -507,7 +519,8 @@ impl Expr {
 			| Expr::Call { span: s, .. }
 			| Expr::Structured { span: s, .. }
 			| Expr::Capture { span: s, .. }
-			| Expr::Dispatch { span: s, .. } => *s,
+			| Expr::Dispatch { span: s, .. }
+			| Expr::Program { span: s, .. } => *s,
 		}
 	}
 }

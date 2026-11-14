@@ -56,11 +56,15 @@ pub const RULES: &[Rule] = &[
 	},
 	Rule {
 		id: "capture-position",
-		summary: "A `$` run or a `run` dispatch where the runner has nothing to run it in.",
+		summary: "A `$` run, a `run` dispatch or an `exec` command where the runner has nothing to run it in.",
 	},
 	Rule {
 		id: "glued-list",
 		summary: "A list interpolated with no space between it and the text beside it, in a `$` line.",
+	},
+	Rule {
+		id: "package-reference",
+		summary: "A `run` of a package written so that it can never be fetched: no `@` version, an address that is not `https`, or no repository.",
 	},
 	Rule {
 		id: "relative-cwd-in-loop",
@@ -338,8 +342,9 @@ impl Check<'_> {
 				}
 			}
 			Statement::Break { .. } | Statement::Continue { .. } => {}
-			Statement::Run { target, args, .. } => {
+			Statement::Run { target, args, span } => {
 				self.root = Place::Inner;
+				self.reference(target, *span);
 				self.parts(target);
 				for a in args {
 					self.parts(a);
@@ -772,6 +777,7 @@ impl Check<'_> {
 				true
 			}
 			Expr::Dispatch { target, args, span } => {
+				self.reference(target, *span);
 				let mut fails = self.parts(target);
 				for a in args {
 					fails |= self.parts(a);
@@ -782,7 +788,38 @@ impl Check<'_> {
 				self.unrunnable(*span, "a `run` dispatch");
 				true
 			}
+			Expr::Program { command, span } => {
+				let fails = self.parts(command);
+				if root && self.root == Place::Whole {
+					return fails;
+				}
+				self.unrunnable(*span, "an `exec` command");
+				true
+			}
 		}
+	}
+
+	/// A `run` of a package, written out, that can never be fetched.
+	///
+	/// Only a literal: an interpolated reference is not known until the line
+	/// runs, where the runner refuses it with the same message.
+	fn reference(&mut self, target: &[InterpPart], within: Span) {
+		let [InterpPart::Literal(word)] = target else {
+			return;
+		};
+		if !crate::reference::is_reference(word) {
+			return;
+		}
+		let Err(e) = crate::reference::parse(word) else {
+			return;
+		};
+		let at = self.src[within.start.min(self.src.len())..]
+			.find(word.as_str())
+			.map_or(within, |k| {
+				let start = within.start + k;
+				Span::new(start, start + word.len(), within.line)
+			});
+		self.report("package-reference", at, e.0, None);
 	}
 
 	/// `e` has to be one of `needs`; report it when it never is. Answers
@@ -943,7 +980,7 @@ impl Check<'_> {
 			let last = k + 1 == args.len();
 			fails |= match a {
 				Expr::Capture { .. } => self.expr(a, whole && last),
-				Expr::Dispatch { .. } => self.expr(a, whole && last && name == "code_of"),
+				Expr::Dispatch { .. } | Expr::Program { .. } => self.expr(a, whole && last && name == "code_of"),
 				_ => self.expr(a, false),
 			};
 		}
@@ -963,13 +1000,17 @@ impl Check<'_> {
 		if fails {
 			return true;
 		}
-		if name == "code_of" && !matches!(args.first(), Some(Expr::Capture { .. } | Expr::Dispatch { .. })) {
+		if name == "code_of"
+			&& !matches!(
+				args.first(),
+				Some(Expr::Capture { .. } | Expr::Dispatch { .. } | Expr::Program { .. })
+			) {
 			let text = args.first().map(|a| self.text(a.span())).unwrap_or_default();
 			self.report(
 				"wrong-type",
 				args.first().map_or(span, Expr::span),
 				format!(
-					"`code_of` takes a `$` run or a `run` dispatch, as `code_of($ make)` or `code_of(run build)`, and `{text}` is neither"
+					"`code_of` takes a `$` run, a `run` dispatch or an `exec` command, as `code_of($ make)`, `code_of(run build)` or `code_of(exec make)`, and `{text}` is none of them"
 				),
 				None,
 			);

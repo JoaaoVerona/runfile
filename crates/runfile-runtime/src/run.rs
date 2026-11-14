@@ -504,6 +504,7 @@ fn statement(st: &Statement, props: &Props, r: &mut Runner<'_>) -> Result<(), Ru
 				label: r.label.as_deref(),
 				detach: *detach,
 				announce: props.logging && !r.dry_run,
+				direct: false,
 			})?;
 			Ok(())
 		}
@@ -667,6 +668,7 @@ fn value_of(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<Value, RunErr
 		// never detached: the whole point is waiting for what it prints.
 		detach: false,
 		announce: props.logging && !r.dry_run,
+		direct: false,
 	})?;
 	Ok(Value::Str(out))
 }
@@ -691,12 +693,15 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 	if let Expr::Dispatch { target, args, .. } = e {
 		return dispatch_code(target, args, r);
 	}
+	if let Expr::Program { command, .. } = e {
+		return program_code(command, props, r);
+	}
 	let Expr::Capture { command, body, .. } = e else {
 		// The parser used to guarantee this, back when `code_of` was the only
 		// call a capture could sit inside. Now that any call may hold one,
 		// answering 0 for `code_of("x")` would be a silent wrong number.
 		return Err(RunError::Eval(runfile_lang::eval::EvalError::Other {
-			msg: "`code_of` takes a `$` run or a `run` dispatch, as `code_of($ mkdir out)` or `code_of(run build)`"
+			msg: "`code_of` takes a `$` run, a `run` dispatch or an `exec` command, as `code_of($ mkdir out)`, `code_of(run build)` or `code_of(exec make)`"
 				.into(),
 			line: e.span().line,
 		}));
@@ -716,6 +721,37 @@ fn exit_code(e: &Expr, props: &Props, r: &mut Runner<'_>) -> Result<i32, RunErro
 		label: r.label.as_deref(),
 		detach: false,
 		announce: props.logging && !r.dry_run,
+		direct: false,
+	})?)
+}
+
+/// `code_of(exec <command>)`: the program started directly, with the terminal,
+/// and its exit status.
+///
+/// No shell reads the line, so it is written for the reader that does -- the
+/// runner's own split, as an `exec` block's command is -- and nothing on
+/// Windows needs a bash to start a native program. In a parallel branch it is
+/// relayed and labelled like any other command, with no terminal to read.
+fn program_code(command: &[InterpPart], props: &Props, r: &mut Runner<'_>) -> Result<i32, RunError> {
+	let cmd = interpolate_command(command, &mut r.scope)?;
+	let show = runfile_lang::eval::interpolate_display(command);
+	// What a preview prints, as an `exec` block's resolved body is.
+	r.trace.push(cmd.clone());
+	let env = env_of(r);
+	let dir = r.scope.workdir.clone();
+	Ok(exec::spawn_code(Spawn {
+		command: Some(&cmd),
+		body: "",
+		show_command: Some(&show),
+		display: "",
+		cwd: &dir,
+		env: &env,
+		capture: false,
+		dry_run: r.dry_run,
+		label: r.label.as_deref(),
+		detach: false,
+		announce: props.logging && !r.dry_run,
+		direct: true,
 	})?)
 }
 

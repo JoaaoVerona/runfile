@@ -26,6 +26,15 @@ use std::collections::HashMap;
 pub struct Inherited {
 	pub exported: HashMap<String, String>,
 	pub defaults: HashMap<String, String>,
+	/// The working directory of the line that ran it -- `None` from the command
+	/// line, which is the process's own.
+	///
+	/// A target of the project starts at its anchor whatever this says, since
+	/// it works on the project it belongs to. A **package** starts here: it was
+	/// fetched to work on whatever called it, so `web-docs:i18n-sync` running
+	/// j18n has it translate `web-docs/`, and a `set_cwd()` above the line moves
+	/// where it starts as it moves every command.
+	pub workdir: Option<std::path::PathBuf>,
 }
 
 impl Inherited {
@@ -61,6 +70,7 @@ impl std::fmt::Debug for Inherited {
 		f.debug_struct("Inherited")
 			.field("exported", &names(&self.exported))
 			.field("defaults", &names(&self.defaults))
+			.field("workdir", &self.workdir)
 			.finish()
 	}
 }
@@ -80,5 +90,6 @@ pub fn handed_over(sc: &Scope) -> Inherited {
 		};
 		half.insert(k.clone(), v.clone());
 	}
+	out.workdir = Some(sc.workdir.clone());
 	out
 }

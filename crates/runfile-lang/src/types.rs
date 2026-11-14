@@ -183,6 +183,7 @@ pub(crate) const SIGNATURES: &[Signature] = &[
 	sig("decrypt", 2, TWO, &[S, S], TEXT),
 	sig("directory_exists", 1, ONE, &[S], TRUTH),
 	sig("dirname", 1, ONE, &[S], TEXT),
+	sig("download", 1, TWO, &[S], TEXT),
 	sig("ends_with", 2, TWO, &[S, S], TRUTH),
 	sig("error", 1, ONE, &[S], Returns::Never),
 	sig("escape", 1, ONE, &[S], TEXT),
@@ -449,7 +450,7 @@ impl Names {
 				Some(s) => s.answer(&args.iter().map(|a| self.ty(a)).collect::<Vec<_>>()),
 				None => Ty::ANY,
 			},
-			Expr::Dispatch { .. } => Ty::ANY,
+			Expr::Dispatch { .. } | Expr::Program { .. } => Ty::ANY,
 		}
 	}
 

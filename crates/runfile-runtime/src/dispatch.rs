@@ -10,9 +10,44 @@ use crate::run::{Dispatch, RunError, Runner};
 use runfile_discovery::Catalog;
 use runfile_lang::args::Word;
 use runfile_lang::eval::Scope;
+use runfile_lang::reference::{self, ENTRY, Reference};
 use runfile_lang::{Arg, Value};
-use std::path::Path;
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// What separates a package from the name of one of its targets in a call
+/// chain. No folder and no target name can hold it.
+const IN_PACKAGE: char = '\u{0}';
+
+/// A package a run has reached: a repository fetched into the cache, or a
+/// folder on disk, with a `runfiles/_main.run`.
+///
+/// It is a catalog of its own. Its `run x` means its own `x` -- the way a
+/// subproject's means its sibling -- and never the caller's, which it cannot
+/// know about.
+pub struct Package {
+	/// The reference as it reads once parsed: `host/repo@v1.0.0`, or the path
+	/// as written. What a message names it by.
+	pub shown: String,
+	/// The folder holding its `runfiles/`: `RUN.parent`, and what tells it
+	/// apart from every other package in the run.
+	pub root: PathBuf,
+	pub catalog: Catalog,
+	/// The tag it was fetched at, which is `RUN.version`; empty otherwise.
+	pub version: String,
+}
+
+impl Package {
+	/// `runfiles/_main.run`, which is what running the package runs.
+	pub fn entry(&self) -> Option<&runfile_discovery::Target> {
+		self.catalog.resolve(ENTRY)
+	}
+
+	fn key(&self) -> String {
+		self.root.display().to_string()
+	}
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -51,6 +86,10 @@ pub enum HostError {
 	/// What [`Host::on_header`] said no with.
 	#[error("{0}")]
 	Header(String),
+	/// A package that cannot be run: a reference that cannot be fetched, a
+	/// fetch that failed, or a folder with no `runfiles/_main.run`.
+	#[error("{0}")]
+	Package(String),
 }
 
 /// One problem to a line, each naming its file. The first line is the error the
@@ -121,8 +160,14 @@ pub struct Host<'a> {
 	/// a probe would have had to run them twice. An error it answers with ends
 	/// the run, as `HostError::Header`.
 	pub on_header: Option<&'a OnHeader<'a>>,
+	/// Where packages are fetched to and `download()` keeps what it fetches.
+	/// `None` leaves both unavailable, saying so.
+	pub cache: Option<runfile_remote::Cache>,
 	/// The key pool of the run in progress, once something in it has needed one.
 	pool: Mutex<Option<runfile_lang::Keys>>,
+	/// Every package the host has reached, by the reference that reached it --
+	/// so a package named twice in a run is asked about once.
+	packages: Mutex<HashMap<String, Arc<Package>>>,
 }
 
 impl<'a> Host<'a> {
@@ -138,8 +183,120 @@ impl<'a> Host<'a> {
 			trace: Mutex::new(Vec::new()),
 			temps: runfile_lang::TempFiles::default(),
 			on_header: None,
+			cache: None,
 			pool: Mutex::new(None),
+			packages: Mutex::new(HashMap::new()),
 		}
+	}
+
+	/// The package a reference names, fetched into the cache if it is not
+	/// there, and read.
+	///
+	/// A path is relative to where the line naming it was (`env`'s working
+	/// directory), or to the process's from the command line. A remote one is
+	/// fetched only when it has to be, and never under `--dry-run`, whose
+	/// preview reads what the cache already holds.
+	pub fn package(&self, word: &str, env: Option<&crate::env::Inherited>) -> Result<Arc<Package>, RunError> {
+		let refused = |m: String| RunError::Host(Box::new(HostError::Package(m)));
+		let reference = reference::parse(word).map_err(|e| refused(e.0))?;
+		let (memo, shown) = match &reference {
+			Reference::Path(p) => {
+				let base = env
+					.and_then(|e| e.workdir.clone())
+					.or_else(|| std::env::current_dir().ok())
+					.unwrap_or_default();
+				let dir = base.join(p);
+				let dir = std::fs::canonicalize(&dir).map(plain).map_err(|_| {
+					let shown: PathBuf = dir
+						.components()
+						.filter(|c| *c != std::path::Component::CurDir)
+						.collect();
+					refused(format!(
+						"`{word}` is not a package: {} does not exist",
+						crate::term::sanitize(&shown.display().to_string())
+					))
+				})?;
+				(dir.display().to_string(), word.to_string())
+			}
+			Reference::Remote(r) => (r.shown(), r.shown()),
+		};
+		if let Some(p) = self.packages.lock().expect("packages lock").get(&memo) {
+			return Ok(p.clone());
+		}
+		let (root, version) = match reference {
+			Reference::Path(_) => (PathBuf::from(&memo), String::new()),
+			Reference::Remote(r) => {
+				let Some(cache) = &self.cache else {
+					return Err(refused(format!(
+						"there is no cache directory to fetch `{shown}` into; set {} to one",
+						runfile_remote::CACHE_DIR_ENV_VAR
+					)));
+				};
+				let network = if self.dry_run {
+					runfile_remote::Network::Offline
+				} else {
+					runfile_remote::Network::Allowed
+				};
+				let fetched = cache.package(&r, network, &say).map_err(|e| refused(e.0))?;
+				(fetched.root, fetched.version)
+			}
+		};
+		let entry = root.join("runfiles").join(format!("{ENTRY}.run"));
+		if !std::fs::metadata(&entry).is_ok_and(|m| m.is_file()) {
+			return Err(refused(format!(
+				"`{shown}` is not a package: there is no `runfiles/{ENTRY}.run` in {}",
+				crate::term::sanitize(&root.display().to_string())
+			)));
+		}
+		// Discovered from its own folder and nowhere else: no machine-wide
+		// directory joins it, since its targets are its author's and only its own.
+		let catalog = runfile_discovery::discover(&root, None).map_err(|e| refused(format!("`{shown}`: {e}")))?;
+		let pkg = Arc::new(Package {
+			shown,
+			root,
+			catalog,
+			version,
+		});
+		Ok(self
+			.packages
+			.lock()
+			.expect("packages lock")
+			.entry(memo)
+			.or_insert(pkg)
+			.clone())
+	}
+
+	/// The package a call-chain entry belongs to, when it belongs to one.
+	fn package_of(&self, entry: &str) -> Option<Arc<Package>> {
+		let (key, _) = entry.split_once(IN_PACKAGE)?;
+		self.packages
+			.lock()
+			.expect("packages lock")
+			.values()
+			.find(|p| p.key() == key)
+			.cloned()
+	}
+
+	/// A call-chain entry as a person reads it: a package's entry is the
+	/// package, and another of its targets is the package and the target.
+	fn shown(&self, entry: &str) -> String {
+		match (entry.split_once(IN_PACKAGE), self.package_of(entry)) {
+			(Some((_, ENTRY)), Some(p)) => p.shown.clone(),
+			(Some((_, name)), Some(p)) => format!("{} {name}", p.shown),
+			_ => entry.to_string(),
+		}
+	}
+
+	/// What `download()` fetches through, when there is a cache to keep what
+	/// it fetches.
+	fn downloader(&self) -> Option<runfile_lang::eval::Downloader> {
+		let cache = self.cache.clone()?;
+		Some(Arc::new(move |url: &str, pin: Option<&str>| {
+			cache
+				.download(url, pin, &say)
+				.map(|p| plain(p).display().to_string())
+				.map_err(|e| e.0)
+		}))
 	}
 
 	/// The key pool every target in the run in progress decrypts from.
@@ -213,20 +370,37 @@ impl<'a> Host<'a> {
 		label: Option<&str>,
 		trace: &mut Vec<String>,
 	) -> Result<(), RunError> {
+		// `run github.com/owner/repo@v1 sync`, or `run ../tools/j18n sync`: a
+		// package, whose `_main.run` is what runs.
+		if reference::is_reference(name) {
+			let pkg = self.package(name, env.as_ref())?;
+			let target = pkg.entry().expect("a package is only kept once its entry is there");
+			let entry = format!("{}{IN_PACKAGE}{}", pkg.key(), target.name);
+			let next = self.called(&entry, chain)?;
+			return ended(
+				&pkg.shown,
+				self.run_inner(Some(&pkg), target, args, env, next, label, trace),
+			);
+		}
+		// Inside a package, a name is the package's own.
+		let pkg = chain.last().and_then(|c| self.package_of(c));
+		let catalog = pkg.as_ref().map_or(self.catalog, |p| &p.catalog);
+		let caller = chain
+			.last()
+			.map(|c| c.split_once(IN_PACKAGE).map_or(c.as_str(), |(_, n)| n));
+
 		// A subproject is self-contained: `run compile` inside `web/runfiles/`
 		// means that directory's `compile`, whatever the root calls it. Without
 		// this a file would have to spell its own siblings' names differently
 		// depending on where `run` was invoked from.
-		let qualified = chain
-			.last()
+		let qualified = caller
 			.and_then(|caller| caller.rsplit_once(':'))
 			.map(|(prefix, _)| format!("{prefix}:{name}"))
-			.filter(|q| self.catalog.resolve(q).is_some());
+			.filter(|q| catalog.resolve(q).is_some());
 		let name = qualified.as_deref().unwrap_or(name);
 
-		let target = self.catalog.resolve(name).ok_or_else(|| {
-			let near: Vec<&str> = self
-				.catalog
+		let target = catalog.resolve(name).ok_or_else(|| {
+			let near: Vec<&str> = catalog
 				.targets
 				.keys()
 				.filter(|k| k.contains(name) || name.contains(k.as_str()))
@@ -249,17 +423,32 @@ impl<'a> Host<'a> {
 			}))
 		})?;
 
-		if chain.iter().any(|c| c == name) {
-			let mut shown = chain.to_vec();
-			shown.push(name.to_string());
+		let entry = match &pkg {
+			Some(p) => format!("{}{IN_PACKAGE}{}", p.key(), target.name),
+			None => name.to_string(),
+		};
+		let next = self.called(&entry, chain)?;
+		let shown = self.shown(&entry);
+		ended(
+			&shown,
+			self.run_inner(pkg.as_deref(), target, args, env, next, label, trace),
+		)
+	}
+
+	/// The chain once `entry` is called from the end of it, refused when that
+	/// would be calling it again.
+	fn called(&self, entry: &str, chain: &[String]) -> Result<Vec<String>, RunError> {
+		if chain.iter().any(|c| c == entry) {
+			let mut shown: Vec<String> = chain.iter().map(|c| self.shown(c)).collect();
+			shown.push(self.shown(entry));
 			return Err(RunError::Host(Box::new(HostError::Cycle {
-				name: name.to_string(),
+				name: self.shown(entry),
 				chain: shown.join(" -> "),
 			})));
 		}
 		let mut next = chain.to_vec();
-		next.push(name.to_string());
-		ended(&target.name, self.run_inner(target, args, env, next, label, trace))
+		next.push(entry.to_string());
+		Ok(next)
 	}
 
 	/// Everything `run_inner` needs before a line runs: the target's tree and
@@ -270,11 +459,13 @@ impl<'a> Host<'a> {
 	/// run from the command line, which starts from the process's environment.
 	fn prepare(
 		&self,
+		pkg: Option<&Package>,
 		target: &runfile_discovery::Target,
 		args: &[Word],
 		env: Option<crate::env::Inherited>,
 	) -> Result<Prepared, RunError> {
-		let (ast, shared) = self.load(target)?;
+		let catalog = pkg.map_or(self.catalog, |p| &p.catalog);
+		let (ast, shared) = self.load(catalog, target)?;
 
 		// The whole `_shared.run` chain is walked for what it reads *before* the
 		// command line is classified: a name only a shared file reads is still a
@@ -282,7 +473,10 @@ impl<'a> Host<'a> {
 		let reads = runfile_lang::inputs::of_chain(&ast, &shared);
 
 		let mut scope = Scope::new();
-		populate_run_context(&mut scope, target, self.catalog);
+		populate_run_context(&mut scope, target, catalog);
+		if let Some(p) = pkg {
+			scope.run.insert("version".into(), Value::Str(p.version.clone()));
+		}
 		// A target another one ran reads what it was handed from its first line,
 		// a `_shared.run`'s included.
 		if let Some(i) = &env {
@@ -297,12 +491,22 @@ impl<'a> Host<'a> {
 		scope.confirm = self.confirm;
 		scope.assume_yes = self.assume_yes;
 		scope.rooted_at(target.anchor.clone());
+		// A package works on whatever called it, so it starts where the line
+		// that ran it was, and finds its own files under `RUN.parent`.
+		if pkg.is_some() {
+			scope.workdir = env
+				.as_ref()
+				.and_then(|e| e.workdir.clone())
+				.or_else(|| std::env::current_dir().ok())
+				.unwrap_or_else(|| target.anchor.clone());
+		}
 		// A `--dry-run` writes nothing, confines its reads to the project, and
 		// reads no `.env` file and asks for no key (SA-008).
 		scope.dry_run = self.dry_run;
 		scope.preview = self.dry_run;
 		scope.temps = self.temps.clone();
 		scope.private_keys = self.key_pool();
+		scope.downloader = self.downloader();
 
 		// An input the target does not read is a mistake, and used to be a
 		// warning only because the check was textual guesswork. Walked from the
@@ -347,9 +551,9 @@ impl<'a> Host<'a> {
 	/// file's `let` evaluated on its behalf. A shared file is checked ahead of
 	/// the target, since whatever is wrong there is wrong for every target below
 	/// it.
-	fn load(&self, target: &runfile_discovery::Target) -> Result<Loaded, RunError> {
+	fn load(&self, catalog: &Catalog, target: &runfile_discovery::Target) -> Result<Loaded, RunError> {
 		let (ast, src) = parse_file(&target.path)?;
-		let chain = self.catalog.shared_chain(target);
+		let chain = catalog.shared_chain(target);
 		let (shared, texts): (Vec<runfile_lang::Target>, Vec<String>) = chain
 			.iter()
 			.map(|p| parse_file(p))
@@ -372,11 +576,21 @@ impl<'a> Host<'a> {
 	/// `run --stdin-args` asks this before it asks anything, so nobody answers
 	/// questions about a file that is refused the moment they finish.
 	pub fn check(&self, target: &runfile_discovery::Target) -> Result<(), RunError> {
-		self.load(target).map(|_| ())
+		self.load(self.catalog, target).map(|_| ())
 	}
 
+	/// [`Host::check`], for the entry of a package.
+	pub fn check_package(&self, pkg: &Package) -> Result<(), RunError> {
+		match pkg.entry() {
+			Some(t) => self.load(&pkg.catalog, t).map(|_| ()),
+			None => Ok(()),
+		}
+	}
+
+	#[allow(clippy::too_many_arguments)]
 	fn run_inner(
 		&self,
+		pkg: Option<&Package>,
 		target: &runfile_discovery::Target,
 		args: &[Word],
 		env: Option<crate::env::Inherited>,
@@ -385,7 +599,7 @@ impl<'a> Host<'a> {
 		trace: &mut Vec<String>,
 	) -> Result<(), RunError> {
 		let top = chain.len() == 1;
-		let (ast, shared, mut scope, props) = self.prepare(target, args, env)?;
+		let (ast, shared, mut scope, props) = self.prepare(pkg, target, args, env)?;
 		// Dispatched from a parallel branch, it is part of that branch: what it
 		// prints carries the branch's label, and it asks the terminal nothing.
 		if let Some(l) = label {
@@ -414,6 +628,28 @@ impl<'a> Host<'a> {
 		trace.append(&mut r.trace);
 		out
 	}
+}
+
+/// A notice the runner gives while it works -- a package being fetched, a file
+/// downloaded -- on stderr, where nothing reading the run's output sees it.
+fn say(msg: &str) {
+	eprintln!("{} {msg}", crate::exec::tag());
+}
+
+/// A canonical path as everything else spells it: Windows' canonical form is a
+/// verbatim `\\?\C:\…`, which most programs handed it as a working directory or
+/// an argument do not read.
+fn plain(p: PathBuf) -> PathBuf {
+	#[cfg(windows)]
+	{
+		let s = p.display().to_string();
+		if let Some(rest) = s.strip_prefix(r"\\?\")
+			&& rest.as_bytes().get(1) == Some(&b':')
+		{
+			return PathBuf::from(rest);
+		}
+	}
+	p
 }
 
 /// What a target's own `exit()` is to everything outside it.
@@ -548,6 +784,9 @@ pub(crate) fn populate_run_context(sc: &mut Scope, t: &runfile_discovery::Target
 	sc.run.insert("file".into(), Value::Str(t.path.display().to_string()));
 	sc.run
 		.insert("parent".into(), Value::Str(t.anchor.display().to_string()));
+	// The tag a package was fetched at, which `Host::prepare` sets for a
+	// package's targets; every other target has none.
+	sc.run.insert("version".into(), Value::Str(String::new()));
 	// Whoever is running this, which a target otherwise has to shell out for:
 	// `id -un` on Unix, and a different variable on each platform.
 	if let Some(u) = std::env::var_os("USER")

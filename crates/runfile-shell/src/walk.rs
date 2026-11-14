@@ -520,6 +520,7 @@ impl Walk<'_> {
 					self.parts(a, env);
 				}
 			}
+			Expr::Program { command, .. } => self.parts(command, env),
 			Expr::Number(..) | Expr::Bool(..) | Expr::Ident(..) | Expr::Source { .. } => {}
 		}
 	}

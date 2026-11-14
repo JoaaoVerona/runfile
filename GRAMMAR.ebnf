@@ -89,8 +89,19 @@ call        = postfix | capture_call ;                      (* bare call, e.g. d
    checked once a file has parsed and before any of it runs (`runfile-lang/src/resolve.rs`), and a
    reassignment needs a `let` of its name above it. *)
 
-target_ref  = { ident_char | ":" | interp } ;
+target_ref  = { ident_char | ":" | interp } | package_ref ;
 arg_word    = { ANY - WS - NEWLINE | interp } ;
+(* A word with a `/` names a package, whose `runfiles/_main.run` is what runs -- no target's name can hold
+   one, a `:` standing where its directories were. A folder on disk is a path; a repository is its host, then
+   `owner/repo` (or a path ending in `.git`, for a GitLab subgroup), then a folder inside it, and always a
+   version: a tag, a branch, or a full commit id. `http://` and ssh addresses are refused, as is a reference
+   with no version -- by the checker before a run (`package-reference`), and by the runner for one built at
+   run time. *)
+package_ref = path_ref | [ "https://" ] , host , "/" , segment , "/" , segment , { "/" , segment } , "@" , version ;
+path_ref    = "." | ".." | ( "./" | "../" | "/" ) , { ANY - WS - NEWLINE } ;
+host        = label , { "." , label } , [ ":" , digit , { digit } ] ;   (* at least one `.` *)
+segment     = { letter | digit | "." | "_" | "-" | "~" | "+" } ;
+version     = { ANY - WS - NEWLINE } ;                       (* a name `git check-ref-format` accepts *)
 
 (* ---- values ---- *)
 (* A capture or a structured block stands where a value is wanted. Each ends at
@@ -106,10 +117,13 @@ exec_body   = { ANY - ( WS , "end" , eol ) } ;              (* a `#` in a body i
 
 (* A call whose last argument is a `$` run: the capture reaches the `)`, which
    has to be the last character of the line. `code_of` is the one call that may
-   take a `run` dispatch instead — a dispatched target reports a status, not
-   output, so a status is the only value it has to give. *)
-capture_call = ident , "(" , { expr , "," } , ( "$" , " " , shell_text | dispatch ) , ")" ;
+   take a `run` dispatch or an `exec` program instead — a dispatched target, and
+   a program given the terminal, report a status, not output, so a status is the
+   only value either has to give. A program's command is split by the runner, as
+   an `exec` block's is, and holds no `)` outside an interpolation. *)
+capture_call = ident , "(" , { expr , "," } , ( "$" , " " , shell_text | dispatch | program ) , ")" ;
 dispatch    = "run" , target_ref , { WS , arg_word } ;
+program     = "exec" , " " , cmd_text ;
 
 (* ---- expressions ---- *)
 expr        = chain ;

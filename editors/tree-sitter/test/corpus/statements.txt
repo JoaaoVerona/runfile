@@ -262,6 +262,32 @@ code_of(run web:build --env={{ e }})
         (argument)))))
 
 ================================================================================
+A program inside code_of
+================================================================================
+
+let status = code_of(exec {{ join_path(dir, "j18n") }} {{ ARGS }})
+code_of(exec git -C ../app status)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement
+    (identifier)
+    (capture_call
+      (identifier)
+      (program
+        (program_name)
+        (argument))))
+  (expression_statement
+    (capture_call
+      (identifier)
+      (program
+        (program_name)
+        (argument)
+        (argument)
+        (argument)))))
+
+================================================================================
 A capture as any call's last argument
 ================================================================================
 

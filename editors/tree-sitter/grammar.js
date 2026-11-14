@@ -211,7 +211,7 @@ module.exports = grammar({
 				field("name", $.identifier),
 				"(",
 				repeat(seq($._expression, ",")),
-				choice($._capture_argument, $.dispatch),
+				choice($._capture_argument, $.dispatch, $.program),
 				")",
 			),
 		_capture_argument: ($) => seq("$", optional(alias($._capture_text, $.shell_text))),
@@ -221,6 +221,17 @@ module.exports = grammar({
 		// terminal like any other, so its status is the only value it has.
 		dispatch: ($) =>
 			seq("run", field("target", alias($.dispatch_word, $.target)), repeat(alias($.dispatch_word, $.argument))),
+
+		// `code_of(exec j18n {{ ARGS }})`: a program started directly, with the
+		// terminal, scored. One line and no body -- the words are the runner's
+		// to split, as an `exec` block's command is -- and only `code_of` takes
+		// one, for the reason only it takes a dispatch.
+		program: ($) =>
+			seq(
+				"exec",
+				field("program", alias($.dispatch_word, $.program_name)),
+				repeat(alias($.dispatch_word, $.argument)),
+			),
 		_capture_text: ($) =>
 			repeat1(choice(alias($._capture_content, $.shell_content), alias($._lone_brace, $.shell_content), $.interpolation)),
 		_capture_content: () => token.immediate(prec(-1, /([^{)\\\r\n]|\\[^\r\n])+/)),

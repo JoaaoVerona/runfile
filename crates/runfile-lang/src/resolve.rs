@@ -422,6 +422,7 @@ impl Walk {
 				self.parts(target, sc);
 				args.iter().for_each(|a| self.parts(a, sc));
 			}
+			Expr::Program { command, .. } => self.parts(command, sc),
 		}
 	}
 

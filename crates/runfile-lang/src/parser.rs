@@ -1081,7 +1081,7 @@ impl<'a> P<'a> {
 		// `shell_capture` answers `None` when the `$` turns out to be inside a
 		// string, so this only has to be a cheap first look.
 		if !rhs.starts_with("$ ")
-			&& (rhs.contains("$ ") || rhs.contains("run"))
+			&& (rhs.contains("$ ") || rhs.contains("run") || rhs.contains("exec"))
 			&& let Some(e) = shell_capture(rhs, offset, no)?
 		{
 			return Ok(Some(e));
@@ -1201,7 +1201,7 @@ fn for_header(header: &str, base: usize, no: usize) -> Result<(Vec<String>, Expr
 /// `f() && g()` are too, since a call is still reached. `35` is not.
 fn has_effect(e: &Expr) -> bool {
 	match e {
-		Expr::Call { .. } | Expr::Capture { .. } | Expr::Dispatch { .. } => true,
+		Expr::Call { .. } | Expr::Capture { .. } | Expr::Dispatch { .. } | Expr::Program { .. } => true,
 		Expr::Unary { rhs, .. } => has_effect(rhs),
 		Expr::Binary { lhs, rhs, .. } | Expr::Chain { lhs, rhs, .. } => has_effect(lhs) || has_effect(rhs),
 		Expr::Index { base, index, .. } => has_effect(base) || has_effect(index),
@@ -1333,6 +1333,7 @@ fn refuse_effects(e: &Expr) -> Result<(), ParseError> {
 			refuse_effects_in(target)?;
 			args.iter().try_for_each(|a| refuse_effects_in(a))
 		}
+		Expr::Program { command, .. } => refuse_effects_in(command),
 	}
 }
 
@@ -1368,18 +1369,63 @@ fn shell_capture(text: &str, offset: usize, no: usize) -> Result<Option<Expr>, P
 		return Ok(None);
 	}
 	let Some(inner) = text[open + 1..].strip_suffix(')') else {
-		// Only worth a message when a `$` is plainly what was meant.
-		return if text[open..].contains("$ ") {
+		// Only worth a message when a `$` or a program is plainly what was meant.
+		return if text[open..].contains("$ ") || exec_arg(&text[open + 1..]).is_some_and(|c| !c.is_empty()) {
 			err(
 				no,
 				format!(
-					"`{name}(` is never closed: a `$` run has to be the last argument, and the `)` the last character of the line"
+					"`{name}(` is never closed: a `$` run or an `exec` command has to be the last argument, and the `)` the last character of the line"
 				),
 			)
 		} else {
 			Ok(None)
 		};
 	};
+	// `code_of(exec j18n {{ ARGS }})`: a program started directly, scored. Read
+	// before the arguments are split, because everything after `exec` is a
+	// command line -- a comma in it is an argument of the program, not of the
+	// call -- and only `code_of` may hold one, for the reason only it may hold a
+	// dispatch: the program has the terminal, so its status is all there is.
+	if let Some(cmd) = exec_arg(inner)
+		// A bare `exec` is a program missing only where one could go:
+		// `length(exec)` is a binding called `exec`, as `length(run)` is one
+		// called `run`.
+		&& !(cmd.is_empty() && name != "code_of")
+	{
+		if name != "code_of" {
+			return err(
+				no,
+				format!(
+					"`{name}(` cannot take an `exec` command: the program has the terminal, so its \
+					 status is the only value there is, and `code_of(exec …)` is the one call that takes one"
+				),
+			);
+		}
+		if cmd.is_empty() {
+			return err(no, "`exec` needs a program to start, as `code_of(exec git status)`");
+		}
+		// The one `)` that may not be in the command is a bare one: it cannot
+		// be told from the one closing the call. Inside a `{{ … }}` it is part
+		// of an expression, which the interpolation already delimits.
+		if bare_paren(cmd) {
+			return err(
+				no,
+				"a `)` inside this `exec` command cannot be told from the one that closes `code_of(`; \
+				 bind the text first and interpolate it",
+			);
+		}
+		let at = offset_in(text, offset, cmd);
+		let command = to_parts(lexer::split_interp(cmd, at, no)?)?;
+		let start = offset + open + 1;
+		return Ok(Some(Expr::Call {
+			name: name.into(),
+			args: vec![Expr::Program {
+				command,
+				span: Span::new(start, start + inner.len(), no),
+			}],
+			span: Span::new(offset, offset + text.len(), no),
+		}));
+	}
 	let Some(parts) = split_args(inner) else {
 		return Ok(None);
 	};
@@ -1460,6 +1506,40 @@ fn shell_capture(text: &str, offset: usize, no: usize) -> Result<Option<Expr>, P
 	}))
 }
 
+/// The command after `exec` in `code_of(exec …)`, if that is what this text is.
+///
+/// Shared with the formatter, which leaves an `exec` command's spacing alone
+/// wherever it is written.
+pub(crate) fn exec_arg(text: &str) -> Option<&str> {
+	let rest = text.trim().strip_prefix("exec")?;
+	if !rest.is_empty() && !rest.starts_with(' ') && !rest.starts_with('\t') {
+		return None;
+	}
+	Some(rest.trim())
+}
+
+/// Whether `cmd` holds a `)` outside every `{{ … }}`.
+fn bare_paren(cmd: &str) -> bool {
+	let b = cmd.as_bytes();
+	let mut i = 0;
+	while i < b.len() {
+		if b[i..].starts_with(b"{{") {
+			match lexer::skip_interp(b, i, 0) {
+				Ok(end) => {
+					i = end;
+					continue;
+				}
+				Err(_) => return true,
+			}
+		}
+		if b[i] == b')' {
+			return true;
+		}
+		i += 1;
+	}
+	false
+}
+
 /// The `run …` tail of a dispatch argument, if that is what this text is.
 ///
 /// Shared with the formatter, which spaces a dispatch's words the way it
@@ -1507,6 +1587,9 @@ pub(crate) fn is_capture_call(text: &str) -> bool {
 	let Some(inner) = text[open + 1..].strip_suffix(')') else {
 		return false;
 	};
+	if exec_arg(inner).is_some_and(|cmd| !cmd.is_empty() || name == "code_of") {
+		return true;
+	}
 	split_args(inner)
 		.and_then(|parts| {
 			parts

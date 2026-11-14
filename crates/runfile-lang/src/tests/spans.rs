@@ -141,6 +141,7 @@ fn expr(e: &Expr, out: &mut Vec<(String, Span)>) {
 			parts(target, out);
 			args.iter().for_each(|a| parts(a, out));
 		}
+		Expr::Program { command, .. } => parts(command, out),
 	}
 }
 

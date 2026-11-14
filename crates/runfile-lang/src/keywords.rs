@@ -31,7 +31,8 @@ pub const KEYWORDS: &[Keyword] = &[
 		syntax: "exec <command> … end",
 		doc: "Run `<command>` with the block's body as its **stdin**. The body is that command's \
 		      language, not this one — only `{{ … }}` is read — so a Python or SQL block travels \
-		      through untouched. In value position it captures what the command prints.",
+		      through untouched. In value position it captures what the command prints. Inside \
+		      `code_of(exec …)` it is one line with no body, and the program gets the terminal.",
 		example: "exec sudo tee /etc/systemd/journald.conf.d/app.conf\n\t[Journal]\n\tStorage=persistent\nend",
 	},
 	Keyword {
@@ -45,14 +46,17 @@ pub const KEYWORDS: &[Keyword] = &[
 	},
 	Keyword {
 		name: "run",
-		syntax: "run <target> [arguments]",
+		syntax: "run <target> [arguments] or run <package> [arguments]",
 		doc: "Run another target **in this process** — no second binary, no shell in between. It \
 		      starts from the environment a command on this line would get — every `ENV.X = …` and \
 		      `add_path()` above it included — and changes its own copy; a value only a file \
 		      supplied stays a default its own `import_env_file()` replaces. Its arguments are values rather than shell \
 		      text: one `{{ … }}` is one argument even with spaces in it, and a list becomes one \
-		      argument per item. A bare `--` forwards the rest exactly as typed.",
-		example: "run build --env=production\nrun _aws -- s3api put-bucket-encryption --bucket {{ name }}",
+		      argument per item. A bare `--` forwards the rest exactly as typed. A word with a `/` in \
+		      it is a **package**: a repository at a version, `host/owner/repo@v1.0.0`, fetched once \
+		      into the cache, or a `./folder` — either way its `runfiles/_main.run`, started in the \
+		      directory this line runs in.",
+		example: "run build --env=production\nrun _aws -- s3api put-bucket-encryption --bucket {{ name }}\nrun git.joaoverona.com/joaaoverona/j18n@v0.14.1 sync",
 	},
 	Keyword {
 		name: "let",
@@ -195,12 +199,14 @@ pub const KEYWORDS: &[Keyword] = &[
 	},
 	Keyword {
 		name: "code_of",
-		syntax: "code_of($ <command line>) or code_of(run <target> [args])",
-		doc: "The exit status of a command, or of another target, as a number. It never stops this \
-		      target and never captures output, so it is the way to ask how something went rather \
-		      than depend on it. This is the one call a `$` capture or a `run` may sit inside. A \
+		syntax: "code_of($ <command line>), code_of(run <target> [args]) or code_of(exec <program> [args])",
+		doc: "The exit status of a command, of another target, or of a program, as a number. It never \
+		      stops this target and never captures output, so it is the way to ask how something went \
+		      rather than depend on it. This is the one call a `run` or an `exec` may sit inside. A \
 		      dispatched target is scored the way the binary would exit: a target that ends with \
-		      `exit(3)` is 3, any other failure is 1.",
+		      `exit(3)` is 3, any other failure is 1. `exec` starts the program itself, with no shell \
+		      and with the terminal, which is how a target hands itself over to one: bind \
+		      its status and `exit()` with it, and the run ends the way the program did.",
 		example: "let rust = code_of(run coverage:rust)\nlet web = code_of(run web:coverage)\n\nif rust != 0 || web != 0\n\texit(1)\nend",
 	},
 	Keyword {

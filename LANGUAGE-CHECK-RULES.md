@@ -220,7 +220,7 @@ Left alone: any of these worked out during the run rather than written out.
 
 ### `capture-position`
 
-A `$` run or a `run` dispatch where the runner has nothing to run it in.
+A `$` run, a `run` dispatch or an `exec` command where the runner has nothing to run it in.
 
 The runner runs a `$` run as the whole value of a `let`, a reassignment, an `ENV.X =`, a line of its own or a
 `for` — or as the last argument of a call that is — and as the whole of what an `if`, `while`, `until` or `match`
@@ -281,6 +281,35 @@ $ rm -rf {{ dirs }}
 Left alone: a list built *into* a word on purpose, with a non-space prefix (`-Dexec.args={{ ARGS }}`,
 `inst={{ ARGS }}; …`), which is the common "zero or one positional" idiom; a list with a space after it
 (`{{ ARGS }} -- --flag`); and a value that is only sometimes a list (`ARG.x ? glob("…")`), whose string form is fine.
+
+### `package-reference`
+
+A `run` of a package written so that it can never be fetched: no `@` version, an address that is not `https`, or no repository.
+
+A `run` word holding a `/` names a package rather than a target, since no target's name can hold one: a folder on
+this machine, which starts with `./`, `../` or `/`, or a repository on a host, which starts with the host's name. A
+repository is fetched over HTTPS at the version after its `@` — a tag, a branch or a full commit id — and one
+without a version would run whatever its host had that day, so it is refused rather than guessed at. So is an
+`http://` or ssh address, and a word whose first part is not a host.
+
+```sh
+# flagged
+run github.com/acme/tasks deploy
+```
+
+```sh
+# flagged
+run git@github.com:acme/tasks.git deploy
+```
+
+```sh
+# not flagged
+run github.com/acme/tasks@v1.2.0 deploy
+run ./tools/j18n sync
+```
+
+Left alone: a reference built at run time, as `run {{ tool }} sync`, which the runner refuses with the same message
+when the line runs; and whether the version exists, which only the host can answer.
 
 ### `relative-cwd-in-loop`
 

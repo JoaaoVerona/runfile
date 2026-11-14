@@ -7,6 +7,7 @@
 
 mod ci_detect;
 mod cmd_env;
+mod cmd_fetch;
 mod cmd_generate;
 mod cmd_lint;
 mod cmd_update;
@@ -35,6 +36,11 @@ const SECTIONS: &[Section] = &[
 		"Commands",
 		&[
 			Row("run <target> [args...]", "run a target"),
+			Row(
+				"run <package> [args...]",
+				"run a package: host/owner/repo@version, or a ./folder",
+			),
+			Row("run :fetch <package>...", "fetch packages into the cache now"),
 			Row("run :list", "list every target"),
 			Row("run :init", "create runfiles/ with an example target"),
 			Row("run :lint", "format every runfile and check it for errors"),
@@ -146,6 +152,13 @@ fn real_main() -> Result<ExitCode, String> {
 			let cat = catalog(&flags)?;
 			return cmd_generate::dispatch(&cat, &args);
 		}
+		":fetch" => {
+			if args.is_empty() || help::wants_help(&args) {
+				print!("{}", cmd_fetch::usage());
+				return Ok(ExitCode::SUCCESS);
+			}
+			return cmd_fetch::cmd_fetch(&args);
+		}
 		":update" => {
 			if help::wants_help(&args) {
 				print!("{}", cmd_update::usage());
@@ -232,23 +245,40 @@ fn real_main() -> Result<ExitCode, String> {
 		_ => {}
 	}
 
-	let cat = catalog(&flags)?;
-	let target = cat.resolve(&first).ok_or_else(|| list::unknown(&cat, &first))?;
+	// `run github.com/owner/repo@v1 sync`, or `run ./tools/j18n sync`: a
+	// package, which needs no project here -- it is run from wherever someone
+	// stands, as a program on PATH is.
+	let package = runfile_lang::reference::is_reference(&first);
+	let cat = if package { Catalog::default() } else { catalog(&flags)? };
+	let target = match package {
+		true => None,
+		false => Some(cat.resolve(&first).ok_or_else(|| list::unknown(&cat, &first))?),
+	};
 
-	// Before anything else, and before the prepare gate: asking what a target
-	// does must not require the project to be set up, and must never be the
-	// thing that runs it. `run deploy --help` used to deploy.
-	if target_help::wants_help(&args) {
-		print!("{}", target_help::render(&cat, target));
-		return Ok(ExitCode::SUCCESS);
+	if let Some(target) = target {
+		// Before anything else, and before the prepare gate: asking what a
+		// target does must not require the project to be set up, and must never
+		// be the thing that runs it. `run deploy --help` used to deploy. Not for
+		// a package, which is a program someone runs: `--help` after it is the
+		// program's own.
+		if target_help::wants_help(&args) {
+			print!("{}", target_help::render(&cat, target));
+			return Ok(ExitCode::SUCCESS);
+		}
+
+		// The gate runs before anything else, so a target cannot half-run and
+		// then be told its setup was missing. A preview is exempt: it changes
+		// nothing, and reading what a target would do is a reasonable thing to
+		// want before deciding to set the project up at all. A package has no
+		// gate: nobody set up a cache entry, or works in one.
+		if !flags.dry_run {
+			prepare::enforce(&cat, target)?;
+		}
 	}
-
-	// The gate runs before anything else, so a target cannot half-run and then
-	// be told its setup was missing. A preview is exempt: it changes nothing,
-	// and reading what a target would do is a reasonable thing to want before
-	// deciding to set the project up at all.
-	if !flags.dry_run {
-		prepare::enforce(&cat, target)?;
+	let assume_yes = flags.assume_yes || ci_detect::is_ci();
+	let cache = runfile_remote::Cache::open_default();
+	if package && !flags.dry_run {
+		first_fetch(&first, cache.as_ref(), assume_yes, flags.stdin_args)?;
 	}
 
 	// Caught from here on, and only here: a target run is what looks at the
@@ -274,17 +304,30 @@ fn real_main() -> Result<ExitCode, String> {
 	};
 	let mut host = Host::new(&cat);
 	host.interrupted = Some(&interrupted);
-	host.assume_yes = flags.assume_yes || ci_detect::is_ci();
+	host.assume_yes = assume_yes;
 	host.confirm = Some(prompt::confirm);
+	host.cache = cache;
+	host.dry_run = flags.dry_run;
 	if flags.stdin_args {
 		// A file that names something nothing defines is refused before anyone
 		// is asked about it: the answers would only be thrown away.
-		host.check(target).map_err(|e| e.to_string())?;
-		// Asked before anything runs, from the list the tree gives. The lazy
-		// prompt stays as a backstop for a value the walk cannot see -- there
-		// should be none, and a missing one must still be askable rather than
-		// fatal.
-		stdin_args::collect(&cat, target, &mut args);
+		match target {
+			Some(target) => {
+				host.check(target).map_err(|e| e.to_string())?;
+				// Asked before anything runs, from the list the tree gives. The
+				// lazy prompt stays as a backstop for a value the walk cannot see
+				// -- there should be none, and a missing one must still be
+				// askable rather than fatal.
+				stdin_args::collect(&cat, target, &mut args);
+			}
+			None => {
+				let pkg = host.package(&first, None).map_err(|e| e.to_string())?;
+				host.check_package(&pkg).map_err(|e| e.to_string())?;
+				if let Some(entry) = pkg.entry() {
+					stdin_args::collect(&pkg.catalog, entry, &mut args);
+				}
+			}
+		}
 		// Stopped at a question: nothing has run, and nothing will.
 		if interrupted() {
 			return Ok(ExitCode::from(runfile_runtime::interrupt::EXIT_CODE as u8));
@@ -294,7 +337,6 @@ fn real_main() -> Result<ExitCode, String> {
 		// too, terminal or not -- the same rule as every other question.
 		host.confirm = Some(prompt::confirm_on_stdin);
 	}
-	host.dry_run = flags.dry_run;
 	host.keys = runfile_state::keyring_keys::all_private_keys;
 
 	if !flags.dry_run {
@@ -315,7 +357,11 @@ fn real_main() -> Result<ExitCode, String> {
 		host.on_header = None;
 		let report = |outcome: Result<(), runfile_runtime::run::RunError>| {
 			match outcome {
-				Ok(()) => prepare::record(&cat, target),
+				Ok(()) => {
+					if let Some(target) = target {
+						prepare::record(&cat, target);
+					}
+				}
 				// Said about an interrupt by nobody, as outside watch mode: the
 				// terminal already echoed `^C`.
 				Err(_) if interrupted() => {}
@@ -367,7 +413,9 @@ fn real_main() -> Result<ExitCode, String> {
 		// prepared, and every target after it walked through the gate.
 		// `--dry-run` changes nothing, and that includes what the gate believes.
 		Ok(()) => {
-			if !flags.dry_run {
+			if !flags.dry_run
+				&& let Some(target) = target
+			{
 				prepare::record(&cat, target);
 			}
 			Ok(ExitCode::SUCCESS)
@@ -380,6 +428,48 @@ fn real_main() -> Result<ExitCode, String> {
 			Some(code) => Ok(ExitCode::from(code as u8)),
 			None => Err(e.to_string()),
 		},
+	}
+}
+
+/// Ask before a package typed at the terminal is fetched from a repository
+/// this machine has never fetched from -- the one place a typo in a name could
+/// fetch and run someone else's code. Says which commit it would run.
+///
+/// A reference written in a file is not asked about: the file is the decision,
+/// as its `$ curl … | sh` would be. Nor is one after `-y` or in CI, or one the
+/// cache already knows the repository of.
+fn first_fetch(
+	word: &str,
+	cache: Option<&runfile_remote::Cache>,
+	assume_yes: bool,
+	stdin_args: bool,
+) -> Result<(), String> {
+	use runfile_lang::reference::Reference;
+	let (Ok(Reference::Remote(r)), Some(cache)) = (runfile_lang::reference::parse(word), cache) else {
+		// A path needs no fetching, and a reference that cannot be read is the
+		// run's to refuse, with the same message.
+		return Ok(());
+	};
+	if assume_yes || cache.knows(&r) {
+		return Ok(());
+	}
+	let resolved = cache.resolve(&r, runfile_remote::Network::Allowed).map_err(|e| e.0)?;
+	let question = format!(
+		"{} has not been run on this machine; fetch {} ({}) and run it?",
+		r.repository(),
+		r.shown(),
+		runfile_remote::short(&resolved.commit)
+	);
+	let yes = match stdin_args {
+		true => prompt::confirm_on_stdin(&question),
+		false => prompt::confirm(&question),
+	};
+	match yes {
+		true => Ok(()),
+		false => Err(format!(
+			"not fetched: {} runs only once you say yes, or with `-y` -- `run -y {word}`",
+			r.repository()
+		)),
 	}
 }
 

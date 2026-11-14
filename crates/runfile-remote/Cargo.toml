@@ -1,0 +1,23 @@
+[package]
+description = "Fetching and caching Runfile packages, and the files download() asks for"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+name = "runfile-remote"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+dirs.workspace = true
+flate2.workspace = true
+hex.workspace = true
+lzma-rs.workspace = true
+runfile-crypto.workspace = true
+runfile-lang.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

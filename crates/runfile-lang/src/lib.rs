@@ -16,6 +16,7 @@ pub mod inputs;
 pub mod keywords;
 pub mod lexer;
 pub mod parser;
+pub mod reference;
 pub mod resolve;
 pub mod span;
 pub mod state;

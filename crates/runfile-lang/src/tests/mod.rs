@@ -10,5 +10,6 @@ mod inputs;
 mod io;
 mod lines;
 mod parser;
+mod reference;
 mod resolve;
 mod spans;

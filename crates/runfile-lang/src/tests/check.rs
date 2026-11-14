@@ -587,3 +587,46 @@ fn every_type_the_table_refuses_is_refused_by_the_function_and_what_it_answers_i
 	}
 	let _ = ANY;
 }
+
+// ---- package-reference
+
+#[test]
+fn a_package_that_can_never_be_fetched_is_found_at_its_reference() {
+	let f = one(
+		"run github.com/acme/tasks deploy\n",
+		"package-reference",
+		"github.com/acme/tasks",
+	);
+	assert!(f.message.contains("names no version"), "{f:#?}");
+	one(
+		"let s = code_of(run http://h.io/o/r@v1)\n",
+		"package-reference",
+		"http://h.io/o/r@v1",
+	);
+	one(
+		"if x\n\trun tools/j18n sync\nend\nlet x = true\n",
+		"package-reference",
+		"tools/j18n",
+	);
+}
+
+#[test]
+fn a_package_that_can_be_fetched_is_left_alone_and_one_built_at_run_time_is_not_asked_about() {
+	clean("run github.com/acme/tasks@v1.2.0 deploy\nrun ./tools/j18n sync\nrun ../x\n");
+	clean("let tool = \"github.com/acme/tasks\"\nrun {{ tool }} deploy\n");
+}
+
+#[test]
+fn a_program_runs_only_where_a_capture_can() {
+	clean("let s = code_of(exec make)\ncode_of(exec make)\n");
+	one(
+		"if code_of(exec make)\n\tprint(\"ok\")\nend\n",
+		"capture-position",
+		"exec make",
+	);
+	// And one with anything after its `)` is not a `code_of(exec …)` at all.
+	let e = crate::parse("if code_of(exec make) == 0\n\tprint(\"ok\")\nend\n")
+		.unwrap_err()
+		.to_string();
+	assert!(e.contains("is never closed"), "{e}");
+}

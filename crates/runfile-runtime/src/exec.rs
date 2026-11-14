@@ -16,6 +16,8 @@ use std::process::{Command, Stdio};
 pub enum ExecError {
 	#[error("no shell found: install bash, or Git for Windows on Windows")]
 	NoShell,
+	#[error("`exec` needs a program to start")]
+	NoProgram,
 	#[error("could not start `{cmd}`: {source}")]
 	Spawn { cmd: String, source: std::io::Error },
 	/// The directory a command would run in is not one. Starting a process
@@ -62,6 +64,10 @@ pub struct Spawn<'a> {
 	/// Announce the command before running it, on stderr. The runner does this
 	/// natively, which is why there is no `logging` property to turn it on.
 	pub announce: bool,
+	/// `code_of(exec …)`: the program and its arguments as `command` spells
+	/// them, started with the terminal and no body -- never as a shell given a
+	/// script, even when the program is one, since there is no script to give.
+	pub direct: bool,
 }
 
 /// Split a command line into program and arguments, respecting quotes so
@@ -482,8 +488,14 @@ pub fn spawn_code(s: Spawn<'_>) -> Result<i32, ExecError> {
 }
 
 pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
-	let (program, args) = program_and_args(s.command)?;
-	let shell = is_shell(&program);
+	let (program, args) = if s.direct {
+		let parts = split_command(s.command.unwrap_or_default());
+		let (head, rest) = parts.split_first().ok_or(ExecError::NoProgram)?;
+		(PathBuf::from(head), rest.to_vec())
+	} else {
+		program_and_args(s.command)?
+	};
+	let shell = !s.direct && is_shell(&program);
 	// Built from the *display* command, never the executed one: `label` is used
 	// only in the messages below (announce, every `ExecError`), so an `exec`
 	// whose command word interpolates a secret is named by its source form here
@@ -558,6 +570,14 @@ pub fn spawn(s: Spawn<'_>) -> Result<String, ExecError> {
 		// in a parallel branch -- which a label says it is -- where several
 		// commands would be reading one terminal at once, each getting whatever
 		// keystrokes it happened to take.
+		c.stdin(if s.detach || s.label.is_some() {
+			Stdio::null()
+		} else {
+			Stdio::inherit()
+		});
+	} else if s.direct {
+		// The program has the terminal, as a `$` line's shell does -- except
+		// where a shell's would not, for the same reasons.
 		c.stdin(if s.detach || s.label.is_some() {
 			Stdio::null()
 		} else {
@@ -1064,6 +1084,7 @@ mod tests {
 				label: None,
 				detach: false,
 				announce: false,
+				direct: false,
 			})
 			.expect("busybox starts")
 		};

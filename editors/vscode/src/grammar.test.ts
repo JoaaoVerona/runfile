@@ -553,6 +553,27 @@ test("a dispatch inside code_of is coloured like a run statement", async () => {
 	)
 })
 
+test("a program inside code_of is coloured like an exec command", async () => {
+	// `code_of(exec j18n {{ ARGS }})` starts a program directly. The keyword
+	// and the program read the way an `exec` block's do, and nothing here is a
+	// block: there is no `end` to wait for, so the line after it is ours again.
+	const lines = await tokensOf("let s = code_of(exec j18n sync {{ ARGS }})\nlet n = 3\n")
+	const tokens = lines[0] ?? []
+	const scopeOf = (text: string) => tokens.find((t) => t.text === text)?.scopes ?? []
+	assert.ok(scopeOf("code_of").includes("support.function.run"), `code_of: ${scopeOf("code_of").join(" ")}`)
+	assert.ok(scopeOf("exec").includes("keyword.control.exec.run"), `exec: ${scopeOf("exec").join(" ")}`)
+	assert.ok(scopeOf("j18n").includes("entity.name.function.program.run"), `j18n: ${scopeOf("j18n").join(" ")}`)
+	const next = lines[1] ?? []
+	assert.ok(
+		next.some((t) => t.text === "let" && t.scopes.includes("keyword.other.let.run")),
+		`the next line is not ours: ${next.map((t) => `${t.text}=${t.scopes.join(",")}`).join(" ")}`
+	)
+	assert.ok(
+		!tokens.concat(next).some((t) => t.scopes.some((s) => s.includes("meta.embedded.block"))),
+		"code_of(exec …) opened a block"
+	)
+})
+
 test("a comment is coloured wherever the language reads one", async () => {
 	// Every one of these used to be a parse error in the runner, so the only
 	// place a `#` could go was a line of its own.
