@@ -1055,7 +1055,7 @@ impl<'a> Text<'a> {
 /// Blanking keeps every other line where it was, so a position in the tree is
 /// still a position in the document. The text that parsed comes back with the
 /// tree, since the tree's byte offsets index it rather than the document.
-fn parse_around(
+pub(crate) fn parse_around(
 	src: &str,
 	line: usize,
 	aside: Option<&std::ops::Range<usize>>,
@@ -1101,10 +1101,10 @@ fn error_line(e: &runfile_lang::ParseError) -> Option<usize> {
 }
 
 /// A run of lines in somebody else's language, and the statement it is part of.
-struct Body {
+pub(crate) struct Body {
 	/// Its own lines, zero-based: an `exec` body, a structured block's
 	/// contents, or the lines a `$` line's backslash carries it on to.
-	lines: std::ops::Range<usize>,
+	pub(crate) lines: std::ops::Range<usize>,
 	/// The whole statement -- opener, body and `end` -- which is what is set
 	/// aside when the cursor is in the body.
 	whole: std::ops::Range<usize>,
@@ -1117,7 +1117,7 @@ struct Body {
 ///
 /// Read from the lines rather than the tree, because a body is where a
 /// document spends most of its time not parsing.
-fn bodies(src: &str) -> Vec<Body> {
+pub(crate) fn bodies(src: &str) -> Vec<Body> {
 	let raw: Vec<&str> = src.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
 	let mut out = Vec::new();
 	let mut i = 0;

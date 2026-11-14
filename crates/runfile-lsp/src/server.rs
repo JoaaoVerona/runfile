@@ -89,6 +89,7 @@ impl Server {
 			"textDocument/hover" => vec![reply(id, self.hover(&msg["params"]))],
 			"textDocument/definition" => vec![reply(id, self.definition(&msg["params"]))],
 			"textDocument/formatting" => vec![reply(id, self.formatting(&msg["params"]))],
+			"textDocument/semanticTokens/full" => vec![reply(id, self.semantic_tokens(&msg["params"]))],
 			// Anything else: an unanswered request hangs the client, so refuse
 			// rather than ignore.
 			_ if id.is_some() => vec![reply(id, Value::Null)],
@@ -124,6 +125,14 @@ impl Server {
 			},
 			"newText": out,
 		}])
+	}
+
+	/// What each word of the document is, as the parser reads it -- see `tokens`. A document the server does not
+	/// have open has none.
+	fn semantic_tokens(&self, params: &Value) -> Value {
+		let uri = uri_of(&params["textDocument"]);
+		let src = self.docs.get(&uri).map(String::as_str).unwrap_or_default();
+		json!({"data": crate::tokens::encode(&crate::tokens::tokens(src))})
 	}
 
 	fn diagnostics_for(&self, uri: &str) -> Value {
@@ -374,6 +383,15 @@ fn capabilities() -> Value {
 			// produces, so a file cannot come out of an editor in a shape the
 			// CLI would then change.
 			"documentFormattingProvider": true,
+			// Colours from the parser, for an editor to lay over its own grammar's: a release's new syntax is
+			// coloured by the `run` that brings it. Whole documents, as sync is.
+			"semanticTokensProvider": {
+				"legend": {
+					"tokenTypes": crate::tokens::TYPES,
+					"tokenModifiers": crate::tokens::MODIFIERS,
+				},
+				"full": true,
+			},
 		},
 		"serverInfo": {"name": "runfile-lsp", "version": env!("CARGO_PKG_VERSION")},
 	})

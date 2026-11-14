@@ -7,6 +7,7 @@ pub mod analysis;
 pub mod document;
 pub mod rpc;
 pub mod server;
+pub mod tokens;
 
 /// Speak the protocol on stdin/stdout until the client says goodbye.
 ///

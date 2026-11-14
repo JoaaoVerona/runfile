@@ -50,6 +50,60 @@ fn initialize_announces_what_the_server_can_do() {
 	assert!(caps["completionProvider"].is_object());
 	assert_eq!(caps["definitionProvider"], true);
 	assert_eq!(caps["documentFormattingProvider"], true, "format-on-save needs this");
+	let tokens = &caps["semanticTokensProvider"];
+	assert_eq!(tokens["full"], true, "whole documents, as sync is");
+	assert_eq!(tokens["legend"]["tokenTypes"][0], "keyword");
+	assert_eq!(tokens["legend"]["tokenModifiers"][0], "declaration");
+}
+
+#[test]
+fn semantic_tokens_say_what_each_word_of_the_open_document_is() {
+	let uri = "file:///x/runfiles/a.run";
+	let out = converse(&[
+		json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+		did_open(uri, "let ok = code_of(exec make)\n"),
+		json!({
+			"jsonrpc": "2.0", "id": 2, "method": "textDocument/semanticTokens/full",
+			"params": {"textDocument": {"uri": uri}},
+		}),
+	]);
+	let legend = &out[0]["result"]["capabilities"]["semanticTokensProvider"]["legend"];
+	let reply = out.iter().find(|m| m["id"] == 2).expect("answered");
+	let data: Vec<u64> = reply["result"]["data"]
+		.as_array()
+		.expect("data")
+		.iter()
+		.map(|n| n.as_u64().unwrap())
+		.collect();
+	// Five numbers a token, its position relative to the one before: read back as the words they cover.
+	let line = "let ok = code_of(exec make)";
+	let mut column = 0;
+	let words: Vec<(&str, &str)> = data
+		.chunks(5)
+		.map(|t| {
+			column += t[1] as usize;
+			let kind = legend["tokenTypes"][t[3] as usize].as_str().unwrap();
+			(&line[column..column + t[2] as usize], kind)
+		})
+		.collect();
+	assert_eq!(
+		words,
+		[
+			("let", "keyword"),
+			("ok", "variable"),
+			("=", "operator"),
+			("code_of", "function"),
+			("exec", "keyword"),
+			("make", "function"),
+		]
+	);
+
+	// A document the server does not have open has none, and is answered all the same.
+	let out = converse(&[json!({
+		"jsonrpc": "2.0", "id": 1, "method": "textDocument/semanticTokens/full",
+		"params": {"textDocument": {"uri": "file:///x/runfiles/closed.run"}},
+	})]);
+	assert_eq!(out[0]["result"]["data"], json!([]));
 }
 
 #[test]

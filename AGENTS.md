@@ -1685,6 +1685,27 @@ over a file, with what each name can hold where). `SHELL-CHECK-RULES.md` is the 
   the runner refuses the file for it -- and carries its fix as a second line of the message (`fix: …`), which an
   editor shows under the problem and `:lint` indents beneath it. ShellCheck used to be handed each script with a
   placeholder for every interpolation; *runfile-shell* says why that was replaced.
+- **Semantic tokens colour a document from the parser too** (`tokens.rs`, `textDocument/semanticTokens/full`).
+  An editor's grammar -- the TextMate one, the tree-sitter one, or one an editor wrote for itself -- is a second
+  description of the language, and a release leaves it behind: `code_of(exec …)` reached git-merlot's own
+  highlighter as plain text while the `run :lsp` beside it already knew the form. An editor that lays these over
+  its grammar's colours is never further behind than its `run`. What the tree places is taken from it: every name,
+  call, source, string, number and operator in an expression, and the `$`, `run` or `exec` inside a call. What it
+  does not -- a statement's keywords, the names a `let`, a `for` or an assignment binds, a `run`'s target, an
+  `exec`'s program -- is read off the statement's own line, whose kind the tree has already said, so nothing there
+  guesses at a form. Somebody else's text -- a `$` line's shell, an `exec` body, a `json` block, a `run`'s
+  arguments -- gets nothing but its `{{ … }}`, so an editor's own shell colours stay where they are. Comments and
+  the words that close or divide a block (`end`, `else`, `case`, `default`) are read a line at a time, so they
+  keep their colour while the document does not parse; the rest comes from `parse_around`'s repaired tree, whose
+  byte offsets index its own copy and are placed by line for that reason. A call is a `function` only when
+  `functions::exists` says it reaches one -- the runner's own test, so `code_of` is one -- and any other keeps a
+  plain name's colour, as the tree-sitter grammar leaves it. A boolean gets none: the protocol has no type for one,
+  and a `keyword` would take it off the boolean colour the editor's grammar gives it, which Neovim lays these over.
+  The types and modifiers are the protocol's own (`keyword`, `function`, `variable`, `property`, `string`, `number`,
+  `comment`, `operator`; `declaration`, `modification`, `readonly`, `defaultLibrary`), since a client colours only
+  names it knows, and columns are UTF-16 code units, as the protocol counts them. A sweep holds every token in every `.run` file here to the text: apart,
+  on its line, spelling what its type says, and none missing where a line opens with a keyword or a `$`. The
+  author's 1,574-file corpus came out the same, 42,775 tokens.
 
 ### editors/vscode
 

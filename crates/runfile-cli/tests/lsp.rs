@@ -76,6 +76,26 @@ fn run_lsp_answers_initialize_and_reports_a_problem() {
 	);
 }
 
+/// The shipped binary colours too: an editor asks `run :lsp` for what each word is, not a grammar of its own.
+#[test]
+fn run_lsp_says_what_each_word_is() {
+	let replies = talk(
+		None,
+		&[
+			json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+			did_open("file:///x/runfiles/a.run", "let x = 1\n"),
+			json!({
+				"jsonrpc": "2.0", "id": 2, "method": "textDocument/semanticTokens/full",
+				"params": {"textDocument": {"uri": "file:///x/runfiles/a.run"}},
+			}),
+		],
+	);
+	assert!(replies[0]["result"]["capabilities"]["semanticTokensProvider"].is_object());
+	let reply = replies.iter().find(|r| r["id"] == 2).expect("answered");
+	// `let`, `x`, `=` and `1`: five numbers each.
+	assert_eq!(reply["result"]["data"].as_array().map(Vec::len), Some(20), "{reply}");
+}
+
 #[test]
 fn run_lsp_exits_zero_when_the_client_says_goodbye() {
 	// An editor closing down must not leave a failing process behind.

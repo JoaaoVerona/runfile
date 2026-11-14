@@ -1353,8 +1353,12 @@ reads no `.env` files and asks for no key.
 ## Editor support
 
 `run :lsp` is a language server, so the binary you already have gives you diagnostics, completion, formatting,
-go-to-definition and documentation on hover — from the same parser `run` itself uses, so your editor never
-disagrees with what will actually happen. There is nothing extra to install.
+go-to-definition, documentation on hover and semantic highlighting — from the same parser `run` itself uses, so
+your editor never disagrees with what will actually happen. There is nothing extra to install.
+
+An editor that asks for semantic tokens (Neovim does by default) colours each word as `run` reads it: a keyword,
+a function the runner has, a variable and where it is bound, a source and its key. So a new release's syntax is
+coloured by the `run` that brings it, whatever grammar the editor has, and the shell in a `$` line is left to it.
 
 Diagnostics include every call to a function that does not exist and every name nothing has bound, underlined
 where it is written, with the name you probably meant. It is the check that stops a run before it starts, so it
