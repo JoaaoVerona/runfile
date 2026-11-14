@@ -8,10 +8,19 @@
 //!
 //! ```text
 //! <cache>/packages/<host>/<owner>/<repo>/refs.json        what each tag and branch was, and when it was asked
-//! <cache>/packages/<host>/<owner>/<repo>/<commit>/        the repository at that commit
-//! <cache>/packages/<host>/<owner>/<repo>/<commit>-<hash>/ one folder of it, for a package in a subfolder
+//! <cache>/packages/<host>/<owner>/<repo>/<commit>-<hash>/ a package's runfiles/ at that commit, and nothing else
+//! <cache>/packages/<host>/<owner>/<repo>/<commit>/        the whole repository at that commit
 //! <cache>/downloads/<hash of the URL>/                    what download() fetched, unpacked
 //! ```
+//!
+//! **Only a package's `runfiles/` is fetched**, unless its `_main.run` says
+//! `.requires-whole-repository`: a package starts in the directory of whoever
+//! ran it, so the rest of its repository is reachable only through
+//! `RUN.parent` and `RUN.file`, and a package that uses neither needs nothing
+//! else. Its entry is read in between, and the rest fetched when it asks. What
+//! is kept is decided again from the entry each time, so a copy of only
+//! `runfiles/` -- or a folder an older runner kept -- whose entry asks for more
+//! has the rest fetched rather than run without it.
 //!
 //! **A commit names one tree forever**, so a package pinned to one is fetched
 //! once and never asked about again. **A tag or a branch can move**, so the
@@ -193,15 +202,28 @@ impl Cache {
 	/// network says why.
 	pub fn package(&self, r: &Remote, network: Network, say: &dyn Fn(&str)) -> Result<Package, RemoteError> {
 		let resolved = self.resolve(r, network)?;
-		let tree = self.tree_dir(r, &resolved.commit);
-		if !tree.is_dir() {
-			if network == Network::Offline {
-				return fail(not_fetched(r));
-			}
-			say(&format!("fetching {} ({})", r.shown(), short(&resolved.commit)));
-			self.checkout(r, &resolved.commit, &tree)?;
+		let whole = self.repo_dir(r).join(&resolved.commit);
+		if whole.is_dir() {
+			return package_at(r, &whole, resolved);
 		}
-		package_at(r, &tree, resolved)
+		let thin = self.thin_dir(r, &resolved.commit);
+		if thin.is_dir() && !requires_whole(r, &thin)? {
+			return package_at(r, &thin, resolved);
+		}
+		if network == Network::Offline {
+			return fail(not_fetched(r));
+		}
+		say(&format!("fetching {} ({})", r.shown(), short(&resolved.commit)));
+		let tmp = self.scratch()?;
+		let out = git::checkout(r, &resolved.commit, &tmp, &self.git_config, &|tree| {
+			requires_whole(r, tree)
+		})
+		.and_then(|(tree, is_whole)| {
+			let into = if is_whole { &whole } else { &thin };
+			settle(&tree, into).map(|()| into.clone())
+		});
+		remove_tree(&tmp);
+		package_at(r, &out?, resolved)
 	}
 
 	/// The package as the cache has it, at whatever age, without asking
@@ -224,14 +246,11 @@ impl Cache {
 		d
 	}
 
-	/// The repository at `commit`, or only the package's folder of it.
-	fn tree_dir(&self, r: &Remote, commit: &str) -> PathBuf {
-		let repo = self.repo_dir(r);
-		if r.dir.is_empty() {
-			return repo.join(commit);
-		}
+	/// Where a package's `runfiles/` alone is kept: one per folder of the
+	/// repository a package lives in, its root included.
+	fn thin_dir(&self, r: &Remote, commit: &str) -> PathBuf {
 		let h = hex::encode(Sha256::digest(r.dir.as_bytes()));
-		repo.join(format!("{commit}-{}", &h[..12]))
+		self.repo_dir(r).join(format!("{commit}-{}", &h[..12]))
 	}
 
 	/// A fresh, empty folder under the cache for something not finished yet.
@@ -249,13 +268,32 @@ impl Cache {
 		std::fs::create_dir_all(&dir).map_err(|e| RemoteError(format!("could not create {}: {e}", dir.display())))?;
 		Ok(dir)
 	}
+}
 
-	fn checkout(&self, r: &Remote, commit: &str, into: &Path) -> Result<(), RemoteError> {
-		let tmp = self.scratch()?;
-		let out = git::checkout(r, commit, &tmp, &self.git_config).and_then(|tree| settle(&tree, into));
-		remove_tree(&tmp);
-		out
+/// Whether the entry of the package in `tree` asks for its whole repository.
+///
+/// A missing or unreadable entry answers no, and is then reported as what it
+/// is -- not a package, or a file that does not parse -- by whatever reads it
+/// next, in the words it always uses.
+fn requires_whole(r: &Remote, tree: &Path) -> Result<bool, RemoteError> {
+	let mut entry = tree.to_path_buf();
+	for seg in r.dir.split('/').filter(|s| !s.is_empty()) {
+		entry.push(seg);
 	}
+	entry.push("runfiles");
+	entry.push(format!("{ENTRY}.run"));
+	// What the runner reads a runfile as, and no more: a file bigger than any
+	// it would read is refused there, not read here.
+	let small = std::fs::metadata(&entry).is_ok_and(|m| m.is_file() && m.len() <= 1 << 20);
+	let Some(target) = small
+		.then(|| std::fs::read_to_string(&entry).ok())
+		.flatten()
+		.and_then(|src| runfile_lang::parse(&src).ok())
+	else {
+		return Ok(false);
+	};
+	runfile_lang::reference::requires_whole_repository(&target)
+		.map_err(|e| RemoteError(format!("`{}`: runfiles/{ENTRY}.run: {e}", r.shown())))
 }
 
 /// Move a finished `from` to `to`, unless another run got there first, which

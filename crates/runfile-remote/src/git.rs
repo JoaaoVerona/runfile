@@ -68,10 +68,28 @@ pub(crate) fn ls_remote(r: &Remote, name: &str, wait: Duration, config: &[String
 	fail(format!("{} has no tag or branch named `{name}`{hint}", r.repository()))
 }
 
-/// The repository at `commit`, checked out under `tmp` -- only the package's
-/// folder of it when it is in one -- with no `.git` in it. Answers with the
-/// tree.
-pub(crate) fn checkout(r: &Remote, commit: &str, tmp: &Path, config: &[String]) -> Result<PathBuf, RemoteError> {
+/// How deep below a package's folder another `runfiles/` is still part of it:
+/// discovery's own reach for subprojects.
+const SUBPROJECT_DEPTH: usize = 3;
+
+/// The package at `commit`, checked out under `tmp` with no `.git` in it, in
+/// two steps: its `runfiles/` first -- its own and its subprojects', which is
+/// everything a target can `run` or a `_shared.run` can add -- and then, when
+/// `whole` says so of that tree, the rest of the repository. Answers with the
+/// tree and whether it is the whole repository.
+///
+/// The first step fetches the commit's folders and the files of `runfiles/`
+/// alone, so a package that needs nothing else costs what its runfiles weigh
+/// however large the repository; the second fetches the files that are left.
+/// A host that does not filter sends everything in the first, and the second
+/// then has nothing left to fetch.
+pub(crate) fn checkout(
+	r: &Remote,
+	commit: &str,
+	tmp: &Path,
+	config: &[String],
+	whole: &dyn Fn(&Path) -> Result<bool, RemoteError>,
+) -> Result<(PathBuf, bool), RemoteError> {
 	let gd = tmp.join("git");
 	let tree = tmp.join("tree");
 	std::fs::create_dir_all(&tree).map_err(|e| RemoteError(format!("could not create {}: {e}", tree.display())))?;
@@ -80,27 +98,51 @@ pub(crate) fn checkout(r: &Remote, commit: &str, tmp: &Path, config: &[String]) 
 		all.extend(args.iter().map(|a| a.to_string()));
 		all
 	};
+	// The person's own hooks, from a global `core.hooksPath`, are no business
+	// of a cache, and line endings stay as they were committed.
+	let no_hooks = tmp.join("no-hooks");
+	let in_tree = |args: &[&str]| {
+		let mut all = vec![
+			format!("--git-dir={}", gd.display()),
+			format!("--work-tree={}", tree.display()),
+			"-c".to_string(),
+			format!("core.hooksPath={}", no_hooks.display()),
+			"-c".to_string(),
+			"core.autocrlf=false".to_string(),
+			"-c".to_string(),
+			"advice.detachedHead=false".to_string(),
+		];
+		all.extend(args.iter().map(|a| a.to_string()));
+		all
+	};
 	let long = Duration::from_secs(600);
 	let quick = Duration::from_secs(60);
 	let bad = |e: String| RemoteError(format!("could not fetch {}: {e}", r.shown()));
 	git(config, &at(&["init", "-q"]), quick).map_err(bad)?;
 	git(config, &at(&["remote", "add", "origin", &r.clone_url()]), quick).map_err(bad)?;
-	let sparse = !r.dir.is_empty();
-	if sparse {
-		git(config, &at(&["config", "core.sparseCheckout", "true"]), quick).map_err(bad)?;
-		let info = gd.join("info");
-		std::fs::create_dir_all(&info).map_err(|e| bad(e.to_string()))?;
-		std::fs::write(info.join("sparse-checkout"), format!("/{}/\n", r.dir)).map_err(|e| bad(e.to_string()))?;
-	}
-	// One commit, and for a package in a folder only the files the checkout
-	// asks for. A host that will not hand over a commit by its id -- few do
+	git(config, &at(&["config", "core.sparseCheckout", "true"]), quick).map_err(bad)?;
+	let info = gd.join("info");
+	std::fs::create_dir_all(&info).map_err(|e| bad(e.to_string()))?;
+	let patterns = info.join("sparse-checkout");
+	std::fs::write(&patterns, runfiles_patterns(&r.dir)).map_err(|e| bad(e.to_string()))?;
+	// One commit. A host that will not hand over a commit by its id -- few do
 	// not -- gets asked for everything instead.
-	let mut fetch = vec!["fetch", "-q", "--no-tags", "--depth", "1"];
-	if sparse {
-		fetch.push("--filter=blob:none");
-	}
-	fetch.extend(["origin", commit]);
-	if git(config, &at(&fetch), long).is_err() {
+	if git(
+		config,
+		&at(&[
+			"fetch",
+			"-q",
+			"--no-tags",
+			"--depth",
+			"1",
+			"--filter=blob:none",
+			"origin",
+			commit,
+		]),
+		long,
+	)
+	.is_err()
+	{
 		git(
 			config,
 			&at(&["fetch", "-q", "--tags", "origin", "+refs/heads/*:refs/remotes/origin/*"]),
@@ -112,29 +154,27 @@ pub(crate) fn checkout(r: &Remote, commit: &str, tmp: &Path, config: &[String]) 
 	if git(config, &at(&["cat-file", "-e", &object]), quick).is_err() {
 		return fail(format!("{} has no commit {commit}", r.repository()));
 	}
-	// The person's own hooks, from a global `core.hooksPath`, are no business
-	// of a cache, and line endings stay as they were committed.
-	let no_hooks = tmp.join("no-hooks");
-	git(
-		config,
-		&[
-			format!("--git-dir={}", gd.display()),
-			format!("--work-tree={}", tree.display()),
-			"-c".into(),
-			format!("core.hooksPath={}", no_hooks.display()),
-			"-c".into(),
-			"core.autocrlf=false".into(),
-			"-c".into(),
-			"advice.detachedHead=false".into(),
-			"checkout".into(),
-			"-q".into(),
-			"--force".into(),
-			commit.into(),
-		],
-		long,
-	)
-	.map_err(bad)?;
-	Ok(tree)
+	git(config, &in_tree(&["checkout", "-q", "--force", commit]), long).map_err(bad)?;
+	if !whole(&tree)? {
+		return Ok((tree, false));
+	}
+	// Everything, and the files the first step left out with it.
+	std::fs::write(&patterns, "/*\n").map_err(|e| bad(e.to_string()))?;
+	git(config, &in_tree(&["read-tree", "-mu", "HEAD"]), long).map_err(bad)?;
+	Ok((tree, true))
+}
+
+/// The sparse-checkout patterns for a package's `runfiles/`, and its
+/// subprojects' below it.
+fn runfiles_patterns(dir: &str) -> String {
+	let base = if dir.is_empty() {
+		String::new()
+	} else {
+		format!("/{dir}")
+	};
+	(0..=SUBPROJECT_DEPTH)
+		.map(|depth| format!("{base}/{}runfiles/\n", "*/".repeat(depth)))
+		.collect()
 }
 
 /// Run git, answering with its stdout, or with what it said went wrong.

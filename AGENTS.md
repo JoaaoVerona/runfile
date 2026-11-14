@@ -495,11 +495,26 @@ reason -- a separate verb would have been one more thing that reads differently 
   that fails -- offline, the host down -- uses the commit it found last time. `refs.json` beside the trees records
   each name's commit, tag and when it was asked. `run :fetch` asks now (`Network::Refresh`), and is the one place
   a failed question is an error. `--dry-run` and the language server ask nothing (`Network::Offline`).
-- **The cache is readable, not hashed**: `<cache>/packages/<host>/<repo>/<commit>/`, the commit already being a
-  content hash, so a person can see what is there and delete one entry. A package in a folder is a sparse,
-  blob-filtered checkout of that folder alone, under `<commit>-<hash of the folder>`. No `.git` is kept, so a git
-  command run inside a package finds nothing. Everything is built under `<cache>/tmp/` and renamed into place,
-  so an interrupted fetch leaves nothing that looks finished and two runs fetching one commit both end with it.
+- **The cache is readable, not hashed**: `<cache>/packages/<host>/<repo>/<commit>/` for a whole repository and
+  `<commit>-<hash of the folder>/` for a package's `runfiles/` alone, the commit already being a content hash, so
+  a person can see what is there and delete one entry. No `.git` is kept, so a git command run inside a package
+  finds nothing. Everything is built under `<cache>/tmp/` and renamed into place, so an interrupted fetch leaves
+  nothing that looks finished and two runs fetching one commit both end with it.
+- **Only a package's `runfiles/` is fetched, unless its entry says `.requires-whole-repository`** (`git::checkout`,
+  two steps in one fetch). The first is a sparse, blob-filtered checkout of the package's `runfiles/` and its
+  subprojects' down to discovery's depth -- everything a `run` can reach and every `_shared.run` that applies --
+  and costs what those files weigh, however large the repository: measured, ruff at a tag went from 6.4 MB to
+  284 KB. The entry is read off the page (`reference::requires_whole_repository`), and when it asks, the sparse
+  patterns widen to everything and `read-tree -mu` fetches the files left out. It is the whole *repository*, not
+  the package's folder, so a package in a subfolder may build what is around it. A property rather than an
+  inference from `RUN.parent` was the user's call: a package's own files are reachable only through `RUN.parent`
+  and `RUN.file`, since it starts in its caller's directory, so the tree could have answered -- the property is
+  what the author says instead, and is what a reader of `_main.run` sees. Its cost is that it can disagree with
+  the file: left out of an entry that reads `RUN.parent`, the package works in its author's checkout, where
+  every file is, and fails for whoever fetches it. **What is kept is decided again from the entry every time**:
+  a whole copy answers for any package of that repository at that commit; a `runfiles/`-only copy -- or the
+  folder an older runner kept under the same name -- whose entry asks for more has the rest fetched, never run
+  without it. A preview, which fetches nothing, says so instead.
 - **A package starts in the working directory of the line that ran it**, or the process's from the command line
   (`Inherited.workdir`). It was fetched to work on whatever called it: `web-docs:i18n-sync` running j18n has it
   translate `web-docs/`. A target of the project still starts at its anchor -- it works on the project it belongs
@@ -509,7 +524,7 @@ reason -- a separate verb would have been one more thing that reads differently 
   which it cannot know about; a call-chain entry inside one is `<root>\0<name>`, so cycle detection and the
   subproject qualification read it like any other. It is discovered from its folder with no machine-wide
   directory joining it. Its `_shared.run` runs ahead of it, as for any target in its folder -- so j18n's dev-only
-  `.logging` would reach its consumers, and belongs in the targets that want it.
+  `.logging` would reach its consumers, which its `_main.run` turns off with a `.logging = false` of its own.
 - **No setup gate, and `--help` is the package's.** Nobody set up a cache entry or works in one, so the gate is
   not asked; and a package is a program someone runs, so `run <ref> sync --help` hands `--help` on. A package
   needs no project where it is run: the CLI builds no catalog for one.
@@ -2150,10 +2165,17 @@ in it, one per run however many targets, branches and files decrypt, and a fresh
 
 **A property is a fact about the whole file, so it is written at its top, above its first statement** -- the
 parser refuses one inside a block or below a statement (*"a property describes the whole file"*), a question
-about the text. There are four, all in `PROPERTIES`: `.shell`, `.logging`, `.watch`, `.only-in-directories`.
-They are exactly the things read before a file runs -- the shell checker reads `.shell` statically, discovery
-reads `.only-in-directories`, the watch loop `.watch` -- which is the line that separates a property from a
-statement: a dot is a declaration about the file, a call is something done when its line runs. A property's
+about the text. There are five, all in `PROPERTIES`: `.shell`, `.logging`, `.watch`, `.only-in-directories`,
+`.requires-whole-repository`. They are exactly the things read before a file runs -- the shell checker reads
+`.shell` statically, discovery reads `.only-in-directories`, the watch loop `.watch`, the cache
+`.requires-whole-repository` -- which is the line that separates a property from a statement: a dot is a
+declaration about the file, a call is something done when its line runs. Two depend on where the file is, which
+`Props` carries rather than reads: `.only-in-directories` only in the machine-wide directory (`machine_wide`),
+and `.requires-whole-repository` only in a package's entry, a `_main.run` directly in a `runfiles/`
+(`reference::is_entry`, `Props.entry`, which `run_chain` turns off for the `_shared.run` files ahead of the
+target). The second is also only ever written out (`PropError::NotLiteral`), since the cache reads it before
+anything of the package exists to evaluate it; the language server is handed whether a document is an entry
+(`analysis::diagnose_at`) and underlines it anywhere else. A property's
 value is worked out once the `_shared.run` chain has run, against the scope it left (`Props::extend`), so a
 `.watch` is relative to the directory the chain left and reads what it set. `.watch` and `.only-in-directories`
 append. `props::check` answers everything about a property line that needs no run, and the language server asks

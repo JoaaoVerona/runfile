@@ -85,6 +85,19 @@ pub enum Chain<'a> {
 /// that makes a language server worse than none. `chain` is what binds the
 /// names the document does not bind itself.
 pub fn diagnose(src: &str, known_targets: &[String], machine_wide: bool, chain: Chain<'_>) -> Vec<Diagnostic> {
+	diagnose_at(src, known_targets, machine_wide, None, chain)
+}
+
+/// [`diagnose`], knowing whether the document is a package's entry, its
+/// `runfiles/_main.run` -- the one place `.requires-whole-repository` is read.
+/// `None` when the document has no path to say, and the rule is not asked.
+pub fn diagnose_at(
+	src: &str,
+	known_targets: &[String],
+	machine_wide: bool,
+	entry: Option<bool>,
+	chain: Chain<'_>,
+) -> Vec<Diagnostic> {
 	let ast = match runfile_lang::parse(src) {
 		Ok(a) => a,
 		Err(e) => {
@@ -100,7 +113,7 @@ pub fn diagnose(src: &str, known_targets: &[String], machine_wide: bool, chain: 
 	};
 
 	let mut out = Vec::new();
-	check_properties(&ast.body, machine_wide, &mut out, src);
+	check_properties(&ast.body, machine_wide, entry, &mut out, src);
 	if !known_targets.is_empty() {
 		check_target_calls(&ast.body, known_targets, &mut out, src);
 	}
@@ -203,7 +216,13 @@ fn word_in(line: &str, word: &str) -> Option<usize> {
 
 /// The file's properties, which are all at its top: the parser refuses one
 /// anywhere else.
-fn check_properties(block: &runfile_lang::Block, machine_wide: bool, out: &mut Vec<Diagnostic>, src: &str) {
+fn check_properties(
+	block: &runfile_lang::Block,
+	machine_wide: bool,
+	entry: Option<bool>,
+	out: &mut Vec<Diagnostic>,
+	src: &str,
+) {
 	// Asked of the runner's own `check`, rather than described a second time
 	// here: an editor that accepts a line the runner refuses is how the two
 	// come to disagree about what a file means, and this file used to hold its
@@ -230,6 +249,19 @@ fn check_properties(block: &runfile_lang::Block, machine_wide: bool, out: &mut V
 				});
 				continue;
 			}
+		}
+		// Where the file is, which only the caller knows: the runner refuses it
+		// as it applies the line, so an editor says so as it is written.
+		if head == runfile_lang::reference::WHOLE_REPOSITORY && entry == Some(false) {
+			let e = runfile_runtime::props::PropError::NotEntry {
+				name: head.clone(),
+				line: p.span.line,
+			};
+			out.push(Diagnostic {
+				range: whole_line(src, p.span.line),
+				message: strip_line_prefix(&e.to_string()),
+				severity: Severity::Error,
+			});
 		}
 		if head == runfile_discovery::SCOPE {
 			let refused = if !machine_wide {
@@ -2275,6 +2307,26 @@ mod tests {
 			.collect();
 		assert_eq!(m.len(), 1, "{m:#?}");
 		assert!(m[0].contains("names no version"), "{m:#?}");
+	}
+
+	#[test]
+	fn requires_whole_repository_is_underlined_anywhere_but_an_entry() {
+		let src = ".requires-whole-repository = true\n$ true\n";
+		assert!(diagnose_at(src, &[], false, Some(true), Chain::Target(&[])).is_empty());
+		// Nothing says where a document without a path sits, so nothing is said.
+		assert!(diagnose(src, &[], false, Chain::Target(&[])).is_empty());
+		let d = diagnose_at(src, &[], false, Some(false), Chain::Target(&[]));
+		assert_eq!(d.len(), 1, "{d:#?}");
+		assert!(d[0].message.contains("nowhere else"), "{d:#?}");
+		// Worked out, it is refused wherever it is: the cache cannot run it.
+		let d = diagnose_at(
+			".requires-whole-repository = ENV.X\n$ true\n",
+			&[],
+			false,
+			Some(true),
+			Chain::Target(&[]),
+		);
+		assert!(d.iter().any(|d| d.message.contains("not worked out")), "{d:#?}");
 	}
 
 	#[test]

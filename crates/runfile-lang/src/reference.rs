@@ -17,6 +17,44 @@
 /// own `:list` by its `_`.
 pub const ENTRY: &str = "_main";
 
+/// The property a package's entry declares when it needs more of its
+/// repository than its `runfiles/`: everything else it reaches through
+/// `RUN.parent` or `RUN.file`. Without it, only `runfiles/` is fetched.
+pub const WHOLE_REPOSITORY: &str = "requires-whole-repository";
+
+/// Whether `path` is a package's entry: a `_main.run` directly in a
+/// `runfiles/`. One in a namespace's folder (`runfiles/api/_main.run`) is an
+/// ordinary target, since no package runs it.
+pub fn is_entry(path: &std::path::Path) -> bool {
+	path.file_name().is_some_and(|n| n == "_main.run")
+		&& path
+			.parent()
+			.and_then(|d| d.file_name())
+			.is_some_and(|n| n == "runfiles")
+}
+
+/// What an entry's `.requires-whole-repository` says, read off the page --
+/// which is the only way it can be read, since it decides what is fetched
+/// before anything of the package runs. Absent is `false`, bare is `true`.
+pub fn requires_whole_repository(target: &crate::Target) -> Result<bool, RefError> {
+	let Some(p) = target
+		.body
+		.properties
+		.iter()
+		.find(|p| p.path.len() == 1 && p.path[0] == WHOLE_REPOSITORY)
+	else {
+		return Ok(false);
+	};
+	match &p.value {
+		None => Ok(true),
+		Some(crate::Expr::Bool(b, _)) => Ok(*b),
+		Some(_) => Err(RefError(format!(
+			"line {}: `.{WHOLE_REPOSITORY}` is read before anything runs, so it is written `true` or `false`, not worked out",
+			p.span.line
+		))),
+	}
+}
+
 /// What a reference names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reference {

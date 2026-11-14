@@ -983,6 +983,7 @@ A property is a fact about the whole file, written at its top, above the first s
 | `.logging` | Announce each command on stderr before it runs. Off unless set. | ✅ |
 | `.watch` | Re-run when matching files change. A `!` prefix excludes. | |
 | `.only-in-directories` | Machine-wide targets only: offer this one inside these directories. | |
+| `.requires-whole-repository` | A package's `runfiles/_main.run` only: fetch its whole repository, not only `runfiles/`. See [Packages](#packages). | ✅ |
 
 A **flag** is written bare for `= true`, or given a bool. A constant that can never be one is refused where it
 is written — `.logging = 23` and `.logging = "true"` are both errors, and the second says to drop the quotes. A
@@ -1112,8 +1113,33 @@ asked what it points at again once a week has passed since it last was — and w
 with the host down, the commit it pointed at last time is used. `run :fetch <package>` asks now.
 
 What is fetched lands in the platform's cache directory — `~/.cache/runfile` on Linux,
-`~/Library/Caches/runfile` on macOS, `%LOCALAPPDATA%\runfile` on Windows, or `RUNFILE_CACHE_DIR` — as the
-repository at that commit without its `.git`, or only the package's folder of it.
+`~/Library/Caches/runfile` on macOS, `%LOCALAPPDATA%\runfile` on Windows, or `RUNFILE_CACHE_DIR` — without its
+`.git`.
+
+**Only the package's `runfiles/` is fetched** — its own and its subprojects', which is everything a target can
+`run` and every `_shared.run` that applies — however large the repository. A package that reads files of its own
+beyond that, through `{{ RUN.parent }}` or `{{ RUN.file }}`, says so in its `_main.run`, and gets the whole
+repository at that commit:
+
+```sh
+# runfiles/_main.run
+# translate, built from the source it was fetched with
+
+.requires-whole-repository = true
+
+let exe = join_path(temp_dir(), "translate")
+
+$ go -C {{ RUN.parent }} build -o {{ exe }} ./cmd/translate
+
+let status = code_of(exec {{ exe }} {{ ARGS }})
+
+exit(status)
+```
+
+The entry is read after `runfiles/` arrives and the rest is fetched only when it asks, so a package that does not
+pays for none of it. The property is read before anything runs, so it is written `true` or `false`, and only in
+a package's `runfiles/_main.run` — anywhere else nothing would read it, and the run refuses it rather than let a
+package work in its author's checkout, where every file is there, and nowhere else.
 
 **A package runs where it was run from.** It was fetched to work on whatever called it, so it starts in the
 directory you typed `run` in, or in the working directory of the line that ran it — a `set_cwd()` above that

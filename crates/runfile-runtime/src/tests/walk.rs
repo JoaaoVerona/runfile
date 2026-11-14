@@ -165,6 +165,7 @@ fn every_exported_property_name_is_actually_known() {
 	fn base() -> crate::props::Props {
 		crate::props::Props {
 			machine_wide: true,
+			entry: true,
 			..Default::default()
 		}
 	}
@@ -300,6 +301,51 @@ fn a_scored_dispatch_passes_its_arguments_and_splices_its_trace() {
 		trace.find("echo hi") < trace.find("echo bye"),
 		"the dependency's trace comes first: {trace}"
 	);
+}
+
+// ---- `.requires-whole-repository`, which only a package's entry may set
+
+#[test]
+fn requires_whole_repository_is_accepted_in_an_entry_and_nowhere_else() {
+	// Read by the cache before a package is fetched past its `runfiles/`, from
+	// its `_main.run` alone. Written anywhere else it is read by nothing, and
+	// the package works for its author -- whose checkout has every file -- and
+	// for nobody who fetches it.
+	let d = project(&[("runfiles/_main.run", ".requires-whole-repository = true\n$ true\n")]);
+	host_run(&d, "_main").expect("the one place it means something");
+	for (file, name) in [
+		("runfiles/deploy.run", "deploy"),
+		("runfiles/api/_main.run", "api:_main"),
+	] {
+		let d = project(&[(file, ".requires-whole-repository = true\n$ true\n")]);
+		let e = host_run(&d, name).expect_err(file);
+		assert!(
+			e.to_string().contains("in its `runfiles/_main.run` and nowhere else"),
+			"{file}: {e}"
+		);
+	}
+	// Nor in the `_shared.run` ahead of an entry, which is not the entry.
+	let d = project(&[
+		("runfiles/_shared.run", ".requires-whole-repository = true\n"),
+		("runfiles/_main.run", "$ true\n"),
+	]);
+	let e = host_run(&d, "_main").expect_err("a shared file is not the entry");
+	assert!(e.to_string().contains("nowhere else"), "{e}");
+}
+
+#[test]
+fn requires_whole_repository_is_written_out_because_it_is_read_before_anything_runs() {
+	for src in [
+		".requires-whole-repository = ENV.WHOLE\n$ true\n",
+		".requires-whole-repository = 1 == 1\n$ true\n",
+	] {
+		let d = project(&[("runfiles/_main.run", src)]);
+		let e = host_run(&d, "_main").expect_err(src);
+		assert!(e.to_string().contains("is read before anything runs"), "{src}: {e}");
+	}
+	let d = project(&[("runfiles/_main.run", ".requires-whole-repository = \"true\"\n$ true\n")]);
+	let e = host_run(&d, "_main").expect_err("a string is not a bool");
+	assert!(e.to_string().contains("without the quotes"), "{e}");
 }
 
 // ---- `.only-in-directories`, which only the machine-wide directory may set

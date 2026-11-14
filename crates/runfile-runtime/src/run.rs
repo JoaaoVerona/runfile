@@ -282,11 +282,14 @@ pub fn run_chain(
 	r: &mut Runner<'_>,
 	header: impl FnOnce(&Props) -> Result<(), RunError>,
 ) -> Result<(), RunError> {
-	let mut props = base;
+	// Only the target itself can be a package's entry.
+	let entry = base.entry;
+	let mut props = Props { entry: false, ..base };
 	for s in shared {
 		props = props.extend(&s.body, &mut r.scope)?;
 		walk(&s.body, &props, r)?;
 	}
+	props.entry = entry;
 	let props = props.extend(&target.body, &mut r.scope)?;
 	header(&props)?;
 	walk(&target.body, &props, r)

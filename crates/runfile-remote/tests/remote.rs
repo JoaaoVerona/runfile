@@ -43,6 +43,9 @@ impl Server {
 		let d = self.dir.path().join(path);
 		std::fs::create_dir_all(&d).unwrap();
 		git(&d, &["init", "-q", "-b", "main"]);
+		// As GitHub, GitLab and Gitea do: a fetch may leave files out and ask
+		// for them later, which is what fetching only `runfiles/` relies on.
+		git(&d, &["config", "uploadpack.allowFilter", "true"]);
 		d
 	}
 }
@@ -262,6 +265,177 @@ fn a_package_in_a_folder_is_fetched_without_the_rest_of_the_repository() {
 	let checkout = p.root.parent().unwrap().parent().unwrap();
 	assert!(!checkout.join("big").exists(), "the rest of the repository came too");
 	assert!(!checkout.join("runfiles").exists(), "the root's package came too");
+}
+
+/// Every file in `dir`, `/`-separated and relative to it.
+fn files_in(dir: &Path) -> Vec<String> {
+	fn walk(root: &Path, d: &Path, out: &mut Vec<String>) {
+		for e in std::fs::read_dir(d).unwrap().flatten() {
+			let p = e.path();
+			if p.is_dir() {
+				walk(root, &p, out);
+			} else {
+				out.push(slashed(p.strip_prefix(root).unwrap()));
+			}
+		}
+	}
+	let mut out = Vec::new();
+	walk(dir, dir, &mut out);
+	out.sort();
+	out
+}
+
+#[test]
+fn a_package_that_asks_for_nothing_more_gets_only_its_runfiles() {
+	if !has_git() {
+		return eprintln!("skipped: git is not installed");
+	}
+	let s = Server::new();
+	let d = s.repo("acme/tool.git");
+	for (f, body) in [
+		("runfiles/_main.run", "# The tool\n\nrun helper\n"),
+		("runfiles/_shared.run", "# Shared\n\nlet x = 1\n"),
+		("runfiles/helper.run", "# Helper\n\nprint(\"h\")\n"),
+		("sub/runfiles/x.run", "# A subproject\n\nprint(\"x\")\n"),
+		("cmd/main.go", "package main\n"),
+		("README.md", "big\n"),
+	] {
+		write(&d, f, body);
+	}
+	commit(&d, "one");
+	git(&d, &["tag", "v1"]);
+	let p = s
+		.cache()
+		.package(&remote("example.test/acme/tool@v1"), Network::Allowed, &quiet)
+		.unwrap();
+	assert_eq!(
+		files_in(&p.root),
+		[
+			"runfiles/_main.run",
+			"runfiles/_shared.run",
+			"runfiles/helper.run",
+			"sub/runfiles/x.run"
+		],
+		"a package that reads nothing through RUN.parent can reach nothing else"
+	);
+}
+
+#[test]
+fn a_package_that_asks_for_its_whole_repository_gets_all_of_it() {
+	if !has_git() {
+		return eprintln!("skipped: git is not installed");
+	}
+	// In a folder of its repository, and building what is outside it: the
+	// whole repository is what it says, not only its own folder.
+	let s = Server::new();
+	let d = s.repo("acme/mono.git");
+	for (f, body) in [
+		(
+			"tools/build/runfiles/_main.run",
+			"# Builds the repository\n\n.requires-whole-repository = true\n\nprint(read_file(join_path(RUN.parent, \"..\", \"..\", \"go.mod\")))\n",
+		),
+		("go.mod", "module example.test/acme/mono\n"),
+		("cmd/tool/main.go", "package main\n"),
+	] {
+		write(&d, f, body);
+	}
+	let c = commit(&d, "one");
+	git(&d, &["tag", "v1"]);
+	let cache = s.cache();
+	let p = cache
+		.package(
+			&remote("example.test/acme/mono/tools/build@v1"),
+			Network::Allowed,
+			&quiet,
+		)
+		.unwrap();
+	let repo = p.root.parent().unwrap().parent().unwrap();
+	assert_eq!(
+		repo.file_name().unwrap().to_str().unwrap(),
+		c,
+		"kept as the whole repository at its commit"
+	);
+	assert_eq!(
+		files_in(repo),
+		["cmd/tool/main.go", "go.mod", "tools/build/runfiles/_main.run"]
+	);
+	// Another package of the same repository at the same commit is found in it.
+	let p2 = cache
+		.package(
+			&remote(&format!("example.test/acme/mono/tools/build@{c}")),
+			Network::Offline,
+			&quiet,
+		)
+		.unwrap();
+	assert_eq!(p2.root, p.root);
+}
+
+#[test]
+fn a_copy_of_only_runfiles_whose_entry_asks_for_more_has_the_rest_fetched() {
+	if !has_git() {
+		return eprintln!("skipped: git is not installed");
+	}
+	// What a runfile that kept only `runfiles/` -- or an older one, which kept
+	// a different shape -- leaves for a runner that reads the entry differently:
+	// the entry is read again, and the rest fetched rather than run without.
+	let s = Server::new();
+	let d = s.repo("acme/tool.git");
+	write(
+		&d,
+		"runfiles/_main.run",
+		"# The tool\n\n.requires-whole-repository = true\n\nprint(\"x\")\n",
+	);
+	write(&d, "cmd/main.go", "package main\n");
+	commit(&d, "one");
+	git(&d, &["tag", "v1"]);
+	let cache = s.cache();
+	let r = remote("example.test/acme/tool@v1");
+	let p = cache.package(&r, Network::Allowed, &quiet).unwrap();
+	// Made by hand into a copy of only its runfiles.
+	let commit_dir = p.root.clone();
+	let thin = std::fs::read_dir(commit_dir.parent().unwrap())
+		.unwrap()
+		.flatten()
+		.map(|e| e.path())
+		.find(|e| e.is_dir())
+		.unwrap();
+	assert_eq!(thin, commit_dir, "only the whole repository was kept");
+	let renamed = commit_dir.with_file_name(format!(
+		"{}-e3b0c44298fc",
+		commit_dir.file_name().unwrap().to_str().unwrap()
+	));
+	std::fs::rename(&commit_dir, &renamed).unwrap();
+	std::fs::remove_dir_all(renamed.join("cmd")).unwrap();
+	// A preview fetches nothing, and says so rather than run a partial tree.
+	let e = cache.package(&r, Network::Offline, &quiet).unwrap_err();
+	assert!(e.0.contains("has not been fetched"), "{e}");
+	let p = cache.package(&r, Network::Allowed, &quiet).unwrap();
+	assert_eq!(p.root, commit_dir);
+	assert!(p.root.join("cmd/main.go").is_file());
+}
+
+#[test]
+fn an_entry_that_works_out_whether_it_needs_more_is_refused() {
+	if !has_git() {
+		return eprintln!("skipped: git is not installed");
+	}
+	let s = Server::new();
+	let d = s.repo("acme/tool.git");
+	write(
+		&d,
+		"runfiles/_main.run",
+		"# The tool\n\n.requires-whole-repository = ENV.WHOLE\n\nprint(\"x\")\n",
+	);
+	commit(&d, "one");
+	git(&d, &["tag", "v1"]);
+	let e = s
+		.cache()
+		.package(&remote("example.test/acme/tool@v1"), Network::Allowed, &quiet)
+		.unwrap_err();
+	assert!(
+		e.0.contains("runfiles/_main.run: line 3") && e.0.contains("not worked out"),
+		"{e}"
+	);
 }
 
 #[test]

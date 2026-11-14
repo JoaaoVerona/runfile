@@ -33,8 +33,9 @@ pub fn diagnostics(
 		return analysis::diagnose(src, &[], false, Chain::Target(&[]));
 	};
 	let machine_wide = runfile_discovery::is_machine_wide(path);
+	let entry = Some(runfile_lang::reference::is_entry(path));
 	let Some(cat) = cat else {
-		return analysis::diagnose(src, &[], machine_wide, Chain::Unknown);
+		return analysis::diagnose_at(src, &[], machine_wide, entry, Chain::Unknown);
 	};
 	// A shared file that does not parse -- mid-edit, usually -- binds nothing
 	// anybody can read, which is not the same as binding nothing.
@@ -48,7 +49,7 @@ pub fn diagnostics(
 		Some(files) if is_shared => Chain::Shared(files),
 		Some(files) => Chain::Target(files),
 	};
-	analysis::diagnose(src, &target_names(cat, path), machine_wide, chain)
+	analysis::diagnose_at(src, &target_names(cat, path), machine_wide, entry, chain)
 }
 
 /// Every `_shared.run` that applies to a document, outermost first.

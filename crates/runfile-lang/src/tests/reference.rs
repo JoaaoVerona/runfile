@@ -191,3 +191,29 @@ fn a_program_is_left_as_written_by_the_formatter() {
 	let src = "let s = code_of(exec tool   --x   {{ ARGS }})\n";
 	assert_eq!(crate::format(src).unwrap(), src);
 }
+
+#[test]
+fn an_entry_is_a_main_run_directly_in_a_runfiles_folder() {
+	use crate::reference::is_entry;
+	use std::path::Path;
+	assert!(is_entry(Path::new("/x/runfiles/_main.run")));
+	assert!(is_entry(Path::new("tools/j18n/runfiles/_main.run")));
+	assert!(
+		!is_entry(Path::new("/x/runfiles/api/_main.run")),
+		"a namespace's target"
+	);
+	assert!(!is_entry(Path::new("/x/runfiles/main.run")));
+	assert!(!is_entry(Path::new("/x/_main.run")));
+}
+
+#[test]
+fn whether_an_entry_asks_for_its_whole_repository_is_read_off_the_page() {
+	use crate::reference::requires_whole_repository as whole;
+	let t = |src: &str| crate::parse(src).unwrap_or_else(|e| panic!("{src}\n{e}"));
+	assert_eq!(whole(&t("$ true\n")), Ok(false));
+	assert_eq!(whole(&t(".requires-whole-repository\n$ true\n")), Ok(true));
+	assert_eq!(whole(&t(".requires-whole-repository = true\n$ true\n")), Ok(true));
+	assert_eq!(whole(&t(".requires-whole-repository = false\n$ true\n")), Ok(false));
+	let e = whole(&t(".requires-whole-repository = ENV.X\n$ true\n")).unwrap_err();
+	assert!(e.0.contains("line 1") && e.0.contains("not worked out"), "{e:?}");
+}

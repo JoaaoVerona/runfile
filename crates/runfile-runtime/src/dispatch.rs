@@ -537,6 +537,7 @@ impl<'a> Host<'a> {
 			// with two answers is how an editor and the runner come to
 			// disagree.
 			machine_wide: runfile_discovery::is_machine_wide(&target.path),
+			entry: reference::is_entry(&target.path),
 			..Props::default()
 		};
 		Ok((ast, shared, scope, props))

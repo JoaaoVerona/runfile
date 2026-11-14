@@ -218,6 +218,36 @@ fn a_package_runs_where_it_was_run_from_with_its_tag_as_its_version() {
 }
 
 #[test]
+fn a_package_gets_what_its_entry_says_it_needs_and_no_more() {
+	if !has_git() {
+		return eprintln!("skipped: git is not installed");
+	}
+	// The only way to a package's own files outside `runfiles/` is through
+	// `RUN.parent`: one that says it needs them gets them, and one that does
+	// not is fetched without them.
+	let reads =
+		|whole: &str| format!("# Reads its own data\n\n{whole}print(read_file(join_path(RUN.parent, \"data.txt\")))\n");
+	let w = World::new();
+	w.repo(
+		"acme/whole.git",
+		&[
+			("runfiles/_main.run", &reads(".requires-whole-repository = true\n\n")),
+			("data.txt", "from the package"),
+		],
+	);
+	w.repo(
+		"acme/thin.git",
+		&[("runfiles/_main.run", &reads("")), ("data.txt", "from the package")],
+	);
+	let o = w.run(&["-y", "example.test/acme/whole@v1.0.0"]);
+	assert!(o.status.success(), "{}", err(&o));
+	assert_eq!(out(&o).trim_end(), "from the package");
+	let o = w.run(&["-y", "example.test/acme/thin@v1.0.0"]);
+	assert!(!o.status.success(), "a file it never asked for was there: {}", out(&o));
+	assert!(err(&o).contains("could not read"), "{}", err(&o));
+}
+
+#[test]
 fn a_package_typed_at_the_terminal_is_asked_about_once_per_repository() {
 	if !has_git() {
 		return eprintln!("skipped: git is not installed");

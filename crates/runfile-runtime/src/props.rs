@@ -26,6 +26,12 @@ pub struct Props {
 	/// property: it is a fact about where the file was found, and the one
 	/// thing that makes `.only-in-directories` mean anything.
 	pub machine_wide: bool,
+	/// Whether the file whose properties are being applied is a package's
+	/// entry, `runfiles/_main.run` -- the one place `.requires-whole-repository`
+	/// means anything. Also not a property: `run_chain` turns it off for the
+	/// `_shared.run` files ahead of the target, which are not the entry even
+	/// when the target is.
+	pub entry: bool,
 }
 
 /// A `.watch` pattern and the directory it is matched beneath: the working
@@ -72,6 +78,14 @@ pub const PROPERTIES: &[KnownProperty] = &[
 		example: ".only-in-directories = [\"~/work/acme\", \"~/work/zed\"]",
 	},
 	KnownProperty {
+		name: "requires-whole-repository",
+		flag: true,
+		doc: "For a package's `runfiles/_main.run`: fetch the whole repository, not only its `runfiles/`, because it reads files through `RUN.parent` or `RUN.file`. Written `true` or `false`, since it is read before anything runs.",
+		example: ".requires-whole-repository = true
+
+$ go -C {{ RUN.parent }} build -o {{ out }} ./cmd/tool",
+	},
+	KnownProperty {
 		name: "shell",
 		flag: false,
 		doc: "Which POSIX shell `$` lines use: sh, bash, dash, ash, zsh, ksh, busybox or brush.",
@@ -112,6 +126,16 @@ pub enum PropError {
 	NeedsValue { name: String, line: usize },
 	#[error("line {line}: `.{name}` scopes the machine-wide directory; this target is part of the project")]
 	NotMachineWide { name: String, line: usize },
+	/// `.requires-whole-repository` anywhere but a package's entry, where
+	/// nothing reads it: a package is fetched by what its `_main.run` says.
+	#[error(
+		"line {line}: `.{name}` says what a package needs fetched, so it is written in its `runfiles/_main.run` and nowhere else"
+	)]
+	NotEntry { name: String, line: usize },
+	/// A property read off the page before anything runs, given a value only
+	/// a run could work out.
+	#[error("line {line}: `.{name}` is read before anything runs, so it is written `true` or `false`, not worked out")]
+	NotLiteral { name: String, line: usize },
 	/// A constant that can never be a bool, read off the page. Separate from
 	/// `FlagValue` because this one is a mistake in the text and is answerable
 	/// before the run: the language server reports it from the same list.
@@ -178,6 +202,16 @@ pub fn check(p: &Property) -> Result<&'static KnownProperty, PropError> {
 			name: p.path.join("."),
 			line,
 			kind: describe_constant(&c),
+		});
+	}
+	// What decides how much of a package is fetched is read before any of it
+	// runs, by the cache, so only what is written out can be read at all.
+	if known.name == runfile_lang::reference::WHOLE_REPOSITORY
+		&& !matches!(p.value, None | Some(runfile_lang::Expr::Bool(..)))
+	{
+		return Err(PropError::NotLiteral {
+			name: p.path.join("."),
+			line,
 		});
 	}
 	// The same shape for the one property whose *values* are a fixed set: a
@@ -262,6 +296,20 @@ impl Props {
 						line,
 					});
 				}
+			}
+			// Read by the cache before anything is fetched past `runfiles/`, so
+			// there is nothing to do with it here. Anywhere but an entry nothing
+			// reads it, and a package that needed its whole repository would be
+			// fetched without it -- working for its author, whose checkout has
+			// every file, and for nobody else.
+			"requires-whole-repository" => {
+				if !self.entry {
+					return Err(PropError::NotEntry {
+						name: p.path.join("."),
+						line,
+					});
+				}
+				flag(p, sc)?;
 			}
 			_ => unreachable!("`check` answered with a property `apply` does not know"),
 		}
