@@ -532,11 +532,13 @@ reason -- a separate verb would have been one more thing that reads differently 
   commit it would run -- the one place a mistyped name fetches someone else's code. A tree in the cache is what
   "known" means (`Cache::knows`), not a lookup: answering no must not make the next run skip the question. `-y`,
   CI and a reference in a file are never asked; the file is the decision, as its `$ curl … | sh` would be.
-- **A monorepo pins a version once with a package of its own**: `tools/j18n/runfiles/_main.run` holding
-  `run <ref>@v1 {{ ARGS }}`, reached as `run ../tools/j18n sync` from each subproject. A root *target* could not do
-  it: a subproject run from its own folder never sees the root's targets (the upward walk stops at the nearest
+- **A monorepo pins a version once with a package of its own**: `.packages/j18n/runfiles/_main.run` holding
+  `run <ref>@v1 {{ ARGS }}`, reached as `run ../.packages/j18n sync` from each subproject. A root *target* could not
+  do it: a subproject run from its own folder never sees the root's targets (the upward walk stops at the nearest
   `runfiles/`), and a root target starts at the root, so the tool would run there. A path package has neither
-  problem, and is the same concept rather than a new one.
+  problem, and is the same concept rather than a new one. **Its folder's name starts with a dot**, which discovery
+  passes over: as `tools/j18n/` it is a subproject as well, and skiley-web's root targets, which run
+  `parallel for ns in RUN.namespaces`, would have run `tools:check` beside the real ones and failed.
 
 ### Comments
 

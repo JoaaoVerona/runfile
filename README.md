@@ -1190,7 +1190,7 @@ A subproject does not inherit the root's `_shared.run`, so a version written in 
 a package of your own, which every subproject reaches by path — from the root or from inside the subproject:
 
 ```sh
-# tools/translate/runfiles/_main.run
+# .packages/translate/runfiles/_main.run
 # The translator, pinned for every package in this repository
 
 run github.com/acme/translate@v1.4.0 {{ ARGS }}
@@ -1200,10 +1200,12 @@ run github.com/acme/translate@v1.4.0 {{ ARGS }}
 # web-docs/runfiles/i18n.run
 # Translate the docs
 
-run ../tools/translate sync
+run ../.packages/translate sync
 ```
 
-`../tools/translate` is relative to `web-docs/`, where the line runs, and so is where the translator starts.
+`../.packages/translate` is relative to `web-docs/`, where the line runs, and so is where the translator starts. The
+folder's name starts with a dot so discovery passes over it: as `tools/translate/` it would be a subproject too, and
+a root target that runs `for ns in RUN.namespaces` would run it with them.
 
 ### Publishing a tool as a package
 
