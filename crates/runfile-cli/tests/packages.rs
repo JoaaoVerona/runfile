@@ -148,6 +148,16 @@ fn git(dir: &Path, args: &[&str]) -> String {
 	String::from_utf8(o.stdout).unwrap().trim().to_string()
 }
 
+/// Where the cache keeps `example.test/acme/tool`'s trees, spelled the way the
+/// platform spells a path -- which is how `RUN.parent` prints it.
+fn tree_of(w: &World) -> PathBuf {
+	w.cache()
+		.join("packages")
+		.join("example.test")
+		.join("acme")
+		.join("tool")
+}
+
 fn has_git() -> bool {
 	Command::new("git")
 		.arg("--version")
@@ -155,8 +165,10 @@ fn has_git() -> bool {
 		.is_ok_and(|o| o.status.success())
 }
 
+/// What it printed, with `\n` for a line break: `print` ends a line with
+/// `\r\n` on Windows, as the platform's own programs do.
 fn out(o: &Output) -> String {
-	String::from_utf8_lossy(&o.stdout).into_owned()
+	String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n")
 }
 
 fn err(o: &Output) -> String {
@@ -188,21 +200,12 @@ fn a_package_runs_where_it_was_run_from_with_its_tag_as_its_version() {
 	assert!(out(&o).contains("args=sync --help -f x.json"), "{}", out(&o));
 	assert!(out(&o).contains("version=v1.0.0"), "{}", out(&o));
 	assert!(
-		out(&o).contains(&format!(
-			"parent={}",
-			w.cache()
-				.join("packages/example.test/acme/tool")
-				.join(&commit)
-				.display()
-		)),
+		out(&o).contains(&format!("parent={}", tree_of(&w).join(&commit).display())),
 		"{}",
 		out(&o)
 	);
 	assert!(ran_in(w.here.path()), "it did not run where it was run from");
-	assert!(
-		!ran_in(&w.cache().join("packages/example.test/acme/tool").join(&commit)),
-		"it ran in the cache"
-	);
+	assert!(!ran_in(&tree_of(&w).join(&commit)), "it ran in the cache");
 	assert!(
 		err(&o).contains(&format!("fetching example.test/acme/tool@v1.0.0 ({})", &commit[..7])),
 		"{}",
